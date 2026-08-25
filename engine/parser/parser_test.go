@@ -397,6 +397,7 @@ func TestParseNormalizesConfigurations(t *testing.T) {
 	if cfg.Security != "tls" {
 		t.Fatalf("expected normalized security, got %q", cfg.Security)
 	}
+}
 func TestParseHysteria2(t *testing.T) {
 	p := New()
 
