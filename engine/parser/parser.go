@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/url"
 	"strconv"
 	"strings"
@@ -202,6 +203,30 @@ func (p *Parser) parseURLs(text string) ([]config.Config, error) {
 	var configs []config.Config
 	var parseErrors []error
 
+	if looksLikeWireGuardConfig(text) {
+	cfg, err := parseWireGuardConfig(text)
+
+	if err != nil {
+		return nil, fmt.Errorf(
+			"invalid WireGuard configuration: %w",
+			err,
+		)
+	}
+
+	finalized, validationErrors := p.finalize(
+		[]config.Config{cfg},
+	)
+
+	if len(finalized) == 0 {
+		return nil, fmt.Errorf(
+			"no valid WireGuard configurations found: %s",
+			formatErrors(validationErrors),
+		)
+	}
+
+	return finalized, nil
+}
+
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 
@@ -346,39 +371,42 @@ func parseURL(raw string) (config.Config, error) {
 	}
 
 		switch strings.ToLower(u.Scheme) {
-	case "vless":
-		return parseVLESS(u)
+case "vless":
+	return parseVLESS(u)
 
-	case "vmess":
-		return parseVMess(u)
+case "vmess":
+	return parseVMess(u)
 
-	case "trojan":
-		return parseTrojan(u)
+case "trojan":
+	return parseTrojan(u)
 
-	case "ss":
-		return parseShadowsocks(u)
+case "ss":
+	return parseShadowsocks(u)
 
-	case "hysteria":
-		return parseHysteria(u)
+case "hysteria":
+	return parseHysteria(u)
 
-	case "hysteria2", "hy2":
-		return parseHysteria2(u)
+case "hysteria2", "hy2":
+	return parseHysteria2(u)
 
-	case "tuic":
-		return parseTUIC(u)
+case "tuic":
+	return parseTUIC(u)
 
-	case "socks", "socks4", "socks4a", "socks5":
-		return parseSOCKS(u)
+case "wireguard", "wg":
+	return parseWireGuardURL(u)
 
-	case "http", "https":
-		return parseHTTP(u)
+case "socks", "socks4", "socks4a", "socks5":
+	return parseSOCKS(u)
 
-	default:
-		return config.Config{}, fmt.Errorf(
-			"unsupported configuration scheme: %q",
-			u.Scheme,
-		)
-	}
+case "http", "https":
+	return parseHTTP(u)
+
+default:
+	return config.Config{}, fmt.Errorf(
+		"unsupported configuration scheme: %q",
+		u.Scheme,
+	)
+}
 }
 
 // parseVLESS parses a VLESS URI.
@@ -969,4 +997,294 @@ func formatErrors(errors []error) string {
 	}
 
 	return strings.Join(messages, "; ")
+}
+// parseWireGuardURL parses a WireGuard URI.
+//
+// Supported form:
+//
+//	wireguard://public-key@host:port?privateKey=...&allowedIPs=0.0.0.0%2F0
+//
+// The parser also accepts wg:// as an alias.
+func parseWireGuardURL(u *url.URL) (config.Config, error) {
+	if u.Host == "" {
+		return config.Config{}, fmt.Errorf(
+			"WireGuard URL has no server address",
+		)
+	}
+
+	port := parsePort(u.Port())
+
+	if port == 0 {
+		return config.Config{}, fmt.Errorf(
+			"invalid WireGuard port",
+		)
+	}
+
+	query := u.Query()
+
+	publicKey := strings.TrimSpace(query.Get("publicKey"))
+
+	if publicKey == "" && u.User != nil {
+		publicKey = strings.TrimSpace(u.User.Username())
+	}
+
+	if publicKey == "" {
+		return config.Config{}, fmt.Errorf(
+			"WireGuard URL has no public key",
+		)
+	}
+
+	privateKey := strings.TrimSpace(query.Get("privateKey"))
+
+	allowedIPs := splitConfigValues(
+		query.Get("allowedIPs"),
+	)
+
+	if len(allowedIPs) == 0 {
+		allowedIPs = splitConfigValues(
+			query.Get("allowed_ips"),
+		)
+	}
+
+	dns := splitConfigValues(query.Get("dns"))
+
+	mtu := parsePort(query.Get("mtu"))
+
+	keepalive := parsePort(
+		query.Get("persistentKeepalive"),
+	)
+
+	if keepalive == 0 {
+		keepalive = parsePort(
+			query.Get("persistent_keepalive"),
+		)
+	}
+
+	return config.Config{
+		Type:                config.TypeWireGuard,
+		Address:             u.Hostname(),
+		Port:                port,
+		PublicKey:           publicKey,
+		PrivateKey:          privateKey,
+		AllowedIPs:          allowedIPs,
+		DNS:                 dns,
+		MTU:                 mtu,
+		PersistentKeepalive: keepalive,
+		Name:                u.Fragment,
+	}, nil
+}
+
+// parseWireGuardConfig parses a standard WireGuard configuration.
+//
+// The parser intentionally supports the common [Interface] and [Peer]
+// fields without attempting to interpret unrelated WireGuard extensions.
+func parseWireGuardConfig(text string) (config.Config, error) {
+	lines := strings.Split(
+		strings.ReplaceAll(text, "\r\n", "\n"),
+		"\n",
+	)
+
+	section := ""
+
+	values := make(map[string][]string)
+
+	for _, rawLine := range lines {
+		line := strings.TrimSpace(rawLine)
+
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		if strings.HasPrefix(line, "[") &&
+			strings.HasSuffix(line, "]") {
+			section = strings.ToLower(
+				strings.TrimSpace(
+					line[1 : len(line)-1],
+				),
+			)
+			continue
+		}
+
+		if section == "" {
+			continue
+		}
+
+		key, value, ok := strings.Cut(line, "=")
+
+		if !ok {
+			continue
+		}
+
+		key = strings.ToLower(strings.TrimSpace(key))
+		value = strings.TrimSpace(value)
+
+		if key == "" || value == "" {
+			continue
+		}
+
+		values[section+"."+key] = append(
+			values[section+"."+key],
+			value,
+		)
+	}
+
+	privateKey := firstConfigValue(
+		values,
+		"interface.privatekey",
+	)
+
+	publicKey := firstConfigValue(
+		values,
+		"peer.publickey",
+	)
+
+	endpoint := firstConfigValue(
+		values,
+		"peer.endpoint",
+	)
+
+	if privateKey == "" {
+		return config.Config{}, fmt.Errorf(
+			"WireGuard configuration has no private key",
+		)
+	}
+
+	if publicKey == "" {
+		return config.Config{}, fmt.Errorf(
+			"WireGuard configuration has no peer public key",
+		)
+	}
+
+	if endpoint == "" {
+		return config.Config{}, fmt.Errorf(
+			"WireGuard configuration has no peer endpoint",
+		)
+	}
+
+	address, port, err := splitEndpoint(endpoint)
+
+	if err != nil {
+		return config.Config{}, err
+	}
+
+	allowedIPs := splitConfigValues(
+		firstConfigValue(
+			values,
+			"peer.allowedips",
+		),
+	)
+
+	dns := splitConfigValues(
+		firstConfigValue(
+			values,
+			"interface.dns",
+		),
+	)
+
+	mtu := parsePort(
+		firstConfigValue(
+			values,
+			"interface.mtu",
+		),
+	)
+
+	keepalive := parsePort(
+		firstConfigValue(
+			values,
+			"peer.persistentkeepalive",
+		),
+	)
+
+	return config.Config{
+		Type:                config.TypeWireGuard,
+		Address:             address,
+		Port:                port,
+		PublicKey:           publicKey,
+		PrivateKey:          privateKey,
+		AllowedIPs:          allowedIPs,
+		DNS:                 dns,
+		MTU:                 mtu,
+		PersistentKeepalive: keepalive,
+	}, nil
+}
+
+func firstConfigValue(
+	values map[string][]string,
+	key string,
+) string {
+	items := values[strings.ToLower(key)]
+
+	if len(items) == 0 {
+		return ""
+	}
+
+	return strings.TrimSpace(items[0])
+}
+
+func splitConfigValues(value string) []string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+
+	parts := strings.FieldsFunc(value, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t'
+	})
+
+	result := make([]string, 0, len(parts))
+
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+
+		if part == "" {
+			continue
+		}
+
+		result = append(result, part)
+	}
+
+	return result
+}
+
+func splitEndpoint(endpoint string) (string, int, error) {
+	endpoint = strings.TrimSpace(endpoint)
+
+	if endpoint == "" {
+		return "", 0, fmt.Errorf(
+			"WireGuard endpoint is empty",
+		)
+	}
+
+	host, portString, err := net.SplitHostPort(endpoint)
+
+	if err != nil {
+		// Some producers omit brackets around IPv6 endpoints.
+		// Do not guess an arbitrary port in that case.
+		return "", 0, fmt.Errorf(
+			"invalid WireGuard endpoint %q: %w",
+			endpoint,
+			err,
+		)
+	}
+
+	port := parsePort(portString)
+
+	if port == 0 {
+		return "", 0, fmt.Errorf(
+			"invalid WireGuard endpoint port %q",
+			portString,
+		)
+	}
+
+	return strings.TrimSpace(host), port, nil
+}
+
+func looksLikeWireGuardConfig(text string) bool {
+	normalized := strings.ToLower(
+		strings.ReplaceAll(text, "\r\n", "\n"),
+	)
+
+	return strings.Contains(normalized, "[interface]") &&
+		strings.Contains(normalized, "[peer]") &&
+		strings.Contains(normalized, "privatekey") &&
+		strings.Contains(normalized, "publickey")
 }
