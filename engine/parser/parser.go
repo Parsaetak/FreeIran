@@ -471,6 +471,16 @@ func parseVMess(u *url.URL) (config.Config, error) {
 }
 
 // parseTrojan parses a Trojan URI.
+//
+// Trojan commonly uses:
+//
+//	trojan://password@host:port
+//
+// Some producers may use:
+//
+//	trojan://username:password@host:port
+//
+// For the standard form, the URL username is the Trojan password.
 func parseTrojan(u *url.URL) (config.Config, error) {
 	if u.Host == "" {
 		return config.Config{}, fmt.Errorf(
@@ -488,27 +498,40 @@ func parseTrojan(u *url.URL) (config.Config, error) {
 
 	if u.User == nil {
 		return config.Config{}, fmt.Errorf(
-		"Trojan URL has no password",
+			"Trojan URL has no password",
 		)
 	}
 
-	password, hasPassword := u.User.Password()
+	password := u.User.Username()
 
-if !hasPassword || strings.TrimSpace(password) == "" {
-	return config.Config{}, fmt.Errorf(
-		"Trojan URL has no password",
-	)
-}
+	// Standard Trojan URI:
+	//
+	// trojan://password@host:port
+	//
+	// In this form Username() contains the password.
+	if suppliedPassword, hasPassword := u.User.Password(); hasPassword {
+		// Also accept username:password@host for compatibility with
+		// non-standard producers. The password component takes
+		// precedence when explicitly supplied.
+		password = suppliedPassword
+	}
 
-query := u.Query()
+	password = strings.TrimSpace(password)
 
-return config.Config{
-	Type:       config.TypeTrojan,
-	Address:    u.Hostname(),
-	Port:       port,
-	Password:   password,
-	UUID:       password,
-	Network:    query.Get("type"),
+	if password == "" {
+		return config.Config{}, fmt.Errorf(
+			"Trojan URL has no password",
+		)
+	}
+
+	query := u.Query()
+
+	return config.Config{
+		Type:       config.TypeTrojan,
+		Address:    u.Hostname(),
+		Port:       port,
+		Password:   password,
+		Network:    query.Get("type"),
 		Security:   query.Get("security"),
 		ServerName: query.Get("sni"),
 		Host:       query.Get("host"),
