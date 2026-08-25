@@ -253,3 +253,137 @@ func TestDifferentProtocolsDoNotCollide(t *testing.T) {
 		t.Fatal("VMess and Trojan fingerprints must differ")
 	}
 }
+func TestWireGuardFingerprintIncludesMeaningfulFields(t *testing.T) {
+	base := Config{
+		Type:       TypeWireGuard,
+		Address:    "example.com",
+		Port:       51820,
+		PublicKey:  "peer-public-key",
+		AllowedIPs: []string{"0.0.0.0/0"},
+		DNS:        []string{"1.1.1.1"},
+	}
+
+	tests := []struct {
+		name   string
+		change func(*Config)
+	}{
+		{
+			name: "public key",
+			change: func(c *Config) {
+				c.PublicKey = "different-public-key"
+			},
+		},
+		{
+			name: "allowed IPs",
+			change: func(c *Config) {
+				c.AllowedIPs = []string{"10.0.0.0/8"}
+			},
+		},
+		{
+			name: "DNS",
+			change: func(c *Config) {
+				c.DNS = []string{"8.8.8.8"}
+			},
+		},
+		{
+			name: "MTU",
+			change: func(c *Config) {
+				c.MTU = 1420
+			},
+		},
+		{
+			name: "persistent keepalive",
+			change: func(c *Config) {
+				c.PersistentKeepalive = 25
+			},
+		},
+	}
+
+	baseFingerprint := base.Fingerprint()
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			changed := base
+			test.change(&changed)
+
+			if baseFingerprint == changed.Fingerprint() {
+				t.Fatalf(
+					"meaningful %s change must produce a different fingerprint",
+					test.name,
+				)
+			}
+		})
+	}
+}
+
+func TestWireGuardPrivateKeyDoesNotChangeFingerprint(t *testing.T) {
+	first := Config{
+		Type:       TypeWireGuard,
+		Address:    "example.com",
+		Port:       51820,
+		PublicKey:  "peer-public-key",
+		PrivateKey: "private-key-a",
+		AllowedIPs: []string{"0.0.0.0/0"},
+	}
+
+	second := first
+	second.PrivateKey = "private-key-b"
+
+	if first.Fingerprint() != second.Fingerprint() {
+		t.Fatal("private key must not affect configuration fingerprint")
+	}
+}
+
+func TestWireGuardNormalize(t *testing.T) {
+	config := Config{
+		Type: TypeWireGuard,
+		AllowedIPs: []string{
+			"0.0.0.0/0",
+			" 0.0.0.0/0 ",
+			"10.0.0.0/8",
+			"",
+		},
+		DNS: []string{
+			"1.1.1.1",
+			" 1.1.1.1 ",
+			"",
+		},
+	}
+
+	config.Normalize()
+
+	if len(config.AllowedIPs) != 2 {
+		t.Fatalf(
+			"expected 2 unique allowed IPs, got %d",
+			len(config.AllowedIPs),
+		)
+	}
+
+	if config.AllowedIPs[0] != "0.0.0.0/0" {
+		t.Fatalf(
+			"unexpected first allowed IP: %q",
+			config.AllowedIPs[0],
+		)
+	}
+
+	if config.AllowedIPs[1] != "10.0.0.0/8" {
+		t.Fatalf(
+			"unexpected second allowed IP: %q",
+			config.AllowedIPs[1],
+		)
+	}
+
+	if len(config.DNS) != 1 {
+		t.Fatalf(
+			"expected 1 unique DNS server, got %d",
+			len(config.DNS),
+		)
+	}
+
+	if config.DNS[0] != "1.1.1.1" {
+		t.Fatalf(
+			"unexpected DNS value: %q",
+			config.DNS[0],
+		)
+	}
+}
