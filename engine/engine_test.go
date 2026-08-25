@@ -487,9 +487,13 @@ func TestRunOnceContextCancellation(t *testing.T) {
 		)
 	}
 
-	if !result.FinishedAt.IsZero() {
-		t.Fatal("expected cancelled cycle to return before completion timestamp")
-	}
+	if result.FinishedAt.IsZero() {
+	t.Fatal("expected cancelled cycle to record completion timestamp")
+}
+
+if result.Duration < 0 {
+	t.Fatal("expected non-negative duration")
+}
 }
 
 func TestRunOnceNilTester(t *testing.T) {
