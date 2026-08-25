@@ -26,13 +26,13 @@ const (
 
 type Entry struct {
 	Config    *config.Config `json:"config"`
-	Archived  time.Time     `json:"archived"`
+	Archived  time.Time      `json:"archived"`
 	LastError string         `json:"last_error,omitempty"`
 }
 
 type diskState struct {
-	Version int                `json:"version"`
-	Entries map[string]*Entry  `json:"entries"`
+	Version int               `json:"version"`
+	Entries map[string]*Entry `json:"entries"`
 }
 
 type Archive struct {
@@ -244,7 +244,11 @@ func (a *Archive) Load() error {
 		}
 
 		if err := cfg.Validate(); err != nil {
-			return fmt.Errorf("archive: invalid entry %q: %w", id, err)
+			return fmt.Errorf(
+				"archive: invalid entry %q: %w",
+				id,
+				err,
+			)
 		}
 
 		loaded[cfg.ID] = &Entry{
@@ -297,7 +301,10 @@ func (a *Archive) Save() error {
 
 	temp, err := os.CreateTemp(dir, ".freeiran-archive-*")
 	if err != nil {
-		return fmt.Errorf("archive: create temporary file: %w", err)
+		return fmt.Errorf(
+			"archive: create temporary file: %w",
+			err,
+		)
 	}
 
 	tempPath := temp.Name()
@@ -308,16 +315,22 @@ func (a *Archive) Save() error {
 
 	if err := temp.Chmod(defaultFileMode); err != nil {
 		_ = temp.Close()
-		return fmt.Errorf("archive: set file permissions: %w", err)
+
+		return fmt.Errorf(
+			"archive: set temporary file permissions: %w",
+			err,
+		)
 	}
 
 	if _, err := temp.Write(data); err != nil {
 		_ = temp.Close()
+
 		return fmt.Errorf("archive: write: %w", err)
 	}
 
 	if err := temp.Sync(); err != nil {
 		_ = temp.Close()
+
 		return fmt.Errorf("archive: sync: %w", err)
 	}
 
@@ -329,6 +342,19 @@ func (a *Archive) Save() error {
 		return fmt.Errorf("archive: replace: %w", err)
 	}
 
+	// Explicitly enforce the intended private mode on the final path.
+	//
+	// On Unix-like systems this guarantees 0600 even if the destination
+	// previously existed with broader permissions. On Windows, the Go
+	// runtime does not expose Unix permission bits through Mode().Perm(),
+	// so platform-specific tests must not require a literal 0600 there.
+	if err := os.Chmod(a.path, defaultFileMode); err != nil {
+		return fmt.Errorf(
+			"archive: set final file permissions: %w",
+			err,
+		)
+	}
+
 	return nil
 }
 
@@ -338,5 +364,20 @@ func cloneConfig(cfg *config.Config) *config.Config {
 	}
 
 	copy := *cfg
+
+	if cfg.AllowedIPs != nil {
+		copy.AllowedIPs = append(
+			[]string(nil),
+			cfg.AllowedIPs...,
+		)
+	}
+
+	if cfg.DNS != nil {
+		copy.DNS = append(
+			[]string(nil),
+			cfg.DNS...,
+		)
+	}
+
 	return &copy
 }
