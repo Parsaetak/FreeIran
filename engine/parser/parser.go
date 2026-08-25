@@ -251,10 +251,25 @@ func (p *Parser) parseURLs(text string) ([]config.Config, error) {
 			continue
 		}
 
+		if strings.Contains(line, "://") {
+	u, err := url.Parse(line)
+
+	if err == nil && u.Scheme != "" {
 		parseErrors = append(
 			parseErrors,
-			fmt.Errorf("unsupported configuration input: %q", line),
+			fmt.Errorf(
+				"unsupported configuration scheme: %q",
+				u.Scheme,
+			),
 		)
+		continue
+	}
+}
+
+parseErrors = append(
+	parseErrors,
+	fmt.Errorf("unsupported configuration input: %q", line),
+)
 	}
 
 	finalized, validationErrors := p.finalize(configs)
@@ -477,15 +492,23 @@ func parseTrojan(u *url.URL) (config.Config, error) {
 		)
 	}
 
-	password, _ := u.User.Password()
-	query := u.Query()
+	password, hasPassword := u.User.Password()
 
-	return config.Config{
-		Type:       config.TypeTrojan,
-		Address:    u.Hostname(),
-		Port:       port,
-		Password:   password,
-		Network:    query.Get("type"),
+if !hasPassword || strings.TrimSpace(password) == "" {
+	return config.Config{}, fmt.Errorf(
+		"Trojan URL has no password",
+	)
+}
+
+query := u.Query()
+
+return config.Config{
+	Type:       config.TypeTrojan,
+	Address:    u.Hostname(),
+	Port:       port,
+	Password:   password,
+	UUID:       password,
+	Network:    query.Get("type"),
 		Security:   query.Get("security"),
 		ServerName: query.Get("sni"),
 		Host:       query.Get("host"),
