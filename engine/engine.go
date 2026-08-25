@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Parsaetak/FreeIran/engine/config"
+	"github.com/Parsaetak/FreeIran/engine/database"
 	"github.com/Parsaetak/FreeIran/engine/core"
 	"github.com/Parsaetak/FreeIran/engine/source"
 	"github.com/Parsaetak/FreeIran/engine/tester"
@@ -21,6 +22,7 @@ type Engine struct {
 	Collector *source.Collector
 	Tester    *tester.Tester
 	Registry  *core.Registry
+	Database  *database.Database
 
 	mu sync.RWMutex
 }
@@ -57,6 +59,17 @@ func New(
 	}
 }
 
+// SetDatabase attaches a persistent configuration database to the engine.
+func (e *Engine) SetDatabase(db *database.Database) {
+	if e == nil {
+		return
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	e.Database = db
+}
 // RunOnce executes one complete discovery and testing cycle.
 //
 // The cycle:
@@ -85,10 +98,11 @@ func (e *Engine) RunOnce(
 	}
 
 	e.mu.RLock()
-	collector := e.Collector
-	testerInstance := e.Tester
-	registry := e.Registry
-	e.mu.RUnlock()
+collector := e.Collector
+testerInstance := e.Tester
+registry := e.Registry
+db := e.Database
+e.mu.RUnlock()
 
 	if collector == nil {
 		collector = source.NewCollector()
@@ -157,6 +171,27 @@ func (e *Engine) RunOnce(
 	})
 
 	result.Configurations = configurations
+	if db != nil {
+	for i := range configurations {
+		if err := db.Upsert(&configurations[i]); err != nil {
+			result.FinishedAt = time.Now().UTC()
+			result.Duration = result.FinishedAt.Sub(started)
+
+			return result, fmt.Errorf(
+				"persist configuration %s: %w",
+				configurations[i].ID,
+				err,
+			)
+		}
+	}
+
+	if err := db.Save(); err != nil {
+		result.FinishedAt = time.Now().UTC()
+		result.Duration = result.FinishedAt.Sub(started)
+
+		return result, fmt.Errorf("persist database: %w", err)
+	}
+}
 	result.FinishedAt = time.Now().UTC()
 	result.Duration = result.FinishedAt.Sub(started)
 
@@ -178,3 +213,27 @@ func countConfigurations(collections []source.Collection) int {
 
 	return total
 }
+
+// NewWithDatabase creates an Engine and loads its persistent database.
+func NewWithDatabase(
+	collector *source.Collector,
+	testerInstance *tester.Tester,
+	registry *core.Registry,
+	path string,
+) (*Engine, error) {
+	db, err := database.New(path)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := db.Load(); err != nil {
+		return nil, err
+	}
+
+	engine := New(collector, testerInstance, registry)
+	engine.SetDatabase(db)
+
+	return engine, nil
+}
+
+
