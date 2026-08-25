@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 	"time"
 
@@ -429,8 +430,14 @@ func TestSaveCreatesPrivateFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if mode := info.Mode().Perm(); mode != 0o600 {
-		t.Fatalf("archive file is not private: %o", mode)
+	switch runtime.GOOS {
+	case "windows", "android":
+		// Unix permission bits are not reliable on these platforms.
+		return
+	default:
+		if mode := info.Mode().Perm(); mode != 0o600 {
+			t.Fatalf("archive file is not private: %o", mode)
+		}
 	}
 }
 
