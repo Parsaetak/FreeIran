@@ -129,18 +129,14 @@ func (e *Engine) RunOnce(
 		// If a registry exists, do not send configurations to a tester
 		// that cannot execute their protocol.
 		if registry != nil && !registry.Supports(cfg.Type) {
-			cfg.Working = false
-			cfg.LastError = fmt.Sprintf(
-				"no execution core registered for protocol %q",
-				cfg.Type,
-			)
-			cfg.TestedAt = time.Now().UTC()
+	cfg.Working = false
+	cfg.TestedAt = time.Now().UTC().UnixMilli()
 
-			result.Tested++
-			result.Failed++
+	result.Tested++
+	result.Failed++
 
-			continue
-		}
+	continue
+}
 
 		testResult := testerInstance.TestAndApply(ctx, cfg)
 
