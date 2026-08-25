@@ -21,7 +21,7 @@ func New() *Parser {
 }
 
 // Parse accepts raw configuration data and returns normalized,
-// structurally valid, deduplicated configurations.
+// structurally valid and deduplicated configurations.
 func (p *Parser) Parse(data []byte) ([]config.Config, error) {
 	text := strings.TrimSpace(string(data))
 
@@ -36,7 +36,20 @@ func (p *Parser) Parse(data []byte) ([]config.Config, error) {
 			return nil, err
 		}
 
-		return p.finalize(configs)
+		finalized, validationErrors := p.finalize(configs)
+
+		if len(finalized) == 0 {
+			if len(validationErrors) > 0 {
+				return nil, fmt.Errorf(
+					"no valid configurations found: %s",
+					formatErrors(validationErrors),
+				)
+			}
+
+			return nil, fmt.Errorf("no configurations found")
+		}
+
+		return finalized, nil
 	}
 
 	return p.parseURLs(text)
@@ -45,7 +58,7 @@ func (p *Parser) Parse(data []byte) ([]config.Config, error) {
 // parseJSON attempts to interpret input as a JSON configuration source.
 //
 // The function returns:
-//   - configs
+//   - configurations
 //   - recognized: whether the input looked like JSON
 //   - error: decoding error, if any
 func parseJSON(text string) ([]config.Config, bool, error) {
@@ -59,7 +72,10 @@ func parseJSON(text string) ([]config.Config, bool, error) {
 	var raw any
 
 	if err := json.Unmarshal([]byte(trimmed), &raw); err != nil {
-		return nil, true, fmt.Errorf("invalid JSON configuration: %w", err)
+		return nil, true, fmt.Errorf(
+			"invalid JSON configuration: %w",
+			err,
+		)
 	}
 
 	var configs []config.Config
@@ -98,19 +114,19 @@ func parseJSON(text string) ([]config.Config, bool, error) {
 	return configs, true, nil
 }
 
-// configFromJSON converts a simple normalized configuration object.
+// configFromJSON converts the universal FreeIran configuration
+// representation from a JSON object.
 //
-// This deliberately supports the universal Config representation rather
-// than attempting to interpret every possible Xray/sing-box JSON schema.
-// Dedicated source adapters will handle those richer schemas later.
+// Rich Xray/sing-box JSON schemas will be handled by dedicated adapters
+// rather than being forced into this generic representation.
 func configFromJSON(value map[string]any) (config.Config, bool) {
 	getString := func(key string) string {
-		value, ok := value[key]
+		raw, ok := value[key]
 		if !ok {
 			return ""
 		}
 
-		result, ok := value.(string)
+		result, ok := raw.(string)
 		if !ok {
 			return ""
 		}
@@ -119,21 +135,27 @@ func configFromJSON(value map[string]any) (config.Config, bool) {
 	}
 
 	getInt := func(key string) int {
-		value, ok := value[key]
+		raw, ok := value[key]
 		if !ok {
 			return 0
 		}
 
-		switch v := value.(type) {
+		switch v := raw.(type) {
 		case float64:
-			return int(v)
+			port := int(v)
+
+			if port >= 1 && port <= 65535 {
+				return port
+			}
 
 		case string:
 			return parsePort(v)
 
-		default:
-			return 0
+		case json.Number:
+			return parsePort(string(v))
 		}
+
+		return 0
 	}
 
 	protocol := strings.ToLower(
@@ -170,15 +192,15 @@ func configFromJSON(value map[string]any) (config.Config, bool) {
 }
 
 // parseURLs extracts supported configuration URLs from newline-separated
-// input. Invalid entries are ignored when at least one valid configuration
-// remains.
+// input. Invalid entries are retained as errors internally but do not
+// prevent valid configurations from being returned.
 func (p *Parser) parseURLs(text string) ([]config.Config, error) {
 	lines := strings.FieldsFunc(text, func(r rune) bool {
 		return r == '\n' || r == '\r'
 	})
 
 	var configs []config.Config
-	var parseErrors []string
+	var parseErrors []error
 
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
@@ -187,8 +209,24 @@ func (p *Parser) parseURLs(text string) ([]config.Config, error) {
 			continue
 		}
 
-		// A complete subscription may itself be base64 encoded.
-		if decoded, ok := decodeBase64(line); ok {
+		// First attempt to interpret the complete line as a protocol URI.
+		// This is important for vmess:// because its payload itself is
+		// base64 encoded.
+		if isSupportedScheme(line) {
+			cfg, err := parseURL(line)
+
+			if err != nil {
+				parseErrors = append(parseErrors, err)
+				continue
+			}
+
+			configs = append(configs, cfg)
+			continue
+		}
+
+		// If the line is not a recognized URI, it may be a complete
+		// base64-encoded subscription.
+		if decoded, ok := decodeBase64Subscription(line); ok {
 			decodedLines := strings.FieldsFunc(decoded, func(r rune) bool {
 				return r == '\n' || r == '\r'
 			})
@@ -203,7 +241,7 @@ func (p *Parser) parseURLs(text string) ([]config.Config, error) {
 				cfg, err := parseURL(decodedLine)
 
 				if err != nil {
-					parseErrors = append(parseErrors, err.Error())
+					parseErrors = append(parseErrors, err)
 					continue
 				}
 
@@ -213,27 +251,21 @@ func (p *Parser) parseURLs(text string) ([]config.Config, error) {
 			continue
 		}
 
-		cfg, err := parseURL(line)
-
-		if err != nil {
-			parseErrors = append(parseErrors, err.Error())
-			continue
-		}
-
-		configs = append(configs, cfg)
+		parseErrors = append(
+			parseErrors,
+			fmt.Errorf("unsupported configuration input: %q", line),
+		)
 	}
 
 	finalized, validationErrors := p.finalize(configs)
 
-	for _, err := range validationErrors {
-		parseErrors = append(parseErrors, err.Error())
-	}
+	parseErrors = append(parseErrors, validationErrors...)
 
 	if len(finalized) == 0 {
 		if len(parseErrors) > 0 {
 			return nil, fmt.Errorf(
 				"no valid configurations found: %s",
-				strings.Join(parseErrors, "; "),
+				formatErrors(parseErrors),
 			)
 		}
 
@@ -243,7 +275,8 @@ func (p *Parser) parseURLs(text string) ([]config.Config, error) {
 	return finalized, nil
 }
 
-// finalize normalizes, validates, assigns IDs and deduplicates configurations.
+// finalize normalizes, validates, assigns IDs and deduplicates
+// configurations.
 func (p *Parser) finalize(
 	configs []config.Config,
 ) ([]config.Config, []error) {
@@ -278,12 +311,14 @@ func (p *Parser) finalize(
 	return valid, errors
 }
 
-// parseURL dispatches a URI to its protocol parser.
+// parseURL dispatches a URI to the appropriate protocol parser.
 func parseURL(raw string) (config.Config, error) {
 	raw = strings.TrimSpace(raw)
 
 	if raw == "" {
-		return config.Config{}, fmt.Errorf("empty configuration URL")
+		return config.Config{}, fmt.Errorf(
+			"empty configuration URL",
+		)
 	}
 
 	u, err := url.Parse(raw)
@@ -332,7 +367,8 @@ func parseVLESS(u *url.URL) (config.Config, error) {
 		)
 	}
 
-	if u.User == nil || strings.TrimSpace(u.User.Username()) == "" {
+	if u.User == nil ||
+		strings.TrimSpace(u.User.Username()) == "" {
 		return config.Config{}, fmt.Errorf(
 			"VLESS URL has no UUID",
 		)
@@ -437,12 +473,11 @@ func parseTrojan(u *url.URL) (config.Config, error) {
 
 	if u.User == nil {
 		return config.Config{}, fmt.Errorf(
-			"Trojan URL has no password",
+		"Trojan URL has no password",
 		)
 	}
 
 	password, _ := u.User.Password()
-
 	query := u.Query()
 
 	return config.Config{
@@ -485,6 +520,18 @@ func parseShadowsocks(u *url.URL) (config.Config, error) {
 	method := u.User.Username()
 	password, _ := u.User.Password()
 
+	if strings.TrimSpace(method) == "" {
+		return config.Config{}, fmt.Errorf(
+			"Shadowsocks method is empty",
+		)
+	}
+
+	if strings.TrimSpace(password) == "" {
+		return config.Config{}, fmt.Errorf(
+			"Shadowsocks password is empty",
+		)
+	}
+
 	return config.Config{
 		Type:     config.TypeShadowsocks,
 		Address:  u.Hostname(),
@@ -495,6 +542,18 @@ func parseShadowsocks(u *url.URL) (config.Config, error) {
 	}, nil
 }
 
+// isSupportedScheme determines whether a line is directly parseable as
+// a supported protocol URI.
+func isSupportedScheme(value string) bool {
+	lower := strings.ToLower(strings.TrimSpace(value))
+
+	return strings.HasPrefix(lower, "vless://") ||
+		strings.HasPrefix(lower, "vmess://") ||
+		strings.HasPrefix(lower, "trojan://") ||
+		strings.HasPrefix(lower, "ss://")
+}
+
+// parsePort converts a decimal port into an integer.
 func parsePort(value string) int {
 	value = strings.TrimSpace(value)
 
@@ -511,6 +570,7 @@ func parsePort(value string) int {
 	return port
 }
 
+// normalizePort converts common JSON port representations to int.
 func normalizePort(value any) int {
 	switch v := value.(type) {
 	case float64:
@@ -530,7 +590,10 @@ func normalizePort(value any) int {
 	return 0
 }
 
-func decodeBase64(value string) (string, bool) {
+// decodeBase64Subscription attempts to decode a complete base64-encoded
+// subscription. It deliberately requires recognizable configuration
+// content before accepting the result.
+func decodeBase64Subscription(value string) (string, bool) {
 	value = strings.TrimSpace(value)
 
 	if value == "" {
@@ -543,16 +606,32 @@ func decodeBase64(value string) (string, bool) {
 		return "", false
 	}
 
-	// Prevent ordinary URLs or arbitrary strings from being treated as
-	// subscriptions.
-	if !strings.Contains(decoded, "://") &&
-		!strings.Contains(decoded, "\n") {
+	if !looksLikeSubscription(decoded) {
 		return "", false
 	}
 
 	return decoded, true
 }
 
+// looksLikeSubscription checks whether decoded content resembles a
+// newline-separated configuration subscription.
+func looksLikeSubscription(value string) bool {
+	value = strings.TrimSpace(value)
+
+	if value == "" {
+		return false
+	}
+
+	if strings.Contains(value, "\n") ||
+		strings.Contains(value, "\r") {
+		return true
+	}
+
+	return isSupportedScheme(value)
+}
+
+// decodeBase64Strict attempts the common standard, raw and URL-safe
+// base64 variants.
 func decodeBase64Strict(value string) (string, error) {
 	value = strings.TrimSpace(value)
 
@@ -576,4 +655,19 @@ func decodeBase64Strict(value string) (string, error) {
 	}
 
 	return "", lastErr
+}
+
+// formatErrors converts a collection of errors into a compact message.
+func formatErrors(errors []error) string {
+	messages := make([]string, 0, len(errors))
+
+	for _, err := range errors {
+		if err == nil {
+			continue
+		}
+
+		messages = append(messages, err.Error())
+	}
+
+	return strings.Join(messages, "; ")
 }
