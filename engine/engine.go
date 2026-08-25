@@ -94,10 +94,17 @@ func (e *Engine) RunOnce(
 	}
 
 	if ctx == nil {
-		ctx = context.Background()
-	}
+	ctx = context.Background()
+}
 
-	e.mu.RLock()
+if err := ctx.Err(); err != nil {
+	result.FinishedAt = time.Now().UTC()
+	result.Duration = result.FinishedAt.Sub(started)
+
+	return result, err
+}
+
+e.mu.RLock()
 collector := e.Collector
 testerInstance := e.Tester
 registry := e.Registry
