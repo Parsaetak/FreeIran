@@ -6,29 +6,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/Parsaetak/FreeIran/engine/config"
 	"github.com/Parsaetak/FreeIran/engine/database"
 	"github.com/Parsaetak/FreeIran/engine/source"
 	"github.com/Parsaetak/FreeIran/engine/tester"
 )
-
-func testEngineConfig() config.Config {
-	return config.Config{
-		Type:    config.ProtocolVLESS,
-		Address: "127.0.0.1",
-		Port:    443,
-	}
-}
-
-func testEngineSource(t *testing.T, cfg config.Config) source.Source {
-	t.Helper()
-
-	return source.Source{
-		Name:    "test",
-		URL:     "https://example.com/configs",
-		Enabled: true,
-	}
-}
 
 func TestRunOnceWithoutDatabase(t *testing.T) {
 	engine := New(nil, nil, nil)
@@ -40,6 +21,10 @@ func TestRunOnceWithoutDatabase(t *testing.T) {
 
 	if result.FinishedAt.IsZero() {
 		t.Fatal("expected FinishedAt to be set")
+	}
+
+	if result.Duration < 0 {
+		t.Fatal("expected non-negative duration")
 	}
 }
 
@@ -62,18 +47,6 @@ func TestSetDatabaseNilEngine(t *testing.T) {
 	var engine *Engine
 
 	engine.SetDatabase(nil)
-}
-
-func TestRunOncePersistsConfigurations(t *testing.T) {
-	t.Skip("requires injectable collector/tester fixtures")
-}
-
-func TestRunOncePropagatesDatabaseSaveError(t *testing.T) {
-	t.Skip("requires injectable database failure fixture")
-}
-
-func TestRunOncePersistsRuntimeState(t *testing.T) {
-	t.Skip("requires deterministic probe fixture")
 }
 
 func TestRunOnceContextCancellation(t *testing.T) {
