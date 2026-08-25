@@ -405,9 +405,9 @@ func TestRunOncePersistsDatabase(t *testing.T) {
 	}
 
 	stored, ok := db.Get(id)
-	if !ok {
-		t.Fatal("expected configuration to be persisted in database")
-	}
+	if ok != nil {
+	t.Fatalf("expected success, got: %v", ok)
+}
 
 	if stored == nil {
 		t.Fatal("database returned nil configuration")
