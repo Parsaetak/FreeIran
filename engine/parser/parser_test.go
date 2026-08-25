@@ -677,3 +677,155 @@ func TestParseProtocolMix(t *testing.T) {
 		}
 	}
 }
+func TestParseWireGuardConfig(t *testing.T) {
+	input := `[Interface]
+PrivateKey = private-key-example
+Address = 10.0.0.2/32
+DNS = 1.1.1.1, 8.8.8.8
+MTU = 1420
+
+[Peer]
+PublicKey = peer-public-key-example
+AllowedIPs = 0.0.0.0/0, ::/0
+Endpoint = example.com:51820
+PersistentKeepalive = 25
+`
+
+	parser := New()
+
+	configs, err := parser.Parse([]byte(input))
+
+	if err != nil {
+		t.Fatalf("Parse() failed: %v", err)
+	}
+
+	if len(configs) != 1 {
+		t.Fatalf(
+			"expected 1 configuration, got %d",
+			len(configs),
+		)
+	}
+
+	cfg := configs[0]
+
+	if cfg.Type != config.TypeWireGuard {
+		t.Fatalf(
+			"expected WireGuard type, got %q",
+			cfg.Type,
+		)
+	}
+
+	if cfg.Address != "example.com" {
+		t.Fatalf(
+			"expected address example.com, got %q",
+			cfg.Address,
+		)
+	}
+
+	if cfg.Port != 51820 {
+		t.Fatalf(
+			"expected port 51820, got %d",
+			cfg.Port,
+		)
+	}
+
+	if cfg.PublicKey != "peer-public-key-example" {
+		t.Fatalf(
+			"unexpected public key: %q",
+			cfg.PublicKey,
+		)
+	}
+
+	if cfg.PrivateKey != "private-key-example" {
+		t.Fatalf(
+			"unexpected private key: %q",
+			cfg.PrivateKey,
+		)
+	}
+
+	if len(cfg.AllowedIPs) != 2 {
+		t.Fatalf(
+			"expected 2 allowed IPs, got %d",
+			len(cfg.AllowedIPs),
+		)
+	}
+
+	if len(cfg.DNS) != 2 {
+		t.Fatalf(
+			"expected 2 DNS servers, got %d",
+			len(cfg.DNS),
+		)
+	}
+
+	if cfg.MTU != 1420 {
+		t.Fatalf(
+			"expected MTU 1420, got %d",
+			cfg.MTU,
+		)
+	}
+
+	if cfg.PersistentKeepalive != 25 {
+		t.Fatalf(
+			"expected persistent keepalive 25, got %d",
+			cfg.PersistentKeepalive,
+		)
+	}
+}
+
+func TestParseWireGuardIPv6Endpoint(t *testing.T) {
+	input := `[Interface]
+PrivateKey = private-key
+
+[Peer]
+PublicKey = peer-public-key
+AllowedIPs = ::/0
+Endpoint = [2001:db8::1]:51820
+`
+
+	parser := New()
+
+	configs, err := parser.Parse([]byte(input))
+
+	if err != nil {
+		t.Fatalf("Parse() failed: %v", err)
+	}
+
+	if len(configs) != 1 {
+		t.Fatalf(
+			"expected 1 configuration, got %d",
+			len(configs),
+		)
+	}
+
+	cfg := configs[0]
+
+	if cfg.Address != "2001:db8::1" {
+		t.Fatalf(
+			"unexpected IPv6 address: %q",
+			cfg.Address,
+		)
+	}
+
+	if cfg.Port != 51820 {
+		t.Fatalf(
+			"unexpected port: %d",
+			cfg.Port,
+		)
+	}
+}
+
+func TestParseWireGuardRejectsMissingEndpoint(t *testing.T) {
+	input := `[Interface]
+PrivateKey = private-key
+
+[Peer]
+PublicKey = peer-public-key
+AllowedIPs = 0.0.0.0/0
+`
+
+	parser := New()
+
+	if _, err := parser.Parse([]byte(input)); err == nil {
+		t.Fatal("expected missing endpoint to be rejected")
+	}
+}
