@@ -30,8 +30,15 @@ func (p *Parser) Parse(data []byte) ([]config.Config, error) {
 		return nil, fmt.Errorf("configuration input is empty")
 	}
 
-	// JSON is checked first because some sources publish structured
-	// configuration objects rather than URI subscriptions.
+	// Native WireGuard configurations use INI-style sections such as
+	// [Interface] and [Peer]. They must be detected before JSON because
+	// a WireGuard configuration also begins with '['.
+	if looksLikeWireGuardConfig(text) {
+		return p.parseURLs(text)
+	}
+
+	// JSON is checked before URI subscriptions because some sources
+	// publish structured configuration objects.
 	if configs, recognized, err := parseJSON(text); recognized {
 		if err != nil {
 			return nil, err
