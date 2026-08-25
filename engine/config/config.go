@@ -55,6 +55,13 @@ type Config struct {
 	PublicKey          string `json:"public_key,omitempty"`
 	ShortID            string `json:"short_id,omitempty"`
 
+	// WireGuard.
+	PrivateKey          string   `json:"private_key,omitempty"`
+	AllowedIPs          []string `json:"allowed_ips,omitempty"`
+	DNS                 []string `json:"dns,omitempty"`
+	MTU                 int      `json:"mtu,omitempty"`
+	PersistentKeepalive int      `json:"persistent_keepalive,omitempty"`
+
 	// Source information.
 	Source string `json:"source,omitempty"`
 
@@ -85,6 +92,45 @@ func (c *Config) Normalize() {
 
 	c.PublicKey = strings.TrimSpace(c.PublicKey)
 	c.ShortID = strings.TrimSpace(c.ShortID)
+
+	c.PrivateKey = strings.TrimSpace(c.PrivateKey)
+
+	for i := range c.AllowedIPs {
+		c.AllowedIPs[i] = strings.TrimSpace(c.AllowedIPs[i])
+	}
+
+	for i := range c.DNS {
+		c.DNS[i] = strings.TrimSpace(c.DNS[i])
+	}
+
+	c.AllowedIPs = compactStrings(c.AllowedIPs)
+	c.DNS = compactStrings(c.DNS)
+}
+
+func compactStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+
+	result := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+
+		if value == "" {
+			continue
+		}
+
+		if _, exists := seen[value]; exists {
+			continue
+		}
+
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+
+	return result
 }
 
 // Fingerprint returns a deterministic identifier for the configuration.
@@ -97,23 +143,31 @@ func (c *Config) Fingerprint() string {
 	c.Normalize()
 
 	data := strings.Join([]string{
-		string(c.Type),
-		c.Address,
-		strconv.Itoa(c.Port),
-		c.UUID,
-		c.Username,
-		c.Password,
-		c.Method,
-		c.Network,
-		c.Path,
-		c.Host,
-		c.Service,
-		c.Security,
-		c.ServerName,
-		c.FingerprintProfile,
-		c.PublicKey,
-		c.ShortID,
-	}, "\x00")
+	string(c.Type),
+	c.Address,
+	strconv.Itoa(c.Port),
+
+	c.UUID,
+	c.Username,
+	c.Password,
+	c.Method,
+
+	c.Network,
+	c.Path,
+	c.Host,
+	c.Service,
+
+	c.Security,
+	c.ServerName,
+	c.FingerprintProfile,
+	c.PublicKey,
+	c.ShortID,
+
+	strings.Join(c.AllowedIPs, ","),
+	strings.Join(c.DNS, ","),
+	strconv.Itoa(c.MTU),
+	strconv.Itoa(c.PersistentKeepalive),
+}, "\x00")
 
 	sum := sha256.Sum256([]byte(data))
 	return hex.EncodeToString(sum[:])
