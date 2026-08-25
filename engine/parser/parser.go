@@ -345,7 +345,7 @@ func parseURL(raw string) (config.Config, error) {
 		)
 	}
 
-	switch strings.ToLower(u.Scheme) {
+		switch strings.ToLower(u.Scheme) {
 	case "vless":
 		return parseVLESS(u)
 
@@ -357,6 +357,21 @@ func parseURL(raw string) (config.Config, error) {
 
 	case "ss":
 		return parseShadowsocks(u)
+
+	case "hysteria":
+		return parseHysteria(u)
+
+	case "hysteria2", "hy2":
+		return parseHysteria2(u)
+
+	case "tuic":
+		return parseTUIC(u)
+
+	case "socks", "socks4", "socks4a", "socks5":
+		return parseSOCKS(u)
+
+	case "http", "https":
+		return parseHTTP(u)
 
 	default:
 		return config.Config{}, fmt.Errorf(
@@ -588,6 +603,234 @@ func parseShadowsocks(u *url.URL) (config.Config, error) {
 	}, nil
 }
 
+// parseHysteria parses a Hysteria URI.
+func parseHysteria(u *url.URL) (config.Config, error) {
+	if u.Host == "" {
+		return config.Config{}, fmt.Errorf(
+			"Hysteria URL has no server address",
+		)
+	}
+
+	port := parsePort(u.Port())
+
+	if port == 0 {
+		return config.Config{}, fmt.Errorf(
+			"invalid Hysteria port",
+		)
+	}
+
+	if u.User == nil {
+		return config.Config{}, fmt.Errorf(
+			"Hysteria URL has no authentication",
+		)
+	}
+
+	password := u.User.Username()
+
+	if suppliedPassword, hasPassword := u.User.Password(); hasPassword {
+		password = suppliedPassword
+	}
+
+	password = strings.TrimSpace(password)
+
+	if password == "" {
+		return config.Config{}, fmt.Errorf(
+			"Hysteria authentication is empty",
+		)
+	}
+
+	query := u.Query()
+
+	return config.Config{
+		Type:       config.TypeHysteria,
+		Address:    u.Hostname(),
+		Port:       port,
+		Password:   password,
+		ServerName: query.Get("sni"),
+		Security:   query.Get("obfs"),
+		Host:       query.Get("obfs-password"),
+		Name:       u.Fragment,
+	}, nil
+}
+
+// parseHysteria2 parses a Hysteria 2 URI.
+//
+// Both hysteria2:// and hy2:// are accepted by parseURL().
+func parseHysteria2(u *url.URL) (config.Config, error) {
+	if u.Host == "" {
+		return config.Config{}, fmt.Errorf(
+			"Hysteria2 URL has no server address",
+		)
+	}
+
+	port := parsePort(u.Port())
+
+	if port == 0 {
+		return config.Config{}, fmt.Errorf(
+			"invalid Hysteria2 port",
+		)
+	}
+
+	if u.User == nil {
+		return config.Config{}, fmt.Errorf(
+			"Hysteria2 URL has no authentication",
+		)
+	}
+
+	password := u.User.Username()
+
+	if suppliedPassword, hasPassword := u.User.Password(); hasPassword {
+		password = suppliedPassword
+	}
+
+	password = strings.TrimSpace(password)
+
+	if password == "" {
+		return config.Config{}, fmt.Errorf(
+			"Hysteria2 authentication is empty",
+		)
+	}
+
+	query := u.Query()
+
+	return config.Config{
+		Type:       config.TypeHysteria2,
+		Address:    u.Hostname(),
+		Port:       port,
+		Password:   password,
+		ServerName: query.Get("sni"),
+		Security:   query.Get("obfs"),
+		Host:       query.Get("obfs-password"),
+		Name:       u.Fragment,
+	}, nil
+}
+
+// parseTUIC parses a TUIC URI.
+func parseTUIC(u *url.URL) (config.Config, error) {
+	if u.Host == "" {
+		return config.Config{}, fmt.Errorf(
+			"TUIC URL has no server address",
+		)
+	}
+
+	port := parsePort(u.Port())
+
+	if port == 0 {
+		return config.Config{}, fmt.Errorf(
+			"invalid TUIC port",
+		)
+	}
+
+	if u.User == nil {
+		return config.Config{}, fmt.Errorf(
+			"TUIC URL has no credentials",
+		)
+	}
+
+	uuid := strings.TrimSpace(u.User.Username())
+
+	if uuid == "" {
+		return config.Config{}, fmt.Errorf(
+			"TUIC UUID is empty",
+		)
+	}
+
+	password, hasPassword := u.User.Password()
+
+	if !hasPassword || strings.TrimSpace(password) == "" {
+		return config.Config{}, fmt.Errorf(
+			"TUIC password is empty",
+		)
+	}
+
+	query := u.Query()
+
+	return config.Config{
+		Type:       config.TypeTUIC,
+		Address:    u.Hostname(),
+		Port:       port,
+		UUID:       uuid,
+		Password:   password,
+		ServerName: query.Get("sni"),
+		Network:    query.Get("congestion_control"),
+		Name:       u.Fragment,
+	}, nil
+}
+
+// parseSOCKS parses SOCKS4, SOCKS4a and SOCKS5 URIs.
+func parseSOCKS(u *url.URL) (config.Config, error) {
+	if u.Host == "" {
+		return config.Config{}, fmt.Errorf(
+			"SOCKS URL has no server address",
+		)
+	}
+
+	port := parsePort(u.Port())
+
+	if port == 0 {
+		return config.Config{}, fmt.Errorf(
+			"invalid SOCKS port",
+		)
+	}
+
+	cfg := config.Config{
+		Type:    config.TypeSOCKS,
+		Address: u.Hostname(),
+		Port:    port,
+		Name:    u.Fragment,
+	}
+
+	if u.User != nil {
+		cfg.Username = u.User.Username()
+
+		if password, ok := u.User.Password(); ok {
+			cfg.Password = password
+		}
+	}
+
+	return cfg, nil
+}
+
+// parseHTTP parses HTTP and HTTPS proxy URIs.
+func parseHTTP(u *url.URL) (config.Config, error) {
+	if u.Host == "" {
+		return config.Config{}, fmt.Errorf(
+			"HTTP URL has no server address",
+		)
+	}
+
+	port := parsePort(u.Port())
+
+	if port == 0 {
+		if strings.EqualFold(u.Scheme, "https") {
+			port = 443
+		} else {
+			port = 80
+		}
+	}
+
+	cfg := config.Config{
+		Type:    config.TypeHTTP,
+		Address: u.Hostname(),
+		Port:    port,
+		Name:    u.Fragment,
+	}
+
+	if strings.EqualFold(u.Scheme, "https") {
+		cfg.Security = "tls"
+	}
+
+	if u.User != nil {
+		cfg.Username = u.User.Username()
+
+		if password, ok := u.User.Password(); ok {
+			cfg.Password = password
+		}
+	}
+
+	return cfg, nil
+}
+
 // isSupportedScheme determines whether a line is directly parseable as
 // a supported protocol URI.
 func isSupportedScheme(value string) bool {
@@ -596,7 +839,17 @@ func isSupportedScheme(value string) bool {
 	return strings.HasPrefix(lower, "vless://") ||
 		strings.HasPrefix(lower, "vmess://") ||
 		strings.HasPrefix(lower, "trojan://") ||
-		strings.HasPrefix(lower, "ss://")
+		strings.HasPrefix(lower, "ss://") ||
+		strings.HasPrefix(lower, "hysteria://") ||
+		strings.HasPrefix(lower, "hysteria2://") ||
+		strings.HasPrefix(lower, "hy2://") ||
+		strings.HasPrefix(lower, "tuic://") ||
+		strings.HasPrefix(lower, "socks://") ||
+		strings.HasPrefix(lower, "socks4://") ||
+		strings.HasPrefix(lower, "socks4a://") ||
+		strings.HasPrefix(lower, "socks5://") ||
+		strings.HasPrefix(lower, "http://") ||
+		strings.HasPrefix(lower, "https://")
 }
 
 // parsePort converts a decimal port into an integer.
