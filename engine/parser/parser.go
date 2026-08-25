@@ -1290,8 +1290,16 @@ func looksLikeWireGuardConfig(text string) bool {
 		strings.ReplaceAll(text, "\r\n", "\n"),
 	)
 
-	return strings.Contains(normalized, "[interface]") &&
-		strings.Contains(normalized, "[peer]") &&
-		strings.Contains(normalized, "privatekey") &&
-		strings.Contains(normalized, "publickey")
+	hasInterface := strings.Contains(normalized, "[interface]")
+	hasPeer := strings.Contains(normalized, "[peer]")
+
+	if !hasInterface || !hasPeer {
+		return false
+	}
+
+	hasPrivateKey := strings.Contains(normalized, "privatekey")
+	hasPublicKey := strings.Contains(normalized, "publickey")
+	hasEndpoint := strings.Contains(normalized, "endpoint")
+
+	return hasPrivateKey && hasPublicKey && hasEndpoint
 }
