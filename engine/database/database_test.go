@@ -351,7 +351,6 @@ func TestSaveCreatesDatabaseFile(t *testing.T) {
 	}
 }
 
-
 func TestNilConfiguration(t *testing.T) {
 	db, err := New(filepath.Join(t.TempDir(), "database.json"))
 	if err != nil {

@@ -406,8 +406,8 @@ func TestRunOncePersistsDatabase(t *testing.T) {
 
 	stored, ok := db.Get(id)
 	if ok != nil {
-	t.Fatalf("expected success, got: %v", ok)
-}
+		t.Fatalf("expected success, got: %v", ok)
+	}
 
 	if stored == nil {
 		t.Fatal("database returned nil configuration")
@@ -488,12 +488,12 @@ func TestRunOnceContextCancellation(t *testing.T) {
 	}
 
 	if result.FinishedAt.IsZero() {
-	t.Fatal("expected cancelled cycle to record completion timestamp")
-}
+		t.Fatal("expected cancelled cycle to record completion timestamp")
+	}
 
-if result.Duration < 0 {
-	t.Fatal("expected non-negative duration")
-}
+	if result.Duration < 0 {
+		t.Fatal("expected non-negative duration")
+	}
 }
 
 func TestRunOnceNilTester(t *testing.T) {

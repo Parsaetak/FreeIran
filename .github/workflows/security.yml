@@ -1,0 +1,67 @@
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly vulnerability scan.
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  vulnerabilities:
+    name: Dependency vulnerabilities
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.0"
+          cache: true
+
+      - name: govulncheck (Go)
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./engine/... ./system/... ./cmd/... ./internal/...
+
+  secrets:
+    name: Secret scanning
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  static-analysis:
+    name: Static analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.0"
+          cache: true
+
+      - name: go vet
+        run: go vet ./engine/... ./system/... ./internal/...
+
+      - name: Suspicious pattern scan
+        run: |
+          # Guard rails against accidental credential logging and
+          # unsafe exec patterns in engine code.
+          ! grep -rn "exec.Command(\"sh\" -c" ./engine ./system || true
+          if grep -rniE "password=|secret=" --include="*.go" \
+              ./engine ./system | grep -v _test.go | grep -v "REDACT"; then
+            echo "Potential hardcoded credentials found (see above)" >&2
+            exit 1
+          fi

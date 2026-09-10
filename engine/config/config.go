@@ -143,31 +143,31 @@ func (c *Config) Fingerprint() string {
 	c.Normalize()
 
 	data := strings.Join([]string{
-	string(c.Type),
-	c.Address,
-	strconv.Itoa(c.Port),
+		string(c.Type),
+		c.Address,
+		strconv.Itoa(c.Port),
 
-	c.UUID,
-	c.Username,
-	c.Password,
-	c.Method,
+		c.UUID,
+		c.Username,
+		c.Password,
+		c.Method,
 
-	c.Network,
-	c.Path,
-	c.Host,
-	c.Service,
+		c.Network,
+		c.Path,
+		c.Host,
+		c.Service,
 
-	c.Security,
-	c.ServerName,
-	c.FingerprintProfile,
-	c.PublicKey,
-	c.ShortID,
+		c.Security,
+		c.ServerName,
+		c.FingerprintProfile,
+		c.PublicKey,
+		c.ShortID,
 
-	strings.Join(c.AllowedIPs, ","),
-	strings.Join(c.DNS, ","),
-	strconv.Itoa(c.MTU),
-	strconv.Itoa(c.PersistentKeepalive),
-}, "\x00")
+		strings.Join(c.AllowedIPs, ","),
+		strings.Join(c.DNS, ","),
+		strconv.Itoa(c.MTU),
+		strconv.Itoa(c.PersistentKeepalive),
+	}, "\x00")
 
 	sum := sha256.Sum256([]byte(data))
 	return hex.EncodeToString(sum[:])

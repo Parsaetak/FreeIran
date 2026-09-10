@@ -13,11 +13,11 @@ import (
 // Configuration identity is determined by the configuration fingerprint.
 // The pool is concurrency-safe and keeps deterministic ordering.
 type Pool struct {
-	mu            sync.RWMutex
-	configs       map[string]config.Config
-	working       map[string]bool
-	tested        map[string]bool
-	lastErrors    map[string]string
+	mu         sync.RWMutex
+	configs    map[string]config.Config
+	working    map[string]bool
+	tested     map[string]bool
+	lastErrors map[string]string
 }
 
 // New creates an empty configuration pool.

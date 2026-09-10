@@ -104,11 +104,11 @@ func TestCollectAllKeepsSuccessfulSources(t *testing.T) {
 
 func TestMergeConfigurationsDeduplicates(t *testing.T) {
 	cfg1 := config.Config{
-		Type:     config.TypeVLESS,
-		Address:  "example.com",
-		Port:     443,
-		UUID:     "11111111-1111-1111-1111-111111111111",
-		Network:  "tcp",
+		Type:    config.TypeVLESS,
+		Address: "example.com",
+		Port:    443,
+		UUID:    "11111111-1111-1111-1111-111111111111",
+		Network: "tcp",
 	}
 
 	cfg2 := cfg1

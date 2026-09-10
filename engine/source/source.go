@@ -7,10 +7,12 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/Parsaetak/FreeIran/internal/version"
 )
 
 const (
-	DefaultTimeout    = 20 * time.Second
+	DefaultTimeout     = 20 * time.Second
 	DefaultMaxBodySize = 10 << 20 // 10 MiB
 )
 
@@ -35,7 +37,7 @@ type Result struct {
 
 // Fetcher downloads configuration sources.
 type Fetcher struct {
-	Client     *http.Client
+	Client      *http.Client
 	MaxBodySize int64
 }
 
@@ -81,7 +83,7 @@ func (f *Fetcher) Fetch(ctx context.Context, src Source) (Result, error) {
 		return Result{}, fmt.Errorf("create source request: %w", err)
 	}
 
-	req.Header.Set("User-Agent", "FreeIran/0.1")
+	req.Header.Set("User-Agent", version.UserAgent())
 	req.Header.Set("Accept", "*/*")
 
 	resp, err := client.Do(req)

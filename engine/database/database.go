@@ -26,14 +26,14 @@ const (
 )
 
 type Entry struct {
-	Config *config.Config `json:"config"`
-	Added  time.Time     `json:"added"`
-	Updated time.Time    `json:"updated"`
+	Config  *config.Config `json:"config"`
+	Added   time.Time      `json:"added"`
+	Updated time.Time      `json:"updated"`
 }
 
 type diskState struct {
-	Version int                `json:"version"`
-	Entries map[string]*Entry  `json:"entries"`
+	Version int               `json:"version"`
+	Entries map[string]*Entry `json:"entries"`
 }
 
 type Database struct {

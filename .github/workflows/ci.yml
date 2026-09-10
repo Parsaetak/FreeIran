@@ -1,0 +1,171 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: Go tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.0"
+          cache: true
+
+      - name: Format check
+        run: |
+          unformatted=$(gofmt -l ./engine ./system ./cmd ./internal)
+          if [ -n "$unformatted" ]; then
+            echo "Files not gofmt-clean:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./engine/... ./system/... ./internal/...
+
+      - name: Build engine packages
+        run: go build ./engine/... ./system/... ./internal/...
+
+      - name: Test
+        run: go test -count=1 ./engine/... ./system/... ./internal/...
+
+      - name: Test (race)
+        run: go test -race -count=1 ./engine/... ./system/... ./internal/...
+
+      - name: Benchmarks (smoke)
+        run: |
+          go test -bench=. -benchtime=1x -run=NONE \
+            ./engine/chunks ./engine/store ./engine/pipeline
+
+      # Compile-validate the Wails desktop app for the primary target
+      # from Linux: the Windows webview needs no GTK, so a full
+      # windows/amd64 build succeeds without GUI development packages.
+      - name: Validate desktop build (windows/amd64)
+        run: |
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
+            go build -o /dev/null ./cmd/freeiran
+
+  native:
+    name: C++ native layer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and test native library
+        run: make -C native test
+
+      - name: Build with acceleration (native_accel)
+        run: |
+          make -C native
+          go build -tags native_accel ./engine/native
+
+      - name: Cross-language tests with acceleration
+        run: |
+          CGO_ENABLED=1 go test -tags native_accel -count=1 \
+            ./engine/native
+
+      - name: Benchmark native bridge
+        run: |
+          CGO_ENABLED=1 go test -tags native_accel -bench=Native -benchtime=1x \
+            -run=NONE ./engine/native || true
+
+  frontend:
+    name: TypeScript frontend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Production build
+        run: npm run build
+
+      - name: Upload dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+          retention-days: 3
+
+  windows:
+    name: Windows desktop build
+    runs-on: windows-latest
+    needs: [go, frontend]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.0"
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend (and stage embed assets)
+        run: |
+          npm ci
+          npm run build:embed
+        working-directory: frontend
+
+      - name: Run Go tests
+        run: go test -count=1 ./engine/... ./system/... ./internal/...
+
+      - name: Build desktop application
+        shell: pwsh
+        env:
+          VERSION: ${{ github.sha }}
+        run: |
+          $commit = $env:GITHUB_SHA.Substring(0, 8)
+          go build -trimpath `
+            -ldflags "-s -w -X github.com/Parsaetak/FreeIran/internal/version.Version=0.2.0-ci -X github.com/Parsaetak/FreeIran/internal/version.Commit=$commit" `
+            -o FreeIran-windows-amd64.exe ./cmd/freeiran
+
+      - name: Verify executable
+        shell: pwsh
+        run: |
+          $file = "FreeIran-windows-amd64.exe"
+          if (-not (Test-Path $file)) { throw "executable missing" }
+          $size = (Get-Item $file).Length
+          if ($size -lt 10MB) { throw "executable suspiciously small: $size" }
+          Write-Host "Built $file ($([math]::Round($size/1MB,1)) MB)"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FreeIran-windows-amd64
+          path: FreeIran-windows-amd64.exe
+          retention-days: 7

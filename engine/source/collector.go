@@ -25,7 +25,7 @@ func NewCollector() *Collector {
 
 // Collection contains the configurations discovered from one source.
 type Collection struct {
-	Source        Source
+	Source         Source
 	Configurations []config.Config
 }
 

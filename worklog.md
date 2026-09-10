@@ -1579,3 +1579,102 @@ Repository:
 https://github.com/Parsaetak/FreeIran
 
 This worklog is an engineering continuity document for the project.```
+
+
+---
+
+## 3. Architecture Upgrade — v0.2.0 (2026-09-10)
+
+This section records the complete architecture upgrade delivered in
+version 0.2.0. It supersedes the planning notes above wherever they
+conflict.
+
+### 3.1 What changed
+
+**Persistence.** The full-JSON database is replaced by a chunked store
+(`engine/store`): checksummed chunk files (`FIRC` v1), a binary
+fingerprint index, a write-ahead journal with LSN checkpointing,
+incremental batched writes (one fsync per 512-record batch), atomic
+commits via temp-file+rename, dead-record accounting, compaction, and
+deterministic recovery (rebuild registry/index from chunks; discard
+corrupt journal tails). The legacy JSON v1 format migrates
+deterministically and idempotently, preserving fingerprints; the legacy
+file is renamed `.migrated`, never deleted. `engine/database` is kept
+as the migration reader.
+
+**Ingestion.** `engine/pipeline` implements FETCH → PARSE → NORMALIZE →
+VALIDATE → DEDUP → PERSIST with bounded worker pools, bounded channels,
+context cancellation and per-source failure isolation. Content-hash
+change detection skips unchanged sources entirely. Parser now reports
+reject/duplicate stats (ParseDetailed).
+
+**Caching.** `engine/cache` provides bounded LRU layers with TTL,
+generation stamps and hit/miss stats: source cache (64 MiB), hot config
+cache (4,096 entries), chunk-handle LRU (32 open files), 16-shard dedup
+index.
+
+**Native acceleration.** `native/` is a dependency-free C++17 layer
+behind a stable C ABI (`freeiran.h`): batch FNV-1a 64 hashing, CRC-32
+(IEEE), and a configuration-URL line scanner. `engine/native` bridges
+with pure-Go fallbacks that are bit-identical (verified by shared
+reference vectors in both languages). Build with `-tags native_accel`
+after `make -C native`; runtime override `FREEIRAN_NATIVE=off`; ABI
+version checked at startup.
+
+**Desktop shell.** `cmd/freeiran` boots Wails v3
+(v3.0.0-beta.19, Go 1.25.0) with the engine services bound through
+`application.NewService`; the UI communicates via generated bindings
+(`frontend/bindings`) and `freeiran:state` events only — no localhost
+HTTP API. Frontend is React 18 + TypeScript + Vite + zustand +
+@tanstack/react-virtual with virtualized config lists, debounced
+backend-side search, and a CSV export Web Worker.
+
+**System engine.** `system/` provides app directory layout (XDG /
+Windows APPDATA), atomic file writes, protocol-core process lifecycle
+(polite→forced stop, drained stdout/stderr, redaction), core discovery
+with version probes, reachability dialing, and platform files
+(`process_unix.go`, `process_windows.go`, `paths_*`).
+
+**Observability.** `engine/metrics` exposes local-only counters
+(startup, stage timings, cache rates, chunk I/O, workers, queue depth,
+tests, native fallbacks) surfaced through DiagnosticsService.
+
+**Errors.** `engine/errors` classifies failures (recoverable,
+retryable, invalid_input, configuration, environment,
+dependency_unavailable, corrupt_data, fatal) with subsystem/operation
+context.
+
+**CI/CD.** `.github/workflows/`: ci.yml (gofmt, vet, tests, race,
+benchmark smoke, windows/amd64 compile-validation, native tests,
+frontend typecheck+test+build, full Windows desktop build + artifact),
+release.yml (tag-triggered, version consistency check, Windows zip +
+SHA-256, GitHub Release), security.yml (govulncheck, gitleaks, vet +
+credential guard rails). Build caching via setup-go/setup-node.
+
+**Versioning.** `VERSION` file is the single source of truth (0.2.0),
+mirrored into `internal/version` and `frontend/package.json`, injected
+via ldflags; the fetcher User-Agent reports it.
+
+### 3.2 Baseline problems fixed
+
+- sequential source collection and testing → bounded worker pools
+- full-dataset JSON rewrite per save → incremental chunked writes
+- full-dataset load at startup → metadata-first open (~2 ms for 20k
+  records) + lazy chunk reads
+- latent shallow-copy aliasing bug in database.cloneConfig → store
+  treats records as immutable byte values
+- Python-template .gitignore → project-specific
+- no entrypoint/frontend/CI/versioning → all introduced
+- engine kept and evolved: config/parser/source/tester/core/pool
+  packages and their tests remain the foundation of the pipeline
+
+### 3.3 Verification snapshot (2026-09-10)
+
+- go vet clean across engine/system/internal
+- go test: 16 packages pass (incl. -race for cache/store/scheduler)
+- native: C++ tests pass; Go bridge passes both with and without
+  native_accel (cross-language vector agreement)
+- frontend: tsc clean, vitest 7/7, vite production build ok
+- windows/amd64 desktop build with embedded frontend: 15.8 MB binary
+- benchmarks: store reopen 20k ≈ 2.2 ms; pipeline 5,000 configs
+  end-to-end ≈ 50 ms (see docs/performance.md)

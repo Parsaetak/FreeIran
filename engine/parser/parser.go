@@ -12,8 +12,24 @@ import (
 	"github.com/Parsaetak/FreeIran/engine/config"
 )
 
+// ParseStats reports what a parse call rejected, for observability.
+type ParseStats struct {
+	// Discovered is the number of candidate records before
+	// validation and deduplication.
+	Discovered int
+
+	// Rejected counts records failing structural validation.
+	Rejected int
+
+	// Duplicates counts records removed by in-batch fingerprint
+	// deduplication.
+	Duplicates int
+}
+
 // Parser converts externally published configuration data into the
 // FreeIran universal configuration model.
+//
+// Parser is stateless and safe for concurrent use.
 type Parser struct{}
 
 // New creates a parser.
@@ -24,43 +40,51 @@ func New() *Parser {
 // Parse accepts raw configuration data and returns normalized,
 // structurally valid and deduplicated configurations.
 func (p *Parser) Parse(data []byte) ([]config.Config, error) {
+	configs, _, err := p.ParseDetailed(data)
+
+	return configs, err
+}
+
+// ParseDetailed behaves like Parse and additionally reports how many
+// candidate records were rejected or deduplicated, for observability.
+func (p *Parser) ParseDetailed(data []byte) ([]config.Config, ParseStats, error) {
 	text := strings.TrimSpace(string(data))
 
 	if text == "" {
-		return nil, fmt.Errorf("configuration input is empty")
+		return nil, ParseStats{}, fmt.Errorf("configuration input is empty")
 	}
 
 	// Native WireGuard configurations use INI-style sections such as
 	// [Interface] and [Peer]. They must be detected before JSON because
 	// a WireGuard configuration also begins with '['.
 	if looksLikeWireGuardConfig(text) {
-		return p.parseURLs(text)
+		return p.parseURLsDetailed(text)
 	}
 
 	// JSON is checked before URI subscriptions because some sources
 	// publish structured configuration objects.
 	if configs, recognized, err := parseJSON(text); recognized {
 		if err != nil {
-			return nil, err
+			return nil, ParseStats{}, err
 		}
 
-		finalized, validationErrors := p.finalize(configs)
+		finalized, validationErrors, stats := p.finalize(configs)
 
 		if len(finalized) == 0 {
 			if len(validationErrors) > 0 {
-				return nil, fmt.Errorf(
+				return nil, stats, fmt.Errorf(
 					"no valid configurations found: %s",
 					formatErrors(validationErrors),
 				)
 			}
 
-			return nil, fmt.Errorf("no configurations found")
+			return nil, stats, fmt.Errorf("no configurations found")
 		}
 
-		return finalized, nil
+		return finalized, stats, nil
 	}
 
-	return p.parseURLs(text)
+	return p.parseURLsDetailed(text)
 }
 
 // parseJSON attempts to interpret input as a JSON configuration source.
@@ -203,36 +227,43 @@ func configFromJSON(value map[string]any) (config.Config, bool) {
 // input. Invalid entries are retained as errors internally but do not
 // prevent valid configurations from being returned.
 func (p *Parser) parseURLs(text string) ([]config.Config, error) {
+	configs, _, err := p.parseURLsDetailed(text)
+
+	return configs, err
+}
+
+func (p *Parser) parseURLsDetailed(text string) ([]config.Config, ParseStats, error) {
 	lines := strings.FieldsFunc(text, func(r rune) bool {
 		return r == '\n' || r == '\r'
 	})
 
 	var configs []config.Config
 	var parseErrors []error
+	lineRejected := 0
 
 	if looksLikeWireGuardConfig(text) {
-	cfg, err := parseWireGuardConfig(text)
+		cfg, err := parseWireGuardConfig(text)
 
-	if err != nil {
-		return nil, fmt.Errorf(
-			"invalid WireGuard configuration: %w",
-			err,
+		if err != nil {
+			return nil, ParseStats{}, fmt.Errorf(
+				"invalid WireGuard configuration: %w",
+				err,
+			)
+		}
+
+		finalized, validationErrors, stats := p.finalize(
+			[]config.Config{cfg},
 		)
+
+		if len(finalized) == 0 {
+			return nil, stats, fmt.Errorf(
+				"no valid WireGuard configurations found: %s",
+				formatErrors(validationErrors),
+			)
+		}
+
+		return finalized, stats, nil
 	}
-
-	finalized, validationErrors := p.finalize(
-		[]config.Config{cfg},
-	)
-
-	if len(finalized) == 0 {
-		return nil, fmt.Errorf(
-			"no valid WireGuard configurations found: %s",
-			formatErrors(validationErrors),
-		)
-	}
-
-	return finalized, nil
-}
 
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
@@ -249,6 +280,8 @@ func (p *Parser) parseURLs(text string) ([]config.Config, error) {
 
 			if err != nil {
 				parseErrors = append(parseErrors, err)
+				lineRejected++
+
 				continue
 			}
 
@@ -274,6 +307,8 @@ func (p *Parser) parseURLs(text string) ([]config.Config, error) {
 
 				if err != nil {
 					parseErrors = append(parseErrors, err)
+					lineRejected++
+
 					continue
 				}
 
@@ -284,53 +319,62 @@ func (p *Parser) parseURLs(text string) ([]config.Config, error) {
 		}
 
 		if strings.Contains(line, "://") {
-	u, err := url.Parse(line)
+			u, err := url.Parse(line)
 
-	if err == nil && u.Scheme != "" {
+			if err == nil && u.Scheme != "" {
+				parseErrors = append(
+					parseErrors,
+					fmt.Errorf(
+						"unsupported configuration scheme: %q",
+						u.Scheme,
+					),
+				)
+				lineRejected++
+
+				continue
+			}
+		}
+
 		parseErrors = append(
 			parseErrors,
-			fmt.Errorf(
-				"unsupported configuration scheme: %q",
-				u.Scheme,
-			),
+			fmt.Errorf("unsupported configuration input: %q", line),
 		)
-		continue
-	}
-}
-
-parseErrors = append(
-	parseErrors,
-	fmt.Errorf("unsupported configuration input: %q", line),
-)
+		lineRejected++
 	}
 
-	finalized, validationErrors := p.finalize(configs)
+	finalized, validationErrors, stats := p.finalize(configs)
+
+	stats.Rejected += lineRejected
+	stats.Discovered += lineRejected
 
 	parseErrors = append(parseErrors, validationErrors...)
 
 	if len(finalized) == 0 {
 		if len(parseErrors) > 0 {
-			return nil, fmt.Errorf(
+			return nil, stats, fmt.Errorf(
 				"no valid configurations found: %s",
 				formatErrors(parseErrors),
 			)
 		}
 
-		return nil, fmt.Errorf("no configurations found")
+		return nil, stats, fmt.Errorf("no configurations found")
 	}
 
-	return finalized, nil
+	return finalized, stats, nil
 }
 
 // finalize normalizes, validates, assigns IDs and deduplicates
 // configurations.
 func (p *Parser) finalize(
 	configs []config.Config,
-) ([]config.Config, []error) {
+) ([]config.Config, []error, ParseStats) {
 	valid := make([]config.Config, 0, len(configs))
-	errors := make([]error, 0)
+	errs := make([]error, 0)
 
 	seen := make(map[string]struct{}, len(configs))
+
+	rejected := 0
+	duplicates := 0
 
 	for i := range configs {
 		cfg := configs[i]
@@ -338,16 +382,20 @@ func (p *Parser) finalize(
 		cfg.Normalize()
 
 		if err := cfg.Validate(); err != nil {
-			errors = append(
-				errors,
+			errs = append(
+				errs,
 				fmt.Errorf("configuration %d: %w", i, err),
 			)
+			rejected++
+
 			continue
 		}
 
 		cfg.SetID()
 
 		if _, exists := seen[cfg.ID]; exists {
+			duplicates++
+
 			continue
 		}
 
@@ -355,7 +403,13 @@ func (p *Parser) finalize(
 		valid = append(valid, cfg)
 	}
 
-	return valid, errors
+	stats := ParseStats{
+		Discovered: len(configs),
+		Rejected:   rejected,
+		Duplicates: duplicates,
+	}
+
+	return valid, errs, stats
 }
 
 // parseURL dispatches a URI to the appropriate protocol parser.
@@ -377,43 +431,43 @@ func parseURL(raw string) (config.Config, error) {
 		)
 	}
 
-		switch strings.ToLower(u.Scheme) {
-case "vless":
-	return parseVLESS(u)
+	switch strings.ToLower(u.Scheme) {
+	case "vless":
+		return parseVLESS(u)
 
-case "vmess":
-	return parseVMess(u)
+	case "vmess":
+		return parseVMess(u)
 
-case "trojan":
-	return parseTrojan(u)
+	case "trojan":
+		return parseTrojan(u)
 
-case "ss":
-	return parseShadowsocks(u)
+	case "ss":
+		return parseShadowsocks(u)
 
-case "hysteria":
-	return parseHysteria(u)
+	case "hysteria":
+		return parseHysteria(u)
 
-case "hysteria2", "hy2":
-	return parseHysteria2(u)
+	case "hysteria2", "hy2":
+		return parseHysteria2(u)
 
-case "tuic":
-	return parseTUIC(u)
+	case "tuic":
+		return parseTUIC(u)
 
-case "wireguard", "wg":
-	return parseWireGuardURL(u)
+	case "wireguard", "wg":
+		return parseWireGuardURL(u)
 
-case "socks", "socks4", "socks4a", "socks5":
-	return parseSOCKS(u)
+	case "socks", "socks4", "socks4a", "socks5":
+		return parseSOCKS(u)
 
-case "http", "https":
-	return parseHTTP(u)
+	case "http", "https":
+		return parseHTTP(u)
 
-default:
-	return config.Config{}, fmt.Errorf(
-		"unsupported configuration scheme: %q",
-		u.Scheme,
-	)
-}
+	default:
+		return config.Config{}, fmt.Errorf(
+			"unsupported configuration scheme: %q",
+			u.Scheme,
+		)
+	}
 }
 
 // parseVLESS parses a VLESS URI.
@@ -1005,6 +1059,7 @@ func formatErrors(errors []error) string {
 
 	return strings.Join(messages, "; ")
 }
+
 // parseWireGuardURL parses a WireGuard URI.
 //
 // Supported form:

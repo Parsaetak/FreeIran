@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/Parsaetak/FreeIran/engine/config"
-	"github.com/Parsaetak/FreeIran/engine/database"
 	"github.com/Parsaetak/FreeIran/engine/core"
+	"github.com/Parsaetak/FreeIran/engine/database"
 	"github.com/Parsaetak/FreeIran/engine/source"
 	"github.com/Parsaetak/FreeIran/engine/tester"
 )
@@ -18,6 +18,11 @@ import (
 //
 // The engine deliberately contains no platform-specific code.
 // Windows and Android can both use the same orchestration layer.
+//
+// Deprecated: this sequential orchestrator is preserved for library
+// users of the v0.1 API. The application now drives ingestion through
+// engine/pipeline (bounded worker stages) and engine/app (services);
+// new integrations should use those instead.
 type Engine struct {
 	Collector *source.Collector
 	Tester    *tester.Tester
@@ -29,14 +34,14 @@ type Engine struct {
 
 // CycleResult contains the complete result of one engine cycle.
 type CycleResult struct {
-	StartedAt   time.Time
-	FinishedAt  time.Time
-	Duration    time.Duration
-	Discovered  int
-	Unique      int
-	Tested      int
-	Working     int
-	Failed      int
+	StartedAt      time.Time
+	FinishedAt     time.Time
+	Duration       time.Duration
+	Discovered     int
+	Unique         int
+	Tested         int
+	Working        int
+	Failed         int
 	Configurations []config.Config
 }
 
@@ -70,6 +75,7 @@ func (e *Engine) SetDatabase(db *database.Database) {
 
 	e.Database = db
 }
+
 // RunOnce executes one complete discovery and testing cycle.
 //
 // The cycle:
@@ -94,22 +100,22 @@ func (e *Engine) RunOnce(
 	}
 
 	if ctx == nil {
-	ctx = context.Background()
-}
+		ctx = context.Background()
+	}
 
-if err := ctx.Err(); err != nil {
-	result.FinishedAt = time.Now().UTC()
-	result.Duration = result.FinishedAt.Sub(started)
+	if err := ctx.Err(); err != nil {
+		result.FinishedAt = time.Now().UTC()
+		result.Duration = result.FinishedAt.Sub(started)
 
-	return result, err
-}
+		return result, err
+	}
 
-e.mu.RLock()
-collector := e.Collector
-testerInstance := e.Tester
-registry := e.Registry
-db := e.Database
-e.mu.RUnlock()
+	e.mu.RLock()
+	collector := e.Collector
+	testerInstance := e.Tester
+	registry := e.Registry
+	db := e.Database
+	e.mu.RUnlock()
 
 	if collector == nil {
 		collector = source.NewCollector()
@@ -150,14 +156,14 @@ e.mu.RUnlock()
 		// If a registry exists, do not send configurations to a tester
 		// that cannot execute their protocol.
 		if registry != nil && !registry.Supports(cfg.Type) {
-	cfg.Working = false
-	cfg.TestedAt = time.Now().UTC().UnixMilli()
+			cfg.Working = false
+			cfg.TestedAt = time.Now().UTC().UnixMilli()
 
-	result.Tested++
-	result.Failed++
+			result.Tested++
+			result.Failed++
 
-	continue
-}
+			continue
+		}
 
 		testResult := testerInstance.TestAndApply(ctx, cfg)
 
@@ -179,26 +185,26 @@ e.mu.RUnlock()
 
 	result.Configurations = configurations
 	if db != nil {
-	for i := range configurations {
-		if err := db.Upsert(&configurations[i]); err != nil {
+		for i := range configurations {
+			if err := db.Upsert(&configurations[i]); err != nil {
+				result.FinishedAt = time.Now().UTC()
+				result.Duration = result.FinishedAt.Sub(started)
+
+				return result, fmt.Errorf(
+					"persist configuration %s: %w",
+					configurations[i].ID,
+					err,
+				)
+			}
+		}
+
+		if err := db.Save(); err != nil {
 			result.FinishedAt = time.Now().UTC()
 			result.Duration = result.FinishedAt.Sub(started)
 
-			return result, fmt.Errorf(
-				"persist configuration %s: %w",
-				configurations[i].ID,
-				err,
-			)
+			return result, fmt.Errorf("persist database: %w", err)
 		}
 	}
-
-	if err := db.Save(); err != nil {
-		result.FinishedAt = time.Now().UTC()
-		result.Duration = result.FinishedAt.Sub(started)
-
-		return result, fmt.Errorf("persist database: %w", err)
-	}
-}
 	result.FinishedAt = time.Now().UTC()
 	result.Duration = result.FinishedAt.Sub(started)
 
@@ -242,5 +248,3 @@ func NewWithDatabase(
 
 	return engine, nil
 }
-
-

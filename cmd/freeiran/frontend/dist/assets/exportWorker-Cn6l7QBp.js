@@ -1,0 +1,2 @@
+(function(){"use strict";function o(t){const n=t==null?"":String(t);return/[",\n\r]/.test(n)?`"${n.replace(/"/g,'""')}"`:n}function s(t){if(t.length===0)return"";const n=Object.keys(t[0]),e=[n.join(",")];for(const r of t)e.push(n.map(c=>o(r[c])).join(","));return e.join(`\r
+`)}self.onmessage=t=>{if(t.data?.type!=="export")return;const n=s(t.data.rows);self.postMessage({type:"export:done",csv:n})}})();

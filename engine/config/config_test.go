@@ -47,17 +47,17 @@ func TestIdenticalConfigsHaveSameFingerprint(t *testing.T) {
 
 func TestRuntimeFieldsDoNotChangeFingerprint(t *testing.T) {
 	first := Config{
-		Type:       TypeVLESS,
-		Address:    "example.com",
-		Port:       443,
-		UUID:       "test-uuid",
-		Network:    "ws",
-		Path:       "/vpn",
-		Security:   "tls",
-		Source:     "source-a",
-		Working:    false,
-		LatencyMS:  500,
-		TestedAt:   1000,
+		Type:      TypeVLESS,
+		Address:   "example.com",
+		Port:      443,
+		UUID:      "test-uuid",
+		Network:   "ws",
+		Path:      "/vpn",
+		Security:  "tls",
+		Source:    "source-a",
+		Working:   false,
+		LatencyMS: 500,
+		TestedAt:  1000,
 	}
 
 	second := first
@@ -229,10 +229,10 @@ func TestSetID(t *testing.T) {
 
 func TestDifferentProtocolsDoNotCollide(t *testing.T) {
 	vless := Config{
-		Type:     TypeVLESS,
-		Address:  "example.com",
-		Port:     443,
-		UUID:     "test",
+		Type:    TypeVLESS,
+		Address: "example.com",
+		Port:    443,
+		UUID:    "test",
 	}
 
 	vmess := vless

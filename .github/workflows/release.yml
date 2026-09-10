@@ -1,0 +1,131 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    name: Verify version and run tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.0"
+          cache: true
+
+      - name: Verify version consistency
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          expected="${tag#v}"
+          version=$(tr -d '[:space:]' < VERSION)
+
+          echo "tag=$tag expected=$expected VERSION=$version"
+
+          if [ "$expected" != "$version" ]; then
+            echo "VERSION file ($version) does not match tag ($expected)" >&2
+            exit 1
+          fi
+
+          if ! grep -q "\"$version\"" frontend/package.json; then
+            echo "frontend/package.json version does not match $version" >&2
+            exit 1
+          fi
+
+      - name: Test
+        run: go test -count=1 ./engine/... ./system/... ./internal/...
+
+      - name: Native tests
+        run: make -C native test
+
+  build:
+    name: Build release artifacts
+    runs-on: windows-latest
+    needs: [verify]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.0"
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend (and stage embed assets)
+        run: |
+          npm ci
+          npm run build:embed
+        working-directory: frontend
+
+      - name: Build desktop application
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          $commit = $env:GITHUB_SHA.Substring(0, 8)
+
+          go build -trimpath `
+            -ldflags "-s -w -X github.com/Parsaetak/FreeIran/internal/version.Version=$version -X github.com/Parsaetak/FreeIran/internal/version.Commit=$commit" `
+            -o FreeIran-windows-amd64.exe ./cmd/freeiran
+
+          if ($LASTEXITCODE -ne 0) { throw "build failed" }
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+
+          Compress-Archive -Path FreeIran-windows-amd64.exe `
+            -DestinationPath "FreeIran-windows-amd64.zip"
+
+          $hash = (Get-FileHash "FreeIran-windows-amd64.zip" -Algorithm SHA256).Hash
+          "$hash  FreeIran-windows-amd64.zip" | Out-File -Encoding ascii `
+            "FreeIran-windows-amd64.zip.sha256"
+
+          Write-Host "Packaged FreeIran-windows-amd64 (v$version)"
+
+      - name: Smoke test executable
+        shell: pwsh
+        run: |
+          $size = (Get-Item FreeIran-windows-amd64.exe).Length
+          if ($size -lt 10MB) { throw "executable suspiciously small: $size" }
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: |
+            FreeIran-windows-amd64.zip
+            FreeIran-windows-amd64.zip.sha256
+          retention-days: 3
+
+  publish:
+    name: Publish GitHub release
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            FreeIran-windows-amd64.zip
+            FreeIran-windows-amd64.zip.sha256
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref, '-') }}

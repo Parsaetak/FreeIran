@@ -1,506 +1,158 @@
 # FreeIran
 
-A lightweight, free, open-source VPN application for Android and Windows, built around a shared cross-platform engine for discovering, testing, maintaining, and running publicly available proxy/VPN configurations.
+A lightweight, free, open-source VPN configuration manager for Windows (and,
+architecturally, any desktop platform), built around a shared Go engine for
+discovering, testing, maintaining and running publicly available
+proxy/VPN configurations.
 
-**Project:** FreeIran  
-**Architect:** Parsa Tak / SHEYTAN  
-**Repository:** https://github.com/Parsaetak/FreeIran  
-**Status:** Early development
+**Project:** FreeIran
+**Architect:** Parsa Tak / SHEYTAN
+**Repository:** https://github.com/Parsaetak/FreeIran
+**Current version:** 0.2.0 (see `VERSION`)
+**Status:** production architecture — desktop application with chunked local storage
 
 ---
 
 ## Vision
 
-FreeIran is designed around one simple idea:
+> Continuously find publicly available configurations, test them, keep the
+> ones that work, archive the ones that fail, remove duplicates, and make
+> the working pool immediately usable from a lightweight client.
 
-> Continuously find publicly available configurations, test them, keep the ones that work, archive the ones that fail, remove duplicates, and make the working pool immediately usable from a lightweight client.
-
-The application is intended for environments where ordinary Internet connectivity can be heavily restricted or unreliable, including Iran.
-
-FreeIran is not intended to operate a permanent server network. Its primary resource is a continuously maintained collection of publicly published configurations.
+FreeIran is intended for environments where ordinary Internet connectivity
+can be heavily restricted, including Iran. It is local-first: no account,
+no central backend, no cloud service, and no remote telemetry. All network
+activity relates to fetching public configuration sources or testing
+configurations.
 
 ---
 
-## Core Architecture
+## Architecture Overview
 
 ```text
-                         FREEIRAN
-                            │
-                    Shared Go Engine
-                            │
-             ┌──────────────┼──────────────┐
-             │              │              │
-           Xray          sing-box       WireGuard
-             │              │              │
-             └──────────────┼──────────────┘
-                            │
-                     Config Manager
-                            │
-                    Public Data Sources
-                            │
-                       NiREvil/vless
-                            │
-                  ┌─────────┴─────────┐
-                  │                   │
-               WORKING              FAILED
-                  │                   │
-                  ▼                   ▼
-             Active DB             Archive
-                  │
-          ┌───────┴────────┐
-          │                │
-       Android           Windows
+                       FREEIRAN
+                          │
+                    WAILS v3 APP
+                          │
+                 TypeScript UI layer        (frontend/)
+                          │
+                   Generated bindings        (frontend/bindings)
+                          │
+                    Go application
+                     orchestration           (engine/app)
+                          │
+        ┌─────────────────┼─────────────────┐
+        │                 │                 │
+    Data Engine       Core Manager      System Engine
+  (engine/store,     (engine/core,        (system/)
+   engine/chunks,     process mgmt)
+   engine/cache)
+        │
+   Ingestion pipeline                    C++ native layer
+   (engine/pipeline)                     (native/, engine/native)
+        │                                optional, with Go fallback
+   FETCH → PARSE → NORMALIZE →
+   VALIDATE → DEDUP → PERSIST
 ```
 
-The engine is shared between platforms.
+- **Go** is the primary orchestration/system language: lifecycle,
+  scheduling, concurrency, storage, sources, testing, protocol-core
+  management, and the API exposed to the UI.
+- **C++** provides a small, measurable acceleration layer (batch hashing,
+  CRC-32 checksums, URL scanning) behind a stable C ABI, with bit-exact
+  pure-Go fallbacks so correctness never depends on it.
+- **TypeScript (React + Vite)** is the UI layer: application state,
+  configuration browsing with virtualized lists, source management,
+  diagnostics. The UI talks to Go exclusively through generated Wails v3
+  bindings and events — there is no localhost HTTP API.
 
-Android and Windows are thin platform layers around the same core functionality wherever practical.
+Details: [docs/architecture.md](docs/architecture.md),
+[docs/storage-format.md](docs/storage-format.md),
+[docs/performance.md](docs/performance.md).
 
 ---
 
-## Main Engine Loop
+## Key Features (v0.2.0)
 
-The engine periodically refreshes its configuration sources.
+- **Chunked local storage** — checksummed chunk files with a binary
+  fingerprint index, write-ahead journal, incremental writes, atomic
+  commits, compaction and crash recovery. No full-dataset JSON dumps.
+- **Streaming ingestion pipeline** — bounded worker pools for fetch,
+  parse and dedup/persist with backpressure and cancellation; a slow or
+  failed source never blocks other sources.
+- **Content-hash change detection** — unchanged sources skip parse and
+  persistence entirely.
+- **Progressive startup** — the app opens on metadata (registry + index)
+  immediately; storage verification and cache warm-up run in the
+  background; the UI reports `loading / ready / degraded / ingesting`.
+- **Multi-layer caching** — source cache, parse stats, chunk-handle LRU
+  and a hot-configuration cache for instant UI pages, with hit/miss
+  tracking and size bounds.
+- **Optional C++ acceleration** — built with `-tags native_accel`; falls
+  back to identical pure-Go implementations at build time or runtime.
+- **Deterministic fingerprints** — the original SHA-256 identity model is
+  preserved; duplicates are eliminated before testing.
+- **Legacy migration** — the old JSON database (`database v1`) is
+  detected, validated, imported, verified and preserved as
+  `<file>.migrated`. Idempotent and never destructive.
+- **Local diagnostics** — startup time, stage timings, cache hit rates,
+  worker/queue gauges; local-only, never sent anywhere.
+- **GitHub Actions CI/CD** — tests, race detector, native tests,
+  frontend typecheck/build, Windows desktop builds, tagged releases with
+  checksums, dependency vulnerability scanning and secret scanning.
 
-The default maintenance interval is **one hour**.
+---
 
-```text
-FETCH
-  ↓
-PARSE
-  ↓
-NORMALIZE
-  ↓
-DEDUPLICATE
-  ↓
-TEST
-  ↓
-┌───────────────┴───────────────┐
-│                               │
-WORKING                         FAILED
-│                               │
-▼                               ▼
-ACTIVE DATABASE                ARCHIVE
+## Building
+
+Requirements: Go 1.25+, Node.js 22+, npm, a C++17 compiler (optional —
+only for the native acceleration layer), make (optional).
+
+```bash
+# 1. Build the frontend and stage it for the Go embed
+cd frontend
+npm ci
+npm run build:embed     # builds and copies dist into cmd/freeiran
+cd ..
+
+# 2. Build the desktop application (Windows amd64 primary target)
+#    from a Windows machine:
+go build -trimpath \
+  -ldflags "-s -w -X github.com/Parsaetak/FreeIran/internal/version.Version=$(cat VERSION | tr -d '[:space:]')" \
+  -o FreeIran-windows-amd64.exe ./cmd/freeiran
+
+# From Linux/macOS you can cross-compile the Windows binary:
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
+  go build -o FreeIran-windows-amd64.exe ./cmd/freeiran
 ```
 
-Working configurations remain available to the application.
+### Optional C++ acceleration
 
-Failed configurations are removed from the active pool and retained in compressed historical storage.
-
-A configuration that becomes functional again can return to the active pool during a later test cycle.
-
----
-
-## Configuration Lifecycle
-
-Every configuration passes through a simple lifecycle:
-
-```text
-Discovered
-    ↓
-Parsed
-    ↓
-Normalized
-    ↓
-Deduplicated
-    ↓
-Tested
-    ├── Working → Active
-    └── Failed  → Archive
+```bash
+make -C native            # builds libfreeiran_native + runs its tests
+CGO_ENABLED=1 go build -tags native_accel -o FreeIran.exe ./cmd/freeiran
 ```
 
-Configurations are identified using deterministic fingerprints so the same configuration received from multiple sources is stored only once.
+Without the `native_accel` tag the binary uses the pure-Go
+implementations, which are tested to produce identical results.
+`FREEIRAN_NATIVE=off` disables the native path at runtime.
 
----
+### Development
 
-## Active Database
-
-The active database contains only configurations currently considered usable.
-
-Conceptually:
-
-```text
-active.db
-
-├── VLESS
-├── VMess
-├── Trojan
-├── Shadowsocks
-├── Hysteria
-├── Hysteria2
-├── TUIC
-├── WireGuard
-└── other supported configurations
+```bash
+go test ./engine/... ./system/... ./internal/...   # Go tests
+go test -race ./engine/...                          # race detector
+cd frontend && npm test                             # frontend tests
+cd frontend && npm run dev                          # Vite dev server
 ```
 
-The exact supported protocols depend on the capabilities of the integrated protocol cores.
-
----
-
-## Archive
-
-The archive preserves configurations that are no longer active.
-
-Its purposes are:
-
-- prevent repeatedly downloading identical dead configurations
-- preserve historical data
-- allow failed configurations to be retested later
-- reduce the size of the active database
-- provide useful data for future reliability analysis
-
-Archives should be compressed.
-
-Duplicate configurations should never accumulate indefinitely.
-
----
-
-## Configuration Sources
-
-The first source is:
-
-**NiREvil/vless**
-
-https://github.com/NiREvil/vless
-
-The source is treated as an external public data source rather than as part of the application's permanent codebase.
-
-This allows the source to update independently from the application.
-
-Additional public sources can be added later through source adapters.
-
-Only openly published configuration/subscription data should be ingested.
-
----
-
-## Protocol Engine Strategy
-
-FreeIran does not implement every network protocol itself.
-
-Instead, established protocol cores provide the actual networking implementations.
-
-### Primary engine
-
-**Xray-core**
-
-Used for the Xray/V2Ray ecosystem and compatible configurations.
-
-### Secondary engine
-
-**sing-box**
-
-Used where its protocol and transport support provides better compatibility.
-
-### Specialized engine
-
-**WireGuard**
-
-Used for WireGuard configurations through the appropriate platform implementation.
-
-The FreeIran engine decides which backend is required for a normalized configuration.
-
----
-
-## Universal Configuration Model
-
-External formats are converted into an internal representation.
-
-```text
-Public configuration
-        ↓
-Format parser
-        ↓
-Universal configuration
-        ↓
-Protocol engine
-```
-
-The application should therefore not depend directly on a single subscription format.
-
-Potential input formats include:
-
-- VLESS URLs
-- VMess URLs
-- Trojan URLs
-- Shadowsocks URLs
-- subscription lists
-- V2Ray JSON
-- Sing-box JSON
-- Clash-compatible configurations
-- other supported public configuration formats
-
-Transport and security parameters are preserved when supported by the selected engine.
-
-Examples include:
-
-- TLS
-- REALITY
-- WebSocket
-- gRPC
-- HTTP/2
-- XHTTP
-- QUIC
-- other supported transports
-
----
-
-## Testing
-
-A configuration is not considered working merely because it can be parsed.
-
-The tester should progressively verify:
-
-```text
-Parse
-  ↓
-Core startup
-  ↓
-Endpoint reachability
-  ↓
-Protocol handshake
-  ↓
-Tunnel establishment
-  ↓
-Connectivity test
-  ↓
-Latency measurement
-```
-
-The tester records the result and timestamp.
-
-Example:
-
-```json
-{
-  "status": "working",
-  "latency_ms": 143,
-  "tested_at": "2026-08-25T00:00:00Z"
-}
-```
-
-Testing should be deterministic and lightweight.
-
-AI is not required for basic configuration validation.
-
----
-
-## Deduplication
-
-Duplicate removal happens before expensive testing.
-
-A configuration fingerprint is generated from its normalized connection parameters.
-
-Conceptually:
-
-```text
-fingerprint =
-SHA-256(
-    protocol +
-    endpoint +
-    port +
-    identity +
-    transport +
-    security +
-    transport_parameters
-)
-```
-
-This prevents the same configuration from being tested repeatedly when it appears in multiple sources.
-
----
-
-## Storage Philosophy
-
-FreeIran should remain lightweight.
-
-The active dataset should contain only useful configurations.
-
-Historical data belongs in compressed archives.
-
-The application should avoid accumulating:
-
-- duplicate configurations
-- obsolete active entries
-- unnecessary metadata
-- redundant source copies
-- large uncompressed datasets
-
-The goal is a small, fast local database.
-
----
-
-## Cross-Platform Design
-
-The shared engine is written in Go.
-
-```text
-                 Go Engine
-                     │
-          ┌──────────┴──────────┐
-          │                     │
-       Android                Windows
-          │                     │
-     VPN adapter          Network adapter
-```
-
-The shared engine handles:
-
-- configuration management
-- parsing
-- normalization
-- deduplication
-- testing
-- scheduling
-- storage
-- archive management
-- protocol-core management
-
-Platform-specific code handles operating-system networking and VPN integration.
-
----
-
-## Android
-
-Android will use the native VPN facilities of the operating system.
-
-The application should provide:
-
-- connect
-- disconnect
-- automatic best configuration
-- configuration list
-- basic connection status
-- VPN permission handling
-- background maintenance
-- minimal resource usage
-
-The UI should remain simple and responsive.
-
----
-
-## Windows
-
-Windows will use the shared engine with a Windows-specific networking adapter.
-
-The Windows application should provide:
-
-- connect
-- disconnect
-- automatic best configuration
-- configuration list
-- system networking integration
-- background maintenance
-- minimal resource usage
-
----
-
-## Privacy
-
-FreeIran should follow a privacy-first architecture.
-
-The application should not require a central account or user browsing history.
-
-Configuration discovery and testing should not collect:
-
-- browsing history
-- visited URLs
-- personal identity
-- unnecessary telemetry
-- private credentials
-
-Local configuration data should be protected appropriately by each platform.
-
----
-
-## Security
-
-Downloaded configuration data is untrusted input.
-
-The engine must validate and sanitize configurations before passing them to a protocol core.
-
-The application must never:
-
-- execute arbitrary downloaded scripts
-- install arbitrary certificates automatically
-- trust downloaded configuration files blindly
-- expose configuration credentials in diagnostic logs
-
-Only public configuration data intentionally published by its source should be considered for ingestion.
-
----
-
-## Development Principles
-
-FreeIran follows several simple engineering rules:
-
-1. **Keep the engine small.**
-2. **Prefer existing mature protocol cores.**
-3. **Do not duplicate functionality unnecessarily.**
-4. **Test configurations before activating them.**
-5. **Remove duplicates before testing.**
-6. **Keep failed data compressed in the archive.**
-7. **Keep the active database small.**
-8. **Keep Android and Windows on the same engine.**
-9. **Avoid a backend until one is actually necessary.**
-10. **Prefer deterministic mechanisms over AI for networking decisions.**
-
----
-
-## Development Roadmap
-
-### v0.1 — Engine Foundation
-
-- [ ] Shared Go engine
-- [ ] Configuration model
-- [ ] Deduplication
-- [ ] Local database
-- [ ] Archive
-- [ ] Scheduler
-- [ ] NiREvil source
-- [ ] Configuration parser
-- [ ] Basic tester
-
-### v0.2 — Protocol Engine
-
-- [ ] Xray integration
-- [ ] VLESS
-- [ ] VMess
-- [ ] Trojan
-- [ ] Shadowsocks
-- [ ] Core lifecycle management
-
-### v0.3 — Clients
-
-- [ ] Android client
-- [ ] Windows client
-- [ ] Connect/disconnect
-- [ ] Automatic working-server selection
-
-### v0.4 — Expanded Compatibility
-
-- [ ] sing-box integration
-- [ ] Hysteria
-- [ ] Hysteria2
-- [ ] TUIC
-- [ ] WireGuard
-- [ ] Additional configuration formats
-
-### v0.5 — Source Expansion
-
-- [ ] Additional public sources
-- [ ] Source update management
-- [ ] Improved historical testing
-- [ ] Better reliability statistics
-
-### v1.0 — Stable Release
-
-- [ ] Stable Android release
-- [ ] Stable Windows release
-- [ ] Automated configuration maintenance
-- [ ] Robust core management
-- [ ] Security review
-- [ ] Reproducible builds
-- [ ] Documentation
+A committed placeholder at `cmd/freeiran/frontend/dist` keeps `go build
+./cmd/freeiran` working before any frontend build; the real UI is staged
+by `npm run build:embed` (used by CI).
+
+On Linux, building the GUI locally requires GTK4/WebKitGTK development
+packages (`wails3 doctor` reports what is missing). CI validates the
+desktop build for windows/amd64 where no GUI packages are needed.
 
 ---
 
@@ -508,87 +160,85 @@ FreeIran follows several simple engineering rules:
 
 ```text
 FreeIran/
-│
-├── engine/
-│   ├── core/
-│   ├── config/
-│   ├── parser/
-│   ├── tester/
-│   ├── database/
-│   ├── archive/
-│   └── scheduler/
-│
-├── sources/
-│   └── nirevil/
-│
-├── android/
-│
-├── windows/
-│
-├── tests/
-│
-├── scripts/
-│
-├── go.mod
-├── README.md
-└── LICENSE
-```
-
-The structure is intentionally minimal and can evolve as implementation requirements become clear.
-
----
-
-## Current Status
-
-FreeIran is in the foundation stage.
-
-The immediate goal is to build the shared engine before building a complex user interface.
-
-The first functional milestone is:
-
-```text
-NiREvil source
-      ↓
-Parse
-      ↓
-Deduplicate
-      ↓
-Store
-      ↓
-Test
-      ↓
-Working configurations
-      ↓
-Android / Windows
+├── cmd/freeiran/          Desktop application entrypoint (Wails v3)
+├── engine/                Shared Go engine
+│   ├── app/               Application orchestration + UI service surface
+│   ├── archive/           Failed-configuration archive (JSON v1, gzip-ready)
+│   ├── cache/             Bounded LRU cache layers (TTL, versions, stats)
+│   ├── chunks/            Chunking subsystem (FIRC format)
+│   ├── config/            Universal configuration model + fingerprints
+│   ├── core/              Protocol-core execution boundary (registry)
+│   ├── database/          Legacy JSON database (kept for migration)
+│   ├── errors/            Structured, classified errors
+│   ├── metrics/           Local performance counters
+│   ├── native/            Go↔C++ bridge (pure-Go fallbacks)
+│   ├── parser/            Multi-format configuration parser
+│   ├── pipeline/          Streaming ingestion pipeline (worker pools)
+│   ├── pool/              In-memory configuration pool
+│   ├── scheduler/         Interval scheduler (skip-if-busy, jitter)
+│   ├── source/            Source model, HTTP fetcher, collector
+│   ├── store/             Chunked persistence (WAL, index, compaction,
+│   │                      JSON v1 migration)
+│   └── tester/            Probe interface + TCP reachability probe
+├── frontend/              TypeScript UI (Vite + React + zustand)
+│   ├── bindings/          Generated Wails bindings (do not edit)
+│   └── src/               components/ pages/ state/ services/ workers/
+│                          utilities/ styles/
+├── native/                C++ acceleration layer (C ABI, no deps)
+├── system/                System engine: paths, processes, network,
+│   └── platform           platform-specific files (unix/windows)
+├── internal/version/      Single source of truth for versioning
+├── .github/workflows/     CI, release and security pipelines
+├── docs/                  Architecture, storage format, performance docs
+├── VERSION                Application version (0.2.0)
+└── worklog.md             Engineering worklog
 ```
 
 ---
 
-## Attribution
+## Data Migration
 
-**Architect / Project Originator:**  
-Parsa Tak / SHEYTAN
+Existing users of the v0.1 JSON database keep their data:
 
-**Project:** FreeIran
+1. On first run (or via *Diagnostics → Migrate*), the legacy JSON file is
+   detected and validated.
+2. Every record is imported into the chunked store with its original
+   fingerprint preserved.
+3. The import is verified record-by-record.
+4. The legacy file is renamed to `<original>.migrated` — never deleted.
 
-**Repository:**  
-https://github.com/Parsaetak/FreeIran
+Migration is idempotent: running it again is a no-op.
 
 ---
 
-## License
+## Security & Privacy
 
-To be finalized during the initial implementation stage.
-```
+- Downloaded configuration data is untrusted input: it is parsed,
+  normalized, validated and deduplicated before storage or testing.
+- No arbitrary scripts are executed; no certificates are installed; no
+  credentials are written to logs (log paths pass through redaction).
+- The app is local-first: no account, no cloud, no browsing history,
+  no remote telemetry. Metrics are local diagnostics.
+- CI runs `govulncheck` and gitleaks on every push.
 
-### Why I changed one thing from our earlier plan
+---
 
-I would **not put specific Xray/sing-box version numbers in the README yet**. The current Xray release stream is already changing rapidly, with 26.7.x releases visible upstream, and sing-box is likewise actively releasing. 
+## Roadmap
 
-We'll pin **tested versions in the engine/build configuration**, where they can be updated safely.
+- [x] v0.1 — Engine foundation (config model, parser, dedup, JSON store)
+- [x] v0.2 — Architecture upgrade: chunked store, streaming pipeline,
+      caching, native acceleration layer, Wails v3 desktop shell,
+      TypeScript UI, CI/CD, migration
+- [ ] v0.3 — Protocol core integration (Xray), full connect/disconnect
+- [ ] v0.4 — sing-box, Hysteria2, TUIC, WireGuard runtimes
+- [ ] v0.5 — Source expansion, reliability statistics
+- [ ] v1.0 — Stable releases, security review, reproducible builds
 
-Also, a recent Xray change removed `allowInsecure` in favour of certificate pinning, which is exactly the sort of compatibility change our engine needs to handle centrally rather than freezing into documentation. 
+---
 
-This README is therefore the **stable project contract**, while implementation-specific versions remain in the code.
+## Attribution & License
 
-**Add this as `README.md`.** Then the next file should be the first actual engine file rather than another documentation file.
+**Architect / Project Originator:** Parsa Tak / SHEYTAN
+**Repository:** https://github.com/Parsaetak/FreeIran
+
+License: see [LICENSE](LICENSE).

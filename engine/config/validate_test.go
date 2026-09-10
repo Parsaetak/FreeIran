@@ -250,10 +250,10 @@ func TestValidateRejectsMissingProtocolCredentials(t *testing.T) {
 		{
 			name: "Shadowsocks without password",
 			config: Config{
-				Type:   TypeShadowsocks,
+				Type:    TypeShadowsocks,
 				Address: "example.com",
-				Port:   8388,
-				Method: "aes-256-gcm",
+				Port:    8388,
+				Method:  "aes-256-gcm",
 			},
 			want: "Shadowsocks password",
 		},

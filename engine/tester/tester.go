@@ -64,8 +64,8 @@ func (t *Tester) Test(
 
 	if !t.Probe.Supports(cfg.Type) {
 		return Result{
-			Working:   false,
-			TestedAt:  now,
+			Working:  false,
+			TestedAt: now,
 			LastError: fmt.Sprintf(
 				"unsupported protocol: %s",
 				cfg.Type,

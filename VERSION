@@ -1,0 +1,3 @@
+# FreeIran application version. Single source of truth.
+# CI injects this value into binaries via ldflags.
+0.2.0

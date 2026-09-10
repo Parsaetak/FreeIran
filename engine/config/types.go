@@ -4,14 +4,14 @@ package config
 type Network string
 
 const (
-	NetworkTCP   Network = "tcp"
-	NetworkUDP   Network = "udp"
+	NetworkTCP       Network = "tcp"
+	NetworkUDP       Network = "udp"
 	NetworkWebSocket Network = "ws"
-	NetworkGRPC  Network = "grpc"
-	NetworkHTTP  Network = "http"
-	NetworkHTTP2 Network = "http2"
-	NetworkQUIC  Network = "quic"
-	NetworkXHTTP Network = "xhttp"
+	NetworkGRPC      Network = "grpc"
+	NetworkHTTP      Network = "http"
+	NetworkHTTP2     Network = "http2"
+	NetworkQUIC      Network = "quic"
+	NetworkXHTTP     Network = "xhttp"
 )
 
 // Security identifies the transport security mechanism.
@@ -48,8 +48,8 @@ const (
 
 // TestResult represents the most recent connectivity test.
 type TestResult struct {
-	Status   ConfigStatus `json:"status"`
+	Status    ConfigStatus `json:"status"`
 	LatencyMS int64        `json:"latency_ms,omitempty"`
-	TestedAt int64        `json:"tested_at,omitempty"`
-	Error    string       `json:"error,omitempty"`
+	TestedAt  int64        `json:"tested_at,omitempty"`
+	Error     string       `json:"error,omitempty"`
 }
