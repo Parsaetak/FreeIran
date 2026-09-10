@@ -254,8 +254,16 @@ func (a *App) warmCaches() {
 	})
 }
 
-// Shutdown coordinates a safe stop:
-// stop work → flush → persist state → release resources.
+// Context returns the application lifecycle context. It is
+// cancelled during Shutdown; background loops must select on
+// Context().Done() so no goroutine outlives the application.
+func (a *App) Context() context.Context {
+	return a.ctx
+}
+
+// Shutdown coordinates a safe stop: cancel background work first so
+// the store's own Close never waits on a goroutine the app controls,
+// then flush and release every resource deterministically.
 func (a *App) Shutdown() {
 	if a.scheduler != nil {
 		a.scheduler.Stop()

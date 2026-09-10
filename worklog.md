@@ -1678,3 +1678,111 @@ via ldflags; the fetcher User-Agent reports it.
 - windows/amd64 desktop build with embedded frontend: 15.8 MB binary
 - benchmarks: store reopen 20k ≈ 2.2 ms; pipeline 5,000 configs
   end-to-end ≈ 50 ms (see docs/performance.md)
+
+---
+
+## v0.3.0 — Failure Repair + Storage Lifecycle Rework (2026-09-10)
+
+**Trigger:** two red CI runs at commit `a536191` — the Windows job
+("Run Go tests") and the Security job ("govulncheck (Go)").
+
+### Root causes found and fixed
+
+1. **Windows chunk-file handle leak** (the CI failure). `Store.chunkHandle`
+   stored live `*os.File` values inside `cache.Layer`, which has no eviction
+   callback: evicted handles were merely forgotten, `Close()` never closed
+   cached files, and compaction removed victim files while their handles
+   were still open. On Windows an open handle blocks deletion, so
+   `t.TempDir()` cleanup failed with "The process cannot access the file
+   because it is being used by another process". Reproduced on Linux via
+   `/proc/self/fd` before the fix.
+2. **govulncheck platform mismatch.** The scan included `./cmd/...`, whose
+   Wails v3 import resolves to Linux GTK4/WebKitGTK CGO packages that are
+   not installed on CI runners. Fixed by platform-targeted analysis
+   (pure-Go packages natively; the desktop package with `GOOS=windows`,
+   its actual deployment target) — NOT by `|| true` or installing GUI
+   toolchains. Both scans fail on real vulnerabilities.
+3. **Toolchain vulnerabilities.** go1.25.0 carries known stdlib
+   vulnerabilities (GO-2026-6218 net/url, GO-2026-6090 crypto/tls) and the
+   1.25 series is EOL. The toolchain is now deliberately pinned to
+   go1.26.8 (go.mod `toolchain` directive + CI + docs), with
+   `GOTOOLCHAIN=local` so CI can never silently switch.
+4. **Store correctness bugs** found during the audit and fixed:
+   - flush checkpointed the WAL at `CurrentLSN()`, which can include
+     appended-but-unapplied records — a crash window that silently lost
+     journaled writes under concurrent load.
+   - deletes of unflushed overrides resurrected the old value after the
+     tombstone flushed (stale index entry).
+   - the v1 journal READER skipped the length prefix for delete records
+     while the writer emitted it, so replayed deletes always failed their
+     CRC and were silently discarded.
+   - compaction's unlock/read/relock window let a concurrent delete be
+     undone by the final index swap (resurrection race).
+   - `persistMeta` marshalled shared `*chunkMeta` pointers after releasing
+     the read lock (data race, caught by `-race` once flushes moved to the
+     background).
+   - migration materialised the entire legacy JSON database in RAM.
+5. **CI weaknesses:** `|| true` on the native benchmark step; a
+   suspicious-pattern grep whose first branch could never fail; Node 20
+   era action majors.
+
+### Storage rework (v0.3.0 architecture)
+
+- `chunkHandleCache`: single owner of open chunk descriptors;
+  reference-counted pins, LRU eviction that CLOSES evicted files,
+  `purge` for compaction victims, `closeAll` for shutdown. Path
+  resolution only on misses.
+- Operation barrier (`gate` + WaitGroup): every public operation
+  registers; `Close()` rejects new work, drains in-flight operations,
+  flushes, stops the flush worker, closes the journal and all handles,
+  and returns joined errors. After `Close()` the store owns no
+  descriptor — the store directory is deletable immediately on every
+  platform (enforced by tests).
+- Scan barrier: `Iterate`/`VerifyAll` register as scans; compaction
+  removes victim files only after scans drain and handles are purged.
+- Segmented WAL: per-segment `baseLSN` headers, LSN continuity checks,
+  checkpoint removes fully-incorporated segments (closed before
+  removal), crash-tail discarding, v1 `journal.log` streaming upgrade.
+- Frozen memtables + single background flush worker + explicit
+  backpressure (`maxFrozen`); WAL append and memtable apply are
+  serialized so the LSN watermark is exact. Writers never block on
+  chunk generation.
+- Consistent-snapshot iteration (index refs + immutable slice headers,
+  no per-key lock churn).
+- Compaction with CAS index swaps (no resurrection), deterministic
+  victim ordering, safe removal sequence.
+- Streaming migration via token-walking `json.Decoder`, bounded batches,
+  two-pass verification, rename-only preservation.
+- Diagnostics (`Store.Inspect`): open handles, cache hits/evictions,
+  memtable pressure, WAL size/segments, flush/compaction counts and
+  last durations, sticky flush error — surfaced in the UI through
+  `DiagnosticsService.StoreDiagnostics`.
+- `cache.Layer` gained an `OnEvict` callback so any layer owning native
+  resources can release them deterministically.
+- Removed dead v0.1 code: `engine/engine.go` (deprecated orchestrator),
+  `engine/database`, `engine/pool`, `engine/archive`.
+
+### CI modernization
+
+- Node 24 action majors: checkout@v7, setup-go@v7, setup-node@v7,
+  upload-artifact@v7, download-artifact@v8, gitleaks-action@v3,
+  action-gh-release@v3.
+- Windows job runs `go test -count=1 ./...` — the full matrix including
+  `engine/store`; nothing is skipped and no failure is tolerated.
+- govulncheck pinned to v1.8.0; `|| true` removed everywhere; the
+  pattern scan is a real gate.
+- Release verification now includes race tests.
+
+### Verification snapshot (2026-09-10, go1.26.8)
+
+- `go vet` clean (both scopes, incl. `GOOS=windows` for cmd)
+- `go test -count=1 ./engine/... ./system/... ./internal/...` — all pass
+- `go test -race -count=1` — all pass
+- Windows desktop cross-build (CGO_ENABLED=0, GOOS=windows) — 12.4 MB binary
+- Native C++ tests pass; accelerated Go bridge tests pass
+- Frontend: tsc clean, vitest 7/7, vite build + embed staging OK
+- govulncheck: "No vulnerabilities found" for both scan scopes
+- Store benchmarks: write path −24% time / −45% allocs vs a536191;
+  Get −40% bytes / −25% allocs with +18% latency (the documented cost
+  of deterministic ownership); reopen −7%; iterate −9%. See
+  docs/performance.md for the full honest table.

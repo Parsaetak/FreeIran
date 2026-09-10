@@ -48,16 +48,25 @@ func (s *Store) loadOrRecover() error {
 		}
 
 		s.nextSeq = meta.NextSequence
+		s.checkpointLSN = meta.LSN
 		s.lsn = meta.LSN
 		s.deadRecs = meta.DeadRecords
 
-		// Drop registry entries whose chunk files vanished; the
-		// store still opens but reports degraded status.
+		// Drop registry entries whose chunk files vanished; the store
+		// still opens but reports degraded status.
 		for seq := range s.chunksMap {
 			if _, statErr := os.Stat(s.chunkPath(seq)); statErr != nil {
 				delete(s.chunksMap, seq)
 				s.status = "degraded"
 			}
+		}
+
+		// Remove orphan chunk files: crash leftovers of a flush that
+		// wrote its chunk but never persisted the registry. Their
+		// records are still in the WAL (the checkpoint never advanced)
+		// and are replayed right after this call.
+		if err := s.removeOrphanChunks(); err != nil {
+			return err
 		}
 
 	case os.IsNotExist(err) || isEmptyMeta(err):
@@ -85,28 +94,50 @@ func (s *Store) loadOrRecover() error {
 	return nil
 }
 
-func isEmptyMeta(err error) bool {
-	var pathErr *os.PathError
+// removeOrphanChunks deletes chunk files not referenced by the loaded
+// registry. Only valid when the registry itself was readable: in the
+// rebuild path every chunk file IS the truth and must be kept.
+func (s *Store) removeOrphanChunks() error {
+	entries, err := os.ReadDir(s.chunkDir)
+	if err != nil {
+		return firerrors.Wrap(err, firerrors.KindEnvironment,
+			Subsystem, "open", "scan chunk directory")
+	}
 
+	for _, entry := range entries {
+		if entry.IsDir() ||
+			!strings.HasSuffix(entry.Name(), chunks.FileExt) {
+			continue
+		}
+
+		var seq uint32
+
+		if _, scanErr := fmt.Sscanf(entry.Name(), "%d", &seq); scanErr != nil {
+			continue
+		}
+
+		if _, known := s.chunksMap[seq]; known {
+			continue
+		}
+
+		path := filepath.Join(s.chunkDir, entry.Name())
+
+		if removeErr := os.Remove(path); removeErr != nil &&
+			!os.IsNotExist(removeErr) {
+			return firerrors.Wrap(removeErr, firerrors.KindEnvironment,
+				Subsystem, "open", "remove orphan chunk %s", entry.Name())
+		}
+	}
+
+	return nil
+}
+
+func isEmptyMeta(err error) bool {
 	if firerrors.KindOf(err) == firerrors.KindCorruptData {
 		return true
 	}
 
-	if ok := asPathError(err, &pathErr); ok {
-		return false
-	}
-
 	return strings.Contains(err.Error(), "meta is empty")
-}
-
-func asPathError(err error, target **os.PathError) bool {
-	if pe, ok := err.(*os.PathError); ok {
-		*target = pe
-
-		return true
-	}
-
-	return false
 }
 
 // readMeta loads store.meta, distinguishing absence from corruption.
@@ -144,23 +175,29 @@ func (s *Store) indexPath() string {
 	return filepath.Join(s.root, "index.bin")
 }
 
-// persistMeta atomically replaces store.meta.
+// persistMeta atomically replaces store.meta. The chunk registry is
+// deep-copied under the read lock: the shared *chunkMeta values are
+// mutated by concurrent writers (live counters), so marshalling them
+// after unlocking would be a data race.
 func (s *Store) persistMeta() error {
 	s.mu.RLock()
 
 	meta := diskMeta{
 		Version:      metaFormatVersion,
 		Schema:       storeSchema,
-		LSN:          s.lsn,
+		LSN:          s.checkpointLSN,
 		NextSequence: s.nextSeq,
-		Count:        int64(derivedCountLocked(s)),
+		Count:        int64(s.derivedCount()),
 		DeadRecords:  s.deadRecs,
 		Chunks: make(map[string]*chunkMeta,
 			len(s.chunksMap)),
 	}
 
 	for seq, chunk := range s.chunksMap {
-		meta.Chunks[fmt.Sprint(seq)] = chunk
+		// Value copy: snapshot the registry entry while the lock is
+		// held so the JSON encoder never reads shared mutable state.
+		copied := *chunk
+		meta.Chunks[fmt.Sprint(seq)] = &copied
 	}
 
 	s.mu.RUnlock()

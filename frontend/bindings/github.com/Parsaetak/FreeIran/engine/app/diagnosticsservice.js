@@ -16,6 +16,9 @@ import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Cr
 import * as metrics$0 from "../metrics/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as store$0 from "../store/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as system$0 from "../../system/models.js";
 
 /**
@@ -35,6 +38,18 @@ export function Cores() {
 export function Metrics() {
     return $Call.ByID(3687510332).then(/** @type {($result: any) => any} */(($result) => {
         return $$createType2($result);
+    }));
+}
+
+/**
+ * StoreDiagnostics returns the deep storage-subsystem report: open
+ * file handles, cache hit rates, memtable pressure, WAL size, flush
+ * and compaction timings. Every value is a live measurement.
+ * @returns {$CancellablePromise<store$0.Diagnostics>}
+ */
+export function StoreDiagnostics() {
+    return $Call.ByID(902993624).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType4($result);
     }));
 }
 
@@ -61,3 +76,4 @@ const $$createType0 = system$0.CoreBinary.createFrom;
 const $$createType1 = $Create.Array($$createType0);
 const $$createType2 = metrics$0.Snapshot.createFrom;
 const $$createType3 = system$0.Info.createFrom;
+const $$createType4 = store$0.Diagnostics.createFrom;

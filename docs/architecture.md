@@ -78,31 +78,53 @@ sources ──▶ FETCH (4 workers) ──▶ PARSE (4 workers) ──▶ DEDUP+
 
 ```text
 data/
-├── store.meta      JSON chunk registry (atomic replace)
-├── index.bin       binary fingerprint index (atomic replace)
-├── chunks/NNNNNN.firc  checksummed chunk files
-└── wal/journal.log write-ahead journal for unflushed writes
+├── store.meta              JSON chunk registry (atomic replace)
+├── index.bin               binary fingerprint index (atomic replace)
+├── chunks/NNNNNN.firc      checksummed immutable chunk files
+└── wal/seg-XXXXXXXX.wal    segmented write-ahead journal
 ```
 
-- **Writes** go to the WAL (fsync per batch) and an in-memory memtable.
-  When the memtable crosses a threshold it is flushed as ONE new chunk;
-  index and registry are replaced atomically; the journal is
-  checkpointed (header LSN advanced + record area truncated).
-- **Reads** consult the memtable, then the in-memory index, then read
-  the record directly from the chunk file at the indexed offset.
-  Open chunk files are kept in a bounded LRU.
+- **Writes** go to the WAL (one write + one fsync per batch) and the
+  active memtable under a serialized writer path. When the active
+  table crosses a threshold it is FROZEN into an immutable table and
+  flushed by a single background worker as ONE new chunk; index and
+  registry are replaced atomically; the journal is checkpointed
+  (incorporated segments removed — closed before deletion, so this is
+  Windows-safe). Backpressure bounds the frozen queue: writers beyond
+  `maxFrozen` pending tables throttle until the worker catches up.
+- **Reads** consult the memtable levels (newest first), then the
+  in-memory index, then read the record directly from the chunk file
+  at the indexed offset through a pinned handle from the bounded
+  chunk-handle cache (the sole owner of open descriptors — eviction
+  closes files, shutdown closes everything).
+- **Iteration** captures a consistent point-in-time snapshot (index
+  references + immutable memtable slice headers) and streams chunk
+  records through pinned handles; concurrent writers cannot make a
+  scan skip, duplicate or resurrect records.
 - **Integrity**: chunk payloads carry CRC-32; the journal is
   CRC-per-record; a corrupt or truncated journal tail is discarded
-  safely; missing/corrupt meta or index triggers deterministic
-  rebuilds from chunk files.
+  safely; a continuity break between segments fails the open loudly;
+  missing/corrupt meta or index triggers deterministic rebuilds from
+  chunk files; orphan chunk files (crash between chunk write and meta
+  persist) are removed on open and recovered from the WAL.
 - **Compaction**: chunks whose dead-record ratio exceeds 50% are
   rewritten (merged) with only live records; fully dead chunks are
-  deleted. Dead-record accounting drives the garbage-ratio stat.
+  deleted. Victim files are removed only after their cached handles
+  are closed and active scans have drained — never while open. Index
+  swaps are compare-and-swap against the snapshotted locations, so
+  concurrent deletes can never be resurrected by a compaction racing
+  them. Dead-record accounting drives the garbage-ratio stat.
 - **Key contract**: keys are lowercase hex SHA-256 fingerprints
   (64 chars), stored as 32 raw bytes. Chunk records are
   `[32-byte key][value]` pairs so the index can always be rebuilt.
+- **Lifecycle**: every public operation registers in a barrier;
+  `Close()` rejects new work, drains active operations, flushes,
+  closes the journal and every cached handle — after it returns the
+  store owns no file descriptor, so the store directory is deletable
+  immediately on every platform (including Windows).
 
-See docs/storage-format.md for the byte-level formats.
+See docs/storage-format.md for the byte-level formats and the full
+resource-ownership model.
 
 ## 5. Cache architecture
 

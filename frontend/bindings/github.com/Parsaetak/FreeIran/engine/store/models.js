@@ -149,5 +149,156 @@ export class Stats {
     }
 }
 
+/**
+ * Diagnostics is a deep operational report for maintenance UIs. Every
+ * value is a real measurement taken from live subsystem state.
+ */
+export class Diagnostics {
+    /**
+     * Creates a new Diagnostics instance.
+     * @param {Partial<Diagnostics>} [$$source = {}] - The source object to create a Diagnostics from.
+     */
+    constructor($$source = {}) {
+        if (!("status" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["status"] = "";
+        }
+        if (!("open_files" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["open_files"] = 0;
+        }
+        if (!("open_files_max" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["open_files_max"] = 0;
+        }
+        if (!("cache_opens" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["cache_opens"] = 0;
+        }
+        if (!("cache_closes" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["cache_closes"] = 0;
+        }
+        if (!("cache_hits" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["cache_hits"] = 0;
+        }
+        if (!("cache_misses" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["cache_misses"] = 0;
+        }
+        if (!("cache_evictions" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["cache_evictions"] = 0;
+        }
+        if (!("memtable_bytes" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["memtable_bytes"] = 0;
+        }
+        if (!("pending_tables" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["pending_tables"] = 0;
+        }
+        if (!("pending_keys" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["pending_keys"] = 0;
+        }
+        if (!("wal_segments" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["wal_segments"] = 0;
+        }
+        if (!("wal_bytes" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["wal_bytes"] = 0;
+        }
+        if (!("flushes" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["flushes"] = 0;
+        }
+        if (!("last_flush_ms" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["last_flush_ms"] = 0;
+        }
+        if (!("compactions" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["compactions"] = 0;
+        }
+        if (!("last_compact_ms" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["last_compact_ms"] = 0;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["flush_error"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new Diagnostics instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {Diagnostics}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new Diagnostics(/** @type {Partial<Diagnostics>} */($$parsedSource));
+    }
+}
+
 // Private type creation functions
 const $$createType0 = $Create.Array($Create.Any);

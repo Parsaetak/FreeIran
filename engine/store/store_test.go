@@ -213,6 +213,12 @@ func TestAutoFlushThreshold(t *testing.T) {
 		}
 	}
 
+	// Flushes are asynchronous by design; drain before asserting
+	// on-disk state.
+	if err := s.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
 	// Two automatic flushes must have happened.
 	s.mu.RLock()
 	chunksCount := len(s.chunksMap)
@@ -382,6 +388,11 @@ func TestVerifyAll(t *testing.T) {
 		if err := s.Upsert(testKey(i), testValue(i)); err != nil {
 			t.Fatal(err)
 		}
+	}
+
+	// Flushes are asynchronous; drain so chunks exist to verify.
+	if err := s.Flush(); err != nil {
+		t.Fatal(err)
 	}
 
 	progressCalls := 0

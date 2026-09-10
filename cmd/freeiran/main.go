@@ -77,14 +77,18 @@ func main() {
 
 // startStateBroadcaster emits the application state periodically so
 // the UI observes loading, ingestion and degradation without polling.
-func startStateBroadcaster(wailsApp *application.App, applicationInstance *app.App) {
+// The loop terminates with the application context: no goroutine
+// outlives the webview run.
+func startStateBroadcaster(
+	wailsApp *application.App,
+	applicationInstance *app.App,
+) {
 	broadcast := func() {
 		wailsApp.Event.Emit("freeiran:state", applicationInstance.State())
 	}
 
 	go func() {
 		time.Sleep(500 * time.Millisecond)
-
 		broadcast()
 	}()
 
@@ -92,8 +96,15 @@ func startStateBroadcaster(wailsApp *application.App, applicationInstance *app.A
 		ticker := time.NewTicker(2 * time.Second)
 		defer ticker.Stop()
 
-		for range ticker.C {
-			broadcast()
+		ctx := applicationInstance.Context()
+
+		for {
+			select {
+			case <-ticker.C:
+				broadcast()
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
 }

@@ -5,8 +5,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
-	"sort"
 	"strings"
 
 	firerrors "github.com/Parsaetak/FreeIran/engine/errors"
@@ -23,23 +23,26 @@ import (
 //     verbatim inside the migrated values.
 //   - Migration is idempotent: a missing legacy file is a no-op
 //     success, and re-running after ".migrated" exists does nothing.
+//   - The legacy file is STREAMED with a token-walking decoder and
+//     processed in bounded batches: a huge legacy database never
+//     requires proportional RAM.
 //   - Every record is validated before it is staged; a corrupt record
-//     is reported, not silently dropped (strict mode).
+//     is reported, not silently dropped (strict mode aborts).
+//   - Verification is a second streaming pass after the final flush,
+//     so the full disk path (chunk + index + read) is checked without
+//     keeping every key in memory.
 //   - On any failure the store is left consistent: staging only
-//     mutates the in-memory memtable, and a failed run aborts before
-//     the rename.
+//     mutates the memtable, and a failed run aborts before the rename.
+//     Re-running re-applies batches idempotently.
 
-// LegacyEntry mirrors engine/database.Entry.
+// migrationBatchSize bounds records staged per UpsertBatch.
+const migrationBatchSize = 1024
+
+// LegacyEntry mirrors engine/database Entry.
 type LegacyEntry struct {
 	Config  json.RawMessage `json:"config"`
 	Added   string          `json:"added"`
 	Updated string          `json:"updated"`
-}
-
-// LegacyState mirrors the legacy diskState envelope.
-type LegacyState struct {
-	Version int                     `json:"version"`
-	Entries map[string]*LegacyEntry `json:"entries"`
 }
 
 // MigrateOptions controls the JSON v1 migration.
@@ -67,7 +70,13 @@ func (s *Store) MigrateFromJSON(
 ) (MigrationResult, error) {
 	var result MigrationResult
 
-	raw, err := os.ReadFile(opts.LegacyPath)
+	if !s.beginOp() {
+		return result, ErrClosed
+	}
+
+	defer s.endOp()
+
+	file, err := os.Open(opts.LegacyPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			// Idempotent: nothing to migrate.
@@ -78,83 +87,37 @@ func (s *Store) MigrateFromJSON(
 			Subsystem, "migrate", "read legacy database")
 	}
 
-	var state LegacyState
+	defer file.Close()
 
-	if err := json.Unmarshal(raw, &state); err != nil {
-		return result, firerrors.Wrap(err, firerrors.KindCorruptData,
-			Subsystem, "migrate", "legacy database is not valid JSON")
+	version, err := legacyVersion(file)
+	if err != nil {
+		return result, err
 	}
 
-	if state.Version != 1 {
+	if version != 1 {
 		return result, firerrors.New(firerrors.KindCorruptData,
-			Subsystem, "migrate", "unsupported legacy version %d",
-			state.Version)
+			Subsystem, "migrate", "unsupported legacy version %d", version)
 	}
 
-	// Deterministic order: keys sorted, so the chunk layout produced
-	// by migration is reproducible.
-	ids := make([]string, 0, len(state.Entries))
+	// ---- Pass 1: stream entries, stage in bounded batches ----
+	batch := make([]Pair, 0, migrationBatchSize)
 
-	for id := range state.Entries {
-		ids = append(ids, id)
-	}
+	stage := func(key string, entry *LegacyEntry) error {
+		batch = append(batch, Pair{Key: key, Value: entry.Config})
 
-	sort.Strings(ids)
-
-	batch := make([]Pair, 0, 1024)
-
-	flushBatch := func() error {
-		if len(batch) == 0 {
-			return nil
+		if len(batch) >= migrationBatchSize {
+			return commitMigrationBatch(s, &batch, &result)
 		}
-
-		if err := s.UpsertBatch(batch); err != nil {
-			return err
-		}
-
-		result.Migrated += len(batch)
-		batch = batch[:0]
 
 		return nil
 	}
 
-	for _, id := range ids {
-		if err := ctx.Err(); err != nil {
-			return result, err
-		}
-
-		entry := state.Entries[id]
-		if entry == nil || len(entry.Config) == 0 {
-			result.Skipped++
-
-			continue
-		}
-
-		// The record key IS the fingerprint (the legacy ID).
-		key, keyErr := normalizeLegacyKey(id)
-		if keyErr != nil {
-			result.Errors = append(result.Errors,
-				fmt.Sprintf("entry %s: %v", id, keyErr))
-
-			if opts.Strict {
-				return result, firerrors.New(
-					firerrors.KindInvalidInput,
-					Subsystem, "migrate", "entry %s: %v", id, keyErr)
-			}
-
-			continue
-		}
-
-		batch = append(batch, Pair{Key: key, Value: entry.Config})
-
-		if len(batch) >= 1024 {
-			if err := flushBatch(); err != nil {
-				return result, err
-			}
-		}
+	if err := s.legacyPass(ctx, file, opts, &result, stage); err != nil {
+		return result, err
 	}
 
-	if err := flushBatch(); err != nil {
+	// Leftover partial batch.
+	if err := commitMigrationBatch(s, &batch, &result); err != nil {
 		return result, err
 	}
 
@@ -163,24 +126,30 @@ func (s *Store) MigrateFromJSON(
 		return result, err
 	}
 
-	// Verify: every migrated key must now be readable from the store.
-	for _, id := range ids {
-		entry := state.Entries[id]
-		if entry == nil || len(entry.Config) == 0 {
-			continue
+	// ---- Pass 2: verify every record through the full disk path ----
+	verified := 0
+
+	verify := func(key string, _ *LegacyEntry) error {
+		value, err := s.Get(key)
+		if err != nil || value == nil {
+			return firerrors.New(firerrors.KindCorruptData,
+				Subsystem, "migrate", "verification failed for %s", key)
 		}
 
-		key, keyErr := normalizeLegacyKey(id)
-		if keyErr != nil {
-			continue
-		}
+		verified++
 
-		value, getErr := s.Get(key)
-		if getErr != nil || value == nil {
-			return result, firerrors.New(firerrors.KindCorruptData,
-				Subsystem, "migrate",
-				"verification failed for %s", id)
-		}
+		return nil
+	}
+
+	if err := s.legacyPass(ctx, file, opts, &result, verify); err != nil {
+		return result, err
+	}
+
+	if verified != result.Migrated {
+		return result, firerrors.New(firerrors.KindCorruptData,
+			Subsystem, "migrate",
+			"verification mismatch: staged %d, verified %d",
+			result.Migrated, verified)
 	}
 
 	// Preserve the legacy file (rename, never delete). If a previous
@@ -200,6 +169,240 @@ func (s *Store) MigrateFromJSON(
 	return result, nil
 }
 
+// commitMigrationBatch writes one bounded batch with a single WAL
+// append and counts it into the result.
+func commitMigrationBatch(
+	s *Store,
+	batch *[]Pair,
+	result *MigrationResult,
+) error {
+	if len(*batch) == 0 {
+		return nil
+	}
+
+	if err := s.UpsertBatch(*batch); err != nil {
+		return err
+	}
+
+	result.Migrated += len(*batch)
+	*batch = (*batch)[:0]
+
+	return nil
+}
+
+// legacyPass streams the entries map of the legacy file once,
+// invoking handle for each valid entry. Memory stays bounded: only
+// one decoded entry and the handler's own state exist at a time.
+// handle is invoked single-threaded from this method.
+func (s *Store) legacyPass(
+	ctx context.Context,
+	file *os.File,
+	opts MigrateOptions,
+	result *MigrationResult,
+	handle func(key string, entry *LegacyEntry) error,
+) error {
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return firerrors.Wrap(err, firerrors.KindEnvironment,
+			Subsystem, "migrate", "rewind legacy database")
+	}
+
+	decoder := json.NewDecoder(file)
+
+	if err := expectToken(decoder, json.Delim('{')); err != nil {
+		return firerrors.Wrap(err, firerrors.KindCorruptData,
+			Subsystem, "migrate", "legacy database is not a JSON object")
+	}
+
+	for decoder.More() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		name, err := nextString(decoder)
+		if err != nil {
+			return firerrors.Wrap(err, firerrors.KindCorruptData,
+				Subsystem, "migrate", "read legacy field name")
+		}
+
+		switch name {
+		case "version":
+			// Already validated by legacyVersion; skip the value.
+			var skip json.RawMessage
+
+			if err := decoder.Decode(&skip); err != nil {
+				return firerrors.Wrap(err, firerrors.KindCorruptData,
+					Subsystem, "migrate", "read legacy version")
+			}
+
+		case "entries":
+			if err := s.legacyEntries(ctx, decoder, opts, result, handle); err != nil {
+				return err
+			}
+
+		default:
+			// Unknown field: skip its value for forward compatibility.
+			var skip json.RawMessage
+
+			if err := decoder.Decode(&skip); err != nil {
+				return firerrors.Wrap(err, firerrors.KindCorruptData,
+					Subsystem, "migrate", "skip unknown legacy field")
+			}
+		}
+	}
+
+	if err := expectToken(decoder, json.Delim('}')); err != nil {
+		return firerrors.Wrap(err, firerrors.KindCorruptData,
+			Subsystem, "migrate", "terminate legacy database object")
+	}
+
+	return nil
+}
+
+// legacyEntries walks the entries object of the legacy file.
+func (s *Store) legacyEntries(
+	ctx context.Context,
+	decoder *json.Decoder,
+	opts MigrateOptions,
+	result *MigrationResult,
+	handle func(key string, entry *LegacyEntry) error,
+) error {
+	if err := expectToken(decoder, json.Delim('{')); err != nil {
+		return firerrors.Wrap(err, firerrors.KindCorruptData,
+			Subsystem, "migrate", "legacy entries is not an object")
+	}
+
+	for decoder.More() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		id, err := nextString(decoder)
+		if err != nil {
+			return firerrors.Wrap(err, firerrors.KindCorruptData,
+				Subsystem, "migrate", "read legacy entry key")
+		}
+
+		var entry LegacyEntry
+
+		if err := decoder.Decode(&entry); err != nil {
+			result.Errors = append(result.Errors,
+				fmt.Sprintf("entry %s: %v", id, err))
+
+			if opts.Strict {
+				return firerrors.New(firerrors.KindInvalidInput,
+					Subsystem, "migrate", "entry %s: %v", id, err)
+			}
+
+			continue
+		}
+
+		if len(entry.Config) == 0 {
+			result.Skipped++
+
+			continue
+		}
+
+		// The record key IS the fingerprint (the legacy ID).
+		key, keyErr := normalizeLegacyKey(id)
+		if keyErr != nil {
+			result.Errors = append(result.Errors,
+				fmt.Sprintf("entry %s: %v", id, keyErr))
+
+			if opts.Strict {
+				return firerrors.New(firerrors.KindInvalidInput,
+					Subsystem, "migrate", "entry %s: %v", id, keyErr)
+			}
+
+			continue
+		}
+
+		if err := handle(key, &entry); err != nil {
+			return err
+		}
+	}
+
+	if err := expectToken(decoder, json.Delim('}')); err != nil {
+		return firerrors.Wrap(err, firerrors.KindCorruptData,
+			Subsystem, "migrate", "terminate legacy entries object")
+	}
+
+	return nil
+}
+
+// expectToken asserts the next JSON token is the given delimiter.
+func expectToken(decoder *json.Decoder, want json.Delim) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+
+	delim, ok := token.(json.Delim)
+	if !ok || delim != want {
+		return fmt.Errorf("unexpected token %v, want %v", token, want)
+	}
+
+	return nil
+}
+
+// nextString reads one JSON string token.
+func nextString(decoder *json.Decoder) (string, error) {
+	token, err := decoder.Token()
+	if err != nil {
+		return "", err
+	}
+
+	str, ok := token.(string)
+	if !ok {
+		return "", fmt.Errorf("expected string key, got %v", token)
+	}
+
+	return str, nil
+}
+
+// legacyVersion reads only the version field of the legacy envelope.
+func legacyVersion(file *os.File) (int, error) {
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return 0, firerrors.Wrap(err, firerrors.KindEnvironment,
+			Subsystem, "migrate", "rewind legacy database")
+	}
+
+	decoder := json.NewDecoder(file)
+
+	if err := expectToken(decoder, json.Delim('{')); err != nil {
+		return 0, firerrors.Wrap(err, firerrors.KindCorruptData,
+			Subsystem, "migrate", "legacy database is not valid JSON")
+	}
+
+	for decoder.More() {
+		name, err := nextString(decoder)
+		if err != nil {
+			return 0, firerrors.Wrap(err, firerrors.KindCorruptData,
+				Subsystem, "migrate", "read legacy field name")
+		}
+
+		if name == "version" {
+			var version int
+
+			if err := decoder.Decode(&version); err != nil {
+				return 0, firerrors.Wrap(err, firerrors.KindCorruptData,
+					Subsystem, "migrate", "read legacy version")
+			}
+
+			return version, nil
+		}
+
+		var skip json.RawMessage
+
+		if err := decoder.Decode(&skip); err != nil {
+			return 0, firerrors.Wrap(err, firerrors.KindCorruptData,
+				Subsystem, "migrate", "skip unknown legacy field")
+		}
+	}
+
+	return 0, firerrors.New(firerrors.KindCorruptData,
+		Subsystem, "migrate", "legacy database has no version field")
+}
+
 // normalizeLegacyKey ensures the legacy ID is a canonical fingerprint
 // key accepted by the store.
 func normalizeLegacyKey(id string) (string, error) {
@@ -207,18 +410,10 @@ func normalizeLegacyKey(id string) (string, error) {
 		return "", fmt.Errorf("ID is not a 64-char fingerprint")
 	}
 
-	raw, err := hexDecode(id)
+	raw, err := hex.DecodeString(strings.ToLower(id))
 	if err != nil {
 		return "", err
 	}
 
-	return hexEncode(raw), nil
-}
-
-func hexDecode(s string) ([]byte, error) {
-	return hex.DecodeString(strings.ToLower(s))
-}
-
-func hexEncode(b []byte) string {
-	return hex.EncodeToString(b)
+	return hex.EncodeToString(raw), nil
 }

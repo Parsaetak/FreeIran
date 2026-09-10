@@ -6,11 +6,12 @@ import {
   formatNumber,
   formatPercent,
 } from "../utilities/format";
-import type { CacheStats, CoreBinary, MetricsSnapshot, SystemInfo, VerifyResult } from "../services";
+import type { CacheStats, CoreBinary, MetricsSnapshot, StorageDiagnostics, SystemInfo, VerifyResult } from "../services";
 
 export function DiagnosticsPage() {
   const [cacheStats, setCacheStats] = useState<CacheStats | null>(null);
   const [metrics, setMetrics] = useState<MetricsSnapshot | null>(null);
+  const [storeDiag, setStoreDiag] = useState<StorageDiagnostics | null>(null);
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
   const [cores, setCores] = useState<CoreBinary[]>([]);
   const [verifyResult, setVerifyResult] = useState<VerifyResult | null>(null);
@@ -21,15 +22,17 @@ export function DiagnosticsPage() {
 
   const reload = async () => {
     try {
-      const [caches, snap, info, coreList] = await Promise.all([
+      const [caches, snap, diag, info, coreList] = await Promise.all([
         call(() => appService.CacheStats()),
         call(() => diagnosticsService.Metrics()),
+        call(() => diagnosticsService.StoreDiagnostics()),
         call(() => diagnosticsService.SystemInfo()),
         call(() => diagnosticsService.Cores()),
       ]);
 
       setCacheStats(caches);
       setMetrics(snap);
+      setStoreDiag(diag);
       setSystemInfo(info);
       setCores(coreList);
     } catch (error) {
@@ -145,6 +148,49 @@ export function DiagnosticsPage() {
           <button className="btn" onClick={() => void call(() => appService.ClearCaches()).then(reload)}>
             Clear caches
           </button>
+        </div>
+      )}
+
+      {storeDiag && (
+        <div className="card">
+          <h3 className="card-title">Storage subsystem</h3>
+
+          <div className="stat-grid">
+            <Metric label="Status" value={storeDiag.status} />
+            <Metric
+              label="Open chunk handles"
+              value={`${formatNumber(storeDiag.open_files)} / ${formatNumber(storeDiag.open_files_max)}`}
+            />
+            <Metric
+              label="Handle cache hits"
+              value={formatNumber(storeDiag.cache_hits)}
+            />
+            <Metric
+              label="Handle cache evictions"
+              value={formatNumber(storeDiag.cache_evictions)}
+            />
+            <Metric
+              label="Pending tables"
+              value={formatNumber(storeDiag.pending_tables)}
+            />
+            <Metric label="Pending keys" value={formatNumber(storeDiag.pending_keys)} />
+            <Metric label="Memtable bytes" value={formatBytes(storeDiag.memtable_bytes)} />
+            <Metric label="WAL size" value={formatBytes(storeDiag.wal_bytes)} />
+            <Metric label="WAL segments" value={formatNumber(storeDiag.wal_segments)} />
+            <Metric label="Flushes" value={formatNumber(storeDiag.flushes)} />
+            <Metric label="Last flush" value={`${formatNumber(storeDiag.last_flush_ms)} ms`} />
+            <Metric label="Compactions" value={formatNumber(storeDiag.compactions)} />
+            <Metric
+              label="Last compaction"
+              value={`${formatNumber(storeDiag.last_compact_ms)} ms`}
+            />
+          </div>
+
+          {storeDiag.flush_error && (
+            <div className="error-banner" style={{ marginTop: 10 }}>
+              Flush error: {storeDiag.flush_error}
+            </div>
+          )}
         </div>
       )}
 

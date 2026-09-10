@@ -30,6 +30,7 @@ export type VerifyResult = import("../../bindings/github.com/Parsaetak/FreeIran/
 export type Config = import("../../bindings/github.com/Parsaetak/FreeIran/engine/config/models.js").Config;
 export type MetricsSnapshot = import("../../bindings/github.com/Parsaetak/FreeIran/engine/metrics/models.js").Snapshot;
 export type StorageStats = import("../../bindings/github.com/Parsaetak/FreeIran/engine/store/models.js").Stats;
+export type StorageDiagnostics = import("../../bindings/github.com/Parsaetak/FreeIran/engine/store/models.js").Diagnostics;
 export type IngestionStats = import("../../bindings/github.com/Parsaetak/FreeIran/engine/pipeline/models.js").Stats;
 export type SystemInfo = import("../../bindings/github.com/Parsaetak/FreeIran/system/models.js").Info;
 export type CoreBinary = import("../../bindings/github.com/Parsaetak/FreeIran/system/models.js").CoreBinary;

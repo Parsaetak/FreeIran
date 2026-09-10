@@ -47,3 +47,8 @@ Thumbs.db
 *.log
 tmp/
 temp/
+
+# --- Test & benchmark artifacts ---
+coverage*.out
+*.prof
+*.test-output/

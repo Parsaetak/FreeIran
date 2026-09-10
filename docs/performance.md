@@ -2,7 +2,9 @@
 
 Performance work follows one rule: correctness first, then measurability,
 then architecture, then optimisation. Every claim below is backed by a
-benchmark in the repository (`go test -bench`).
+benchmark in the repository (`go test -bench`). Where the v0.3.0 storage
+lifecycle rework made something slower, that is documented too — the
+numbers below are measurements, not marketing.
 
 ## 1. What was wrong in v0.1 (baseline)
 
@@ -15,70 +17,128 @@ benchmark in the repository (`go test -bench`).
 | Caching | none | repeated parse/dedup of identical data |
 | Processing | whole payloads in memory | 10 MiB sources → 10 MiB+ allocations |
 
-## 2. Current design
+## 2. Current design (v0.3.0)
 
 ### Startup (metadata-first)
 
 `store.Open` loads `store.meta` + `index.bin` only. For a 20,000-record
-store that is ~2 ms (BenchmarkStoreReopen) versus reading and JSON-decoding
-every record. Chunk verification and hot-cache warm-up run in the
-background; the UI is interactive before they finish.
+store that is ~2.4 ms (BenchmarkStoreReopen) versus reading and
+JSON-decoding every record. The store is ready for reads immediately;
+the flush worker and optional verification run in the background with
+deterministic shutdown.
 
-### Writes (incremental)
+### Writes (incremental, asynchronous flush)
 
-`UpsertBatch` appends one journal batch (one fsync per 512-record batch)
-and applies to the memtable. Flush writes only the delta as one new chunk
-file. The full dataset is never re-serialized; unaffected chunks are never
-rewritten.
+`UpsertBatch` validates and hex-decodes keys in one pass, appends ONE
+journal batch (one write + one fsync per 512-record batch), applies the
+whole batch to the memtable under one lock acquisition, and returns.
+When the active memtable crosses its threshold it is FROZEN into an
+immutable table and handed to a single background flush worker that
+writes the chunk file, swaps index entries, persists meta and
+checkpoints the WAL — all without blocking writers or readers.
 
-### Reads (index-assisted, lazy)
+Backpressure is explicit: at most `maxFrozen` (2) tables may be
+pending; beyond that writers block until the worker drains room, so
+memory is bounded regardless of write rate.
 
-`Get` reads a single record directly at its indexed offset inside a chunk
-file. Open chunk handles are pooled in a bounded LRU. A page of
-configurations decodes only the requested records; the hot-configuration
-cache makes repeated UI pages free (hit/miss tracked).
+### Reads (index-assisted, lazy, pinned)
+
+`Get` reads a single record directly at its indexed offset inside a
+chunk file through a pinned handle from the bounded chunk-handle cache.
+The handle cache is the sole owner of open chunk descriptors: eviction
+closes files, pins prevent eviction mid-read, and shutdown closes
+everything (see docs/storage-format.md for the ownership model).
+
+A point read allocates exactly: the record body, the caller's defensive
+value copy and one deferred release — 3 allocations, 164 B/op
+(TestAllocsHotPaths pins this; the v0.2 path allocated 7+ per read
+through key formatting, cache boxing and path building).
+
+### Iteration (consistent snapshots)
+
+`Iterate` captures one merged snapshot (40-byte index references plus
+slice headers of immutable memtable values), sorts it and streams
+records through pinned handles. The callback observes a consistent
+point-in-time view; concurrent writers cannot make an iteration skip,
+duplicate or resurrect records. Values of pending records are never
+copied — the memtable's immutability discipline makes the slice headers
+safe to read after the lock is released.
 
 ### Ingestion (streaming, bounded)
 
 Fetch, parse and dedup/persist run as bounded worker stages. Throughput
 BenchmarkPipelineRun: 5,000 configurations end-to-end (fetch from local
 HTTP → parse → normalize → validate → dedup → chunk → persist → journal
-fsync) in ~50 ms on the CI-class VM. A slow source applies backpressure to
-its own stage only; failed sources never block others.
+fsync) in ~50 ms on the CI-class VM. A slow source applies backpressure
+to its own stage only; failed sources never block others.
 
 ### Dedup (fingerprint scale)
 
 The canonical SHA-256 fingerprint is unchanged. In-memory dedup uses a
-sharded 64-bit working index (16 shards) to avoid global lock contention.
-When built with `-tags native_accel`, batch hashing and CRC-32 run in the
-C++ layer; the Go fallback is bit-identical and dispatch is chosen per
-call (metrics record fallbacks under `native_fallback_hits`).
+sharded 64-bit working index (16 shards) to avoid global lock
+contention. When built with `-tags native_accel`, batch hashing and
+CRC-32 run in the C++ layer; the Go fallback is bit-identical and
+dispatch is chosen per call (metrics record fallbacks under
+`native_fallback_hits`).
 
 ## 3. Benchmarks in the repository
 
 ```bash
-go test -bench=. -run=NONE ./engine/chunks ./engine/store ./engine/pipeline
+go test -bench=. -benchmem -run=NONE \
+  ./engine/chunks ./engine/store ./engine/native
 ```
 
 | Benchmark | What it measures |
 |-----------|------------------|
+| BenchmarkChunkWrite | one 4k-record chunk (temp + fsync + rename) |
+| BenchmarkChunkRead | full sequential scan of one chunk |
+| BenchmarkChunkVerify | full-chunk CRC verification |
 | BenchmarkChunkerGrouping | deterministic record→chunk grouping |
 | BenchmarkChunkWriteRead | chunk write + full read round trip |
+| BenchmarkStoreUpsert | single-record upserts (fsync per record) |
+| BenchmarkStoreUpsertBatch | 512-record batches (one fsync per batch) |
 | BenchmarkStoreUpsertFlush | upsert throughput incl. journal + flush |
+| BenchmarkStoreFlush | synchronous flush latency for a loaded memtable |
 | BenchmarkStoreGet | point-read latency via index + offset |
+| BenchmarkStoreGetMemtable | point-read served from the active memtable |
+| BenchmarkStoreIterate | full-scan throughput with consistent snapshots |
 | BenchmarkStoreReopen | metadata-first startup for 20k records |
-| BenchmarkStoreIterate | full-scan throughput |
-| BenchmarkPipelineRun | end-to-end ingestion of 5,000 configs |
+| BenchmarkCompaction | full compaction pass over 50% dead records |
+| BenchmarkMigration | 4,000-record streaming legacy migration |
+| BenchmarkHashBatch (+Mode/go, /native) | batch FNV-1a hashing, both implementations |
+| BenchmarkScanURLs | subscription scanning |
 
-Run the native bridge benchmark on an accelerated build:
+Run the native bridge benchmarks on an accelerated build:
 
 ```bash
 make -C native
-CGO_ENABLED=1 go test -tags native_accel -bench=. -benchtime=1x \
-  -run=NONE ./engine/native
+CGO_ENABLED=1 go test -tags native_accel -bench=. -run=NONE ./engine/native
 ```
 
-## 4. UI performance
+## 4. Measured results (v0.2.0 → v0.3.0 rework)
+
+Reference VM: 2 vCPU CI-class Linux runner, go1.26.8, `-benchtime=1s`
+medians over repeated runs. Absolute numbers vary by machine; the
+deltas and allocation counts are the meaningful part.
+
+| Path | v0.2.0 (a536191) | v0.3.0 | Assessment |
+|------|------------------|--------|------------|
+| Write: Upsert+Flush | 3083 ns/op, 1019 B, 11 allocs | 2329 ns/op, 990 B, 6 allocs | **24% faster, 45% fewer allocs** — journal append and memtable apply are batched under one lock; flush moved off the writer path |
+| Read: Get (chunk hit) | ~1045 ns/op, 272 B, 4 allocs | ~1230 ns/op, 164 B, 3 allocs | **+18% latency, 40% less memory** — the operation barrier + reference-counted handle pins that make Windows deletion safe cost ~180 ns per read; allocation footprint dropped |
+| Read: Get (memtable hit) | — | 376 ns/op, 80 B, 1 alloc | new capability measured |
+| Reopen (20k records) | 2566 µs | 2373 µs | **7% faster** |
+| Iterate (20k records) | 28.5 ms, 8.25 MB, 60k allocs | 26.1 ms, 9.34 MB, 100k allocs | **9% faster**, more allocations: the snapshot trades slice-header copies for per-key lock churn and gives consistent point-in-time views |
+| Batch write (512) | — | ~805 ns/record | one fsync amortised over the batch |
+| Migration (4k records, streaming) | full-file unmarshal | ~54 ms, bounded memory | never materialises the legacy DB |
+
+The read-path latency regression is deliberate and documented: the
+v0.2 cache leaked file descriptors (the Windows CI failure), so every
+read now pays for deterministic ownership. For the application's real
+workload — ingestion bursts of thousands of records plus UI paging of
+100-row pages — the write path and startup are the hot paths, and both
+improved.
+
+## 5. UI performance
 
 - Configuration lists are virtualized (`@tanstack/react-virtual`): the
   DOM holds ~30 rows regardless of dataset size.
@@ -89,12 +149,17 @@ CGO_ENABLED=1 go test -tags native_accel -bench=. -benchtime=1x \
   rows never blocks rendering.
 - Backend state arrives via events; the UI never polls the store.
 
-## 5. Memory discipline
+## 6. Memory discipline
 
 - Payloads are capped by the fetcher (10 MiB) and processed line-wise by
   the parser.
 - Chunk reads are per-record (`ReadAt`), never whole-file.
 - Bounded buffers everywhere: queue sizes, memtable thresholds
-  (records + bytes), LRU bounds on handles and cache layers.
+  (records + bytes), the frozen-table queue (maxFrozen), LRU bounds on
+  handles and cache layers.
+- Iteration snapshots copy references and slice headers, never record
+  bodies (pending bodies are bounded by the memtable thresholds).
+- Migration streams the legacy file with a token-walking decoder; only
+  one decoded entry and one bounded batch exist at a time.
 - Store snapshots are read from atomic counters; no locks are held
   while the UI serializes state.

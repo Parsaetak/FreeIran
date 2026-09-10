@@ -8,7 +8,7 @@ proxy/VPN configurations.
 **Project:** FreeIran
 **Architect:** Parsa Tak / SHEYTAN
 **Repository:** https://github.com/Parsaetak/FreeIran
-**Current version:** 0.2.0 (see `VERSION`)
+**Current version:** 0.3.0 (see `VERSION`)
 **Status:** production architecture — desktop application with chunked local storage
 
 ---
@@ -68,15 +68,26 @@ configurations.
 
 Details: [docs/architecture.md](docs/architecture.md),
 [docs/storage-format.md](docs/storage-format.md),
-[docs/performance.md](docs/performance.md).
+[docs/performance.md](docs/performance.md),
+[docs/ci.md](docs/ci.md), [docs/security.md](docs/security.md).
 
 ---
 
-## Key Features (v0.2.0)
+## Key Features (v0.3.0)
 
-- **Chunked local storage** — checksummed chunk files with a binary
-  fingerprint index, write-ahead journal, incremental writes, atomic
-  commits, compaction and crash recovery. No full-dataset JSON dumps.
+- **Chunked local storage** — checksummed immutable chunk files with a
+  binary fingerprint index, segmented write-ahead journal, incremental
+  writes, atomic commits, compaction and crash recovery. No full-dataset
+  JSON dumps.
+- **Deterministic resource lifecycle** — a bounded chunk-handle cache is
+  the sole owner of open chunk descriptors: eviction closes files, pins
+  protect in-flight reads, and `Close()` releases every descriptor before
+  returning, so the store directory is deletable immediately on every
+  platform (the Windows guarantee, enforced by tests).
+- **Asynchronous flush with backpressure** — memtables freeze into
+  immutable tables that a background worker persists as chunks without
+  blocking writers; the pending queue is bounded, and writers throttle
+  when it is full.
 - **Streaming ingestion pipeline** — bounded worker pools for fetch,
   parse and dedup/persist with backpressure and cancellation; a slow or
   failed source never blocks other sources.
@@ -85,28 +96,33 @@ Details: [docs/architecture.md](docs/architecture.md),
 - **Progressive startup** — the app opens on metadata (registry + index)
   immediately; storage verification and cache warm-up run in the
   background; the UI reports `loading / ready / degraded / ingesting`.
-- **Multi-layer caching** — source cache, parse stats, chunk-handle LRU
+- **Multi-layer caching** — source cache, parse stats, chunk-handle cache
   and a hot-configuration cache for instant UI pages, with hit/miss
   tracking and size bounds.
 - **Optional C++ acceleration** — built with `-tags native_accel`; falls
   back to identical pure-Go implementations at build time or runtime.
 - **Deterministic fingerprints** — the original SHA-256 identity model is
   preserved; duplicates are eliminated before testing.
-- **Legacy migration** — the old JSON database (`database v1`) is
-  detected, validated, imported, verified and preserved as
-  `<file>.migrated`. Idempotent and never destructive.
+- **Streaming legacy migration** — the old JSON database (`database v1`)
+  is detected, streamed (bounded memory), imported in batches, verified
+  through the full disk path and preserved as `<file>.migrated`.
+  Idempotent and never destructive.
 - **Local diagnostics** — startup time, stage timings, cache hit rates,
-  worker/queue gauges; local-only, never sent anywhere.
+  open file handles, flush/compaction timings, WAL size; local-only,
+  never sent anywhere.
 - **GitHub Actions CI/CD** — tests, race detector, native tests,
-  frontend typecheck/build, Windows desktop builds, tagged releases with
+  frontend typecheck/build, the full Windows test matrix (including the
+  store lifecycle), Windows desktop builds, tagged releases with
   checksums, dependency vulnerability scanning and secret scanning.
 
 ---
 
 ## Building
 
-Requirements: Go 1.25+, Node.js 22+, npm, a C++17 compiler (optional —
-only for the native acceleration layer), make (optional).
+Requirements: Go **1.26.8** (the go.mod toolchain — see
+[docs/development.md](docs/development.md) for the toolchain policy),
+Node.js 22+, npm, a C++17 compiler (optional — only for the native
+acceleration layer), make (optional).
 
 ```bash
 # 1. Build the frontend and stage it for the Go embed
@@ -163,25 +179,25 @@ FreeIran/
 ├── cmd/freeiran/          Desktop application entrypoint (Wails v3)
 ├── engine/                Shared Go engine
 │   ├── app/               Application orchestration + UI service surface
-│   ├── archive/           Failed-configuration archive (JSON v1, gzip-ready)
-│   ├── cache/             Bounded LRU cache layers (TTL, versions, stats)
+│   ├── cache/             Bounded LRU cache layers (TTL, versions, stats,
+│   │                      eviction callbacks for owned resources)
 │   ├── chunks/            Chunking subsystem (FIRC format)
 │   ├── config/            Universal configuration model + fingerprints
 │   ├── core/              Protocol-core execution boundary (registry)
-│   ├── database/          Legacy JSON database (kept for migration)
 │   ├── errors/            Structured, classified errors
 │   ├── metrics/           Local performance counters
 │   ├── native/            Go↔C++ bridge (pure-Go fallbacks)
 │   ├── parser/            Multi-format configuration parser
 │   ├── pipeline/          Streaming ingestion pipeline (worker pools)
-│   ├── pool/              In-memory configuration pool
 │   ├── scheduler/         Interval scheduler (skip-if-busy, jitter)
 │   ├── source/            Source model, HTTP fetcher, collector
-│   ├── store/             Chunked persistence (WAL, index, compaction,
-│   │                      JSON v1 migration)
+│   ├── store/             Chunked persistence: segmented WAL, frozen
+│   │                      memtables + background flush, refcounted
+│   │                      chunk-handle cache, compaction, streaming
+│   │                      JSON v1 migration, diagnostics
 │   └── tester/            Probe interface + TCP reachability probe
 ├── frontend/              TypeScript UI (Vite + React + zustand)
-│   ├── bindings/          Generated Wails bindings (do not edit)
+│   ├── bindings/          Generated Wails bindings
 │   └── src/               components/ pages/ state/ services/ workers/
 │                          utilities/ styles/
 ├── native/                C++ acceleration layer (C ABI, no deps)
@@ -189,10 +205,17 @@ FreeIran/
 │   └── platform           platform-specific files (unix/windows)
 ├── internal/version/      Single source of truth for versioning
 ├── .github/workflows/     CI, release and security pipelines
-├── docs/                  Architecture, storage format, performance docs
-├── VERSION                Application version (0.2.0)
+├── docs/                  Architecture, storage format, performance,
+│                          CI and security docs
+├── VERSION                Application version (0.3.0)
 └── worklog.md             Engineering worklog
 ```
+
+The v0.1-era `engine/database`, `engine/pool`, `engine/archive` and the
+deprecated `engine.Engine` orchestrator were removed in v0.3.0: they
+were dead code after the chunked store became the persistence path.
+The legacy JSON *format* knowledge is preserved (and tested) inside
+`engine/store/migrate.go`.
 
 ---
 
@@ -202,12 +225,16 @@ Existing users of the v0.1 JSON database keep their data:
 
 1. On first run (or via *Diagnostics → Migrate*), the legacy JSON file is
    detected and validated.
-2. Every record is imported into the chunked store with its original
-   fingerprint preserved.
-3. The import is verified record-by-record.
+2. Records are streamed into the chunked store in bounded batches with
+   their original fingerprints preserved — a huge legacy database never
+   requires proportional RAM.
+3. The import is verified record-by-record through the full disk path
+   (index + chunk read) in a second streaming pass.
 4. The legacy file is renamed to `<original>.migrated` — never deleted.
 
-Migration is idempotent: running it again is a no-op.
+Migration is idempotent: running it again is a no-op, and an interrupted
+run is safely re-runnable (records are re-applied idempotently and the
+legacy file is only renamed after full verification).
 
 ---
 
@@ -219,7 +246,9 @@ Migration is idempotent: running it again is a no-op.
   credentials are written to logs (log paths pass through redaction).
 - The app is local-first: no account, no cloud, no browsing history,
   no remote telemetry. Metrics are local diagnostics.
-- CI runs `govulncheck` and gitleaks on every push.
+- CI runs `govulncheck` (platform-targeted for the desktop app, pinned
+  tool version) and gitleaks on every push; see
+  [docs/security.md](docs/security.md).
 
 ---
 
@@ -229,9 +258,12 @@ Migration is idempotent: running it again is a no-op.
 - [x] v0.2 — Architecture upgrade: chunked store, streaming pipeline,
       caching, native acceleration layer, Wails v3 desktop shell,
       TypeScript UI, CI/CD, migration
-- [ ] v0.3 — Protocol core integration (Xray), full connect/disconnect
-- [ ] v0.4 — sing-box, Hysteria2, TUIC, WireGuard runtimes
-- [ ] v0.5 — Source expansion, reliability statistics
+- [x] v0.3 — Storage lifecycle rework (Windows-safe resource ownership,
+      segmented WAL, background flush), streaming migration, toolchain
+      policy (go1.26.8), CI/security modernization, deep diagnostics
+- [ ] v0.4 — Protocol core integration (Xray), full connect/disconnect
+- [ ] v0.5 — sing-box, Hysteria2, TUIC, WireGuard runtimes
+- [ ] v0.6 — Source expansion, reliability statistics
 - [ ] v1.0 — Stable releases, security review, reproducible builds
 
 ---

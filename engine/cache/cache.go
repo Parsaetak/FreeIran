@@ -41,6 +41,13 @@ type Options struct {
 	// TTL expires entries older than the duration. 0 = no expiry.
 	TTL time.Duration
 
+	// OnEvict, when set, is invoked with the stored value for every
+	// entry removed from the cache (LRU eviction, expiry, stale
+	// generation, Invalidate and Clear). Use it to release resources
+	// owned by cached values — a cache must never silently forget a
+	// native resource it owns.
+	OnEvict func(value any)
+
 	// Name identifies the layer in diagnostics.
 	Name string
 }
@@ -191,6 +198,12 @@ func (l *Layer) Clear() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	if l.opts.OnEvict != nil {
+		for element := l.order.Front(); element != nil; element = element.Next() {
+			l.opts.OnEvict(element.Value.(*entry).value)
+		}
+	}
+
 	l.order.Init()
 	l.entries = make(map[string]*list.Element)
 	l.bytes = 0
@@ -242,6 +255,10 @@ func (l *Layer) removeElement(element *list.Element) {
 	l.order.Remove(element)
 	delete(l.entries, e.key)
 	l.bytes -= e.weight
+
+	if l.opts.OnEvict != nil {
+		l.opts.OnEvict(e.value)
+	}
 }
 
 func (l *Layer) evictOverflow() {

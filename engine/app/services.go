@@ -444,6 +444,13 @@ func (s *DiagnosticsService) Metrics() metrics.Snapshot {
 	return s.app.metricsR.Snapshot()
 }
 
+// StoreDiagnostics returns the deep storage-subsystem report: open
+// file handles, cache hit rates, memtable pressure, WAL size, flush
+// and compaction timings. Every value is a live measurement.
+func (s *DiagnosticsService) StoreDiagnostics() store.Diagnostics {
+	return s.app.store.Inspect()
+}
+
 // SystemInfo returns platform information.
 func (s *DiagnosticsService) SystemInfo() system.Info {
 	return system.GetInfo()

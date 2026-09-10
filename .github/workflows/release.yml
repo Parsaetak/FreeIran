@@ -12,12 +12,14 @@ jobs:
   verify:
     name: Verify version and run tests
     runs-on: ubuntu-latest
+    env:
+      GOTOOLCHAIN: local
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
-          go-version: "1.25.0"
+          go-version: "1.26.8"
           cache: true
 
       - name: Verify version consistency
@@ -41,6 +43,9 @@ jobs:
       - name: Test
         run: go test -count=1 ./engine/... ./system/... ./internal/...
 
+      - name: Race tests
+        run: go test -race -count=1 ./engine/... ./system/... ./internal/...
+
       - name: Native tests
         run: make -C native test
 
@@ -48,15 +53,17 @@ jobs:
     name: Build release artifacts
     runs-on: windows-latest
     needs: [verify]
+    env:
+      GOTOOLCHAIN: local
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
-          go-version: "1.25.0"
+          go-version: "1.26.8"
           cache: true
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -70,6 +77,8 @@ jobs:
 
       - name: Build desktop application
         shell: pwsh
+        env:
+          CGO_ENABLED: "0"
         run: |
           $version = (Get-Content VERSION -Raw).Trim()
           $commit = $env:GITHUB_SHA.Substring(0, 8)
@@ -101,7 +110,7 @@ jobs:
           if ($size -lt 10MB) { throw "executable suspiciously small: $size" }
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-assets
           path: |
@@ -114,14 +123,14 @@ jobs:
     runs-on: ubuntu-latest
     needs: [build]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: release-assets
 
       - name: Publish release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             FreeIran-windows-amd64.zip

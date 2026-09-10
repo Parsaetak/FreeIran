@@ -1,27 +1,44 @@
 // Package store implements the FreeIran local-first persistence layer.
 //
-// It replaces the legacy full-JSON database (engine/database) with a
-// chunked, incrementally written, crash-safe store:
+// It replaces the legacy full-JSON database (migrated on demand via
+// MigrateFromJSON) with a chunked, incrementally written, crash-safe
+// store:
 //
 //	data/
 //	├── store.meta        JSON chunk registry (atomic replace)
 //	├── index.bin         binary fingerprint index (atomic replace)
-//	├── chunks/NNNNNN.firc checksummed chunk files
-//	└── wal/journal.log   write-ahead journal for unflushed writes
+//	├── chunks/NNNNNN.firc checksummed immutable chunk files
+//	└── wal/seg-XXXXXXXX.wal segmented write-ahead journal
 //
 // Write path (incremental, never rewrites the whole dataset):
 //
-//	Upsert → WAL append (fsync) → memtable → (threshold) Flush:
-//	    memtable delta → ONE new chunk file → index update →
+//	UpsertBatch → WAL append (one write + one fsync) → memtable →
+//	    (threshold) freeze → immutable frozen table →
+//	    background flush worker: ONE new chunk file → index update →
 //	    meta update → WAL checkpoint
+//
+// Backpressure is explicit: when too many frozen tables are pending,
+// writers block until the flush worker drains room (bounded memory).
 //
 // Read path (lazy, index assisted):
 //
-//	Get → memtable → index → chunk file (offset read, verified once)
+//	Get → memtable levels (newest first) → index → chunk file
+//	    (pinned handle, offset read) → decode value
 //
 // Startup is metadata-first: Open() loads meta + index only and is
-// ready immediately; chunk verification and cache warming run in the
-// background. Records are never materialised until requested.
+// ready immediately; chunk verification is available via VerifyAll.
+// Records are never materialised until requested.
+//
+// Resource ownership and shutdown:
+//
+//   - The chunkHandleCache is the sole owner of open chunk
+//     descriptors; eviction and shutdown CLOSE files deterministically.
+//   - Every public operation registers in an operation barrier;
+//     Close() rejects new operations, waits for active ones, flushes,
+//     closes the journal, closes all cached handles and only then
+//     returns. After Close() the store owns no file descriptor, so the
+//     store directory is immediately deletable on every platform
+//     (including Windows, where open handles block deletion).
 //
 // Keys are lowercase hex SHA-256 fingerprints (64 characters), stored
 // as 32 raw bytes. Chunk records are [32-byte key][value] pairs so the
@@ -30,8 +47,6 @@ package store
 
 import (
 	"context"
-	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -42,7 +57,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/Parsaetak/FreeIran/engine/cache"
 	"github.com/Parsaetak/FreeIran/engine/chunks"
 	firerrors "github.com/Parsaetak/FreeIran/engine/errors"
 )
@@ -74,6 +88,16 @@ const (
 	defaultMemtableRecords  = 4096
 	defaultMemtableBytes    = 8 << 20
 	defaultOpenFiles        = 32
+
+	// defaultMaxFrozen bounds the number of pending frozen tables
+	// (plus the one being flushed). Writers exceeding this bound are
+	// throttled until the flush worker catches up: explicit,
+	// bounded-memory backpressure.
+	defaultMaxFrozen = 2
+
+	// flushRetryDelay backs off automatic retries after a flush
+	// failure (disk full, transient IO errors).
+	flushRetryDelay = time.Second
 )
 
 // Options configures a store.
@@ -88,7 +112,7 @@ type Options struct {
 	MemtableRecords int
 
 	// MemtableBytes triggers a flush after N pending bytes.
-	MemtableBytes int64
+	MemtableBytes int
 
 	// OpenFiles bounds concurrently cached open chunk handles.
 	OpenFiles int
@@ -115,21 +139,61 @@ type Store struct {
 	opts    Options
 	chunker *chunks.Chunker
 
+	// files is the sole owner of open chunk descriptors.
+	files *chunkHandleCache
+
+	// writeMu serializes writers: the WAL append and the memtable
+	// apply of one batch happen together so the applied-LSN watermark
+	// is always exact. It is never held while reading.
+	writeMu sync.Mutex
+
+	// mu guards the index, chunk registry and memtable levels.
 	mu        sync.RWMutex
-	memtable  map[[32]byte][]byte // nil value = tombstone
-	memBytes  int64
+	active    *memtable
+	frozen    []*frozenTable
+	flushing  *frozenTable
 	chunksMap map[uint32]*chunkMeta
 	nextSeq   uint32
-	lsn       uint64
-	count     int64
-	deadRecs  int64
-	status    string // ready | degraded | closed
 
-	index    map[[32]byte]loc
-	wal      *journal
-	openLRU  *cache.Layer
-	closed   atomic.Bool
-	flushing sync.Mutex
+	// lsn is the WAL watermark of records applied to the memtable
+	// levels; checkpointLSN is the watermark already durable in
+	// chunks+meta (persisted in store.meta, used to filter replay).
+	lsn           uint64
+	checkpointLSN uint64
+
+	deadRecs int64
+	status   string // ready | degraded | closed
+
+	index map[[32]byte]loc
+	wal   *journal
+
+	// Lifecycle: closed rejects new operations; gate serializes op
+	// registration with the shutdown flip (an Add racing a Wait on a
+	// zero counter is a data race per the sync docs); ops tracks
+	// in-flight operations; scans tracks long-running chunk readers
+	// (iteration, verification) whose open handles must outlive
+	// compaction file removal.
+	closed atomic.Bool
+	gate   sync.RWMutex
+	ops    sync.WaitGroup
+	scans  sync.WaitGroup
+
+	// Background flush worker.
+	flushCond *sync.Cond
+	flushWake chan struct{}
+	flushStop chan struct{}
+	flushWG   sync.WaitGroup
+	stopping  atomic.Bool
+	flushErr  error // guarded by mu; sticky until a flush succeeds
+
+	// compactMu serializes compaction runs.
+	compactMu sync.Mutex
+
+	// Internal counters (atomic; exposed via Diagnostics).
+	flushCount    atomic.Int64
+	compactCount  atomic.Int64
+	lastFlushMS   atomic.Int64
+	lastCompactMS atomic.Int64
 }
 
 // chunkMeta is the per-chunk registry entry persisted in store.meta.
@@ -156,9 +220,9 @@ func Open(opts Options) (*Store, error) {
 		chunkDir:  filepath.Join(opts.Path, "chunks"),
 		walDir:    filepath.Join(opts.Path, "wal"),
 		opts:      opts,
-		memtable:  make(map[[32]byte][]byte),
-		index:     make(map[[32]byte]loc),
+		active:    newMemtable(),
 		chunksMap: make(map[uint32]*chunkMeta),
+		index:     make(map[[32]byte]loc),
 		status:    "ready",
 	}
 
@@ -177,10 +241,7 @@ func Open(opts Options) (*Store, error) {
 		s.opts.OpenFiles = defaultOpenFiles
 	}
 
-	s.openLRU = cache.New("chunk-files", cache.Options{
-		MaxEntries: s.opts.OpenFiles,
-		Weigh:      func(any) int64 { return 1 },
-	})
+	s.files = newChunkHandleCache(s.opts.OpenFiles, s.chunkPath)
 
 	for _, dir := range []string{s.root, s.chunkDir, s.walDir} {
 		if err := os.MkdirAll(dir, dirPerm); err != nil {
@@ -193,18 +254,31 @@ func Open(opts Options) (*Store, error) {
 		return nil, err
 	}
 
-	journal, err := openJournal(s.walDir, s.lsn, func(
+	journal, err := openJournal(s.walDir, s.checkpointLSN, s.checkpointLSN, func(
 		op walOp,
 		key [32]byte,
 		value []byte,
+		lsn uint64,
 	) error {
-		return s.applyReplay(op, key, value)
+		return s.applyReplay(op, key, value, lsn)
 	})
 	if err != nil {
 		return nil, err
 	}
 
 	s.wal = journal
+
+	// Bring the applied-LSN watermark to at least the journal's last
+	// assigned LSN so fresh freezes never checkpoint below reality.
+	if lsn := journal.CurrentLSN(); lsn > s.lsn {
+		s.lsn = lsn
+	}
+
+	s.flushCond = sync.NewCond(&s.mu)
+	s.flushWake = make(chan struct{}, 1)
+	s.flushStop = make(chan struct{})
+
+	s.startFlushWorker()
 
 	return s, nil
 }
@@ -217,7 +291,9 @@ func orDefault(value, fallback int) int {
 	return value
 }
 
-// decodeKey converts a hex fingerprint into its binary key form.
+// decodeKey converts a hex fingerprint into its binary key form in a
+// single pass with no intermediate allocations. It enforces the exact
+// canonical lowercase form.
 func decodeKey(key string) ([32]byte, error) {
 	var out [32]byte
 
@@ -225,48 +301,101 @@ func decodeKey(key string) ([32]byte, error) {
 		return out, fmt.Errorf("%w: length %d", ErrBadKey, len(key))
 	}
 
-	raw, err := hex.DecodeString(key)
-	if err != nil {
-		return out, fmt.Errorf("%w: %v", ErrBadKey, err)
-	}
+	for i := 0; i < 32; i++ {
+		hi, ok := hexNibble(key[2*i])
+		if !ok {
+			return out, fmt.Errorf("%w: byte %d", ErrBadKey, 2*i)
+		}
 
-	if hex.EncodeToString(raw) != key {
-		return out, fmt.Errorf("%w: not lowercase canonical", ErrBadKey)
-	}
+		lo, ok := hexNibble(key[2*i+1])
+		if !ok {
+			return out, fmt.Errorf("%w: byte %d", ErrBadKey, 2*i+1)
+		}
 
-	copy(out[:], raw)
+		out[i] = hi<<4 | lo
+	}
 
 	return out, nil
 }
 
+// hexNibble decodes one lowercase hex digit.
+func hexNibble(c byte) (byte, bool) {
+	switch {
+	case c >= '0' && c <= '9':
+		return c - '0', true
+	case c >= 'a' && c <= 'f':
+		return c - 'a' + 10, true
+	default:
+		return 0, false
+	}
+}
+
 func encodeKey(key [32]byte) string {
-	return hex.EncodeToString(key[:])
+	const hexDigits = "0123456789abcdef"
+
+	out := make([]byte, 64)
+	for i := 0; i < 32; i++ {
+		out[2*i] = hexDigits[key[i]>>4]
+		out[2*i+1] = hexDigits[key[i]&0x0f]
+	}
+
+	return string(out)
+}
+
+// beginOp registers a public operation; it reports false once the
+// store is closed. The gate makes registration race-free against
+// Close: either the operation registers before the shutdown flip is
+// observed (and Close waits for it), or it observes the flip and is
+// rejected without ever touching the counter.
+func (s *Store) beginOp() bool {
+	s.gate.RLock()
+	defer s.gate.RUnlock()
+
+	if s.closed.Load() {
+		return false
+	}
+
+	s.ops.Add(1)
+
+	return true
+}
+
+func (s *Store) endOp() {
+	s.ops.Done()
 }
 
 // Get returns the live value for a key. Values are decoded on demand;
-// nothing is loaded except the requested record.
+// nothing is loaded except the requested record. The returned buffer
+// is owned by the caller.
 func (s *Store) Get(key string) ([]byte, error) {
 	bin, err := decodeKey(key)
 	if err != nil {
 		return nil, err
 	}
 
-	if s.closed.Load() {
+	if !s.beginOp() {
 		return nil, ErrClosed
 	}
 
+	defer s.endOp()
+
+	// The read lock is held through the chunk read: compaction swaps
+	// index entries under the write lock, so a location observed under
+	// RLock stays valid until the read completes.
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	return s.get(bin)
 }
 
+// get serves one lookup; callers hold s.mu (read or write).
 func (s *Store) get(bin [32]byte) ([]byte, error) {
-	if value, ok := s.memtable[bin]; ok {
-		if value == nil {
+	if value, state := s.lookupLevels(bin); state != levelAbsent {
+		if state == levelTombstone {
 			return nil, ErrNotFound
 		}
 
+		// Defensive copy: the table's buffer stays owned by the table.
 		return append([]byte(nil), value...), nil
 	}
 
@@ -278,6 +407,50 @@ func (s *Store) get(bin [32]byte) ([]byte, error) {
 	return s.readRecord(position)
 }
 
+// levelState classifies the newest memtable state of a key.
+type levelState int
+
+const (
+	levelAbsent levelState = iota
+	levelLive
+	levelTombstone
+)
+
+// lookupLevels finds the newest memtable state for bin: the active
+// table first, then frozen tables from newest to oldest. Callers hold
+// s.mu.
+func (s *Store) lookupLevels(bin [32]byte) ([]byte, levelState) {
+	if value, ok := s.active.entries[bin]; ok {
+		if value == nil {
+			return nil, levelTombstone
+		}
+
+		return value, levelLive
+	}
+
+	for i := len(s.frozen) - 1; i >= 0; i-- {
+		if value, ok := s.frozen[i].table.entries[bin]; ok {
+			if value == nil {
+				return nil, levelTombstone
+			}
+
+			return value, levelLive
+		}
+	}
+
+	if s.flushing != nil {
+		if value, ok := s.flushing.table.entries[bin]; ok {
+			if value == nil {
+				return nil, levelTombstone
+			}
+
+			return value, levelLive
+		}
+	}
+
+	return nil, levelAbsent
+}
+
 // Has reports whether a key is live.
 func (s *Store) Has(key string) bool {
 	bin, err := decodeKey(key)
@@ -285,11 +458,22 @@ func (s *Store) Has(key string) bool {
 		return false
 	}
 
+	if !s.beginOp() {
+		return false
+	}
+
+	defer s.endOp()
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	if value, ok := s.memtable[bin]; ok {
-		return value != nil
+	return s.isLive(bin)
+}
+
+// isLive reports whether bin has a live record; callers hold s.mu.
+func (s *Store) isLive(bin [32]byte) bool {
+	if _, state := s.lookupLevels(bin); state != levelAbsent {
+		return state == levelLive
 	}
 
 	_, ok := s.index[bin]
@@ -298,10 +482,16 @@ func (s *Store) Has(key string) bool {
 }
 
 // Count returns the number of live records, including unflushed ones.
-// It is derived from the index and memtable so it can never drift:
-// deletes remove index entries immediately and resurrections are
-// visible in the memtable.
+// It is derived from the index and memtable levels so it can never
+// drift: deletes remove index entries immediately and resurrections
+// are visible in the memtable.
 func (s *Store) Count() int {
+	if !s.beginOp() {
+		return 0
+	}
+
+	defer s.endOp()
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -312,81 +502,148 @@ func (s *Store) Count() int {
 func (s *Store) derivedCount() int {
 	total := len(s.index)
 
-	for bin, value := range s.memtable {
-		if value == nil {
-			continue
-		}
+	// Walk levels newest → oldest; the first level mentioning a key
+	// decides its fate, and `seen` stops older duplicates.
+	seen := make(map[[32]byte]struct{}, len(s.active.entries))
 
-		if _, inIndex := s.index[bin]; !inIndex {
-			total++
+	check := func(table *memtable) {
+		for bin, value := range table.entries {
+			if _, dup := seen[bin]; dup {
+				continue
+			}
+
+			seen[bin] = struct{}{}
+
+			if value == nil {
+				if _, inIndex := s.index[bin]; inIndex {
+					total--
+				}
+			} else if _, inIndex := s.index[bin]; !inIndex {
+				total++
+			}
 		}
 	}
+
+	if s.flushing != nil {
+		check(s.flushing.table)
+	}
+
+	for i := len(s.frozen) - 1; i >= 0; i-- {
+		check(s.frozen[i].table)
+	}
+
+	check(s.active)
 
 	return total
 }
 
-// Upsert stages one record. The write is journaled immediately and
-// applied to the memtable; it becomes durable on the next Flush.
+// Upsert stages one record. The write is journaled (and fsynced)
+// immediately; it becomes a chunk on the next flush.
 func (s *Store) Upsert(key string, value []byte) error {
 	return s.UpsertBatch([]Pair{{Key: key, Value: value}})
 }
 
-// UpsertBatch stages a batch of records atomically: the whole batch is
-// journaled with one fsync before being applied.
+// UpsertBatch stages a batch of records atomically: the whole batch
+// is journaled with one write and one fsync before any of it is
+// applied to the memtable. Keys are decoded once; the write lock is
+// acquired once. When too many frozen tables are pending, the caller
+// is throttled until the background flush worker drains room.
 func (s *Store) UpsertBatch(pairs []Pair) error {
 	if len(pairs) == 0 {
 		return nil
 	}
 
-	if s.closed.Load() {
+	if !s.beginOp() {
 		return ErrClosed
 	}
 
-	binaries := make(map[string][32]byte, len(pairs))
+	defer s.endOp()
 
-	for _, pair := range pairs {
-		if len(pair.Value) == 0 {
+	records := make([]journalRecord, 0, len(pairs))
+
+	for i := range pairs {
+		if len(pairs[i].Value) == 0 {
 			return ErrEmptyValue
 		}
 
-		bin, err := decodeKey(pair.Key)
+		bin, err := decodeKey(pairs[i].Key)
 		if err != nil {
 			return err
 		}
 
-		binaries[pair.Key] = bin
-	}
-
-	records := make([]journalRecord, 0, len(pairs))
-
-	for _, pair := range pairs {
 		records = append(records, journalRecord{
 			Op:    opUpsert,
-			Key:   binaries[pair.Key],
-			Value: pair.Value,
+			Key:   bin,
+			Value: pairs[i].Value,
 		})
 	}
 
-	if err := s.wal.Append(records); err != nil {
+	return s.writeRecords(records)
+}
+
+// writeRecords journals and applies one batch. records must be
+// pre-validated.
+func (s *Store) writeRecords(records []journalRecord) error {
+	s.writeMu.Lock()
+
+	lastLSN, err := s.wal.Append(records)
+	if err != nil {
+		s.writeMu.Unlock()
+
 		return err
 	}
 
+	var throttle bool
+
 	s.mu.Lock()
 
-	for _, pair := range pairs {
-		bin := binaries[pair.Key]
-
-		s.applyUpsert(bin, pair.Value)
+	for i := range records {
+		s.applyUpsert(records[i].Key, records[i].Value)
 	}
 
-	memBytes := s.memBytes
-	s.mu.Unlock()
+	if lastLSN > s.lsn {
+		s.lsn = lastLSN
+	}
 
-	if s.memtablePressure(memBytes, len(pairs)) {
-		return s.Flush()
+	if s.memtablePressureLocked() {
+		s.freezeLocked()
+	}
+
+	if s.pendingTables() >= defaultMaxFrozen {
+		throttle = true
+	}
+
+	s.mu.Unlock()
+	s.writeMu.Unlock()
+
+	// Explicit backpressure: the store never buffers more than
+	// maxFrozen pending tables in memory. (Standard condition-variable
+	// idiom: Lock once, Wait inside the predicate loop — Wait returns
+	// holding the lock, so the predicate must be re-checked, never
+	// re-locked.)
+	if throttle {
+		s.mu.Lock()
+
+		for s.pendingTables() >= defaultMaxFrozen {
+			s.flushCond.Wait()
+		}
+
+		s.mu.Unlock()
 	}
 
 	return nil
+}
+
+// pendingTables counts frozen tables plus the one being flushed.
+// Callers hold s.mu.
+func (s *Store) pendingTables() int {
+	pending := len(s.frozen)
+
+	if s.flushing != nil {
+		pending++
+	}
+
+	return pending
 }
 
 // Delete tombstones a key. Physical space is reclaimed by compaction.
@@ -396,9 +653,11 @@ func (s *Store) Delete(key string) error {
 		return err
 	}
 
-	if s.closed.Load() {
+	if !s.beginOp() {
 		return ErrClosed
 	}
+
+	defer s.endOp()
 
 	s.mu.RLock()
 	live := s.isLive(bin)
@@ -408,10 +667,12 @@ func (s *Store) Delete(key string) error {
 		return nil
 	}
 
-	if err := s.wal.Append([]journalRecord{{
-		Op:  opDelete,
-		Key: bin,
-	}}); err != nil {
+	s.writeMu.Lock()
+
+	_, err = s.wal.Append([]journalRecord{{Op: opDelete, Key: bin}})
+	if err != nil {
+		s.writeMu.Unlock()
+
 		return err
 	}
 
@@ -419,72 +680,72 @@ func (s *Store) Delete(key string) error {
 	s.applyDelete(bin)
 	s.mu.Unlock()
 
+	s.writeMu.Unlock()
+
 	return nil
 }
 
-func (s *Store) isLive(bin [32]byte) bool {
-	if value, ok := s.memtable[bin]; ok {
-		return value != nil
-	}
-
-	_, ok := s.index[bin]
-
-	return ok
-}
-
-// applyUpsert mutates in-memory state; callers hold s.mu.
-// The live count is derived (see derivedCount), so only dead-record
-// accounting is maintained here.
+// applyUpsert mutates in-memory state; callers hold s.mu AND the
+// write mutex (via writeRecords / applyReplay during open).
 func (s *Store) applyUpsert(bin [32]byte, value []byte) {
-	if existing, ok := s.memtable[bin]; ok {
-		if existing != nil {
-			s.memBytes -= int64(len(existing))
-		}
-
-		s.memtable[bin] = append([]byte(nil), value...)
-		s.memBytes += int64(len(value))
+	if _, state := s.lookupLevels(bin); state != levelAbsent {
+		// The key already has a pending state; the newest write simply
+		// replaces it in the active table. Dead-record accounting for
+		// the flushed copy was done when the FIRST pending state was
+		// created.
+		s.active.put(bin, value)
 
 		return
 	}
 
+	// First pending state for this key: a flushed copy (if any)
+	// becomes dead once this value flushes on top of it.
 	if position, ok := s.index[bin]; ok {
-		// Overriding a flushed record: the old copy becomes dead.
-		if meta, ok := s.chunksMap[position.chunk]; ok && meta.Live > 0 {
+		if meta, metaOK := s.chunksMap[position.chunk]; metaOK && meta.Live > 0 {
 			meta.Live--
 			s.deadRecs++
 		}
 	}
 
-	s.memtable[bin] = append([]byte(nil), value...)
-	s.memBytes += int64(len(value))
+	s.active.put(bin, value)
 }
 
-// applyDelete mutates in-memory state; callers hold s.mu.
+// applyDelete mutates in-memory state; callers hold s.mu. The index
+// entry is removed immediately so the delete survives a flush of the
+// tombstone (the tombstone itself is then dropped by the flush).
 func (s *Store) applyDelete(bin [32]byte) {
-	if existing, ok := s.memtable[bin]; ok {
-		if existing == nil {
-			return // already tombstoned
+	if _, state := s.lookupLevels(bin); state != levelAbsent {
+		// Pending state exists: the flushed copy (if any) became dead
+		// when the pending upsert was applied; remove the index entry
+		// so nothing resurrects after the tombstone flushes.
+		if position, ok := s.index[bin]; ok {
+			if meta, metaOK := s.chunksMap[position.chunk]; metaOK && meta.Live > 0 {
+				meta.Live--
+				s.deadRecs++
+			}
+
+			delete(s.index, bin)
 		}
 
-		s.memBytes -= int64(len(existing))
-		s.memtable[bin] = nil
+		s.active.tombstone(bin)
 
 		return
 	}
 
 	if position, ok := s.index[bin]; ok {
-		if meta, ok := s.chunksMap[position.chunk]; ok && meta.Live > 0 {
+		if meta, metaOK := s.chunksMap[position.chunk]; metaOK && meta.Live > 0 {
 			meta.Live--
 			s.deadRecs++
 		}
 
 		delete(s.index, bin)
-		s.memtable[bin] = nil
+
+		s.active.tombstone(bin)
 	}
 }
 
 // applyReplay re-applies a journal record during startup.
-func (s *Store) applyReplay(op walOp, bin [32]byte, value []byte) error {
+func (s *Store) applyReplay(op walOp, bin [32]byte, value []byte, lsn uint64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -496,141 +757,306 @@ func (s *Store) applyReplay(op walOp, bin [32]byte, value []byte) error {
 		s.applyDelete(bin)
 	}
 
-	s.lsn++
+	if lsn > s.lsn {
+		s.lsn = lsn
+	}
 
 	return nil
 }
 
-func (s *Store) memtablePressure(bytes int64, _ int) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	_ = bytes
-
-	return len(s.memtable) >= s.opts.MemtableRecords ||
-		s.memBytes >= s.opts.MemtableBytes
+// memtablePressureLocked reports whether the active table should be
+// frozen. Callers hold s.mu.
+func (s *Store) memtablePressureLocked() bool {
+	return s.active.len() >= s.opts.MemtableRecords ||
+		s.active.bytes >= int64(s.opts.MemtableBytes)
 }
 
-// Flush writes the memtable delta as a new chunk, updates the index
-// and registry, and checkpoints the journal. It never rewrites
-// unaffected data.
+// freezeLocked moves the active table into the flush queue.
+// Callers hold s.mu (and normally the write mutex).
+func (s *Store) freezeLocked() {
+	if s.active.len() == 0 {
+		return
+	}
+
+	s.frozen = append(s.frozen, &frozenTable{
+		table: s.active,
+		lsn:   s.lsn,
+	})
+
+	s.active = newMemtable()
+	s.wakeFlusher()
+}
+
+// wakeFlusher nudges the background worker without blocking.
+func (s *Store) wakeFlusher() {
+	select {
+	case s.flushWake <- struct{}{}:
+	default:
+	}
+}
+
+// Flush durably persists all pending state: the active table is
+// frozen and every queued table is written to chunks, after which the
+// WAL is checkpointed. It returns when the store is fully drained.
 func (s *Store) Flush() error {
-	if s.closed.Load() {
+	if !s.beginOp() {
 		return ErrClosed
 	}
 
-	return s.flushInternal()
-}
+	defer s.endOp()
 
-// flushInternal performs the flush without re-checking the closed
-// flag; Close relies on this to persist final state.
-func (s *Store) flushInternal() error {
-	s.flushing.Lock()
-	defer s.flushing.Unlock()
+	s.writeMu.Lock()
+
+	s.mu.Lock()
+	s.freezeLocked()
+	s.mu.Unlock()
+
+	s.writeMu.Unlock()
 
 	s.mu.Lock()
 
-	if len(s.memtable) == 0 {
-		// Nothing pending; still checkpoint the journal so the LSN
-		// accounting stays tight.
-		lsn := s.wal.CurrentLSN()
-		s.lsn = lsn
-		s.mu.Unlock()
+	for s.pendingTables() > 0 {
+		if s.flushErr != nil && s.stopping.Load() {
+			err := s.flushErr
+			s.mu.Unlock()
 
-		return s.wal.Checkpoint()
+			return err
+		}
+
+		s.flushCond.Wait()
 	}
 
-	keys := make([][32]byte, 0, len(s.memtable))
+	err := s.flushErr
+	s.mu.Unlock()
 
-	for bin := range s.memtable {
-		keys = append(keys, bin)
+	return err
+}
+
+// chunkPath is the filesystem location of one chunk.
+func (s *Store) chunkPath(seq uint32) string {
+	return filepath.Join(s.chunkDir,
+		fmt.Sprintf("%06d%s", seq, chunks.FileExt))
+}
+
+// readRecord reads one record by index position through a pinned
+// chunk handle. Callers must either hold s.mu (Get) or be registered
+// as a scan (Iterate) so compaction cannot remove the file mid-read.
+func (s *Store) readRecord(position loc) ([]byte, error) {
+	handle, err := s.files.acquire(position.chunk)
+	if err != nil {
+		return nil, err
 	}
 
-	sort.Slice(keys, func(i, j int) bool {
-		return lessKey(keys[i], keys[j])
+	defer s.files.release(position.chunk)
+
+	return readRecordAt(handle, position.offset)
+}
+
+// readRecordAt decodes one length-prefixed record at offset using
+// positional reads; no other record of the chunk is touched.
+func readRecordAt(handle readerAt, offset int64) ([]byte, error) {
+	var prefix [4]byte
+
+	if _, err := handle.ReadAt(prefix[:], offset); err != nil {
+		return nil, firerrors.Wrap(err, firerrors.KindCorruptData,
+			Subsystem, "read", "record length at offset %d", offset)
+	}
+
+	length := binaryUint32(prefix)
+
+	if length < 32 || length > chunks.MaxRecordBytes {
+		return nil, firerrors.New(firerrors.KindCorruptData,
+			Subsystem, "read", "record length %d out of range", length)
+	}
+
+	body := make([]byte, length)
+
+	if _, err := handle.ReadAt(body, offset+4); err != nil {
+		return nil, firerrors.Wrap(err, firerrors.KindCorruptData,
+			Subsystem, "read", "record body at offset %d", offset)
+	}
+
+	return body[32:], nil
+}
+
+// readerAt abstracts *os.File for tests.
+type readerAt interface {
+	ReadAt(p []byte, off int64) (int, error)
+}
+
+// binaryUint32 decodes a little-endian uint32.
+func binaryUint32(buf [4]byte) uint32 {
+	return uint32(buf[0]) | uint32(buf[1])<<8 |
+		uint32(buf[2])<<16 | uint32(buf[3])<<24
+}
+
+// Close flushes pending writes and releases every resource the store
+// owns. It is idempotent, rejects nothing silently and guarantees that
+// no file descriptor remains open when it returns: the store directory
+// can be deleted immediately afterwards on every platform.
+func (s *Store) Close() error {
+	if s.closed.Swap(true) {
+		return nil
+	}
+
+	s.stopping.Store(true)
+
+	// 1. Exclude new operations and drain in-flight ones. Acquiring the
+	// gate write lock guarantees no beginOp critical section is still
+	// running, so ops.Wait cannot race an Add.
+	s.gate.Lock()
+	s.ops.Wait()
+	s.gate.Unlock()
+
+	// 2. Freeze whatever is left so the worker flushes it.
+	s.writeMu.Lock()
+
+	s.mu.Lock()
+	s.freezeLocked()
+	s.mu.Unlock()
+
+	s.writeMu.Unlock()
+
+	// 3. Stop the worker; it drains the remaining queue first.
+	close(s.flushStop)
+	s.flushWG.Wait()
+
+	// 4. Close the journal (final sync + close).
+	walErr := s.wal.Close()
+
+	// 5. Close every cached chunk handle.
+	filesErr := s.files.closeAll()
+
+	s.mu.Lock()
+	s.status = "closed"
+	flushErr := s.flushErr
+	s.mu.Unlock()
+
+	return errors.Join(flushErr, walErr, filesErr)
+}
+
+// Iterate walks every live record in key order. It never
+// materialises the dataset: index entries are captured as 40-byte
+// references and pending values as immutable slice headers; chunk
+// records are streamed through pinned handles. The callback receives
+// key strings and a value buffer owned by the snapshot (do not retain
+// or mutate it).
+func (s *Store) Iterate(
+	ctx context.Context,
+	fn func(key string, value []byte) error,
+) error {
+	if !s.beginOp() {
+		return ErrClosed
+	}
+
+	defer s.endOp()
+
+	// Register as a scan BEFORE snapshotting: compaction removes
+	// victim files only when no scan is active, and a scan registered
+	// before the compaction swap is guaranteed to complete first.
+	s.scans.Add(1)
+	defer s.scans.Done()
+
+	snapshot, err := s.iterSnapshot()
+	if err != nil {
+		return err
+	}
+
+	sort.Slice(snapshot, func(i, j int) bool {
+		return lessKey(snapshot[i].key, snapshot[j].key)
 	})
 
-	records := make([][]byte, 0, len(keys))
-	offsets := make([]int64, 0, len(keys))
-	liveKeys := make([][32]byte, 0, len(keys))
+	for i := range snapshot {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 
-	var offset int64 = chunks.HeaderSize
+		entry := &snapshot[i]
 
-	for _, bin := range keys {
-		value, ok := s.memtable[bin]
-		if !ok || value == nil {
+		if entry.memState == levelTombstone {
 			continue
 		}
 
-		record := make([]byte, 32+len(value))
+		if entry.memState == levelLive {
+			if err := fn(encodeKey(entry.key), entry.memValue); err != nil {
+				return err
+			}
 
-		copy(record[:32], bin[:])
-		copy(record[32:], value)
+			continue
+		}
 
-		records = append(records, record)
-		offsets = append(offsets, offset)
-		liveKeys = append(liveKeys, bin)
-
-		offset += int64(4 + len(record))
-	}
-
-	s.mu.Unlock()
-
-	if len(records) > 0 {
-		seq := s.nextSequence()
-
-		path := s.chunkPath(seq)
-
-		meta, err := chunks.WriteChunk(path, records, 0)
+		value, err := s.readRecord(entry.position)
 		if err != nil {
 			return err
 		}
 
-		s.mu.Lock()
-
-		s.chunksMap[seq] = &chunkMeta{
-			Sequence: seq,
-			Records:  meta.Records,
-			Live:     meta.Records,
-			Bytes:    int64(meta.Bytes),
-			Checksum: meta.Checksum,
-			Created:  time.Now().UTC().UnixMilli(),
+		if err := fn(encodeKey(entry.key), value); err != nil {
+			return err
 		}
-
-		for i, bin := range liveKeys {
-			s.index[bin] = loc{chunk: seq, offset: offsets[i]}
-		}
-
-		s.mu.Unlock()
 	}
 
-	// Clear applied entries from the memtable.
-	s.mu.Lock()
+	return nil
+}
 
-	for _, bin := range keys {
-		if value, ok := s.memtable[bin]; ok {
-			if value != nil {
-				s.memBytes -= int64(len(value))
+// iterEntry is one merged snapshot row.
+type iterEntry struct {
+	key      [32]byte
+	position loc
+	memState levelState
+	memValue []byte // immutable; owned by the memtable level
+}
+
+// iterSnapshot captures the merged view (index + memtable levels)
+// under one read lock. Values from memtable levels are immutable
+// buffers, so their slice headers stay valid after the lock is
+// released.
+func (s *Store) iterSnapshot() ([]iterEntry, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	merged := make(map[[32]byte]*iterEntry,
+		len(s.index)+len(s.active.entries))
+
+	for bin, position := range s.index {
+		merged[bin] = &iterEntry{key: bin, position: position}
+	}
+
+	// Oldest level first so newer levels overwrite older state.
+	setState := func(table *memtable) {
+		for bin, value := range table.entries {
+			entry, ok := merged[bin]
+			if !ok {
+				entry = &iterEntry{key: bin}
+				merged[bin] = entry
 			}
 
-			delete(s.memtable, bin)
+			if value == nil {
+				entry.memState = levelTombstone
+				entry.memValue = nil
+			} else {
+				entry.memState = levelLive
+				entry.memValue = value
+			}
 		}
 	}
 
-	lsn := s.wal.CurrentLSN()
-	s.lsn = lsn
-
-	s.mu.Unlock()
-
-	if err := s.persistIndex(); err != nil {
-		return err
+	for i := 0; i < len(s.frozen); i++ {
+		setState(s.frozen[i].table)
 	}
 
-	if err := s.persistMeta(); err != nil {
-		return err
+	if s.flushing != nil {
+		setState(s.flushing.table)
 	}
 
-	return s.wal.Checkpoint()
+	setState(s.active)
+
+	out := make([]iterEntry, 0, len(merged))
+
+	for _, entry := range merged {
+		out = append(out, *entry)
+	}
+
+	return out, nil
 }
 
 func lessKey(a, b [32]byte) bool {
@@ -641,205 +1067,4 @@ func lessKey(a, b [32]byte) bool {
 	}
 
 	return false
-}
-
-func (s *Store) nextSequence() uint32 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.nextSeq++
-
-	return s.nextSeq
-}
-
-func (s *Store) chunkPath(seq uint32) string {
-	return filepath.Join(s.chunkDir,
-		fmt.Sprintf("%06d%s", seq, chunks.FileExt))
-}
-
-// readRecord reads one record by index position. The chunk file is
-// opened once, cached, and verified on first load.
-func (s *Store) readRecord(position loc) ([]byte, error) {
-	handle, err := s.chunkHandle(position.chunk)
-	if err != nil {
-		return nil, err
-	}
-
-	var prefix [4]byte
-
-	if _, err := handle.ReadAt(prefix[:], position.offset); err != nil {
-		return nil, firerrors.Wrap(err, firerrors.KindCorruptData,
-			Subsystem, "read", "record length at offset %d",
-			position.offset)
-	}
-
-	length := binary.LittleEndian.Uint32(prefix[:])
-
-	if length < 32 || length > chunks.MaxRecordBytes {
-		return nil, firerrors.New(firerrors.KindCorruptData,
-			Subsystem, "read", "record length %d out of range", length)
-	}
-
-	body := make([]byte, length)
-
-	if _, err := handle.ReadAt(body, position.offset+4); err != nil {
-		return nil, firerrors.Wrap(err, firerrors.KindCorruptData,
-			Subsystem, "read", "record body at offset %d",
-			position.offset)
-	}
-
-	return body[32:], nil
-}
-
-// chunkHandle returns a verified open handle for a chunk, using a
-// bounded LRU of open files.
-func (s *Store) chunkHandle(seq uint32) (*os.File, error) {
-	if cached, ok := s.openLRU.Get(fmt.Sprint(seq), 0); ok {
-		return cached.(*os.File), nil
-	}
-
-	path := s.chunkPath(seq)
-
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, firerrors.Wrap(err, firerrors.KindEnvironment,
-			Subsystem, "read", "open chunk %d", seq)
-	}
-
-	s.openLRU.Put(fmt.Sprint(seq), file, 0)
-
-	return file, nil
-}
-
-// Close flushes pending writes and releases resources.
-func (s *Store) Close() error {
-	if s.closed.Swap(true) {
-		return nil
-	}
-
-	s.mu.Lock()
-	s.status = "closed"
-	s.mu.Unlock()
-
-	// Close must flush even though new operations are rejected from
-	// now on; flushInternal bypasses the closed check.
-	if err := s.flushInternal(); err != nil {
-		return err
-	}
-
-	return s.wal.Close()
-}
-
-// Iterate walks every live record in key order. It reads chunks
-// sequentially without materialising the whole dataset in memory.
-func (s *Store) Iterate(
-	ctx context.Context,
-	fn func(key string, value []byte) error,
-) error {
-	if s.closed.Load() {
-		return ErrClosed
-	}
-
-	s.mu.RLock()
-
-	type ref struct {
-		key      [32]byte
-		position loc
-	}
-
-	refs := make([]ref, 0, len(s.index))
-
-	for bin, position := range s.index {
-		refs = append(refs, ref{key: bin, position: position})
-	}
-
-	// Memtable keys that were never flushed are not in the index;
-	// they must be part of the iteration too.
-	memOnly := make([][32]byte, 0)
-
-	for bin, value := range s.memtable {
-		if value == nil {
-			continue
-		}
-
-		if _, inIndex := s.index[bin]; !inIndex {
-			memOnly = append(memOnly, bin)
-		}
-	}
-
-	s.mu.RUnlock()
-
-	allKeys := make([][32]byte, 0, len(refs)+len(memOnly))
-
-	for _, r := range refs {
-		allKeys = append(allKeys, r.key)
-	}
-
-	allKeys = append(allKeys, memOnly...)
-
-	sort.Slice(allKeys, func(i, j int) bool {
-		return lessKey(allKeys[i], allKeys[j])
-	})
-
-	positionByChunk := make(map[[32]byte]loc, len(refs))
-
-	for _, r := range refs {
-		positionByChunk[r.key] = r.position
-	}
-
-	for _, bin := range allKeys {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-
-		s.mu.RLock()
-
-		// Memtable wins over flushed state.
-		if value, ok := s.memtable[bin]; ok {
-			if value == nil {
-				s.mu.RUnlock()
-
-				continue
-			}
-
-			err := fn(encodeKey(bin), value)
-
-			s.mu.RUnlock()
-
-			if err != nil {
-				return err
-			}
-
-			continue
-		}
-
-		position, inIndex := positionByChunk[bin]
-
-		s.mu.RUnlock()
-
-		if !inIndex {
-			continue
-		}
-
-		value, err := s.readRecord(position)
-		if errors.Is(err, ErrNotFound) {
-			continue
-		}
-
-		if err != nil {
-			return err
-		}
-
-		if err := fn(encodeKey(bin), value); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// derivedCountLocked is the lock-held form of derivedCount for use
-// outside the store package internals (meta/compaction snapshots).
-func derivedCountLocked(s *Store) int {
-	return s.derivedCount()
 }
