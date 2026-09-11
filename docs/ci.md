@@ -1,8 +1,13 @@
 # FreeIran CI Architecture
 
-Three workflows under `.github/workflows/`, all using Node 24 based
-GitHub Actions majors. Every step is a real gate: no `|| true`, no
-allow-failure annotations, no skipped packages.
+Three workflows under `.github/workflows/`, all using current
+(v7/v8-era) GitHub Action majors with Node 22 runners. Every step is a
+real gate: no `|| true`, no allow-failure annotations, no skipped
+packages. Workflow files must contain NO duplicate YAML mapping keys
+(a duplicate key makes the entire file invalid — the v0.3.0/v0.4.0
+`ci.yml` declared two `env:` blocks on one step, so every run failed
+instantly with zero jobs started); `scripts` and reviewers treat that
+class of defect as a hard failure.
 
 ## ci.yml — continuous integration (push/PR to main)
 
@@ -47,6 +52,15 @@ the smoke suites: each core's own config validator
 generated document, and a full startup cycle (spawn → local listener
 ready → shutdown → cleanup) executes for every supported protocol
 combination.
+
+The pinned SHA-256 values are the hashes of the official release
+archives exactly as published (v2fly/v2ray-core v5.53.0,
+XTLS/Xray-core v26.3.27, SagerNet/sing-box v1.14.0, all linux-64
+assets). The v0.4.0 workflow pinned three INCORRECT checksums, which
+would have failed the `sha256sum -c` gate on every run; they were
+re-verified against the downloaded official assets and corrected in
+v0.4.1. When a core pin is upgraded, the new checksum MUST be taken
+from an actually downloaded archive (never transcribed from memory).
 
 No public proxy server is ever contacted: the smoke tests exercise
 config acceptance and the local runtime lifecycle only, so CI

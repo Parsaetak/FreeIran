@@ -1917,3 +1917,52 @@ lifecycle test suites to SKIP silently — "ok" without coverage):
 These are exactly the class of defect the §55 clean-room requirement
 exists to catch: working-tree verification alone reported false
 confidence.
+
+---
+
+## v0.4.1 — CI Failure Repair + Full Functionality Re-verification
+
+**Base:** e661a28 (v0.4.0). **Failing run:** CI 34546093190
+(completed with ZERO jobs in 0 seconds — workflow rejected before
+scheduling). **Security run:** 34546094410 (green).
+
+### Root causes
+
+1. **Invalid workflow YAML**: the windows job's "Build desktop
+   application" step declared two `env:` mappings (before and after
+   `run:`). Duplicate mapping keys make the entire workflow file
+   invalid → GitHub creates the run, fails it instantly, starts no
+   jobs. Both v0.3.0 (e6defe2) and v0.4.0 (e661a28) carried this
+   defect, so the complete CI matrix never executed for either
+   release. Fix: single merged `env:` block.
+2. **Three wrong pinned core checksums** in the protocol-cores job
+   (masked by #1): v2ray/xray/sing-box release-archive pins did not
+   match the official assets. Fix: pins re-taken from
+   downloaded-and-version-verified official archives:
+   v2ray `6bbb8aee…`, xray `23cd9af9…`, sing-box `2375de69…`.
+3. **Hard-coded version stamp** (`0.4.0-ci`) in the windows build
+   step — replaced by reading `VERSION` (single source of truth).
+
+### Version
+
+0.4.0 → **0.4.1** (patch: verification-pipeline repair; no
+application-behaviour change). Updated: VERSION,
+internal/version/version.go, frontend/package.json, README.md,
+docs/ci.md (also fixes "Node 24" → "Node 22" runner description and
+documents the duplicate-key + checksum policies).
+
+### Verification performed (all from a clean extracted tree)
+
+- gofmt / go vet (linux + GOOS=windows) / go build — clean
+- go test -count=1 and -race, all 19 engine/system/internal packages — pass
+- go test -count=3 flakiness sweep — zero failures
+- Full-suite windows/amd64 compile (`go test -run '^$' GOOS=windows`) — compiles
+- Windows desktop build (trimpath, ldflags 0.4.1) — 17.8 MB exe
+- make -C native test; native_accel build + CGO tests + benchmark — pass
+- Frontend npm ci / typecheck / vitest 12/12 / vite build — pass
+- Real-binary smoke (checksum-verified pinned cores): V2Ray 7/7,
+  Xray 9/9, sing-box 10/10 — pass
+- govulncheck (linux engine, windows-target cmd) — clean; pattern
+  scans (sh -c, hardcoded credentials) — clean
+- Wails binding contract: 30/30 method IDs FNV-verified against Go
+- Strict duplicate-key YAML validation for all three workflows — pass

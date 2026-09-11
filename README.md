@@ -8,7 +8,7 @@ proxy/VPN configurations.
 **Project:** FreeIran
 **Architect:** Parsa Tak / SHEYTAN
 **Repository:** https://github.com/Parsaetak/FreeIran
-**Current version:** 0.4.0 (see `VERSION`)
+**Current version:** 0.4.1 (see `VERSION`)
 **Status:** production architecture — multi-core protocol runtime with chunked local storage
 
 ---
@@ -84,7 +84,7 @@ Details: [docs/architecture.md](docs/architecture.md),
 
 ---
 
-## Key Features (v0.4.0)
+## Key Features (v0.4.x)
 
 - **Chunked local storage** — checksummed immutable chunk files with a
   binary fingerprint index, segmented write-ahead journal, incremental
@@ -253,7 +253,7 @@ FreeIran/
 ├── .github/workflows/     CI, release and security pipelines
 ├── docs/                  Architecture, storage format, performance,
 │                          CI and security docs
-├── VERSION                Application version (0.4.0)
+├── VERSION                Application version (0.4.1)
 └── worklog.md             Engineering worklog
 ```
 
