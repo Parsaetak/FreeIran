@@ -46,6 +46,7 @@ func main() {
 			application.NewService(app.NewDataService(applicationInstance)),
 			application.NewService(app.NewStorageService(applicationInstance)),
 			application.NewService(app.NewDiagnosticsService(applicationInstance)),
+			application.NewService(app.NewConnectionService(applicationInstance)),
 		},
 		Assets: application.AssetOptions{
 			Handler: application.BundledAssetFileServer(assets),
@@ -54,6 +55,10 @@ func main() {
 
 	// Push state transitions to the UI so it never needs polling.
 	startStateBroadcaster(wailsApp, applicationInstance)
+
+	// Push connection state machine transitions (core identity,
+	// lifecycle state, latency) on the same event-driven model.
+	startConnectionBroadcaster(wailsApp, applicationInstance)
 
 	// WindowCentered is the default start position; no override needed.
 	wailsApp.Window.NewWithOptions(application.WebviewWindowOptions{
@@ -73,6 +78,41 @@ func main() {
 	if err := wailsApp.Run(); err != nil {
 		log.Fatalf("run failed: %v", err)
 	}
+}
+
+// startConnectionBroadcaster emits the connection state machine
+// snapshot periodically. The loop terminates with the application
+// context; like the state broadcaster it pushes instead of letting
+// the UI poll.
+func startConnectionBroadcaster(
+	wailsApp *application.App,
+	applicationInstance *app.App,
+) {
+	broadcast := func() {
+		wailsApp.Event.Emit("freeiran:connection",
+			app.NewConnectionService(applicationInstance).ConnectionState())
+	}
+
+	go func() {
+		time.Sleep(700 * time.Millisecond)
+		broadcast()
+	}()
+
+	go func() {
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+
+		ctx := applicationInstance.Context()
+
+		for {
+			select {
+			case <-ticker.C:
+				broadcast()
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 }
 
 // startStateBroadcaster emits the application state periodically so

@@ -8,8 +8,8 @@ proxy/VPN configurations.
 **Project:** FreeIran
 **Architect:** Parsa Tak / SHEYTAN
 **Repository:** https://github.com/Parsaetak/FreeIran
-**Current version:** 0.3.0 (see `VERSION`)
-**Status:** production architecture — desktop application with chunked local storage
+**Current version:** 0.4.0 (see `VERSION`)
+**Status:** production architecture — multi-core protocol runtime with chunked local storage
 
 ---
 
@@ -44,20 +44,31 @@ configurations.
         ┌─────────────────┼─────────────────┐
         │                 │                 │
     Data Engine       Core Manager      System Engine
-  (engine/store,     (engine/core,        (system/)
-   engine/chunks,     process mgmt)
-   engine/cache)
-        │
-   Ingestion pipeline                    C++ native layer
-   (engine/pipeline)                     (native/, engine/native)
-        │                                optional, with Go fallback
-   FETCH → PARSE → NORMALIZE →
-   VALIDATE → DEDUP → PERSIST
+  (engine/store,     (engine/core:       (system/)
+   engine/chunks,     registry, selection,
+   engine/cache)      lifecycle)             │
+        │                 │               C++ native layer
+   Ingestion pipeline    │                (native/, engine/native)
+   (engine/pipeline)     │                optional, with Go fallback
+        │                │
+   FETCH → PARSE →    Connection Manager
+   NORMALIZE →        (engine/connection:
+   VALIDATE →         state machine, fallback)
+   DEDUP → PERSIST        │
+                 ┌─────────┼─────────┐
+                 │         │         │
+              Xray Core  V2Ray Core  sing-box
+             (core/xray) (core/v2ray) (core/singbox)
+                 │         │         │
+                 └─────────┼─────────┘
+                           │
+                  local SOCKS/HTTP listener
 ```
 
 - **Go** is the primary orchestration/system language: lifecycle,
-  scheduling, concurrency, storage, sources, testing, protocol-core
-  management, and the API exposed to the UI.
+  scheduling, concurrency, storage, sources, testing, the
+  protocol-core manager (Xray / V2Ray / sing-box backends behind one
+  abstraction) and the API exposed to the UI.
 - **C++** provides a small, measurable acceleration layer (batch hashing,
   CRC-32 checksums, URL scanning) behind a stable C ABI, with bit-exact
   pure-Go fallbacks so correctness never depends on it.
@@ -73,7 +84,7 @@ Details: [docs/architecture.md](docs/architecture.md),
 
 ---
 
-## Key Features (v0.3.0)
+## Key Features (v0.4.0)
 
 - **Chunked local storage** — checksummed immutable chunk files with a
   binary fingerprint index, segmented write-ahead journal, incremental
@@ -110,10 +121,36 @@ Details: [docs/architecture.md](docs/architecture.md),
 - **Local diagnostics** — startup time, stage timings, cache hit rates,
   open file handles, flush/compaction timings, WAL size; local-only,
   never sent anywhere.
+- **Multi-core protocol runtime** — real Xray, V2Ray (V2Fly) and
+  sing-box backends behind one `Core` abstraction with verified
+  capability declarations. V2Ray is a first-class backend, never a
+  synonym for Xray: capability resolution knows that REALITY lives in
+  Xray/sing-box while classic QUIC/HTTP-2 transports live in V2Ray.
+- **Deterministic backend selection** — configurations map to
+  backends through the registry's capability model (preference →
+  priority → name ordering), with explainable selection reasons,
+  ordered fallbacks and bounded retry; no protocol decisions scattered
+  through the application.
+- **Connection lifecycle** — an explicit state machine
+  (`disconnected → selecting → preparing → starting_core →
+  waiting_for_ready → connected → disconnecting`), one active session,
+  process health separated from network health (listener readiness),
+  and core crash detection through a background monitor.
+- **Runtime security** — generated core configurations live in 0600
+  files inside 0700 temporary directories, are removed on shutdown
+  AND after failed startups, and are written only after the owning
+  process is stopped (Windows file-lock discipline). Credentials are
+  redacted from logs, errors, selection reasons and every UI surface.
+- **Core testing integration** — the tester can execute a
+  configuration through a real backend (validate → temporary core →
+  readiness → latency → deterministic teardown) with capability-first
+  candidate resolution and bounded fallback.
 - **GitHub Actions CI/CD** — tests, race detector, native tests,
   frontend typecheck/build, the full Windows test matrix (including the
-  store lifecycle), Windows desktop builds, tagged releases with
-  checksums, dependency vulnerability scanning and secret scanning.
+  store lifecycle), a dedicated protocol-cores job that installs the
+  three pinned releases (SHA-256 verified) and runs real-binary smoke
+  suites, Windows desktop builds, tagged releases with checksums,
+  dependency vulnerability scanning and secret scanning.
 
 ---
 
@@ -183,7 +220,15 @@ FreeIran/
 │   │                      eviction callbacks for owned resources)
 │   ├── chunks/            Chunking subsystem (FIRC format)
 │   ├── config/            Universal configuration model + fingerprints
-│   ├── core/              Protocol-core execution boundary (registry)
+│   ├── core/              Protocol-core execution boundary: backend
+│   │                      abstraction, capability model, registry,
+│   │                      deterministic selection, supervised process
+│   │                      lifecycle, health checks
+│   ├── core/xray/         Xray adapter (V4 dialect + REALITY/vision/XHTTP)
+│   ├── core/v2ray/        V2Ray (V2Fly) adapter + shared V4 generator
+│   ├── core/singbox/      sing-box adapter (native JSON dialect)
+│   ├── core/contract/     shared backend contract test suite
+│   ├── connection/        Connection manager + explicit state machine
 │   ├── errors/            Structured, classified errors
 │   ├── metrics/           Local performance counters
 │   ├── native/            Go↔C++ bridge (pure-Go fallbacks)
@@ -196,6 +241,7 @@ FreeIran/
 │   │                      chunk-handle cache, compaction, streaming
 │   │                      JSON v1 migration, diagnostics
 │   └── tester/            Probe interface + TCP reachability probe
+│                          + core probe (real backend execution)
 ├── frontend/              TypeScript UI (Vite + React + zustand)
 │   ├── bindings/          Generated Wails bindings
 │   └── src/               components/ pages/ state/ services/ workers/
@@ -207,7 +253,7 @@ FreeIran/
 ├── .github/workflows/     CI, release and security pipelines
 ├── docs/                  Architecture, storage format, performance,
 │                          CI and security docs
-├── VERSION                Application version (0.3.0)
+├── VERSION                Application version (0.4.0)
 └── worklog.md             Engineering worklog
 ```
 
@@ -261,8 +307,11 @@ legacy file is only renamed after full verification).
 - [x] v0.3 — Storage lifecycle rework (Windows-safe resource ownership,
       segmented WAL, background flush), streaming migration, toolchain
       policy (go1.26.8), CI/security modernization, deep diagnostics
-- [ ] v0.4 — Protocol core integration (Xray), full connect/disconnect
-- [ ] v0.5 — sing-box, Hysteria2, TUIC, WireGuard runtimes
+- [x] v0.4 — Protocol core integration: Xray + V2Ray (V2Fly) +
+      sing-box as real backends, deterministic selection, connection
+      state machine, core-based testing, real-binary CI verification
+- [ ] v0.5 — Hysteria2, TUIC, WireGuard runtimes; managed core
+      installation (verified downloads)
 - [ ] v0.6 — Source expansion, reliability statistics
 - [ ] v1.0 — Stable releases, security review, reproducible builds
 

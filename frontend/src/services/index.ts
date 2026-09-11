@@ -11,6 +11,7 @@ import * as sourceService from "../../bindings/github.com/Parsaetak/FreeIran/eng
 import * as dataService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/dataservice.js";
 import * as storageService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/storageservice.js";
 import * as diagnosticsService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/diagnosticsservice.js";
+import * as connectionService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/connectionservice.js";
 
 export {
   appService,
@@ -18,6 +19,7 @@ export {
   dataService,
   storageService,
   diagnosticsService,
+  connectionService,
 };
 
 // Generated model types (synchronized with the Go backend by the
@@ -34,6 +36,11 @@ export type StorageDiagnostics = import("../../bindings/github.com/Parsaetak/Fre
 export type IngestionStats = import("../../bindings/github.com/Parsaetak/FreeIran/engine/pipeline/models.js").Stats;
 export type SystemInfo = import("../../bindings/github.com/Parsaetak/FreeIran/system/models.js").Info;
 export type CoreBinary = import("../../bindings/github.com/Parsaetak/FreeIran/system/models.js").CoreBinary;
+export type ConnectionSnapshot = import("../../bindings/github.com/Parsaetak/FreeIran/engine/connection/models.js").Snapshot;
+export type ConnectionAttempt = import("../../bindings/github.com/Parsaetak/FreeIran/engine/connection/models.js").Attempt;
+export type BackendView = import("../../bindings/github.com/Parsaetak/FreeIran/engine/app/models.js").BackendView;
+export type ConfigDetail = import("../../bindings/github.com/Parsaetak/FreeIran/engine/app/models.js").ConfigDetail;
+export type CoreHealthReport = import("../../bindings/github.com/Parsaetak/FreeIran/engine/core/models.js").HealthReport;
 
 /**
  * Wraps a binding call so UI code receives a single, readable error.

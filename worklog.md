@@ -1786,3 +1786,134 @@ via ldflags; the fetcher User-Agent reports it.
   Get −40% bytes / −25% allocs with +18% latency (the documented cost
   of deterministic ownership); reopen −7%; iterate −9%. See
   docs/performance.md for the full honest table.
+
+---
+
+## v0.4.0 — Protocol Core Integration + V2Ray Core + Production Hardening
+
+Date: 2026-09-11 · Base: `e6defe2` (v0.3.0)
+
+### Objective
+
+Upgrade from a protocol-agnostic configuration manager to a real
+multi-core runtime: Xray + V2Ray (V2Fly) + sing-box behind one
+backend abstraction, deterministic selection, supervised process
+lifecycle, an explicit connection state machine, core-based testing
+and real-binary CI verification — without regressing the v0.3.0 data
+layer.
+
+### Version research (deliberate pins, no "latest")
+
+- V2Ray (V2Fly, `v2fly/v2ray-core`): **v5.53.0** (2026-08-02, latest
+  stable; go.mod toolchain go1.26.1 — compatible with our go1.26.8).
+  Verified against the real binary: V4-format configs accepted for
+  vless/vmess/trojan/ss/socks/http over tcp/ws/grpc/http/quic (+uTLS
+  fingerprint + ALPN); REALITY absent from the codebase (binary
+  string audit: 0 meaningful references vs Xray's 1090); version
+  query is the `version` SUBCOMMAND (`--version` is rejected).
+- Xray (`XTLS/Xray-core`): **v26.3.27**. REALITY + xtls-rprx-vision +
+  XHTTP verified accepted; plain QUIC and HTTP/2 transports REMOVED
+  upstream ("migrated to XHTTP") — encoded as capability exclusions.
+- sing-box (`SagerNet/sing-box`): **v1.14.0**. All listed protocols
+  and transports verified through `sing-box check` + startup cycles;
+  mixed inbound; trojan TLS mandatory.
+- The three version probes genuinely differ (xray: `--version`;
+  v2ray/sing-box: `version` subcommand) — `system.queryCoreVersion`
+  now tries all forms.
+
+### Architecture implemented
+
+- `engine/core` rewritten as the execution boundary: `Core`
+  interface (Name/Supports/Validate/BuildConfig/Start),
+  `Capabilities` (declarative, verified), `Registry` (priority +
+  discovery + availability), `Select` (deterministic: preference →
+  priority → name, with reasons and fallbacks), `Instance` (explicit
+  lifecycle states, no ambiguous booleans), shared launcher (0600
+  temp config in 0700 dir → spawn with redacting output capture →
+  listener readiness polling), `HealthReport` (process vs network
+  axes), `GenCache` (memory-only, TTL 5 min, wholesale
+  invalidation), `RedactLogText` (URL userinfo redaction).
+- Backends: `engine/core/v2ray` (V4 generator shared with Xray),
+  `engine/core/xray` (dialect options: REALITY/flow/XHTTP),
+  `engine/core/singbox` (native JSON). All three pass the shared
+  contract suite (`engine/core/contract`) executed against the
+  config-driven fake core helper (`testdata/fakecore` — reads the
+  inbound port from the generated document exactly like real cores).
+- `engine/connection`: state machine (disconnected → selecting →
+  preparing → starting_core → waiting_for_ready → connected →
+  disconnecting; connection_failed), one active session, bounded
+  fallback with per-attempt reasons, background health monitor with
+  crash detection, terminal Shutdown used by app shutdown ordering.
+- `engine/tester.CoreProbe`: full §12 flow with capability-first
+  candidate resolution and deterministic teardown.
+- `engine/app.ConnectionService`: connect/disconnect/reconnect/
+  state/health/backends/config-details (§17 view with credential
+  presence flags only). `cmd/freeiran` emits `freeiran:connection`.
+- Frontend: Connection page (backend cards, state machine display,
+  attempt history), Configs details view with redaction,
+  connectionStore (+ tests), hand-written bindings (FNV-32a of the
+  fully-qualified method name — verified against the v0.3 IDs).
+- Parser: captures flow/encryption/alpn/spider/header-type/alterId;
+  parses complete V2Ray/Xray client JSON shares (outbounds, bounded);
+  32 MiB input guard; hostile-input fuzz test.
+- Metrics: core_selections/fallbacks/starts/start_failures/crashes/
+  avg_core_startup_ms wired through the connection manager.
+
+### Deliberate decisions
+
+- **Fingerprint unchanged**: new protocol-detail fields are excluded
+  from identity, so v0.2/v0.3 stores stay valid without migration.
+- **V2Ray is not Xray**: the capability matrix encodes the verified
+  divergence (REALITY/flow/vision → xray+singbox only; quic/h2 →
+  v2ray+singbox only); selection routes accordingly.
+- **No binary downloads in v0.4**: discovery only (managed cores dir
+  + PATH); the managed-distribution architecture (pins, checksums,
+  verification-before-execution chain) is documented for v0.5.
+- **Real-binary smoke tests are env-gated** (FREEIRAN_TEST_*_BIN) so
+  ordinary local/CI test runs need no cores; the dedicated
+  `protocol-cores` CI job installs the pinned releases with
+  SHA-256 verification and runs them.
+- Storage/pipeline untouched; the complete v0.3.0 store matrix
+  re-ran as the regression gate.
+
+### Verification snapshot (2026-09-11, go1.26.8, from the tree)
+
+- gofmt/vet clean (both scopes incl. GOOS=windows cmd)
+- `go test -count=1 ./engine/... ./system/... ./internal/...` — all
+  19 packages pass; `-race` — all pass
+- Real-binary smoke: v2ray 7/7, xray 9/9, sing-box 10/10 protocol
+  combinations (core-native validation + full startup cycles)
+- C++ `make -C native test` — pass; native_accel bridge tests — pass
+- Frontend: typecheck clean, vitest 12/12, production build + embed
+  staging OK
+- Windows desktop cross-build (CGO_ENABLED=0) — pass
+- CI `protocol-cores` job simulated locally end-to-end (checksum
+  verification + the three smoke suites) — pass
+
+### Clean-room verification findings (fixed)
+
+The first clean-room extraction exposed three real defects that the
+working-tree runs had masked (a fake-core compile error caused
+lifecycle test suites to SKIP silently — "ok" without coverage):
+
+1. `contract.BuildFakeCore` resolved the helper source relative to
+   the test's working directory, so engine/connection and engine/app
+   suites skipped; now resolved through `runtime.Caller` from the
+   contract package itself.
+2. The fake core had a `*configPath` dereference compile error —
+   skipped builds hid it; fixed and pinned by a direct compile check.
+3. `connection.Manager` never stored its `Options` (registry was nil
+   at Connect time) — surfaced once the suites actually ran.
+4. Ephemeral ports are now allocated BEFORE document generation in
+   all three backend `Start` implementations (the generator embeds
+   the inbound port; allocation previously happened later inside the
+   shared launcher).
+5. Port-steal hardening: the connection manager retries a startup
+   crash once with a fresh port; the fake core retries binds briefly
+   (package-parallel test binaries share the ephemeral range). 24+
+   consecutive `-race` runs of the previously flaky combination are
+   clean.
+
+These are exactly the class of defect the §55 clean-room requirement
+exists to catch: working-tree verification alone reported false
+confidence.

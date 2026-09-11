@@ -53,7 +53,8 @@ jobs:
       - name: Benchmarks (smoke)
         run: |
           go test -bench=. -benchtime=1x -run=NONE \
-            ./engine/chunks ./engine/store ./engine/pipeline
+            ./engine/chunks ./engine/store ./engine/pipeline \
+            ./engine/core ./engine/core/v2ray
 
       # Compile-validate the Wails desktop app for the primary target
       # from Linux: the Windows webview needs no GTK, so a full
@@ -121,10 +122,73 @@ jobs:
           path: frontend/dist
           retention-days: 3
 
+  protocol-cores:
+    name: Protocol cores (real binaries)
+    runs-on: ubuntu-latest
+    env:
+      GOTOOLCHAIN: local
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.8"
+          cache: true
+
+      # The adapter contract tests run in the go job with the fake
+      # core stand-in. THIS job installs the pinned real protocol
+      # cores (version + SHA-256 verified, official sources only) and
+      # runs the smoke suites: the cores' own config validators
+      # (v2ray test / xray run -test / sing-box check) plus a full
+      # startup + listener-ready + shutdown cycle for every
+      # supported protocol. No public proxy server is contacted.
+      - name: Install pinned V2Ray Core (v2fly)
+        run: |
+          curl -sSL -o /tmp/v2ray.zip \
+            "https://github.com/v2fly/v2ray-core/releases/download/v5.53.0/v2ray-linux-64.zip"
+          echo "a7bc11ff3ee286bc15d8191440ebb10810ac801ced54bbd4ce79ce4d291f7f25  /tmp/v2ray.zip" | sha256sum -c -
+          mkdir -p .cores && unzip -oq /tmp/v2ray.zip -d .cores/v2ray
+
+      - name: Install pinned Xray Core
+        run: |
+          curl -sSL -o /tmp/xray.zip \
+            "https://github.com/XTLS/Xray-core/releases/download/v26.3.27/Xray-linux-64.zip"
+          echo "8255dd939c34cf966cc91517b6324dd3c8d0bcf49ffac8beca049a38c46845ed  /tmp/xray.zip" | sha256sum -c -
+          unzip -oq /tmp/xray.zip -d .cores/xray
+
+      - name: Install pinned sing-box
+        run: |
+          curl -sSL -o /tmp/singbox.tar.gz \
+            "https://github.com/SagerNet/sing-box/releases/download/v1.14.0/sing-box-1.14.0-linux-amd64.tar.gz"
+          echo "57b3da14e264b6e05e8f46aee027c02d7dd7f1594d19aa39e2f4d2b9459bbd04  /tmp/singbox.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/singbox.tar.gz -C .cores
+          mv .cores/sing-box-1.14.0-linux-amd64/sing-box .cores/sing-box-bin
+
+      - name: Verify core binaries report their versions
+        run: |
+          ./.cores/v2ray/v2ray version
+          ./.cores/xray/xray version
+          ./.cores/sing-box-bin version
+
+      - name: V2Ray adapter smoke tests (real core)
+        run: go test -count=1 -run TestV2RaySmokeRealBinary -v ./engine/core/v2ray
+        env:
+          FREEIRAN_TEST_V2RAY_BIN: ${{ github.workspace }}/.cores/v2ray/v2ray
+
+      - name: Xray adapter smoke tests (real core)
+        run: go test -count=1 -run TestXraySmokeRealBinary -v ./engine/core/xray
+        env:
+          FREEIRAN_TEST_XRAY_BIN: ${{ github.workspace }}/.cores/xray/xray
+
+      - name: sing-box adapter smoke tests (real core)
+        run: go test -count=1 -run TestSingBoxSmokeRealBinary -v ./engine/core/singbox
+        env:
+          FREEIRAN_TEST_SINGBOX_BIN: ${{ github.workspace }}/.cores/sing-box-bin
+
   windows:
     name: Windows tests and desktop build
     runs-on: windows-latest
-    needs: [go, frontend]
+    needs: [go, frontend, protocol-cores]
     env:
       GOTOOLCHAIN: local
     steps:
@@ -163,7 +227,7 @@ jobs:
         run: |
           $commit = $env:GITHUB_SHA.Substring(0, 8)
           go build -trimpath `
-            -ldflags "-s -w -X github.com/Parsaetak/FreeIran/internal/version.Version=0.3.0-ci -X github.com/Parsaetak/FreeIran/internal/version.Commit=$commit" `
+            -ldflags "-s -w -X github.com/Parsaetak/FreeIran/internal/version.Version=0.4.0-ci -X github.com/Parsaetak/FreeIran/internal/version.Commit=$commit" `
             -o FreeIran-windows-amd64.exe ./cmd/freeiran
         env:
           CGO_ENABLED: "0"

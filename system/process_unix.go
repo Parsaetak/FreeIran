@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
-	"strings"
 	"syscall"
 	"time"
 
@@ -30,22 +29,19 @@ func platformNote() string {
 // launchProcess starts a managed process with stdout/stderr captured.
 // The child runs in its own process group so a forced kill cannot
 // leak grandchildren.
+//
+// Output capture: when ProcessSpec carries Stdout/Stderr writers the
+// child's streams are connected to them (exec creates the pipes and
+// copies internally); otherwise output goes to io.Discard. cmd.Wait
+// waits for the copy goroutines, so the writers are complete once the
+// exited channel closes.
 func launchProcess(ctx context.Context, spec ProcessSpec) (*ManagedProcess, error) {
 	cmd := exec.CommandContext(ctx, spec.Path, spec.Args...)
 	cmd.Env = spec.Env
 	cmd.Dir = spec.WorkDir
 
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, firerrors.Wrap(err, firerrors.KindEnvironment,
-			Subsystem, "start", "stdout pipe")
-	}
-
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, firerrors.Wrap(err, firerrors.KindEnvironment,
-			Subsystem, "start", "stderr pipe")
-	}
+	cmd.Stdout = orDiscard(spec.Stdout)
+	cmd.Stderr = orDiscard(spec.Stderr)
 
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
@@ -61,12 +57,6 @@ func launchProcess(ctx context.Context, spec ProcessSpec) (*ManagedProcess, erro
 		pid:       cmd.Process.Pid,
 	}
 
-	// Drain pipes so the child never blocks on full buffers. The
-	// captured output is discarded here; callers needing logs should
-	// pass a logging wrapper through ProcessSpec.
-	go func() { _, _ = io.Copy(io.Discard, stdout) }()
-	go func() { _, _ = io.Copy(io.Discard, stderr) }()
-
 	go func() {
 		proc.err = cmd.Wait()
 
@@ -79,6 +69,16 @@ func launchProcess(ctx context.Context, spec ProcessSpec) (*ManagedProcess, erro
 	}()
 
 	return proc, nil
+}
+
+// orDiscard defaults absent writers to the sink so the child never
+// blocks on full pipe buffers.
+func orDiscard(w io.Writer) io.Writer {
+	if w == nil {
+		return io.Discard
+	}
+
+	return w
 }
 
 func (m *ManagedProcess) wasStopped() bool {
@@ -107,17 +107,4 @@ func terminateProcess(m *ManagedProcess, grace time.Duration) error {
 
 		return nil
 	}
-}
-
-// queryCoreVersion asks a core for its version string.
-func queryCoreVersion(ctx context.Context, path string) string {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	out, err := exec.CommandContext(ctx, path, "--version").CombinedOutput()
-	if err != nil {
-		return ""
-	}
-
-	return strings.SplitN(strings.TrimSpace(string(out)), "\n", 2)[0]
 }

@@ -9,7 +9,9 @@ package system
 
 import (
 	"context"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -117,7 +119,9 @@ type CoreBinary struct {
 }
 
 // WellKnownCores are the protocol engines FreeIran integrates with.
-var WellKnownCores = []string{"xray", "sing-box", "wireguard", "wg"}
+// v2ray is the actively maintained V2Fly edition (v2fly/v2ray-core),
+// distinct from Xray-core.
+var WellKnownCores = []string{"xray", "v2ray", "sing-box", "wireguard", "wg"}
 
 // Discover finds a core executable by name and queries its version.
 func (l *CoreLocator) Discover(ctx context.Context, name string) (CoreBinary, error) {
@@ -178,6 +182,13 @@ type ProcessSpec struct {
 	Args    []string
 	Env     []string
 	WorkDir string
+
+	// Stdout and Stderr, when set, receive the captured process output
+	// instead of /dev/null. Writers must be safe for concurrent use;
+	// the process manager only writes from the supervision goroutine
+	// and stops writing when the process has exited.
+	Stdout io.Writer
+	Stderr io.Writer
 }
 
 // ManagedProcess is one supervised protocol-core process.
@@ -284,6 +295,39 @@ func Redact(text string, secrets ...string) string {
 	}
 
 	return text
+}
+
+// versionProbeForms are the argument forms protocol cores accept for
+// version queries. Xray supports --version; V2Ray (V2Fly v5) and
+// sing-box use a "version" subcommand. Every form is tried until one
+// succeeds so discovery never depends on the core family.
+var versionProbeForms = [][]string{
+	{"--version"},
+	{"-version"},
+	{"version"},
+}
+
+// queryCoreVersion asks a core for its version string. It returns an
+// empty string when every probe form fails; discovery then reports the
+// binary without version information rather than failing.
+func queryCoreVersion(ctx context.Context, path string) string {
+	for _, args := range versionProbeForms {
+		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+
+		out, err := exec.CommandContext(probeCtx, path, args...).CombinedOutput()
+		cancel()
+
+		if err != nil {
+			continue
+		}
+
+		line := strings.SplitN(strings.TrimSpace(string(out)), "\n", 2)[0]
+		if strings.TrimSpace(line) != "" {
+			return line
+		}
+	}
+
+	return ""
 }
 
 func fileExists(path string) bool {

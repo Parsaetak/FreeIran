@@ -7,7 +7,7 @@
  */
 
 /** Top-level navigation pages. */
-export type Page = "dashboard" | "sources" | "configs" | "diagnostics";
+export type Page = "dashboard" | "sources" | "configs" | "connection" | "diagnostics";
 
 /** Connection state of the UI towards the desktop backend. */
 export type BackendConnection = "connected" | "unavailable" | "unknown";

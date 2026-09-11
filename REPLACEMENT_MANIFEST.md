@@ -1,253 +1,319 @@
-# FreeIran Replacement Manifest — v0.3.0
+# FreeIran Replacement Manifest — v0.4.0
 
 ## Package
 
 | Field | Value |
 |-------|-------|
-| Version | 0.3.0 |
-| Base reference | commit `a536191ffdb22c094fb076948d1135219537ef6c` (2026-09-10, "2026.Sep.10") |
-| Package | `FreeIran-upgraded-0.3.0.zip` — complete source repository replacement |
+| Version | 0.4.0 |
+| Base reference | commit `e6defe229718c6b5c55b0ed5a719048d83744d12` (v0.3.0) |
+| Package | `FreeIran-v0.4.0.zip` — complete source repository replacement |
 | Verified by | Clean extraction into a fresh directory; full build + test matrix re-run from the extracted tree (see "Verification") |
-| Excluded from package | `.git`, `frontend/node_modules`, `frontend/dist` (build output), `native/build`, no secrets, no local runtime data |
+| Excluded from package | `.git`, `frontend/node_modules`, `frontend/dist` (build output), `native/build`, `.cores` (CI core installs), no secrets, no local runtime data |
 
-## Root causes fixed
+## Objective
 
-1. **Windows chunk-file handle leak** (CI run 34432214132, Windows job "Run Go tests").
-   `Store.chunkHandle` stored live `*os.File` values in `cache.Layer` (`openLRU`), which has no
-   eviction callback: evicted handles were forgotten without being closed, `Store.Close()` never
-   closed cached files, and compaction called `os.Remove` on victims still cached open. On
-   Windows an open handle blocks deletion → `t.TempDir()` RemoveAll failed with
-   "The process cannot access the file because it is being used by another process"
-   (chunks/000001.firc, chunks/000011.firc …). Fixed by the resource-ownership rework below.
-2. **govulncheck failure** (CI run 34432214136, step "govulncheck (Go)").
-   Scanning `./cmd/...` on Linux resolves Wails v3 to GTK4/WebKitGTK-6.0 CGO packages that are
-   absent on CI runners ("could not import C"). Fixed with platform-targeted analysis: pure-Go
-   packages (`engine/system/internal`) scanned natively; the desktop package scanned with
-   `GOOS=windows GOARCH=amd64` (its real deployment target — the Wails Windows webview is pure
-   Go). No `|| true`, no muted failures — both scans fail on any detected vulnerability.
-3. **Toolchain inconsistency / EOL toolchain with known vulnerabilities.** go1.25.0 stdlib
-   carries GO-2026-6218 (net/url) and GO-2026-6090 (crypto/tls), and the 1.25 series is EOL.
-   Policy: `go.mod` → `go 1.25.0` + `toolchain go1.26.8`; CI pins `go-version: "1.26.8"` with
-   `GOTOOLCHAIN=local`; govulncheck pinned to **v1.8.0** (never `@latest`); documented in
-   docs/development.md and docs/security.md.
-4. **Storage correctness bugs found during the audit** (all fixed, each with a regression test):
-   - flush checkpointed the WAL at `CurrentLSN()` — under concurrent writes this can include
-     appended-but-unapplied records, so a crash window silently lost journaled writes;
-   - deleting an unflushed override resurrected the old value after the tombstone flushed
-     (stale index entry);
-   - the v1 journal reader skipped the length prefix for delete records while the writer
-     emitted it — replayed deletes always failed their CRC and were silently discarded;
-   - compaction's unlock/read/relock window let a concurrent delete be undone by the final
-     index swap (resurrection race);
-   - `persistMeta` marshalled shared `*chunkMeta` pointers after releasing the read lock
-     (data race, exposed by `-race` once flushes went background);
-   - `MigrateFromJSON` materialised the entire legacy database in RAM.
-5. **CI weaknesses.** `|| true` on the native benchmark step (removed); a suspicious-pattern
-   grep chain that could never fail (now a real gate); Node 20 era action majors forcing Node 24
-   deprecation warnings (upgraded to checkout@v7, setup-go@v7, setup-node@v7,
-   upload-artifact@v7, download-artifact@v8, gitleaks-action@v3, action-gh-release@v3 — all
-   Node 24 based).
-6. **Goroutine leak** in the desktop state broadcaster (ticker ran forever) — now bound to the
-   application context.
+Turn the v0.3.0 protocol-agnostic configuration manager into a real
+multi-core runtime system: three genuine protocol-core backends
+(Xray, V2Ray, sing-box) behind one abstraction, deterministic
+backend selection, a supervised process lifecycle, an explicit
+connection state machine, core-based testing and real-binary CI
+verification — without regressing the v0.3.0 data layer.
 
-## Architecture summary (v0.3.0)
+## Protocol-core changes
+
+### New execution boundary (engine/core, rewritten)
+
+- `Core` interface: `Name / Supports / Validate / BuildConfig / Start`
+  — stateless, concurrency-safe, adapted to the existing codebase.
+- `Capabilities`: declarative per-backend feature model (protocols,
+  transports, securities, flows, TLS-mandatory protocols). Every
+  support decision in the application flows through capability
+  resolution — no protocol-specific if/else outside the adapters.
+- `Registry`: priority-ordered registration, executable discovery via
+  `system.CoreLocator` (managed `cores/` directory → PATH), availability
+  states (available / missing / invalid), version reporting,
+  background refresh.
+- `Select`: deterministic, explainable backend resolution —
+  compatible candidates ordered by user preference (only when
+  compatible AND available) → registry priority → name; returns the
+  chosen core, a human-readable reason and ordered fallbacks.
+- `Instance`: explicit lifecycle states (`created → starting → running
+  → stopping → stopped`; errors: `start_failed / crashed / unhealthy /
+  timed_out`) — no ambiguous booleans. Shared launcher writes the
+  0600 runtime config into a 0700 temp directory, spawns the core with
+  redacting output capture and polls the local listener for readiness.
+- `HealthReport`: process health (`process_alive`) separated from
+  network health (`listener_ready`) with latency.
+- `GenCache`: in-memory, TTL-bounded (5 min, 16 entries) generation
+  cache keyed by fingerprint + backend; invalidated wholesale on
+  binary-path/runtime-options changes; credential-bearing documents
+  are never persisted and never cached indefinitely.
+- `RedactLogText`: URL-userinfo pattern redaction
+  (`vless://***@host:443`) on top of explicit secret-value redaction.
+
+### Backends (all real implementations, no fakes)
+
+| Backend | Dialect | Verified feature set |
+|---------|---------|----------------------|
+| `engine/core/v2ray` | V4 JSON (V2Fly v5 accepts via `v2ray run/test -c`) | vless, vmess, trojan, shadowsocks, socks, http; tcp, ws, grpc, http/h2, quic; tls (+uTLS fingerprint, ALPN); NO reality, NO flow (absent from V2Fly) |
+| `engine/core/xray` | V4 JSON + Xray extensions (reuses the shared V4 generator) | all of the above minus plain quic/h2 (removed upstream in favour of XHTTP) plus reality, xtls-rprx-vision, xhttp |
+| `engine/core/singbox` | native sing-box JSON | all listed protocols; tcp, ws, grpc, http, quic, httpupgrade; tls, reality + vision (utls); mixed inbound; trojan TLS-mandatory |
+
+The Xray adapter deliberately reuses `v2ray.BuildV4Document` with
+dialect options — the shared V4 lineage cannot drift, and the
+capability matrix encodes the verified divergences.
+
+### Connection manager (engine/connection, new)
+
+Explicit state machine — `disconnected → selecting → preparing →
+starting_core → waiting_for_ready → connected → disconnecting`, with
+`connection_failed` — one active session, bounded fallback (max 3
+attempts) with per-attempt reason recording, port stability across
+reconnects, background health monitor with crash detection, and a
+terminal `Shutdown` used by the application shutdown ordering
+(disconnect session → stop core → clean temp configs → close store).
+
+### Tester integration (engine/tester, new CoreProbe)
+
+Config → candidate backend (capability-first, bounded fallback) →
+validate → start temporary core → wait readiness → latency →
+deterministic shutdown → result. Test instances can never leak:
+teardown is deferred before the outcome is even computed.
+
+### System layer changes
+
+- `ProcessSpec` gained `Stdout`/`Stderr` writers (output capture with
+  redaction; default `io.Discard`); both platform implementations
+  rewritten to the simpler `cmd.Stdout = writer` form (exec owns the
+  copy goroutines; `Wait` joins them).
+- Version probing tries `--version`, `-version` and the `version`
+  subcommand — the three cores genuinely disagree (v2ray v5 and
+  sing-box reject `--version`).
+- `WellKnownCores` now includes `v2ray` (was missing).
+- `queryCoreVersion` moved to the platform-neutral file.
+
+### Normalized model (engine/config)
+
+New protocol-detail fields: `flow`, `encryption`, `alter_id`,
+`header_type`, `alpn`, `spider_x`. **Fingerprint deliberately
+unchanged** — record identity stays endpoint + credentials + transport
+so every v0.2/v0.3 store remains valid without migration (see
+docs/storage-format.md §9). New `redact.go`: `SecretFields`,
+`Redacted()`, `DisplayURL()` (`vless://***@host:443 (tls,ws)`).
+
+### Parser hardening (engine/parser)
+
+- Captures flow/encryption/alpn/spider/header-type/alterId from URI
+  forms and vmess JSON.
+- Parses complete V2Ray/Xray client JSON shares
+  (`{"outbounds":[...]}`) into normalized configurations — proxy
+  outbounds only, routing helpers skipped, bounded at 64 outbounds.
+- Input size guard (32 MiB) independent of the source-layer cap.
+- Hostile-input fuzz test added (never panics).
+
+### App integration (engine/app)
+
+`ConnectionService` (bound to the UI): `Connect/ConnectConfig/
+Disconnect/Reconnect/ConnectionState/Health/Backends/RefreshBackends/
+ConfigDetails`. Backend views carry name, status, version, path,
+priority, capability summary, notes and the verified reference
+version + official source. `ConfigDetails` (§17 view) exposes
+protocol/address/port/transport/security/compatible backends/latency/
+last test/source/status plus credential PRESENCE flags — never values.
+App lifecycle: registry refresh is background; `Shutdown` orders
+scheduler stop → context cancel → session disconnect (core stop +
+temp cleanup) → store close. `cmd/freeiran` registers the service and
+emits `freeiran:connection` events alongside `freeiran:state`.
+
+### Metrics (engine/metrics)
+
+New counters: `core_selections`, `core_fallbacks`, `core_starts`,
+`core_start_failures`, `core_crashes`, `avg_core_startup_ms` — wired
+into the connection manager and surfaced in the diagnostics snapshot.
+
+### Frontend
+
+- Hand-written Wails bindings following the v0.3.0 precedent
+  (FNV-32a of the fully-qualified `package.Service.Method`):
+  `connectionservice.js`, `connection/models.js` (Snapshot, Attempt),
+  `core/models.js` (HealthReport), extended `app/models.js`
+  (BackendView, ConfigDetail).
+- New **Connection page**: backend cards (status/version/summary +
+  pinned reference), configuration picker, connect/disconnect/
+  reconnect, live state machine display (core, version, state,
+  configuration, latency, local endpoint) and the attempt history
+  table with failure reasons.
+- **Configurations page**: per-row details view with redaction —
+  protocol, endpoint, transport, security, compatible backends,
+  status/latency/last-test, source, credential presence flags.
+- `connectionStore` subscribes to `freeiran:connection`; busy/error
+  are the only local flags — state always comes from the backend.
+
+### CI
+
+- New `protocol-cores` job: installs the pinned v2ray v5.53.0, Xray
+  v26.3.27 and sing-box v1.14.0 releases (official sources,
+  SHA-256-verified) and runs the real-binary smoke suites — each
+  core's own validator accepts every generated document AND a full
+  startup/listener/shutdown cycle runs per protocol. No public proxy
+  server is contacted; the Windows job now gates on it.
+- Benchmark smoke extended with `engine/core` + `engine/core/v2ray`.
+- The security workflow is unchanged (gitleaks + pinned dual-target
+  govulncheck + vet + the suspicious-pattern gate); the new pure-Go
+  protocol-core packages fall under the existing scan scopes with no
+  new dependencies.
+
+## Protocol-core versions (pinned, verified)
+
+| Core | Version | Source | Verification |
+|------|---------|--------|--------------|
+| V2Ray | **5.53.0** | github.com/v2fly/v2ray-core | `v2ray test` accepts all 7 generated protocol docs; full startup cycles pass; REALITY absence confirmed against the binary; linux-amd64 SHA-256 `a7bc11ff…1f7f25` |
+| Xray | **26.3.27** | github.com/XTLS/Xray-core | `xray run -test` accepts all 9 docs incl. REALITY+vision and XHTTP; plain quic/h2 rejected upstream (encoded in capabilities); SHA-256 `8255dd93…6845ed` |
+| sing-box | **1.14.0** | github.com/SagerNet/sing-box | `sing-box check` accepts all 10 docs; startup cycles pass; SHA-256 `57b3da14…9bbd04` |
+
+No "latest" resolution anywhere; pins live in `engine/core/versions.go`
+and docs/development.md. No new Go module dependencies were added —
+the entire protocol-core layer is standard library.
+
+## Files added
 
 ```text
-                    FREEIRAN
-                       │
-              TypeScript / Wails v3
-                       │
-                     Go 1.26.8
-                       │
-          ┌────────────┼────────────┐
-          │            │            │
-       Pipeline      Storage      System
-          │            │            │
-          │       ┌────┼────┐       │
-          │       │    │    │       │
-          │      WAL  Mem  Index    │
-          │     (segments, frozen   │
-          │      tables, bg flush)  │
-          │          Chunks         │
-          │       (immutable FIRC)  │
-          │            │            │
-          │     chunkHandleCache    │
-          │   (sole fd owner,       │
-          │    refcounted pins)     │
-          │                         │
-          └────────── C++ ──────────┘
-              only for hot paths
+engine/core/capability.go        capability model + resolution
+engine/core/registry.go          backend registry + discovery states
+engine/core/selection.go         deterministic explainable selection
+engine/core/health.go            listener probing + port reservation
+engine/core/logs.go              bounded redacting log capture
+engine/core/runconfig.go         temporary runtime-config lifecycle
+engine/core/gencache.go          generation cache (memory-only, TTL)
+engine/core/versions.go          pinned/verified core releases
+engine/core/contract/contract.go shared backend contract suite
+engine/core/contract/smoke.go    real-binary smoke harness
+engine/core/testdata/fakecore/   process stand-in (config-driven port)
+engine/core/v2ray/               V2Ray adapter + shared V4 generator
+engine/core/xray/                Xray adapter
+engine/core/singbox/             sing-box adapter
+engine/connection/               connection manager + state machine
+engine/config/redact.go          credential redaction surface
+engine/app/connectionservice.go UI service surface
++ per-package tests and benchmarks (see "Tests executed")
+frontend/.../connection/models.js, core/models.js, connectionservice.js
+frontend/src/state/connectionStore.ts (+ test)
+frontend/src/pages/Connection.tsx
 ```
 
-Storage lifecycle (docs/storage-format.md §5 is the full specification):
+## Files changed
 
-- **Chunk handles**: `chunkHandleCache` is the sole owner of open chunk descriptors.
-  acquire pins (refs++, detached from LRU) → ReadAt (pread, concurrent-safe) → release unpins
-  (evictable) → LRU eviction of unpinned entries CLOSES the file; `purge` closes compaction
-  victims; `closeAll` closes everything at shutdown.
-- **Operation barrier**: every public store operation registers through a gate-guarded
-  WaitGroup; `Close()` sets the closed flag, drains in-flight operations, freezes the active
-  memtable, stops the flush worker (draining its queue), closes the journal, closes all cached
-  handles and returns joined errors. After `Close()` the store owns no file descriptor.
-- **Scan barrier**: `Iterate`/`VerifyAll` register as scans; compaction removes victim files
-  only after the registry swap and scan drain, and only after purging their handles — no chunk
-  file is ever deleted while any descriptor is open.
-- **Writes**: WAL append (one write + one fsync per batch) and memtable apply are serialized
-  under a write mutex, making the applied-LSN watermark exact; threshold crossing freezes the
-  active table into an immutable queue flushed by a single background worker (chunk write →
-  CAS index swap → meta persist → WAL checkpoint). Backpressure bounds the queue at 2 pending
-  tables; writers throttle beyond that.
-- **WAL**: segmented (`wal/seg-XXXXXXXX.wal`), per-segment baseLSN headers, contiguous LSNs,
-  continuity validation, checkpoint removes fully-incorporated segments (closed before removal
-  — Windows-safe), corrupt-tail discarding, v1 `journal.log` streamed upgrade.
-- **Reads**: memtable levels (newest first) → index → pinned offset read; two preads per
-  record; 3 allocations per point read (pinned by TestAllocsHotPaths).
-- **Iteration**: consistent point-in-time snapshot (40-byte index refs + immutable slice
-  headers), sorted, streamed through pinned handles.
-- **Compaction**: snapshot refs → read via pins → write replacement chunk → CAS-swap index
-  (concurrent deletes can never be resurrected) → persist → wait scans → purge handles →
-  remove files.
-- **Migration**: token-walking `json.Decoder` streams the legacy file; bounded 1024-record
-  batches; per-batch verification; second streaming pass verifies the full disk path; rename
-  (never delete) after success; idempotent re-runs.
+`engine/core/core.go` (rewritten: Core interface, Instance,
+launcher), `engine/core/core_test.go` (replaced by
+registry/selection/lifecycle suites), `engine/config/config.go` (new
+fields, fingerprint unchanged), `engine/parser/parser.go` (new field
+capture, V2Ray JSON outbounds, size guard), `engine/metrics/metrics.go`
+(core counters), `engine/app/app.go` (registry + connection wiring,
+shutdown ordering), `engine/tester/` (CoreProbe),
+`system/system.go`, `system/process_unix.go`,
+`system/process_windows.go` (writers, version probe forms, v2ray
+discovery), `cmd/freeiran/main.go` (service registration +
+connection broadcaster), `.github/workflows/ci.yml` (protocol-cores
+job, benchmark scope, 0.4.0-ci version), `frontend/src/App.tsx`, `frontend/src/pages/Configs.tsx`
+(details view), `frontend/src/services/index.ts`,
+`frontend/src/types/ui.ts`, `frontend/src/styles/index.css`,
+`frontend/bindings/.../app/models.js`, `VERSION`,
+`internal/version/version.go`, `frontend/package.json`, README + all
+six docs, `.gitignore` (`.cores/`).
 
-## Performance (measured, 2 vCPU reference VM, go1.26.8, `-benchtime=1s`)
+## Files removed
 
-| Path | v0.2.0 (a536191) | v0.3.0 | Assessment |
-|------|------------------|--------|------------|
-| Write: Upsert+Flush | 3083 ns/op, 1019 B, 11 allocs | 2329 ns/op, 990 B, 6 allocs | 24% faster, 45% fewer allocs |
-| Read: Get (chunk) | ~1045 ns/op, 272 B, 4 allocs | ~1230 ns/op, 164 B, 3 allocs | +18% latency, 40% less memory — the cost of the operation barrier + refcounted pins that make Windows deletion safe |
-| Read: Get (memtable) | — | 376 ns/op, 80 B, 1 alloc | new |
-| Reopen 20k | 2566 µs | 2373 µs | 7% faster |
-| Iterate 20k | 28.5 ms, 60k allocs | 26.1 ms, 100k allocs | 9% faster; more allocs for consistent snapshots |
-| Batch write | — | ~805 ns/record (512/batch, 1 fsync) | measured |
-| Migration 4k | full-file unmarshal | ~54 ms, bounded memory | streaming |
+None. The v0.3.0 cleanup already removed the dead v0.1 systems; no
+new obsolescence was created (the old protocol-keyed `core.Registry`
+was replaced in place by the backend-keyed registry in the same
+package).
 
-No unmeasured claims. The read-path regression is documented and deliberate: correctness of
-resource ownership is the acceptance criterion. Full tables: docs/performance.md.
+## Storage changes
 
-## Changed files
+**None.** The chunked store, WAL, registry, index and migration are
+byte-identical to v0.3.0. Fingerprints are unchanged by design (new
+protocol-detail fields excluded from identity), so existing stores
+open with zero migration. The full lifecycle/recovery matrix re-ran
+as a regression gate (see "Tests executed").
 
-- `engine/store/store.go` — rewritten: operation barrier (gate + WaitGroups), write mutex,
-  allocation-free key decoding, level-based memtable lookups, pinned read path, snapshot
-  iteration, deterministic Close.
-- `engine/store/filecache.go` — NEW: refcounted chunk-handle cache (sole fd owner).
-- `engine/store/memtable.go` — NEW: memtable + frozen table types and value-ownership rules.
-- `engine/store/flush.go` — NEW: background flush worker, backpressure, table flush pipeline.
-- `engine/store/wal.go` — rewritten: segmented journal, continuity checks, safe checkpoints,
-  v1 journal.log streaming upgrade, uniform delete framing.
-- `engine/store/compact.go` — rewritten: CAS-swap compaction, scan barrier, purge-before-remove.
-- `engine/store/meta.go` — checkpoint-LSN watermark, orphan-chunk cleanup, race-free persist.
-- `engine/store/migrate.go` — rewritten: two-pass streaming migration.
-- `engine/store/diagnostics.go` — NEW: Stats/Snapshot, Diagnostics/Inspect, scan-registered VerifyAll.
-- `engine/store/store_test.go` — adapted to async flush (drain before on-disk assertions).
-- `engine/store/lifecycle_test.go` — NEW: 12 lifecycle/resource-ownership tests.
-- `engine/store/wal_test.go` — NEW: 8 journal tests (segments, checkpoint, tails, upgrade).
-- `engine/store/store_bench_test.go` — extended: batch/flush/compaction/migration benchmarks,
-  allocation pins (TestAllocsHotPaths), hoisted key generation for honest numbers.
-- `engine/cache/cache.go` — added `OnEvict` callback (release-on-evict for owned resources).
-- `engine/app/app.go` — Context() accessor; shutdown ordering documented.
-- `engine/app/services.go` — NEW DiagnosticsService.StoreDiagnostics (store.Inspect surface).
-- `engine/chunks/chunks_bench_test.go` — NEW: chunk write/read/verify benchmarks.
-- `engine/native/native_bench_test.go` — NEW: hash batch / URL scan benchmarks (Go + native).
-- `cmd/freeiran/main.go` — broadcaster goroutine bound to app context (leak fix).
-- `.github/workflows/ci.yml` — Node 24 majors, GOTOOLCHAIN=local, Windows runs full
-  `go test ./...`, `|| true` removed.
-- `.github/workflows/security.yml` — platform-targeted govulncheck (pinned v1.8.0), real
-  pattern-scan gate, vet for both scopes.
-- `.github/workflows/release.yml` — Node 24 majors, race tests in verify, toolchain pin.
-- `go.mod` — `toolchain go1.26.8` directive.
-- `internal/version/version.go` — default 0.3.0.
-- `VERSION`, `frontend/package.json` — 0.3.0.
-- `frontend/bindings/.../diagnosticsservice.js`, `.../store/models.js` — binding for
-  StoreDiagnostics + Diagnostics model (generator style, FNV-32a method ID).
-- `frontend/src/services/index.ts`, `frontend/src/pages/Diagnostics.tsx` — storage-subsystem
-  diagnostics surfaced in the UI.
-- `cmd/freeiran/frontend/dist/` — rebuilt production assets (fresh hashes).
-- `README.md`, `docs/architecture.md`, `docs/storage-format.md`, `docs/development.md`,
-  `docs/performance.md`, `worklog.md` — updated for the v0.3.0 architecture, lifecycle,
-  toolchain policy and honest benchmark tables.
-- `.gitignore` — coverage/benchmark artifacts.
+## Performance changes
 
-## Added files
-
-`engine/store/filecache.go`, `engine/store/memtable.go`, `engine/store/flush.go`,
-`engine/store/diagnostics.go`, `engine/store/lifecycle_test.go`, `engine/store/wal_test.go`,
-`engine/chunks/chunks_bench_test.go`, `engine/native/native_bench_test.go`,
-`docs/ci.md`, `docs/security.md`.
-
-## Removed files
-
-`engine/engine.go`, `engine/engine_test.go` (deprecated v0.1 orchestrator),
-`engine/database/database.go`, `engine/database/database_test.go` (legacy JSON persistence —
-duplicated storage pathway; the format knowledge lives on, tested, in `engine/store/migrate.go`),
-`engine/pool/pool.go`, `engine/pool/pool_test.go`, `engine/archive/archive.go`,
-`engine/archive/archive_test.go` (unused v0.1 utilities; no non-test users existed).
-Migration path for users of the legacy JSON database: unchanged — `MigrateFromJSON`
-(streaming, verified, rename-only) is the supported path.
-
-## Migration behavior
-
-- Legacy JSON database (v1): unchanged interface, now streaming and bounded; the file is
-  renamed `<original>.migrated` only after a verified two-pass migration; re-runs are no-ops.
-- v1 WAL (`wal/journal.log`): streamed, re-applied, re-journaled into the segmented format
-  (one fsync) and removed — no pending write is lost by the format upgrade. The v1 reader's
-  delete-record framing bug is thereby fixed for upgraded tails.
-- Existing chunk files, `store.meta` and `index.bin`: format unchanged; open recovery now also
-  removes orphan chunk files (crash leftovers) and enforces WAL segment LSN continuity.
-
-## Toolchain versions
-
-| Tool | Version |
-|------|---------|
-| Go | 1.26.8 (go.mod toolchain; floor go 1.25) |
-| govulncheck | v1.8.0 (pinned in CI) |
-| Node.js | 22 (CI) |
-| Wails | v3.0.0-beta.19 |
-| GitHub Actions | checkout@v7, setup-go@v7, setup-node@v7, upload-artifact@v7, download-artifact@v8, gitleaks-action@v3, action-gh-release@v3 |
-| C++ | C++17 (gcc/clang/MSVC) |
+All v0.3.0 paths unchanged (store suite re-measured in CI). New
+measured protocol-core paths (2 vCPU, go1.26.8): config generation
+12–16 µs/doc (1.2 µs cached on reconnect), validation 236 ns,
+capability check 37 ns, backend selection 3.1 µs, log redaction 5 µs
+per write, generation-cache hit 70 ns, real core spawn-to-ready
+~100–140 ms (core-process-bound). Full tables:
+docs/performance.md §4b.
 
 ## CI changes
 
-- Windows job renamed to "Windows tests and desktop build" and runs `go test -count=1 ./...`
-  (full matrix including `engine/store` — nothing skipped, no allowed failures).
-- Both Go jobs and release jobs pin go1.26.8 + `GOTOOLCHAIN=local`.
-- Security workflow: two platform-targeted govulncheck scans (both hard-failing), gitleaks@v3,
-  vet on both scopes, real suspicious-pattern gate.
-- All `|| true` occurrences removed.
+New `protocol-cores` job (pinned SHA-256-verified core installs +
+real-binary smoke suites for all three adapters); Windows job gates
+on it; benchmark smoke includes the core packages. No `|| true`, no
+allowed failures, no `@latest` tooling.
+
+## Security changes
+
+- Credential redaction at every boundary (logs, errors, selection
+  reasons, UI snapshots, details view) with tests asserting
+  non-leakage against synthetic secrets.
+- Temporary runtime configs: 0600 in 0700 temp dirs, removed after
+  failed startups and on shutdown, process stopped before removal
+  (Windows discipline), bounded-remove retries.
+- Executable discovery restricted to controlled locations (managed
+  cores dir + PATH); nothing from downloaded data is ever executed;
+  user binaries never replaced.
+- Managed-distribution architecture reserved (pins + docs) with the
+  mandatory verification chain documented for future installers.
 
 ## Tests executed (from the packaged tree)
 
 - `gofmt -l ./engine ./system ./cmd ./internal` — clean
 - `go vet ./engine/... ./system/... ./internal/...` — clean
 - `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go vet ./cmd/...` — clean
-- `go build ./engine/... ./system/... ./internal/...` — ok
-- `go test -count=1 ./engine/... ./system/... ./internal/...` — all pass (incl. store
-  lifecycle: open/use/close/delete-directory, repeated open/close, cache eviction closes
-  files, compaction+close+delete, concurrent read+close, failed-op+close, operations after
-  close, delete-resurrection regression, WAL crash replay with deletes, journal
-  segments/checkpoint/corrupt-tail/v1-upgrade, orphan cleanup, consistent iteration
-  snapshots, background flush drain)
-- `go test -race -count=1 ./engine/... ./system/... ./internal/...` — all pass
-- `go test -count=1 -tags native_accel ./engine/native` (CGO) — pass
+- `go test -count=1 ./engine/... ./system/... ./internal/...` — all
+  pass (19 packages; includes the adapter contract suites, connection
+  state machine, tester core probe, parser hardening incl. hostile
+  input fuzz, app connection integration, and the complete v0.3.0
+  store lifecycle matrix)
+- `go test -race -count=1 ./engine/... ./system/... ./internal/...` —
+  all pass
+- Real-binary smoke suites (pinned cores, checksum-verified):
+  `v2ray` — 7 protocol/transport combinations PASS;
+  `xray` — 9 combinations incl. REALITY+vision and XHTTP PASS;
+  `sing-box` — 10 combinations PASS. Each covers core-native config
+  validation AND full startup → listener-ready → shutdown → cleanup.
 - `make -C native test` (C++) — pass
-- Frontend: `npm ci`, `npm run typecheck`, `npm test` (vitest 7/7), `npm run build:embed`
-- Windows desktop build: `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build` — 17.4 MB binary
-- Windows cross-compilation of all packages and store/chunks/app/cache/pipeline test binaries
-- `govulncheck ./engine/... ./system/... ./internal/...` — No vulnerabilities found
-- `GOOS=windows GOARCH=amd64 govulncheck ./cmd/...` — No vulnerabilities found
-- Benchmarks: 16 store/chunks/pipeline benchmarks + native benchmarks (Go and native modes)
+- `CGO_ENABLED=1 go test -tags native_accel -count=1 ./engine/native` — pass
+- Frontend: `npm ci`, `npm run typecheck`, `npm test` (12/12),
+  `npm run build:embed`
+- Windows desktop build: `GOOS=windows GOARCH=amd64 CGO_ENABLED=0
+  go build` — passes
+- Benchmarks: 14 protocol-core/store-adjacent benchmarks plus the
+  v0.3.0 suite re-run
 
 ## Known limitations
 
-- The Windows job executes on GitHub's runner: results were validated here by
-  cross-compilation of all packages and test binaries plus the platform-independent lifecycle
-  tests, but the actual Windows test execution is observed in CI (as designed).
-- `Get` on the chunk path is ~18% slower than v0.2 (measured and documented) — the cost of
-  the operation barrier and refcounted handle pins that guarantee Windows-safe deletion.
-  Memory per read dropped 40%.
-- govulncheck's OSV feed evolves; the weekly scheduled scan may flag future stdlib
-  advisories — by design (the toolchain policy documents how to respond).
-- The desktop package is analysed for the windows target only; a Linux GUI build (unrelated
-  to this project's releases) would require GTK4/WebKitGTK packages.
-- Chunk compression (FIRC flag bit 0) remains defined but unwritten; records are stored raw.
+- Hysteria2/TUIC/WireGuard configurations parse, validate and store,
+  but no v0.4 backend adapter executes them yet (sing-box adapter
+  scope was cut to the six normalized protocols with verified
+  smoke coverage; the capability model and contract suite make the
+  v0.5 additions mechanical).
+- REALITY configurations require Xray or sing-box; with only V2Ray
+  installed, selection fails by design with an explainable error.
+- Through-proxy end-to-end connectivity (an HTTP request through the
+  tunnel) is intentionally NOT part of the health ladder: it would
+  make CI and local testing depend on external servers. Health
+  verifies process + listener; full connectivity is observed through
+  real usage.
+- The generation cache keys binary-path as the version invalidation
+  proxy (backends do not learn their version independently of the
+  registry); switching binaries invalidates, same-binary upgrades
+  re-verify through the pinned capability matrix instead.
+- Core process stop on Windows is grace-period + Kill (no SIGTERM);
+  the cores do not implement Windows console control handlers.
+- govulncheck's OSV feed evolves; the weekly scheduled scan may flag
+  future stdlib advisories — by design.
+- Chunk compression (FIRC flag bit 0) remains defined but unwritten
+  (unchanged from v0.3.0).

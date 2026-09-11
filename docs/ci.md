@@ -17,7 +17,16 @@ go (ubuntu)                     native (ubuntu)      frontend (ubuntu)
 └─ windows/amd64 desktop        └─ bridge benchmarks
    compile-validation
                        │
-                       ▼ (needs: go + frontend)
+protocol-cores (ubuntu)         │
+├─ install pinned v2ray 5.53.0  │  (SHA-256 verified, official sources)
+├─ install pinned xray 26.3.27  │
+├─ install pinned sing-box 1.14 │
+├─ version-report checks        │
+├─ v2ray adapter smoke (real)  │  ← v2ray test + run + listener + stop
+├─ xray adapter smoke (real)   │  ← xray run -test + run + stop
+└─ sing-box adapter smoke      │  ← sing-box check + run + stop
+                       │
+                       ▼ (needs: go + frontend + protocol-cores)
               windows (windows-latest)
               ├─ npm ci && npm run build:embed
               ├─ go test -count=1 ./...      ← full matrix, incl. store
@@ -25,6 +34,23 @@ go (ubuntu)                     native (ubuntu)      frontend (ubuntu)
               ├─ executable smoke check
               └─ artifact upload
 ```
+
+### The protocol-cores job
+
+Adapter correctness has two layers. The deterministic layer —
+contract suite, capability declarations, config structure — runs in
+the `go` job against the fake core helper with no protocol core
+installed. The acceptance layer installs the three pinned releases
+(checksum-verified downloads from the official repositories) and runs
+the smoke suites: each core's own config validator
+(`v2ray test` / `xray run -test` / `sing-box check`) accepts every
+generated document, and a full startup cycle (spawn → local listener
+ready → shutdown → cleanup) executes for every supported protocol
+combination.
+
+No public proxy server is ever contacted: the smoke tests exercise
+config acceptance and the local runtime lifecycle only, so CI
+correctness never depends on external infrastructure.
 
 ### Why the Windows job runs the full test matrix
 

@@ -327,3 +327,21 @@ button {
 }
 
 .toolbar .input { flex: 1; }
+
+/* Configuration details view (redacted credentials) */
+.detail-grid {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 6px 12px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.detail-grid dt {
+  color: var(--text-dim);
+}
+
+.detail-grid dd {
+  margin: 0;
+  word-break: break-all;
+}

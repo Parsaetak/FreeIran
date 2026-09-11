@@ -24,7 +24,11 @@ import (
 
 	"github.com/Parsaetak/FreeIran/engine/cache"
 	"github.com/Parsaetak/FreeIran/engine/config"
+	"github.com/Parsaetak/FreeIran/engine/connection"
 	"github.com/Parsaetak/FreeIran/engine/core"
+	"github.com/Parsaetak/FreeIran/engine/core/singbox"
+	"github.com/Parsaetak/FreeIran/engine/core/v2ray"
+	"github.com/Parsaetak/FreeIran/engine/core/xray"
 	"github.com/Parsaetak/FreeIran/engine/metrics"
 	"github.com/Parsaetak/FreeIran/engine/native"
 	"github.com/Parsaetak/FreeIran/engine/pipeline"
@@ -95,9 +99,10 @@ type App struct {
 	hotCache    *cache.Layer
 
 	coreLocator  *system.CoreLocator
+	coreRegistry *core.Registry
+	connMgr      *connection.Manager
 	tester       *tester.Tester
 	scheduler    *scheduler.Scheduler
-	coreRegistry *core.Registry
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -149,6 +154,36 @@ func New(opts Options) (*App, error) {
 
 	mreg := metrics.New()
 
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// The core registry binds backend adapters to executable
+	// discovery: xray (priority 0), v2ray (1), sing-box (2).
+	coreRegistry := core.NewRegistry(system.NewCoreLocator(layout.Cores))
+
+	if err := coreRegistry.Register(xray.New(), 0); err != nil {
+		cancel()
+		_ = st.Close()
+
+		return nil, err
+	}
+
+	if err := coreRegistry.Register(v2ray.New(), 1); err != nil {
+		cancel()
+		_ = st.Close()
+
+		return nil, err
+	}
+
+	if err := coreRegistry.Register(singbox.New(), 2); err != nil {
+		cancel()
+		_ = st.Close()
+
+		return nil, err
+	}
+
+	// Availability refresh runs in the background: the app must boot
+	// instantly with zero cores installed.
+
 	app := &App{
 		opts:     opts,
 		layout:   layout,
@@ -166,7 +201,7 @@ func New(opts Options) (*App, error) {
 			TTL:        30 * time.Minute,
 		}),
 		coreLocator:  system.NewCoreLocator(layout.Cores),
-		coreRegistry: core.NewRegistry(),
+		coreRegistry: coreRegistry,
 		seenHashes:   make(map[string]string),
 		state: AppState{
 			Status:        "ready",
@@ -183,7 +218,11 @@ func New(opts Options) (*App, error) {
 		app.sources = source.DefaultSources()
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	app.connMgr = connection.New(connection.Options{
+		Registry: coreRegistry,
+		Metrics:  mreg,
+	})
+
 	app.ctx = ctx
 	app.cancel = cancel
 
@@ -210,6 +249,11 @@ func (a *App) Start() {
 	}, a.runIngestionCycle)
 
 	a.scheduler.Start(a.ctx)
+
+	// Core availability refresh is background work: the registry
+	// stays usable (selection fails gracefully) while discovery is
+	// still running.
+	go a.coreRegistry.Refresh(a.ctx)
 
 	// Staged startup: verify storage and warm caches in the
 	// background so the UI is interactive immediately.
@@ -261,9 +305,15 @@ func (a *App) Context() context.Context {
 	return a.ctx
 }
 
-// Shutdown coordinates a safe stop: cancel background work first so
-// the store's own Close never waits on a goroutine the app controls,
-// then flush and release every resource deterministically.
+// Shutdown coordinates a safe stop, in order:
+//
+//	stop scheduler (no new ingestion) → cancel background work →
+//	disconnect the active session (stops the protocol core and
+//	removes temporary runtime configs BEFORE the store closes) →
+//	flush and close the store.
+//
+// No core process may outlive this call (the Windows guarantee:
+// process first, temp-config file second, store third).
 func (a *App) Shutdown() {
 	if a.scheduler != nil {
 		a.scheduler.Stop()
@@ -274,6 +324,10 @@ func (a *App) Shutdown() {
 	a.mu.Lock()
 	a.state.Status = "shutting_down"
 	a.mu.Unlock()
+
+	if a.connMgr != nil {
+		a.connMgr.Shutdown()
+	}
 
 	_ = a.store.Close()
 }

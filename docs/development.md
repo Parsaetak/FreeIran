@@ -11,6 +11,28 @@
 | wails3 CLI | v3.0.0-beta.19 | regenerating bindings |
 | govulncheck | **v1.8.0** (pinned) | security scanning |
 
+Protocol-core runtimes (external executables, discovered at runtime —
+never Go dependencies):
+
+| Core | Verified release | Source | SHA-256 (linux-amd64 binary) |
+|------|-----------------|--------|------------------------------|
+| Xray | **26.3.27** | github.com/XTLS/Xray-core | `8255dd939c34cf966cc91517b6324dd3c8d0bcf49ffac8beca049a38c46845ed` |
+| V2Ray (V2Fly) | **5.53.0** | github.com/v2fly/v2ray-core | `a7bc11ff3ee286bc15d8191440ebb10810ac801ced54bbd4ce79ce4d291f7f25` |
+| sing-box | **1.14.0** | github.com/SagerNet/sing-box | `57b3da14e264b6e05e8f46aee027c02d7dd7f1594d19aa39e2f4d2b9459bbd04` |
+
+Core versions are pinned deliberately — never "latest". The pins in
+`engine/core/versions.go` record what the adapters were verified
+against; CI's `protocol-cores` job installs exactly these releases
+(checksum-verified) and runs the real-binary smoke suites. The
+capability declarations were verified empirically against these
+builds: `v2ray test`, `xray run -test` and `sing-box check` accept or
+reject the generated documents, and full startup cycles (spawn →
+listener-ready → shutdown) run against every supported protocol
+combination. Notable verified divergences: V2Ray retains QUIC and
+plain HTTP/2 transports that current Xray REMOVED (migrated to
+XHTTP); REALITY and xtls-rprx-vision exist in Xray and sing-box but
+not in V2Fly.
+
 ### Go toolchain policy (one intentional policy)
 
 - `go.mod` declares `go 1.25.0` (the minimum language/toolchain level,
@@ -38,6 +60,49 @@ The wails3 CLI is only needed when service signatures change:
 go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.19
 wails3 generate bindings -clean -d frontend/bindings ./cmd/freeiran
 ```
+
+On Linux the generator needs the GTK development packages (same
+requirement as a local GUI build). When they are unavailable, single
+methods can be added by hand following the v0.3.0 precedent
+(`DiagnosticsService.StoreDiagnostics`) and the v0.4.0 ConnectionService:
+the method ID is the FNV-32a hash of the fully-qualified
+`github.com/Parsaetak/FreeIran/<package>.<Service>.<Method>` name.
+
+## Protocol-core development
+
+Running the adapter tests needs no protocol core installed: the
+process lifecycle is exercised against the fake core helper
+(`engine/core/testdata/fakecore`), compiled on the fly by the test
+suite.
+
+Real-binary smoke tests are opt-in through environment variables
+(CI sets them after checksum-verified installs):
+
+```bash
+export FREEIRAN_TEST_V2RAY_BIN=/path/to/v2ray
+export FREEIRAN_TEST_XRAY_BIN=/path/to/xray
+export FREEIRAN_TEST_SINGBOX_BIN=/path/to/sing-box
+
+go test -count=1 ./engine/core/...
+```
+
+Adding a backend (checklist):
+
+1. Create `engine/core/<name>/` implementing `core.Core`
+   (Name/Supports/Validate/BuildConfig/Start) with verified
+   `Capabilities` declarations.
+2. Run the shared contract suite
+   (`engine/core/contract.Run`) plus deterministic config tests.
+3. Add a real-binary smoke test guarded by an environment variable.
+4. Register the backend in `engine/app` (`app.New`) with a priority.
+5. Extend the selection/compatibility tests with the new capability
+   matrix lines.
+
+Discovery locations for core executables (in order): the
+application-managed `<base>/cores` directory, then the system PATH.
+A core found on PATH is never copied or modified — FreeIran only
+executes binaries it discovered in controlled locations, never
+anything extracted from downloaded configuration data.
 
 Commit the regenerated bindings together with the backend change so the
 frontend contract stays in sync (frontend/backend contract rule).

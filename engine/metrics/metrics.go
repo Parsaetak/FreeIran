@@ -41,6 +41,16 @@ type Registry struct {
 	testExecuted   atomic.Int64
 	testWorking    atomic.Int64
 	nativeFallback atomic.Int64
+
+	// Protocol-core counters (v0.4): backend selection, fallbacks,
+	// start outcomes, crashes and startup latency.
+	coreSelections atomic.Int64
+	coreFallbacks  atomic.Int64
+	coreStarts     atomic.Int64
+	coreStartFails atomic.Int64
+	coreCrashes    atomic.Int64
+	coreStartupNS  atomic.Int64
+	coreStartupCnt atomic.Int64
 }
 
 // New creates an empty registry.
@@ -167,6 +177,56 @@ func (r *Registry) AddNativeFallback(n int64) {
 	}
 }
 
+// AddCoreSelection records one backend selection.
+func (r *Registry) AddCoreSelection() {
+	if r == nil {
+		return
+	}
+
+	r.coreSelections.Add(1)
+}
+
+// AddCoreFallback records one fallback to a secondary backend.
+func (r *Registry) AddCoreFallback() {
+	if r == nil {
+		return
+	}
+
+	r.coreFallbacks.Add(1)
+}
+
+// AddCoreStart records one core start outcome.
+func (r *Registry) AddCoreStart(success bool) {
+	if r == nil {
+		return
+	}
+
+	if success {
+		r.coreStarts.Add(1)
+	} else {
+		r.coreStartFails.Add(1)
+	}
+}
+
+// AddCoreCrash records one unexpected core process death.
+func (r *Registry) AddCoreCrash() {
+	if r == nil {
+		return
+	}
+
+	r.coreCrashes.Add(1)
+}
+
+// ObserveCoreStartup records one measured spawn-to-ready duration.
+func (r *Registry) ObserveCoreStartup(d time.Duration) {
+	if r == nil {
+		return
+	}
+
+	r.coreStartupNS.Add(d.Nanoseconds())
+	r.coreStartupCnt.Add(1)
+}
+
 // SetActiveWorkers reports the current worker count.
 func (r *Registry) SetActiveWorkers(n int64) {
 	if r != nil {
@@ -208,6 +268,12 @@ type Snapshot struct {
 	TestsExecuted      int64   `json:"tests_executed"`
 	TestsWorking       int64   `json:"tests_working"`
 	NativeFallbackHits int64   `json:"native_fallback_hits"`
+	CoreSelections     int64   `json:"core_selections"`
+	CoreFallbacks      int64   `json:"core_fallbacks"`
+	CoreStarts         int64   `json:"core_starts"`
+	CoreStartFails     int64   `json:"core_start_failures"`
+	CoreCrashes        int64   `json:"core_crashes"`
+	AvgCoreStartupMS   float64 `json:"avg_core_startup_ms"`
 	NumGoroutine       int     `json:"num_goroutine"`
 }
 
@@ -267,6 +333,12 @@ func (r *Registry) Snapshot() Snapshot {
 		TestsExecuted:      r.testExecuted.Load(),
 		TestsWorking:       r.testWorking.Load(),
 		NativeFallbackHits: r.nativeFallback.Load(),
+		CoreSelections:     r.coreSelections.Load(),
+		CoreFallbacks:      r.coreFallbacks.Load(),
+		CoreStarts:         r.coreStarts.Load(),
+		CoreStartFails:     r.coreStartFails.Load(),
+		CoreCrashes:        r.coreCrashes.Load(),
+		AvgCoreStartupMS:   ms(r.coreStartupNS.Load(), r.coreStartupCnt.Load()),
 		NumGoroutine:       runtime.NumGoroutine(),
 	}
 }

@@ -158,18 +158,106 @@ at runtime, recorded in metrics as `native_fallback_hits`.
 
 `system/` provides the local integration surface: application directory
 layout, atomic file writes, process lifecycle for protocol cores
-(polite stop → forced kill, stdout/stderr draining, redaction),
-core binary discovery (`xray`, `sing-box`, `wireguard`) with version
-queries, and reachability probing. Platform differences live in
+(polite stop → forced kill, output capture through caller-supplied
+writers, redaction), core binary discovery (`xray`, `v2ray`,
+`sing-box`, `wireguard`) with multi-form version probes
+(`--version`, `-version`, `version` — the cores disagree), and
+reachability probing. Platform differences live in
 `process_unix.go` / `process_windows.go` / `paths_*`.
 
-## 8. Protocol core strategy
+## 8. Protocol cores (engine/core)
 
-The engine does not implement VPN protocols. `engine/core` defines the
-execution boundary (registry per protocol type); the system engine
-manages external cores (Xray, sing-box, WireGuard) with controlled
-lifecycle, version discovery and health checks. Downloaded
-configurations remain untrusted input at every boundary.
+The engine does not implement VPN protocols. `engine/core` is the
+execution boundary: a backend abstraction, a capability model, a
+registry with executable discovery, deterministic backend selection
+and the supervised process lifecycle shared by every backend.
+
+```text
+                        FREEIRAN
+                           │
+                      WAILS v3 UI
+                           │
+                    TypeScript / Go
+                           │
+                    Core Manager (engine/core)
+                           │
+          ┌────────────────┼─────────────────┐
+          │                │                 │
+       Xray Core       V2Ray Core       sing-box
+     (core/xray)      (core/v2ray)    (core/singbox)
+          │                │                 │
+          └────────────────┼─────────────────┘
+                           │
+                  Normalized Config
+                           │
+              Connection Manager (engine/connection)
+                           │
+                Tester / Selector (engine/tester)
+                           │
+                    Local Connection
+```
+
+**Backends** (`core.Core` interface): `Name`, `Supports`,
+`Validate`, `BuildConfig`, `Start`. Three adapters ship in v0.4:
+
+| Backend | Package | Config dialect | Distinct capabilities |
+|---------|---------|----------------|----------------------|
+| Xray | `engine/core/xray` | V4 JSON | REALITY, xtls-rprx-vision, XHTTP (plain QUIC/H2 removed upstream) |
+| V2Ray | `engine/core/v2ray` | V4 JSON | classic transports incl. QUIC + HTTP/2; no REALITY/flow |
+| sing-box | `engine/core/singbox` | native JSON | REALITY + vision via tls/utls; mixed inbound; Hysteria2/TUIC reserved for v0.5 |
+
+V2Ray (V2Fly) and Xray share the V4 JSON lineage — the Xray adapter
+extends the shared generator (`v2ray.BuildV4Document`) with
+Xray-only branches, so the two dialects can never drift apart.
+
+**Capability model** (`core.Capabilities`): each backend declares
+protocols, transports, securities, flows and TLS-mandatory protocols.
+Declarations are verified against the pinned real binaries
+(docs/development.md); the contract suite enforces them. Capability
+resolution — not scattered protocol checks — decides support
+everywhere in the application.
+
+**Registry** (`core.Registry`): registration (priority-ordered),
+executable discovery through `system.CoreLocator` (managed cores
+directory → PATH), availability state (available / missing /
+invalid), version reporting. Refresh is background work; the app
+boots with zero cores installed and reports them as missing.
+
+**Selection** (`core.Select`): deterministic and explainable —
+compatible candidates are ordered by user preference (when compatible
+AND available), then registry priority, then name; the winner carries
+a human-readable reason and the ordered fallback list. REALITY
+configs resolve to Xray or sing-box; QUIC/H2 configs resolve to V2Ray
+or sing-box; no compatible backend produces an error naming every
+considered backend.
+
+**Process lifecycle** (`core.Instance`): explicit states —
+`created → starting → running → stopping → stopped` with error states
+`start_failed / crashed / unhealthy / timed_out`. The shared launcher
+writes the generated runtime configuration into a 0600 file inside a
+0700 temporary directory, spawns the core with redacting output
+capture, and polls the local listener for readiness. Close stops the
+process FIRST (Windows file-lock discipline), then removes the
+temporary files with bounded retry.
+
+**Health** (`core.HealthReport`): process health and network health
+are separate axes — `process_alive` + `listener_ready` + latency.
+A living process never implies a working tunnel.
+
+**Connection manager** (`engine/connection`): one active session,
+explicit state machine — `disconnected → selecting → preparing →
+starting_core → waiting_for_ready → connected → disconnecting`, with
+`connection_failed` as the failure state. No contradictory booleans:
+the state string is the single source of truth. Bounded fallback
+tries the selection's fallback backends (default max 3 attempts) and
+records every attempt with its failure reason.
+
+**Secret redaction**: credential material (UUID, passwords, keys)
+never reaches logs, diagnostics, selection reasons or UI snapshots.
+`config.DisplayURL()` renders `vless://***@host:443`; the log capture
+buffer redacts both explicit secret values and URL userinfo patterns
+before storing a line. The configuration details view exposes
+presence flags (`has_uuid`, `has_password`), never the values.
 
 ## 9. Error model
 

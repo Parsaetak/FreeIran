@@ -94,3 +94,42 @@ the job.
 - The store never logs record contents; diagnostics expose counters and
   sizes only.
 - All local files are created with 0600/0700 permissions.
+
+
+## Protocol-core runtime security (v0.4.0)
+
+Protocol cores are external executables with full local privileges —
+the runtime treats them accordingly.
+
+**Executable discovery, never execution of downloaded data.**
+Backends resolve their binary through `system.CoreLocator` in exactly
+two controlled locations: the application-managed `<base>/cores`
+directory and the system PATH. Nothing found inside downloaded
+configuration data is ever executed, and user-installed binaries are
+never replaced or modified. Discovery reports path, version and
+availability; a missing core is a reportable state, not an error.
+
+**Untrusted configuration flow.** Source data crosses a one-way
+pipeline: parse → normalize → validate → capability resolution →
+backend-specific conversion → temporary runtime config → core. The
+generated document is written with 0600 permissions inside a 0700
+temporary directory, exists only for the life of the launch, and is
+removed deterministically — after failed startups as well as clean
+shutdowns, with the owning process stopped first (Windows file-lock
+discipline).
+
+**Credential redaction.** UUIDs, passwords and keys never reach logs,
+diagnostics, selection reasons, error messages or UI snapshots.
+`config.DisplayURL()` renders `vless://***@host:443`; captured core
+output passes through `core.RedactLogText` (explicit secret values +
+URL userinfo patterns) before entering the bounded log buffer; the
+configuration details view exposes presence flags only.
+
+**Future managed distribution.** The architecture reserves a managed
+runtime directory and version pins (`engine/core/versions.go`) so a
+future installer can bundle or fetch verified cores. When automatic
+downloads are implemented they MUST follow: HTTPS from the official
+source only, pinned versions, SHA-256 verification before anything is
+executed, atomic installation and rollback on failure. Verification
+before execution is a hard ordering — an unverified binary is never
+started, not even once.

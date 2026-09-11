@@ -85,7 +85,8 @@ dispatch is chosen per call (metrics record fallbacks under
 
 ```bash
 go test -bench=. -benchmem -run=NONE \
-  ./engine/chunks ./engine/store ./engine/native
+  ./engine/chunks ./engine/store ./engine/native \
+  ./engine/core ./engine/core/v2ray
 ```
 
 | Benchmark | What it measures |
@@ -107,6 +108,17 @@ go test -bench=. -benchmem -run=NONE \
 | BenchmarkMigration | 4,000-record streaming legacy migration |
 | BenchmarkHashBatch (+Mode/go, /native) | batch FNV-1a hashing, both implementations |
 | BenchmarkScanURLs | subscription scanning |
+| BenchmarkBuildConfig (v2ray) | V4 runtime-document generation per protocol+transport |
+| BenchmarkBuildConfigCached | generation with the runtime cache warm (reconnect path) |
+| BenchmarkValidate (v2ray) | backend deep validation |
+| BenchmarkSupports (v2ray) | hot capability check (selection + details view) |
+| BenchmarkBackendSelection | deterministic selection across three registered backends |
+| BenchmarkBackendSelectionCompatible | capability resolution across available backends |
+| BenchmarkRedactLogText | log/output redaction hot path |
+| BenchmarkGenCache | generation-cache lookup |
+| BenchmarkFingerprint | normalized-model fingerprint (dedup identity) |
+| BenchmarkNormalize | config normalization (pipeline hot path) |
+| BenchmarkDisplayURL | redacted display rendering |
 
 Run the native bridge benchmarks on an accelerated build:
 
@@ -137,6 +149,40 @@ read now pays for deterministic ownership. For the application's real
 workload — ingestion bursts of thousands of records plus UI paging of
 100-row pages — the write path and startup are the hot paths, and both
 improved.
+
+## 4b. Protocol-core paths (v0.4.0)
+
+The v0.4 protocol-core layer adds four measured paths. Reference VM:
+2 vCPU CI-class Linux runner, go1.26.8, `-benchtime=1s` medians.
+
+| Path | v0.4.0 (measured, 2 vCPU, go1.26.8) | Assessment |
+|------|--------------------------------------|------------|
+| Config generation (V4, per doc) | 12–16 µs/op, 5.0–6.8 KB, 59–78 allocs | one-time per launch; generation is NOT on any hot loop |
+| Config generation (cached, reconnect) | 1.2 µs/op, 464 B, 10 allocs | ~12× faster through the runtime generation cache |
+| Backend validation | 236 ns/op, 0 allocs | capability-table check only |
+| Supports (capability check) | 37 ns/op, 0 allocs | used by selection and the details view |
+| Backend selection (3 backends) | 3.1 µs/op, 3.9 KB, 40 allocs | once per connect; never in a loop |
+| Fingerprint (identity) | 610 ns/op, 355 B, 5 allocs | unchanged hot path from ingestion |
+| Normalize | 96 ns/op, 0 allocs | unchanged |
+| Redacted display | 141 ns/op, 64 B, 3 allocs | per UI snapshot |
+| Log redaction | 5.0 µs/op, 360 B, 7 allocs | per captured log write, bounded buffer |
+| Generation-cache lookup | 70 ns/op, 0 allocs | reconnect path |
+| Core startup (real binaries) | ~100–140 ms spawn→listener-ready | dominated by the core process itself; measured by the smoke suites |
+
+Storage and pipeline paths are unchanged from v0.3.0: the protocol-core
+work deliberately added zero regression surface to the data layer
+(the full store benchmark suite re-runs in CI on every push). The
+temporary-runtime-config write and its 0600 permissions add one
+small-file write per core launch (sub-millisecond), amortised over a
+connection session.
+
+Startup sequence budget (per connect, measured): selection (3 µs) +
+validation (0.24 µs) + generation (12–16 µs, or 1.2 µs cached) +
+temp-file write (sub-ms) + process spawn to listener ready
+(~100–140 ms, core-bound). Everything before the spawn is tens of
+microseconds — the protocol core process itself is the entire startup
+cost, which is why the generation cache exists for the reconnect path
+rather than for first connect.
 
 ## 5. UI performance
 

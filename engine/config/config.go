@@ -55,6 +55,19 @@ type Config struct {
 	PublicKey          string `json:"public_key,omitempty"`
 	ShortID            string `json:"short_id,omitempty"`
 
+	// Protocol details consumed by core backends. Parsers capture them
+	// and backend adapters read them, but they are deliberately NOT part
+	// of the fingerprint: identity is endpoint + credentials + transport,
+	// so existing stored records keep stable keys across the v0.4
+	// protocol-core upgrade (fingerprint stability is a
+	// storage-compatibility guarantee, see docs/storage-format.md).
+	Flow       string   `json:"flow,omitempty"`        // VLESS flow (xtls-rprx-vision).
+	Encryption string   `json:"encryption,omitempty"`  // VLESS encryption (default none).
+	AlterID    int      `json:"alter_id,omitempty"`    // VMess legacy alterId.
+	HeaderType string   `json:"header_type,omitempty"` // VMess TCP header obfuscation.
+	ALPN       []string `json:"alpn,omitempty"`        // TLS ALPN list.
+	SpiderX    string   `json:"spider_x,omitempty"`    // REALITY spider path.
+
 	// WireGuard.
 	PrivateKey          string   `json:"private_key,omitempty"`
 	AllowedIPs          []string `json:"allowed_ips,omitempty"`
@@ -92,6 +105,13 @@ func (c *Config) Normalize() {
 
 	c.PublicKey = strings.TrimSpace(c.PublicKey)
 	c.ShortID = strings.TrimSpace(c.ShortID)
+
+	c.Flow = strings.ToLower(strings.TrimSpace(c.Flow))
+	c.Encryption = strings.ToLower(strings.TrimSpace(c.Encryption))
+	c.HeaderType = strings.ToLower(strings.TrimSpace(c.HeaderType))
+	c.SpiderX = strings.TrimSpace(c.SpiderX)
+
+	c.ALPN = compactStrings(c.ALPN)
 
 	c.PrivateKey = strings.TrimSpace(c.PrivateKey)
 

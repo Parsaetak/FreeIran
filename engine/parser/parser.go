@@ -45,9 +45,21 @@ func (p *Parser) Parse(data []byte) ([]config.Config, error) {
 	return configs, err
 }
 
+// MaxInputSize bounds accepted input. The source layer already caps
+// fetches at 10 MiB; the parser defends its own boundary so no call
+// path can force unbounded allocation.
+const MaxInputSize = 32 << 20
+
 // ParseDetailed behaves like Parse and additionally reports how many
 // candidate records were rejected or deduplicated, for observability.
 func (p *Parser) ParseDetailed(data []byte) ([]config.Config, ParseStats, error) {
+	if len(data) > MaxInputSize {
+		return nil, ParseStats{}, fmt.Errorf(
+			"configuration input exceeds %d bytes",
+			MaxInputSize,
+		)
+	}
+
 	text := strings.TrimSpace(string(data))
 
 	if text == "" {
@@ -116,13 +128,15 @@ func parseJSON(text string) ([]config.Config, bool, error) {
 	case map[string]any:
 		cfg, ok := configFromJSON(value)
 
-		if !ok {
+		if ok {
+			configs = append(configs, cfg)
+		} else if outboundConfigs, isV2Ray := parseV2RayJSON(value); isV2Ray {
+			configs = append(configs, outboundConfigs...)
+		} else {
 			return nil, true, fmt.Errorf(
 				"JSON does not contain a supported configuration object",
 			)
 		}
-
-		configs = append(configs, cfg)
 
 	case []any:
 		for _, item := range value {
@@ -221,6 +235,256 @@ func configFromJSON(value map[string]any) (config.Config, bool) {
 	}
 
 	return cfg, true
+}
+
+// parseV2RayJSON extracts proxy outbounds from a complete V2Ray/Xray
+// client configuration share ({"inbounds":..., "outbounds":[...]}).
+//
+// The V4 outbounds carry backend-specific schemas; this parser
+// converts the proxy-relevant ones (vless, vmess, trojan,
+// shadowsocks, socks, http) into the normalized model and skips
+// routing helpers (freedom, blackhole, dns, etc.). Parsing is
+// bounded: at most maxV2RayOutbounds records are materialised.
+func parseV2RayJSON(value map[string]any) ([]config.Config, bool) {
+	outboundsRaw, ok := value["outbounds"].([]any)
+	if !ok {
+		return nil, false
+	}
+
+	const maxV2RayOutbounds = 64
+
+	if len(outboundsRaw) > maxV2RayOutbounds {
+		outboundsRaw = outboundsRaw[:maxV2RayOutbounds]
+	}
+
+	configs := make([]config.Config, 0, 4)
+
+	for _, outboundRaw := range outboundsRaw {
+		outbound, ok := outboundRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		cfg, ok := v2RayOutboundToConfig(outbound)
+		if !ok {
+			continue
+		}
+
+		configs = append(configs, cfg)
+	}
+
+	if len(configs) == 0 {
+		return nil, true
+	}
+
+	return configs, true
+}
+
+// v2RayOutboundToConfig converts one V4 outbound object into the
+// normalized model. Only proxy outbounds are converted; helpers
+// (freedom/blackhole/dns/loopback) are skipped by protocol name.
+func v2RayOutboundToConfig(outbound map[string]any) (config.Config, bool) {
+	protocol, _ := outbound["protocol"].(string)
+	protocol = strings.ToLower(strings.TrimSpace(protocol))
+
+	var cfg config.Config
+
+	switch protocol {
+	case "vless", "vmess":
+		settings, _ := outbound["settings"].(map[string]any)
+		vnext, _ := settings["vnext"].([]any)
+		if len(vnext) == 0 {
+			return config.Config{}, false
+		}
+
+		server, _ := vnext[0].(map[string]any)
+
+		cfg = config.Config{
+			Type:    config.Type(protocol),
+			Address: jsonString(server, "address"),
+			Port:    jsonPort(server, "port"),
+		}
+
+		if users, _ := server["users"].([]any); len(users) > 0 {
+			if user, ok := users[0].(map[string]any); ok {
+				cfg.UUID = jsonString(user, "id")
+
+				if protocol == "vless" {
+					cfg.Encryption = jsonString(user, "encryption")
+					cfg.Flow = jsonString(user, "flow")
+				} else {
+					cfg.AlterID = jsonInt(user, "alterId")
+				}
+			}
+		}
+
+	case "trojan":
+		settings, _ := outbound["settings"].(map[string]any)
+		servers, _ := settings["servers"].([]any)
+		if len(servers) == 0 {
+			return config.Config{}, false
+		}
+
+		server, _ := servers[0].(map[string]any)
+
+		cfg = config.Config{
+			Type:     config.TypeTrojan,
+			Address:  jsonString(server, "address"),
+			Port:     jsonPort(server, "port"),
+			Password: jsonString(server, "password"),
+		}
+
+	case "shadowsocks":
+		settings, _ := outbound["settings"].(map[string]any)
+		servers, _ := settings["servers"].([]any)
+		if len(servers) == 0 {
+			return config.Config{}, false
+		}
+
+		server, _ := servers[0].(map[string]any)
+
+		cfg = config.Config{
+			Type:     config.TypeShadowsocks,
+			Address:  jsonString(server, "address"),
+			Port:     jsonPort(server, "port"),
+			Method:   strings.ToLower(jsonString(server, "method")),
+			Password: jsonString(server, "password"),
+		}
+
+	case "socks", "http":
+		settings, _ := outbound["settings"].(map[string]any)
+		servers, _ := settings["servers"].([]any)
+		if len(servers) == 0 {
+			return config.Config{}, false
+		}
+
+		server, _ := servers[0].(map[string]any)
+
+		cfg = config.Config{
+			Type:    config.Type(protocol),
+			Address: jsonString(server, "address"),
+			Port:    jsonPort(server, "port"),
+		}
+
+		if users, _ := server["users"].([]any); len(users) > 0 {
+			if user, ok := users[0].(map[string]any); ok {
+				cfg.Username = jsonString(user, "user")
+				cfg.Password = jsonString(user, "pass")
+			}
+		}
+
+	default:
+		// freedom, blackhole, dns, wireguard, loopback… routing
+		// helpers and unsupported outbounds are skipped.
+		return config.Config{}, false
+	}
+
+	// Stream settings: transport + security.
+	if stream, ok := outbound["streamSettings"].(map[string]any); ok {
+		cfg.Network = strings.ToLower(jsonString(stream, "network"))
+
+		security := strings.ToLower(jsonString(stream, "security"))
+		cfg.Security = security
+
+		switch security {
+		case "tls":
+			if tls, ok := stream["tlsSettings"].(map[string]any); ok {
+				cfg.ServerName = jsonString(tls, "serverName")
+				cfg.FingerprintProfile = strings.ToLower(jsonString(tls, "fingerprint"))
+
+				if alpn, _ := tls["alpn"].([]any); len(alpn) > 0 {
+					cfg.ALPN = make([]string, 0, len(alpn))
+
+					for _, value := range alpn {
+						if text, ok := value.(string); ok {
+							cfg.ALPN = append(cfg.ALPN, text)
+						}
+					}
+				}
+			}
+
+		case "reality":
+			if reality, ok := stream["realitySettings"].(map[string]any); ok {
+				cfg.Security = string(config.SecurityReality)
+				cfg.ServerName = jsonString(reality, "serverName")
+				cfg.FingerprintProfile = strings.ToLower(jsonString(reality, "fingerprint"))
+				cfg.PublicKey = jsonString(reality, "publicKey")
+				cfg.ShortID = jsonString(reality, "shortId")
+				cfg.SpiderX = jsonString(reality, "spiderX")
+			}
+		}
+
+		switch cfg.Network {
+		case "ws":
+			if ws, ok := stream["wsSettings"].(map[string]any); ok {
+				cfg.Path = jsonString(ws, "path")
+
+				if headers, _ := ws["headers"].(map[string]any); headers != nil {
+					cfg.Host = jsonString(headers, "Host")
+				}
+			}
+
+		case "grpc":
+			if grpc, ok := stream["grpcSettings"].(map[string]any); ok {
+				cfg.Service = jsonString(grpc, "serviceName")
+			}
+
+		case "http", "h2":
+			if http, ok := stream["httpSettings"].(map[string]any); ok {
+				cfg.Path = jsonString(http, "path")
+				cfg.Network = "http"
+
+				if hosts, _ := http["host"].([]any); len(hosts) > 0 {
+					if host, ok := hosts[0].(string); ok {
+						cfg.Host = host
+					}
+				}
+			}
+		}
+	}
+
+	if tag, _ := outbound["tag"].(string); tag != "" && tag != "proxy" {
+		cfg.Name = tag
+	}
+
+	return cfg, true
+}
+
+// jsonString reads a string field from a decoded JSON object.
+func jsonString(object map[string]any, key string) string {
+	value, _ := object[key].(string)
+
+	return strings.TrimSpace(value)
+}
+
+// jsonInt reads a numeric field from a decoded JSON object.
+func jsonInt(object map[string]any, key string) int {
+	switch value := object[key].(type) {
+	case float64:
+		return int(value)
+
+	case string:
+		parsed, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil {
+			return 0
+		}
+
+		return parsed
+
+	default:
+		return 0
+	}
+}
+
+// jsonPort reads a port field bounded to the valid range.
+func jsonPort(object map[string]any, key string) int {
+	port := jsonInt(object, key)
+
+	if port < 1 || port > 65535 {
+		return 0
+	}
+
+	return port
 }
 
 // parseURLs extracts supported configuration URLs from newline-separated
@@ -509,6 +773,10 @@ func parseVLESS(u *url.URL) (config.Config, error) {
 		PublicKey:          query.Get("pbk"),
 		ShortID:            query.Get("sid"),
 		FingerprintProfile: query.Get("fp"),
+		Flow:               query.Get("flow"),
+		Encryption:         query.Get("encryption"),
+		SpiderX:            query.Get("spx"),
+		ALPN:               splitCommaSeparated(query.Get("alpn")),
 		Name:               u.Fragment,
 	}, nil
 }
@@ -531,12 +799,14 @@ func parseVMess(u *url.URL) (config.Config, error) {
 		Add  string `json:"add"`
 		Port any    `json:"port"`
 		ID   string `json:"id"`
+		Aid  any    `json:"aid"`
 		Net  string `json:"net"`
 		Host string `json:"host"`
 		Path string `json:"path"`
 		TLS  string `json:"tls"`
 		SNI  string `json:"sni"`
 		Type string `json:"type"`
+		Scy  string `json:"scy"`
 	}
 
 	if err := json.Unmarshal([]byte(decoded), &data); err != nil {
@@ -565,13 +835,53 @@ func parseVMess(u *url.URL) (config.Config, error) {
 		Address:    data.Add,
 		Port:       port,
 		UUID:       data.ID,
+		AlterID:    normalizeAlterID(data.Aid),
 		Network:    data.Net,
 		Host:       data.Host,
 		Path:       data.Path,
 		Security:   data.TLS,
 		ServerName: data.SNI,
+		HeaderType: data.Type,
+		Encryption: data.Scy,
 		Name:       data.PS,
 	}, nil
+}
+
+// normalizeAlterID accepts numeric or string alterId values.
+func normalizeAlterID(value any) int {
+	switch v := value.(type) {
+	case float64:
+		return int(v)
+
+	case string:
+		parsed, err := strconv.Atoi(strings.TrimSpace(v))
+		if err != nil {
+			return 0
+		}
+
+		return parsed
+
+	default:
+		return 0
+	}
+}
+
+// splitCommaSeparated parses comma-separated query values (alpn).
+func splitCommaSeparated(value string) []string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+
+	parts := strings.Split(value, ",")
+	result := make([]string, 0, len(parts))
+
+	for _, part := range parts {
+		if part = strings.TrimSpace(part); part != "" {
+			result = append(result, part)
+		}
+	}
+
+	return result
 }
 
 // parseTrojan parses a Trojan URI.

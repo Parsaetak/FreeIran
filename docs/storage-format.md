@@ -1,4 +1,4 @@
-# FreeIran Storage Format v2 (v0.3.0 lifecycle rework)
+# FreeIran Storage Format v2 (v0.3.0 lifecycle rework; unchanged in v0.4.0)
 
 This document specifies the on-disk formats implemented by
 `engine/store` and `engine/chunks`, and — equally important — the
@@ -221,3 +221,21 @@ Each batch is verified through the memtable before the next is staged;
 after the final flush a second streaming pass verifies every record
 through the full disk path. The legacy file is renamed (never deleted)
 only after verification succeeds, and re-running is a no-op.
+
+
+## 9. Fingerprint stability across v0.4.0
+
+The v0.4.0 protocol-core work added protocol-detail fields to the
+normalized model (VLESS flow/encryption, VMess alterId/header type,
+ALPN, REALITY spider path). These fields are deliberately NOT part of
+the fingerprint: record identity remains endpoint + credentials +
+transport, so every fingerprint computed by v0.2/v0.3 stores stays
+valid in v0.4 — no re-keying, no duplicate re-ingestion, no
+migration. The stored JSON gains new optional fields (all
+`omitempty`), so old records decode unchanged and new records remain
+readable by the same decoder.
+
+The full store format (chunks, WAL segments, registry, index) is
+byte-identical to v0.3.0; the v0.4 release re-ran the complete
+lifecycle and recovery test matrix against the protocol-core build
+as a regression gate.

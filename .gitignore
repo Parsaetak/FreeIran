@@ -21,6 +21,9 @@ frontend/dist/
 .npm/
 npm-debug.log*
 
+# --- CI protocol-core installs ---
+.cores/
+
 # --- Application runtime data ---
 data/
 *.firc

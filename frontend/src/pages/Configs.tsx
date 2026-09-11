@@ -1,8 +1,8 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useConfigsStore, makeSearchRunner } from "../state/stores";
-import { dataService, type Config } from "../services";
-import { formatDuration, formatNumber, truncate } from "../utilities/format";
+import { dataService, connectionService, call, type Config, type ConfigDetail } from "../services";
+import { formatDuration, formatNumber, relativeTime, truncate } from "../utilities/format";
 import { configToRow } from "../utilities/export";
 
 const searchRunner = makeSearchRunner(250);
@@ -22,6 +22,8 @@ export function ConfigsPage() {
   const lastError = useConfigsStore((state) => state.lastError);
 
   const setSearchQuery = useConfigsStore((state) => state.setSearchQuery);
+
+  const [detail, setDetail] = useState<ConfigDetail | null>(null);
 
   const parentRef = useRef<HTMLDivElement>(null);
 
@@ -69,6 +71,25 @@ export function ConfigsPage() {
       await useConfigsStore.getState().runSearch();
     } catch (error) {
       console.error("test failed", error);
+    }
+  };
+
+  // Details view: credential material is redacted server-side; this
+  // surface only receives presence flags.
+  const showDetails = async (config: Config) => {
+    const id = String(config["id"]);
+
+    if (detail?.id === id) {
+      setDetail(null);
+
+      return;
+    }
+
+    try {
+      const result = await call(() => connectionService.ConfigDetails(id));
+      setDetail(result ?? null);
+    } catch (error) {
+      console.error("details failed", error);
     }
   };
 
@@ -156,6 +177,12 @@ export function ConfigsPage() {
                   >
                     Test
                   </button>
+                  <button
+                    className="btn"
+                    onClick={() => void showDetails(config)}
+                  >
+                    …
+                  </button>
                 </div>
               );
             })}
@@ -168,6 +195,105 @@ export function ConfigsPage() {
           </div>
         )}
       </div>
+
+      {detail && <ConfigDetailsCard detail={detail} />}
+    </div>
+  );
+}
+
+function ConfigDetailsCard({ detail }: { detail: ConfigDetail }) {
+  return (
+    <div className="card" style={{ marginTop: 16 }}>
+      <h3 className="card-title">
+        Configuration details{detail.name ? ` — ${detail.name}` : ""}
+      </h3>
+
+      <dl className="detail-grid">
+        <dt>Protocol</dt>
+        <dd style={{ fontFamily: "var(--mono)" }}>{detail.type}</dd>
+
+        <dt>Address</dt>
+        <dd style={{ fontFamily: "var(--mono)" }}>
+          {detail.address}:{detail.port}
+        </dd>
+
+        <dt>Transport</dt>
+        <dd style={{ fontFamily: "var(--mono)" }}>{detail.network || "tcp"}</dd>
+
+        <dt>Security</dt>
+        <dd style={{ fontFamily: "var(--mono)" }}>{detail.security || "none"}</dd>
+
+        {detail.path && (
+          <>
+            <dt>Path</dt>
+            <dd style={{ fontFamily: "var(--mono)" }}>{detail.path}</dd>
+          </>
+        )}
+
+        {detail.host && (
+          <>
+            <dt>Host</dt>
+            <dd style={{ fontFamily: "var(--mono)" }}>{detail.host}</dd>
+          </>
+        )}
+
+        {detail.service && (
+          <>
+            <dt>gRPC service</dt>
+            <dd style={{ fontFamily: "var(--mono)" }}>{detail.service}</dd>
+          </>
+        )}
+
+        {detail.server_name && (
+          <>
+            <dt>Server name</dt>
+            <dd style={{ fontFamily: "var(--mono)" }}>{detail.server_name}</dd>
+          </>
+        )}
+
+        {detail.method && (
+          <>
+            <dt>Cipher</dt>
+            <dd style={{ fontFamily: "var(--mono)" }}>{detail.method}</dd>
+          </>
+        )}
+
+        <dt>Backends</dt>
+        <dd>{detail.compatible_backends?.join(", ") || "none compatible"}</dd>
+
+        <dt>Status</dt>
+        <dd>
+          {detail.working ? (
+            <span className="badge working">working</span>
+          ) : (
+            <span className="badge unknown">untested</span>
+          )}
+          {detail.latency_ms !== undefined && detail.latency_ms > 0 && (
+            <span> · {detail.latency_ms} ms</span>
+          )}
+          {detail.tested_at !== undefined && detail.tested_at > 0 && (
+            <span> · tested {relativeTime(detail.tested_at)}</span>
+          )}
+        </dd>
+
+        {detail.source && (
+          <>
+            <dt>Source</dt>
+            <dd>{detail.source}</dd>
+          </>
+        )}
+
+        <dt>Credentials</dt>
+        <dd style={{ color: "var(--text-dim)" }}>
+          {[
+            detail.has_uuid ? "UUID (redacted)" : null,
+            detail.has_password ? "password (redacted)" : null,
+            detail.has_public_key ? "public key (redacted)" : null,
+          ]
+            .filter(Boolean)
+            .join(", ") || "none"}
+        </dd>
+      </dl>
     </div>
   );
 }
