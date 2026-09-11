@@ -118,14 +118,27 @@ func (s *ConnectionService) Connect(configID string) (connection.Snapshot, error
 	ctx, cancel := context.WithTimeout(s.app.ctx, 60*time.Second)
 	defer cancel()
 
+	s.app.logger.Info("connection", "connection_start",
+		"connecting configuration %s via %s", cfg.ID, cfg.DisplayURL())
+
+	preference := s.app.currentSettings().PreferredBackend
+
 	snapshot, err := s.app.connMgr.Connect(ctx, *cfg, core.Preferences{
-		AllowFallback: true,
+		AllowFallback:    true,
+		PreferredBackend: preference,
 	})
 	if err != nil {
+		s.app.logger.Error("connection", "connection_failure", "connect", "backend",
+			"connection failed (state %s): %v", snapshot.State, err)
+
 		return snapshot, err
 	}
 
 	s.app.metricsR.AddCoreSelection()
+
+	s.app.logger.Info("connection", "connection_success",
+		"connected via %s on %s (latency %d ms)",
+		snapshot.Core, snapshot.Endpoint, snapshot.LatencyMS)
 
 	return snapshot, nil
 }
@@ -138,19 +151,39 @@ func (s *ConnectionService) ConnectConfig(cfg config.Config) (connection.Snapsho
 	ctx, cancel := context.WithTimeout(s.app.ctx, 60*time.Second)
 	defer cancel()
 
+	s.app.logger.Info("connection", "connection_start",
+		"connecting ad-hoc configuration via %s", cfg.DisplayURL())
+
+	preference := s.app.currentSettings().PreferredBackend
+
 	snapshot, err := s.app.connMgr.Connect(ctx, cfg, core.Preferences{
-		AllowFallback: true,
+		AllowFallback:    true,
+		PreferredBackend: preference,
 	})
 	if err != nil {
+		s.app.logger.Error("connection", "connection_failure", "connect", "backend",
+			"ad-hoc connection failed (state %s): %v", snapshot.State, err)
+
 		return snapshot, err
 	}
+
+	s.app.logger.Info("connection", "connection_success",
+		"connected via %s on %s (latency %d ms)",
+		snapshot.Core, snapshot.Endpoint, snapshot.LatencyMS)
 
 	return snapshot, nil
 }
 
 // Disconnect tears the session down.
 func (s *ConnectionService) Disconnect() connection.Snapshot {
-	return s.app.connMgr.Disconnect()
+	s.app.logger.Info("connection", "disconnect_start", "disconnecting")
+
+	snapshot := s.app.connMgr.Disconnect()
+
+	s.app.logger.Info("connection", "disconnect_success",
+		"session stopped (final state %s)", snapshot.State)
+
+	return snapshot
 }
 
 // Reconnect re-establishes the last session.
@@ -159,6 +192,14 @@ func (s *ConnectionService) Reconnect() (connection.Snapshot, error) {
 	defer cancel()
 
 	snapshot, err := s.app.connMgr.Reconnect(ctx)
+
+	if err != nil {
+		s.app.logger.Error("connection", "connection_failure", "reconnect", "backend",
+			"reconnect failed: %v", err)
+	} else {
+		s.app.logger.Info("connection", "connection_success",
+			"reconnected via %s", snapshot.Core)
+	}
 
 	return snapshot, err
 }

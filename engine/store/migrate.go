@@ -38,6 +38,16 @@ import (
 // migrationBatchSize bounds records staged per UpsertBatch.
 const migrationBatchSize = 1024
 
+// Lifecycle hooks for the legacy file descriptor. They exist so the
+// close-BEFORE-rename ordering is regression-testable on every
+// platform: on Windows, renaming (or removing) a file that this
+// process still holds open fails with "the process cannot access the
+// file", so the descriptor must be fully released first.
+var (
+	closeLegacyFile  = func(file *os.File) error { return file.Close() }
+	renameLegacyFile = os.Rename
+)
+
 // LegacyEntry mirrors engine/database Entry.
 type LegacyEntry struct {
 	Config  json.RawMessage `json:"config"`
@@ -87,7 +97,25 @@ func (s *Store) MigrateFromJSON(
 			Subsystem, "migrate", "read legacy database")
 	}
 
-	defer file.Close()
+	// The deferred close covers every ERROR exit path below. The
+	// SUCCESS path closes the file EXPLICITLY (with its error checked)
+	// before the rename, because the rename that preserves the legacy
+	// file cannot succeed on Windows while the descriptor is open.
+	closed := false
+
+	closeNow := func() error {
+		if closed {
+			return nil
+		}
+
+		closed = true
+
+		return closeLegacyFile(file)
+	}
+
+	defer func() {
+		_ = closeNow()
+	}()
 
 	version, err := legacyVersion(file)
 	if err != nil {
@@ -152,12 +180,21 @@ func (s *Store) MigrateFromJSON(
 			result.Migrated, verified)
 	}
 
+	// Release the legacy descriptor BEFORE the rename. Windows refuses
+	// to rename a file this process still holds open; a close failure
+	// is fatal here (data is already migrated and verified, but the
+	// lifecycle contract requires the descriptor gone before rename).
+	if err := closeNow(); err != nil {
+		return result, firerrors.Wrap(err, firerrors.KindEnvironment,
+			Subsystem, "migrate", "close legacy database before rename")
+	}
+
 	// Preserve the legacy file (rename, never delete). If a previous
 	// migration already renamed it, treat the rename as done.
 	backup := opts.LegacyPath + ".migrated"
 
 	if _, statErr := os.Stat(opts.LegacyPath); statErr == nil {
-		if err := os.Rename(opts.LegacyPath, backup); err != nil {
+		if err := renameLegacyFile(opts.LegacyPath, backup); err != nil {
 			return result, firerrors.Wrap(err,
 				firerrors.KindEnvironment,
 				Subsystem, "migrate", "preserve legacy file")

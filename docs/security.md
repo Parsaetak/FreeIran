@@ -133,3 +133,28 @@ source only, pinned versions, SHA-256 verification before anything is
 executed, atomic installation and rollback on failure. Verification
 before execution is a hard ordering — an unverified binary is never
 started, not even once.
+## Runtime log security (v0.5.0)
+
+The persistent runtime log (`internal/logging`) is security-reviewed
+surface:
+
+- **Redaction before storage.** Every entry passes pattern redaction
+  (UUIDs, credential-bearing protocol URLs, password/token/key
+  parameters) plus caller-registered secret values BEFORE it reaches
+  the file, the in-memory ring or any subscriber. There is no code
+  path that writes raw entries.
+- **Protocol-core output.** Core stdout/stderr is captured through
+  `engine/core.LogBuffer`, which redacts the active configuration's
+  secret fields and URL credentials line-wise before anything else
+  sees the text.
+- **File hygiene.** The log lives under the platform application-data
+  directory with 0600 file permissions inside a 0700 directory; it is
+  size-rotated with a bounded backup count so it can neither grow
+  unbounded nor be truncated into an inconsistent state (startup
+  recovery rotates an oversized leftover primary).
+- **UI exposure.** The log viewer receives redacted entries only,
+  incrementally by sequence number; "copy diagnostics" copies the same
+  redacted text. The UI never reads the raw file.
+- **No secrets in new settings.** Settings persist non-sensitive
+  preferences only (backend name, intervals, log limits, motion
+  preference) under the config directory with 0600 permissions.

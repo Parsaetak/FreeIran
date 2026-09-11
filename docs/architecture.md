@@ -259,7 +259,43 @@ buffer redacts both explicit secret values and URL userinfo patterns
 before storing a line. The configuration details view exposes
 presence flags (`has_uuid`, `has_password`), never the values.
 
-## 9. Error model
+## 9. Runtime logging (internal/logging)
+
+A persistent, structured runtime log records errors, warnings and
+important lifecycle events for every subsystem. It lives in the
+platform application-data directory (`<BaseDir>/logs/freeiran.log`,
+never inside the repository).
+
+```text
+entry shape:  {seq, ts(RFC3339 UTC), level, subsystem, event,
+               message, operation?, error_kind?}
+file format:  JSON lines (machine-readable)
+rotation:     size-based (default 5 MiB), 4 numbered backups,
+              sequential-rename shift, startup recovery of an
+              interrupted rotation
+redaction:    applied to EVERY entry before storage/broadcast —
+              UUIDs, protocol URLs (vless/vmess/trojan/ss/...),
+              password/token/key parameters and caller-registered
+              secret values are replaced with [REDACTED]
+consumers:    engine packages log through a process-wide no-op-safe
+              global (logging.E/W/Err/D); the desktop app installs
+              the real logger at boot and closes it last
+UI surface:   DiagnosticsService + LogService bindings expose an
+              incremental, bounded read (Recent by sequence number),
+              so the log viewer streams without ever transferring
+              the whole file
+```
+
+Logged lifecycle events include `application_start`, `application_ready`,
+`store_open`, `store_error`, `migration_start/success/error`,
+`source_refresh_start/success/error`, `core_discovered`, `core_start`,
+`core_ready`, `core_exit`, `core_error`, `connection_start/success/failure`,
+`disconnect_start/success`, `shutdown_start`, `shutdown_complete` and
+`settings_updated`. Protocol-core stdout/stderr is captured through the
+existing redacting `LogBuffer` (engine/core/logs.go) and never appended
+raw.
+
+## 10. Error model
 
 Every subsystem reports structured errors (`engine/errors`): kind
 (recoverable, retryable, invalid_input, configuration, environment,

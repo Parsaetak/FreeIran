@@ -2,7 +2,6 @@ package tester_test
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
@@ -19,13 +18,11 @@ import (
 func newCoreProbeEnv(t *testing.T) *tester.CoreProbe {
 	t.Helper()
 
-	fake := contract.BuildFakeCore(t)
-
 	dir := t.TempDir()
 
-	if err := os.WriteFile(dir+"/v2ray", mustRead(t, fake), 0o755); err != nil {
-		t.Fatalf("stage fake v2ray: %v", err)
-	}
+	// Stage with the platform-correct executable name (v2ray.exe on
+	// Windows) so discovery finds the fake v2ray.
+	contract.StageFakeCore(t, dir, "v2ray")
 
 	registry := core.NewRegistry(system.NewCoreLocator(dir))
 
@@ -131,27 +128,11 @@ func TestCoreProbeInvalidConfig(t *testing.T) {
 	}
 }
 
-// mustRead reads a file for test staging.
-func mustRead(t *testing.T, path string) []byte {
-	t.Helper()
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
-	}
-
-	return data
-}
-
 // TestCoreProbeTimeout verifies startup timeouts bound the test.
 func TestCoreProbeTimeout(t *testing.T) {
-	fake := contract.BuildFakeCore(t)
-
 	dir := t.TempDir()
 
-	if err := os.WriteFile(dir+"/v2ray", mustRead(t, fake), 0o755); err != nil {
-		t.Fatalf("stage fake v2ray: %v", err)
-	}
+	contract.StageFakeCore(t, dir, "v2ray")
 
 	registry := core.NewRegistry(system.NewCoreLocator(dir))
 

@@ -221,3 +221,26 @@ time with ldflags; CI injects the git commit. Rules:
 - Frontend dependencies are pinned via `package-lock.json`; CI installs
   with `npm ci` (never bare `npm install`).
 - Dependency updates go through CI + govulncheck before merge.
+
+## Fake-core test harness (v0.5.0)
+
+Lifecycle tests never require real protocol cores:
+
+```bash
+# Option A (default): tests compile engine/core/testdata/fakecore
+# with the local Go toolchain automatically.
+go test ./engine/...
+
+# Option B (CI parity): pre-build the fixture directory and point
+# the harness at it. A missing fixture is a hard failure.
+go build -o /tmp/testcores/fakecore ./engine/core/testdata/fakecore
+FREEIRAN_TEST_CORES=/tmp/testcores go test ./engine/...
+```
+
+Always stage test cores through `contract.StageFakeCore(tb, dir, name)`
+— it applies `system.ExecutableName` (`.exe` suffix on Windows), which
+is what registry discovery expects. Headless application smoke test:
+
+```bash
+go run ./cmd/freeiran --smoke-test   # boot → state → services → shutdown
+```

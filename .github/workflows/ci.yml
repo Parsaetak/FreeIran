@@ -38,6 +38,19 @@ jobs:
             exit 1
           fi
 
+      - name: Build deterministic fake test cores
+        run: |
+          # The test matrix runs against controlled fake protocol-core
+          # executables, never real VPN binaries and never whatever
+          # happens to be in the runner's PATH. The fixture directory is
+          # exposed through FREEIRAN_TEST_CORES (engine/core/contract
+          # consumes it; a missing fixture is a hard failure).
+          mkdir -p "$RUNNER_TEMP/freeiran-test-cores"
+          go build -o "$RUNNER_TEMP/freeiran-test-cores/fakecore" ./engine/core/testdata/fakecore
+          cp "$RUNNER_TEMP/freeiran-test-cores/fakecore" "$RUNNER_TEMP/freeiran-test-cores/fake-xray"
+          cp "$RUNNER_TEMP/freeiran-test-cores/fakecore" "$RUNNER_TEMP/freeiran-test-cores/fake-v2ray"
+          cp "$RUNNER_TEMP/freeiran-test-cores/fakecore" "$RUNNER_TEMP/freeiran-test-cores/fake-sing-box"
+
       - name: Vet
         run: go vet ./engine/... ./system/... ./internal/...
 
@@ -46,15 +59,19 @@ jobs:
 
       - name: Test
         run: go test -count=1 ./engine/... ./system/... ./internal/...
+        env:
+          FREEIRAN_TEST_CORES: ${{ runner.temp }}/freeiran-test-cores
 
       - name: Test (race)
         run: go test -race -count=1 ./engine/... ./system/... ./internal/...
+        env:
+          FREEIRAN_TEST_CORES: ${{ runner.temp }}/freeiran-test-cores
 
       - name: Benchmarks (smoke)
         run: |
           go test -bench=. -benchtime=1x -run=NONE \
             ./engine/chunks ./engine/store ./engine/pipeline \
-            ./engine/core ./engine/core/v2ray
+            ./engine/core ./engine/core/v2ray ./internal/logging
 
       # Compile-validate the Wails desktop app for the primary target
       # from Linux: the Windows webview needs no GTK, so a full
@@ -215,6 +232,21 @@ jobs:
           npm run build:embed
         working-directory: frontend
 
+      # Deterministic test fixtures: the full test matrix runs against
+      # controlled fake protocol-core executables built from
+      # engine/core/testdata/fakecore — NEVER real VPN binaries and
+      # never whatever happens to be installed on the runner. The
+      # fixture directory is exposed through FREEIRAN_TEST_CORES and a
+      # missing fixture fails the tests loudly instead of skipping.
+      - name: Build deterministic fake test cores
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\freeiran-test-cores" | Out-Null
+          go build -o "$env:RUNNER_TEMP\freeiran-test-cores\fakecore.exe" ./engine/core/testdata/fakecore
+          Copy-Item "$env:RUNNER_TEMP\freeiran-test-cores\fakecore.exe" "$env:RUNNER_TEMP\freeiran-test-cores\fake-xray.exe"
+          Copy-Item "$env:RUNNER_TEMP\freeiran-test-cores\fakecore.exe" "$env:RUNNER_TEMP\freeiran-test-cores\fake-v2ray.exe"
+          Copy-Item "$env:RUNNER_TEMP\freeiran-test-cores\fakecore.exe" "$env:RUNNER_TEMP\freeiran-test-cores\fake-sing-box.exe"
+
       # The full test matrix runs on Windows ON PURPOSE: engine/store
       # must prove its file lifecycle (open → use → close → delete
       # temp dir) on the platform where open handles block deletion.
@@ -223,6 +255,20 @@ jobs:
         run: go test -count=1 ./...
         env:
           CGO_ENABLED: "0"
+          FREEIRAN_TEST_CORES: ${{ runner.temp }}\freeiran-test-cores
+
+      - name: Runtime smoke test
+        shell: pwsh
+        # Headless application smoke test: boot the engine, list the
+        # service state, shut down. The webview itself is not launched
+        # (no interactive session guarantees on runners); the engine
+        # startup/shutdown path is what the smoke test guards.
+        env:
+          FREEIRAN_SMOKE_TEST: "1"
+        run: |
+          go run ./cmd/freeiran --smoke-test
+          if ($LASTEXITCODE -ne 0) { throw "smoke test failed: $LASTEXITCODE" }
+
 
       - name: Build desktop application
         shell: pwsh

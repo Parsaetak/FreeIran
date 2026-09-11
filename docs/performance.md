@@ -209,3 +209,21 @@ rather than for first connect.
   one decoded entry and one bounded batch exist at a time.
 - Store snapshots are read from atomic counters; no locks are held
   while the UI serializes state.
+
+## 10. v0.5.0 additions
+
+- `engine/store`: migration close/rename lifecycle hardened WITHOUT
+  changing the streaming architecture; `BenchmarkMigration` covers the
+  migration path and the ordering regression tests add no runtime cost.
+- `engine/cache`: new benchmark set (`BenchmarkCacheGet/Put/Mixed`)
+  covering hit-path reads, bounded insertion and a 75/25 mix.
+- `internal/logging`: new benchmark set (`BenchmarkLogWriteFile`,
+  `BenchmarkLogWriteRingOnly`, `BenchmarkRedact`) tracking the full
+  write pipeline (format + redact + ring + file) and the redaction
+  pattern cost. The log file write path is size-bounded and rotation
+  is amortized (sequential renames on the write path only at the
+  size boundary).
+- UI data paths remain bounded: configuration pages stay virtualized
+  and paginated; the log viewer reads incrementally by sequence
+  number (never a full-file transfer); no new UI API serializes the
+  whole store.

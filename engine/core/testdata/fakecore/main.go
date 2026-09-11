@@ -1,9 +1,15 @@
-// Command fakecore is a test helper that emulates a protocol-core
-// binary for lifecycle tests: it accepts the standard `-c <file>`
-// argument, extracts the local inbound port from the generated
-// configuration (V2Ray/Xray V4 format or sing-box format), opens a
-// TCP listener on that port, prints a "started" line, and exits
-// cleanly on termination.
+// Command fakecore is the deterministic test stand-in for the real
+// protocol-core binaries (Xray, V2Ray, sing-box). It emulates every
+// operation the registry, the process manager and the adapters rely
+// on, so the full test matrix runs without installing real cores:
+//
+//	version | --version | -version
+//	    print a version line and exit 0 (registry version probe)
+//	check -c <file>
+//	    validate the runtime configuration document and exit
+//	(implicit run) -c <file>
+//	    parse the document, bind the declared local inbound and stay
+//	    alive until signalled (readiness = TCP listener accept loop)
 //
 // Reading the port from the generated document — exactly like real
 // cores do — makes the helper verify that adapters actually emit the
@@ -11,8 +17,9 @@
 //
 // Failure injection through environment variables:
 //
-//	FAKECORE_FAIL_FAST=1       exit(3) before listening
+//	FAKECORE_FAIL_FAST=1          exit(3) before listening
 //	FAKECORE_CRASH_AFTER_START=1  exit(5) 300ms after startup
+//	FAKECORE_HANG=1               never listen, never exit (timeout paths)
 package main
 
 import (
@@ -21,6 +28,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -28,7 +36,26 @@ import (
 )
 
 func main() {
-	configPath := findConfigArg(os.Args[1:])
+	args := os.Args[1:]
+
+	// Version probe forms used by system.CoreLocator. The fake core
+	// answers all of them so discovery reports a version like the real
+	// cores do.
+	if len(args) == 1 && isVersionArg(args[0]) {
+		fmt.Printf("fakecore %s (%s)\n", version(), invocationName())
+		return
+	}
+
+	// "check" validates the document without starting (sing-box form).
+	runMode := false
+
+	if len(args) > 0 && args[0] == "check" {
+		args = args[1:]
+	} else {
+		runMode = true
+	}
+
+	configPath := findConfigArg(args)
 
 	if configPath == "" {
 		fmt.Fprintln(os.Stderr, "fakecore: -c is required")
@@ -37,13 +64,29 @@ func main() {
 
 	port, listenHost, err := inboundFromConfig(configPath)
 	if err != nil {
+		// Config validation failure: real cores exit non-zero here and
+		// so does the stand-in (adapters test this path).
 		fmt.Fprintf(os.Stderr, "fakecore: %v\n", err)
 		os.Exit(1)
+	}
+
+	if !runMode {
+		// "check": validation only, no listener.
+		fmt.Printf("fakecore: configuration %s is valid\n", filepath.Base(configPath))
+		return
 	}
 
 	if os.Getenv("FAKECORE_FAIL_FAST") == "1" {
 		fmt.Fprintln(os.Stderr, "fakecore: injected startup failure")
 		os.Exit(3)
+	}
+
+	if os.Getenv("FAKECORE_HANG") == "1" {
+		// Never becomes ready: for startup-timeout paths.
+		signals := make(chan os.Signal, 1)
+		signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT)
+		<-signals
+		return
 	}
 
 	// Parallel test binaries share the ephemeral port range: a
@@ -85,6 +128,20 @@ func main() {
 	<-signals
 
 	fmt.Println("fakecore stopped")
+}
+
+// isVersionArg reports whether the argument is a version probe.
+func isVersionArg(arg string) bool {
+	return arg == "version" || arg == "--version" || arg == "-version"
+}
+
+// invocationName is the binary name it was invoked as, so a single
+// fakecore binary staged as v2ray/xray/sing-box reports a matching
+// identity.
+func invocationName() string {
+	base := filepath.Base(os.Args[0])
+
+	return strings.TrimSuffix(base, ".exe")
 }
 
 // findConfigArg locates the -c/--config argument in a command line

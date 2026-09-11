@@ -3,7 +3,6 @@ package connection_test
 import (
 	"context"
 	"errors"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -22,14 +21,11 @@ import (
 func testEnv(t *testing.T) (*connection.Manager, *core.Registry) {
 	t.Helper()
 
-	fake := contract.BuildFakeCore(t)
-
 	dir := t.TempDir()
 
-	// Stage the fake binary as "v2ray".
-	if err := copyFile(fake, dir+"/v2ray"); err != nil {
-		t.Fatalf("stage fake v2ray: %v", err)
-	}
+	// Stage the fake binary as "v2ray" with the platform-correct
+	// executable name (v2ray.exe on Windows).
+	contract.StageFakeCore(t, dir, "v2ray")
 
 	registry := core.NewRegistry(system.NewCoreLocator(dir))
 
@@ -57,13 +53,9 @@ func testEnv(t *testing.T) (*connection.Manager, *core.Registry) {
 func testRegistry(t *testing.T) *core.Registry {
 	t.Helper()
 
-	fake := contract.BuildFakeCore(t)
-
 	dir := t.TempDir()
 
-	if err := copyFile(fake, dir+"/v2ray"); err != nil {
-		t.Fatalf("stage fake v2ray: %v", err)
-	}
+	contract.StageFakeCore(t, dir, "v2ray")
 
 	registry := core.NewRegistry(system.NewCoreLocator(dir))
 
@@ -403,14 +395,4 @@ func TestNilManagerSafety(t *testing.T) {
 	if !errors.Is(err, err) {
 		t.Fatal("error identity")
 	}
-}
-
-// copyFile duplicates a file with executable permissions.
-func copyFile(source, target string) error {
-	data, err := os.ReadFile(source)
-	if err != nil {
-		return err
-	}
-
-	return os.WriteFile(target, data, 0o755)
 }

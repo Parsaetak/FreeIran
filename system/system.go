@@ -297,6 +297,14 @@ func Redact(text string, secrets ...string) string {
 	return text
 }
 
+// ExecutableName returns the platform-correct file name for a core
+// executable: "v2ray" on Unix-like systems, "v2ray.exe" on Windows.
+// Staging and discovery MUST both go through this helper so a binary
+// staged under the managed cores directory is always found again.
+func ExecutableName(name string) string {
+	return executableName(name)
+}
+
 // versionProbeForms are the argument forms protocol cores accept for
 // version queries. Xray supports --version; V2Ray (V2Fly v5) and
 // sing-box use a "version" subcommand. Every form is tried until one

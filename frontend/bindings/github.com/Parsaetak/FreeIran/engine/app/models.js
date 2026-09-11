@@ -15,6 +15,9 @@ import * as pipeline$0 from "../pipeline/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as store$0 from "../store/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as logging$0 from "../../internal/logging/models.js";
 
 /**
  * AppState is the application state surfaced to the UI.
@@ -609,3 +612,188 @@ const $$createType1 = pipeline$0.Stats.createFrom;
 const $$createType2 = $Create.Nullable($$createType1);
 const $$createType3 = config$0.Config.createFrom;
 const $$createType4 = $Create.Array($$createType3);
+
+/**
+ * Settings is the persisted user preference set.
+ */
+export class Settings {
+    /**
+     * Creates a new Settings instance.
+     * @param {Partial<Settings>} [$$source = {}] - The source object to create the Settings.
+     */
+    constructor($$source = {}) {
+        if (!("preferred_backend" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["preferred_backend"] = "";
+        }
+        if (!("refresh_interval_minutes" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["refresh_interval_minutes"] = 0;
+        }
+        if (!("testing_policy" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["testing_policy"] = "";
+        }
+        if (!("log_level" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["log_level"] = "";
+        }
+        if (!("log_max_bytes_mb" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["log_max_bytes_mb"] = 0;
+        }
+        if (!("log_max_backups" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["log_max_backups"] = 0;
+        }
+        if (!("reduced_motion" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["reduced_motion"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new Settings instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {Settings}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new Settings(/** @type {Partial<Settings>} */($$parsedSource));
+    }
+}
+
+/**
+ * LogFilter selects which entries Recent returns.
+ */
+export class LogFilter {
+    /**
+     * Creates a new LogFilter instance.
+     * @param {Partial<LogFilter>} [$$source = {}] - The source object to create the LogFilter.
+     */
+    constructor($$source = {}) {
+        if (!("since_seq" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["since_seq"] = 0;
+        }
+        if (!("limit" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["limit"] = 0;
+        }
+        if (!("subsystem" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["subsystem"] = "";
+        }
+        if (!("query" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["query"] = "";
+        }
+        if (!("level" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["level"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new LogFilter instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {LogFilter}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new LogFilter(/** @type {Partial<LogFilter>} */($$parsedSource));
+    }
+}
+
+/**
+ * LogPage is one bounded page of runtime log entries.
+ */
+export class LogPage {
+    /**
+     * Creates a new LogPage instance.
+     * @param {Partial<LogPage>} [$$source = {}] - The source object to create the LogPage.
+     */
+    constructor($$source = {}) {
+        if (!("entries" in $$source)) {
+            /**
+             * @member
+             * @type {import("../../internal/logging/models.js").Entry[]}
+             */
+            this["entries"] = [];
+        }
+        if (!("last_seq" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["last_seq"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new LogPage instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {LogPage}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        const result = new LogPage(/** @type {Partial<LogPage>} */($$parsedSource));
+        if ($$parsedSource != null && $$parsedSource["entries"] != null) {
+            result["entries"] = $$parsedSource["entries"].map($$castEntry);
+        }
+        return result;
+    }
+}
+
+const $$create0 = logging$0.Entry.createFrom;
+
+/**
+ * Casts one raw entry object into an Entry instance.
+ * @param {any} $$value
+ * @returns {InstanceType<typeof logging$0.Entry>}
+ */
+function $$castEntry($$value) {
+    return $$create0($$value);
+}

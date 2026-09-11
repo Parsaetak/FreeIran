@@ -1,181 +1,292 @@
-# FreeIran Replacement Manifest — v0.4.1
+# FreeIran Replacement Manifest — v0.5.0
 
 ## Package
 
 | Field | Value |
 |-------|-------|
-| Version | 0.4.1 |
-| Base reference | commit `e661a28523b0265b16a07e3a0de807755b9cfd79` (v0.4.0) |
-| Package | `FreeIran-v0.4.1.zip` — complete source repository replacement |
-| Verified by | Clean extraction into a fresh directory; full build + test matrix re-run from the extracted tree, including real protocol-core smoke suites (see "Verification") |
-| Excluded from package | `.git`, `frontend/node_modules`, `frontend/dist` (build output), `native/build`, `.cores` (CI core installs), no secrets, no local runtime data |
+| Version | 0.5.0 |
+| Previous version | 0.4.1 |
+| Base reference | commit `8dff50e82e931770984baf7201138c18b50ea113` (v0.4.1, `main` HEAD) |
+| Package | `FreeIran-v0.5.0.zip` — complete source repository replacement |
+| Verified by | Clean extraction into a fresh directory; full build + test matrix re-run from the extracted tree (see "Verification") |
+| Excluded from package | `.git`, `frontend/node_modules`, `frontend/dist` (build output), `cmd/freeiran/frontend/dist` (embed staging), `native/build`, `.cores` (CI core installs), `testcores/` (CI fixture output), no secrets, no local runtime data, no test-generated binaries |
 
 ## Objective
 
-Repair the failing CI pipeline at v0.4.0 (run 34546093190, head
-`e661a28`) WITHOUT weakening any gate, and re-verify the entire
-application functionality matrix — the v0.4.0 repository already
-contained the full multi-core runtime (Xray, V2Ray, sing-box); the
-repair makes its verification pipeline actually execute and pass.
+Make FreeIran genuinely functional and production-ready: fix every
+failure in the latest Windows CI run at its root (not the symptoms),
+add persistent runtime error/warning logging, deliver a professional
+TypeScript/Wails UI with purposeful motion, and preserve the
+high-performance storage architecture and the real Xray / V2Ray /
+sing-box integrations.
 
-## Exact Actions failures discovered
+## Exact Actions failures discovered (v0.4.1 run) and root causes
 
-The failing CI run 34546093190 completed in **0 seconds with ZERO
-jobs started** (created 2026-09-11T00:20:42Z, updated the same
-second; the jobs API reports `total_count: 0`). That signature is not
-a test failure — it is GitHub Actions rejecting the workflow file
-before scheduling anything.
-
-### Root cause 1 (workflow failure): invalid YAML — duplicate `env:` key
-
-The `windows` job's "Build desktop application" step in
-`.github/workflows/ci.yml` declared TWO `env:` mappings (one before
-`run:`, one after). Duplicate mapping keys make the whole workflow
-file invalid, so every push since v0.3.0 (commits `e6defe2` and
-`e661a28`, runs 34534589667 and 34546093190) failed instantly with
-no jobs — the entire test matrix (go, native, frontend,
-protocol-cores, windows) was silently NEVER executed for v0.3.0 and
-v0.4.0.
-
-**Fix**: merged both variables into a single `env:` block
-(`CGO_ENABLED: "0"`; the `VERSION: ${{ github.sha }}` entry was
-dead — the script already reads `$env:GITHUB_SHA` — and was dropped).
-All three workflows now pass strict duplicate-key YAML validation.
-
-### Root cause 2 (latent, masked by #1): three wrong pinned core checksums
-
-The `protocol-cores` job pins SHA-256 values for the three real core
-downloads. All three v0.4.0 pins were WRONG (the official release
-archives carry different hashes):
-
-| Asset | v0.4.0 pin (wrong) | Actual official SHA-256 (v0.4.1) |
-|-------|-------------------|--------------------------------|
-| v2fly/v2ray-core v5.53.0 linux-64 | `a7bc11ff…` | `6bbb8aee65a57d0b12599b4b7c842b3ad0daca4436e661d94015c447cb31b4fa` |
-| XTLS/Xray-core v26.3.27 linux-64 | `8255dd93…` | `23cd9af937744d97776ee35ecad4972cf4b2109d1e0fe6be9930467608f7c8ae` |
-| SagerNet/sing-box v1.14.0 linux-amd64 | `57b3da14…` | `2375de6999f4f56ab46b4fc5ddf26a6aba1d3e61a0f4e7ddec2f4690457d5f63` |
-
-Each binary was downloaded, hash-verified against the corrected pin,
-and confirmed to report the pinned version (`v2ray version` → 5.53.0,
-`xray version` → 26.3.27, `sing-box version` → 1.14.0) before the
-pins were updated. With the old pins, the job would have failed at
-the first `sha256sum -c` on every run.
-
-### Historical note
-
-The last CI run with a VALID workflow file (commit `a536191`, run
-34432214132) failed in the Windows job's "Run Go tests" step. That
-failure predates the v0.3.0/v0.4.0 store/process/connection rework
-(which included the Windows file-lifecycle hardening and the
-StdoutPipe → direct-writer process refactor). The current matrix
-passes on Linux (3 consecutive full runs, plus `-race`), compiles the
-entire test suite for windows/amd64, and the Windows-specific hazards
-(`.exe` discovery via `executableName`, fake-core `.exe` staging,
-process-group kill, open-handle-before-delete discipline) were audited
-in code. Full runtime confirmation happens on the windows-latest
-runner once the repaired workflow executes.
-
-## Fixes applied
-
-1. `ci.yml`: single `env:` per step (root cause 1). The step now also
-   reads the version stamp from the `VERSION` file (single source of
-   truth) instead of hard-coding `0.4.0-ci` — future bumps no longer
-   require workflow edits.
-2. `ci.yml`: the three corrected pinned checksums (root cause 2).
-3. Version advance `0.4.0` → `0.4.1` (patch: verification-pipeline
-   repair, no application-behaviour change) in `VERSION`,
-   `internal/version/version.go`, `frontend/package.json`, `README.md`.
-4. `docs/ci.md`: documents the duplicate-key failure mode and the
-   checksum-source policy; fixes the runner description ("Node 22",
-   not "Node 24").
-5. No test was skipped, weakened, or removed. No package was excluded
-   from any job. No assertion was relaxed.
-
-## Application functionality audit (v0.4.1 re-verification)
-
-The complete chain was re-verified on the extracted clean tree:
+### Failure class A — migration rename on Windows
 
 ```text
-launch → app.New (store open, registry, connection manager) →
-UI services bound (6 Wails services, 30 methods — every binding ID
-FNV-verified against the Go source) → staged background init →
-store a config → Connect → capability resolution → config generation →
-core start → WaitReady (listener poll) → connected state → health
-axes (process + listener) → Disconnect → cleanup → Shutdown ordering
-(scheduler stop → session teardown → store close)
+engine/app: migrate: store/migrate: environment: preserve legacy file
 ```
 
-- **Connection state machine** (`engine/connection`): all eight states
-  exercised via the service-level E2E suite; bounded fallback, crash
-  detection in the health monitor, secret redaction in attempt
-  records.
-- **Protocol cores**: real-binary smoke suites pass — V2Ray 7/7,
-  Xray 9/9, sing-box 10/10 protocol combinations (config validation
-  by the core's own validator + full startup/listener/shutdown
-  cycles, synthetic credentials only).
-- **No dead UI**: grep sweep for TODO/FIXME/not-implemented/dummy
-  patterns found only HTML input placeholders and a reserved protocol
-  header field.
-- **Frontend data flow**: paged queries (`ConfigPage`), virtualized
-  config list (`@tanstack/react-virtual`), event-driven state (no
-  polling of full datasets).
+**Root cause.** `Store.MigrateFromJSON` (engine/store/migrate.go) held
+the legacy JSON file open through both streaming passes via
+`defer file.Close()` and then executed `os.Rename(legacy, legacy+".migrated")`.
+On Windows, renaming a file the process still holds open fails —
+the descriptor must be fully released first.
 
-## Performance
+**Fix.** Restructured the migration lifecycle:
+`open → pass 1 → flush → pass 2 (verify) → explicit error-aware close →
+rename`. The deferred close remains only as the ERROR-path safety net;
+the success path closes explicitly and treats a close error as fatal
+(data already migrated and verified, legacy file preserved, migration
+stays retryable). Read errors, rewind errors, close errors, rename
+errors and context cancellation are all handled; the legacy file is
+never deleted and migration remains idempotent.
 
-Benchmark smoke results (2 vCPU, go1.26.8, `-benchtime=1x`):
+### Failure class B — legacy journal upgrade on Windows
 
-| Benchmark | Result |
-|-----------|--------|
-| PipelineRun (engine/pipeline) | ~45 ms/op |
-| BackendSelection | ~2.3 ms/op (first call, cold) |
-| BackendSelectionCompatible | ~38 µs/op |
-| GenCache | ~11 µs/op |
-| v2ray BuildConfig (vless/tcp) | ~278 µs/op |
-| v2ray BuildConfigCached | ~64 µs/op |
-| RedactLogText | ~31 µs/op |
-| Native bridge (CGO) | pass, sub-ms |
+```text
+journal.log: The process cannot access the file because it is being
+used by another process
+seg-00000000.wal
+```
 
-No performance regressions were introduced; the generation cache and
-per-attempt latency recording behave as documented in
-`docs/performance.md`.
+**Root cause.** `journal.migrateLegacyLog` (engine/store/wal.go) opened
+the v1 `journal.log`, streamed and re-journaled its records, then
+executed `os.Remove(path)` — while the descriptor was still open
+(`defer file.Close()`). The comment claimed the removal was
+Windows-safe; it was not. Both removal sites (empty-journal early
+return and the post-upgrade unlink) were affected.
 
-## Tests executed (from the clean extracted tree)
+**Fix.** Close-before-remove on both paths with an error-aware close.
+Additionally, once every record is durably re-journaled into the
+segmented WAL, a close/removal failure can no longer lose data — the
+upgrade is now DEFERRED to the next boot instead of failing the store
+open, so a third-party lock (antivirus, backup tool) can never brick
+the application. The segmented-WAL checkpoint path was audited and was
+already Windows-safe (active segment closed before removal).
 
-- `gofmt -l ./engine ./system ./cmd ./internal` — clean
-- `go vet ./engine/... ./system/... ./internal/...` — pass
-- `go vet` `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 ./...` — pass
-- `go build ./engine/... ./system/... ./internal/...` — pass
-- `go test -count=1 ./engine/... ./system/... ./internal/...` — 19 packages pass
-- `go test -race -count=1 ./engine/... ./system/... ./internal/...` — pass
-- `go test -count=3` (flakiness sweep) — zero failures across 3 runs
-- `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go test -run '^$' ./...` — full suite compiles for Windows
-- Windows desktop build (CGO_ENABLED=0, trimpath, ldflags version) — 17.8 MB executable
-- `make -C native test` — C++ tests pass
-- `go build -tags native_accel ./engine/native` + CGO bridge tests + bridge benchmark — pass
-- Frontend: `npm ci`, `typecheck`, `vitest` (12/12), `vite build` — pass
-- Protocol cores (real pinned binaries, checksum-verified): V2Ray 7/7, Xray 9/9, sing-box 10/10 smoke combinations — pass
-- Security equivalents: `govulncheck` (linux engine + windows-target cmd) — no vulnerabilities; credential/shell-injection pattern scans — clean
-- Workflow strict-YAML validation (duplicate-key detection) — all three workflows pass
+### Failure class C — fake core discovery on Windows
+
+```text
+fake v2ray not discovered
+installed but unavailable: xray, v2ray, sing-box
+```
+
+Affected tests: `TestConnectionServiceBackends`,
+`TestSelectionWithRealBackends`, `TestSelectionPreferenceOverridesPriority`,
+`TestCoreProbeSupports`, `TestCoreProbeTest`.
+
+**Root cause.** Tests staged the fake core binary under an
+extensionless name (`dir/v2ray`), but `system.CoreLocator.Discover`
+searches for the platform-correct name (`v2ray.exe` on Windows). Every
+fake-core staging site was structurally wrong on Windows.
+
+**Fix.** `system.ExecutableName` is now exported and the new
+`contract.StageFakeCore(tb, dir, coreName)` is the single staging
+helper for all eight test sites (engine/core, engine/connection,
+engine/tester, engine/app); extensionless staging is structurally
+impossible. No real binaries are installed for fake test cases and no
+test was weakened.
+
+### Fixture harness (test-environment design fix)
+
+`contract.BuildFakeCore` now resolves deterministically:
+
+1. `FREEIRAN_TEST_CORES` (CI contract): a fixture directory with
+   pre-built fake cores. Missing fixtures are a HARD test failure —
+   never a silent skip.
+2. Local toolchain build of `engine/core/testdata/fakecore`
+   (one compilation per test process, per-test copies), skipping only
+   when no Go toolchain exists on a developer machine.
+
+The fake core itself now emulates the full contract the registry and
+process manager expect: `version`/`--version`/`-version` probes,
+`check -c` config validation, startup, readiness (TCP inbound from the
+generated document), controlled shutdown, deterministic exit and
+failure injection (`FAKECORE_FAIL_FAST`, `FAKECORE_CRASH_AFTER_START`,
+`FAKECORE_HANG`).
+
+## Runtime logging design (new, `internal/logging`)
+
+- Structured JSON-lines log at `<AppData>/FreeIran/logs/freeiran.log`
+  (platform application-data directory, never the repository).
+- Entry shape: `{seq, ts(RFC3339 UTC), level, subsystem, event,
+  message, operation?, error_kind?}`.
+- Size-based rotation (default 5 MiB) with bounded backups (default 4),
+  sequential-rename shift and startup recovery of an interrupted
+  rotation; limits are configurable and adjustable at runtime.
+- Mandatory redaction on every entry (UUIDs, protocol URLs,
+  password/token/key parameters, caller-registered secrets) before
+  file, memory ring or subscriber delivery.
+- No-op-safe package-level global (`logging.E/W/Err/D`) integrates the
+  store, migration, core manager, connection manager and system layer
+  without dependency cycles; the desktop entrypoint opens the log
+  before anything else and closes it last.
+- Core stdout/stderr continues to be captured through the redacting
+  `engine/core.LogBuffer`; raw output is never appended.
+- Logged events: `application_start`, `application_ready`, `store_open`,
+  `store_error`, `migration_start/success/error`, `compaction_*`,
+  `source_refresh_start/success/error`, `core_discovered`, `core_start`,
+  `core_ready`, `core_exit`, `core_error`, `connection_start/success/
+  failure`, `disconnect_start/success`, `shutdown_start`,
+  `shutdown_complete`, `settings_updated`.
+- UI: `LogService` (incremental `Recent(sinceSeq, limit, filters)`,
+  `Subsystems`, `Clear`, `LogFile`, `OpenLogsDir`) feeds the
+  diagnostics viewer without ever transferring the whole file.
+
+## UI changes (frontend/)
+
+- Rebuilt design system: tokens (surface hierarchy, radius, spacing,
+  shadows, typography, status colors, motion), component classes
+  (buttons, inputs, cards, badges, tables, dialogs, tooltips, toasts,
+  skeletons, stat tiles, empty states).
+- Dashboard: connection status panel, stat tiles, core mini-list,
+  recent activity (live log tail), skeleton + backend-unavailable
+  states.
+- Configurations: virtualized list (@tanstack/react-virtual), protocol
+  badges, latency color coding, debounced search, filters, pagination,
+  detail side panel.
+- Connection: authoritative state-machine presentation with per-state
+  animations, attempt history, reconnect, config picker, core
+  management cards (status/version/path/pinned/preferred).
+- Diagnostics: professional log viewer — severity/subsystem/search
+  filters, 1-second live tail, pause/resume, clear display, copy safe
+  diagnostics text, open log location; storage diagnostics and system
+  info cards.
+- Settings (new): preferred backend, refresh cadence, testing policy,
+  log level/size/backups, reduced motion; persisted under the config
+  directory, applied live.
+- Motion language: unique per function (connect signal pulse,
+  disconnect collapse, refresh flow, boot dots, log slide-in),
+  GPU-friendly transforms/opacity only, full
+  `prefers-reduced-motion` support plus an in-app reduced-motion
+  preference.
+
+## Protocol-core changes
+
+Xray, V2Ray (V2Fly) and sing-box adapters are UNCHANGED in behavior
+and remain real integrations — none replaced by fakes, none collapsed
+into another. The fake core is test-only and never ships in production
+builds. Selection remains deterministic
+(capability → preference → priority → availability → health) with a
+human-readable reason; the user's preferred backend (Settings) is
+honored when compatible and available.
+
+## Storage changes
+
+Behavior-preserving lifecycle hardening only (see failure classes A/B):
+explicit error-aware close before rename/remove on every legacy
+upgrade path, deferred (non-fatal) upgrade cleanup after durable
+re-journaling. Streaming, chunking, WAL, lazy reads, caching,
+background flushing and bounded memory are unchanged; the on-disk
+format is unchanged.
+
+## Performance changes
+
+- No regression in store paths; `BenchmarkMigration` and the full
+  benchmark set (parsing, normalization, fingerprinting, chunking,
+  storage read/write, compaction, core selection, config generation)
+  remain in place and pass.
+- New benchmarks: `engine/cache` (Get/Put/Mixed) and
+  `internal/logging` (WriteFile/WriteRingOnly/Redact).
+- UI data paths audited: configuration pages stay virtualized and
+  paginated; the log viewer reads incrementally; no new API
+  serializes the whole store.
+
+## Security changes
+
+- Runtime log redaction enforced at the single write choke point;
+  documented in docs/security.md.
+- Log files 0600 inside 0700 application-data directories.
+- Settings persist non-sensitive preferences only (0600).
+- Security workflow (govulncheck, gitleaks, static analysis) unchanged
+  and passing; the new logging/UI code is covered by the same gates.
 
 ## Workflow changes
 
-- `ci.yml` — the two root-cause fixes above (duplicate `env:` merge,
-  dynamic version stamp, corrected checksums). Job/step structure
-  otherwise unchanged; nothing is skipped.
-- `security.yml`, `release.yml` — unchanged (validated, no defects
-  found; the Security workflow was already green at v0.4.0).
+- `go` job: builds the fake-core fixture directory and exports
+  `FREEIRAN_TEST_CORES` for both the plain and the race test steps;
+  benchmark smoke includes `internal/logging`.
+- `windows` job: builds frontend → builds deterministic fake test
+  cores (`fakecore.exe` + named copies) → exposes the fixture
+  directory → runs the FULL Go test matrix (no package skipped) →
+  headless runtime smoke test (`go run ./cmd/freeiran --smoke-test`:
+  boot → state → services → shutdown) → builds the desktop binary →
+  validates the executable → uploads the artifact. No real VPN
+  infrastructure is installed for ordinary tests.
+- `protocol-cores` job: unchanged — pinned real Xray/V2Ray/sing-box
+  binaries with SHA-256 verification run the real-binary smoke suites
+  separately.
+- `security.yml`, `release.yml`: unchanged.
+
+## Files added
+
+- `internal/logging/logging.go`, `logging_test.go`, `logging_bench_test.go`
+- `engine/store/migrate_test.go` (Windows lifecycle regression suite)
+- `engine/cache/cache_bench_test.go`
+- `engine/app/loggingservice.go` (LogService + SettingsService)
+- `system/open_unix.go`, `system/open_windows.go` (OpenDirectory)
+- `frontend/bindings/.../engine/app/logservice.js`,
+  `settingsservice.js`, `frontend/bindings/.../internal/logging/models.js`
+- `frontend/src/components/{Dialog,ErrorBoundary,Icons,Toasts,common}.tsx`
+- `frontend/src/pages/Settings.tsx`
+
+## Files changed (high level)
+
+- `engine/store/migrate.go`, `engine/store/wal.go` (lifecycle fixes +
+  hooks), `engine/store/migrate_test.go`
+- `engine/core/core.go` (lifecycle logging), `engine/core/contract/
+  contract.go` (fixture harness), `engine/core/testdata/fakecore/main.go`
+  (version/check/hang), staging sites in `engine/core/registry_test.go`,
+  `engine/connection/connection_test.go`, `engine/tester/
+  core_probe_test.go`, `engine/app/connectionservice_test.go`
+- `engine/app/app.go` (logger lifecycle, settings, ingestion events),
+  `engine/app/services.go` (migration/compaction events),
+  `engine/app/connectionservice.go` (connection events, preference
+  wiring)
+- `cmd/freeiran/main.go` (early logger boot, new services,
+  `--smoke-test` headless mode)
+- `system/system.go` (ExecutableName export)
+- `.github/workflows/ci.yml` (fixture harness + smoke test)
+- `VERSION` → 0.5.0, `internal/version/version.go`,
+  `frontend/package.json`, `frontend/package-lock.json`
+- `README.md`, `docs/architecture.md`, `docs/ci.md`,
+  `docs/development.md`, `docs/performance.md`, `docs/security.md`
+- `frontend/` full UI redesign (pages, components, styles, services
+  surface, models bindings)
+
+## Files removed
+
+None. Every subsystem retains exactly one authoritative
+implementation; no dead code was introduced by this release.
+
+## Tests
+
+- Regression: migration close-before-rename ordering, close-error and
+  rename-error preservation, idempotency, cancellation; legacy journal
+  close-before-remove ordering, close-failure preservation, deferred
+  upgrade on removal failure.
+- Logging: file creation/structure, rotation bounds, startup recovery,
+  redaction (pattern + explicit secrets + file-level), concurrent
+  writes, incremental reads, shutdown flush, subscribe/cancel, global
+  no-op safety, hostile-input redaction safety.
+- Harness: `FREEIRAN_TEST_CORES` resolution (hard failure on missing
+  fixtures), platform-correct staging, fake core version/check paths.
+- Frontend: typecheck, 28 unit tests, production build.
+- Full suite: `go test ./...` and `go test -race ./...` across
+  `./engine/... ./system/... ./internal/...`; `go vet` clean;
+  gofmt-clean; `windows/amd64` build + vet of `./cmd/freeiran`.
 
 ## Known limitations
 
-- The Windows job's runtime test execution happens on
-  `windows-latest` only — no local Windows runner exists in this
-  environment; Windows coverage locally is compile-level plus the
-  code-audit of platform-specific paths (verified: `.exe` discovery,
-  fake-core staging, process lifecycle, file-handle discipline).
-- `go test ./...` cannot run the `cmd/freeiran` package on a Linux
-  desktop without GTK4/WebKitGTK dev packages (Wails v3 linux webview
-  is CGO/GTK). This is an environment constraint, not a repository
-  defect; CI compiles and tests that package on windows-latest where
-  the webview is the pure-Go WebView2 path.
-- Protocol-core smoke tests exercise config acceptance and local
-  lifecycle only; no real tunnel traffic (by design — no dependency
-  on external proxy infrastructure).
+- The Windows smoke test boots the engine headlessly; the webview
+  itself is validated by the desktop build step, not interactively
+  (CI runners have no interactive desktop session).
+- `wails3 generate bindings` requires GTK development packages on
+  Linux; the v0.5.0 binding modules were produced against the exact
+  generator output format (FNV-1a method IDs verified against the
+  v0.4.1 generated files) and are byte-compatible in structure.
+- Real-core behavior on exotic protocols (e.g. XRAY REALITY flows) is
+  validated by the dedicated real-binary CI job, not by the fake-core
+  matrix.

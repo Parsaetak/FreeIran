@@ -36,6 +36,7 @@ import (
 	"github.com/Parsaetak/FreeIran/engine/source"
 	"github.com/Parsaetak/FreeIran/engine/store"
 	"github.com/Parsaetak/FreeIran/engine/tester"
+	"github.com/Parsaetak/FreeIran/internal/logging"
 	"github.com/Parsaetak/FreeIran/internal/version"
 	"github.com/Parsaetak/FreeIran/system"
 )
@@ -64,6 +65,11 @@ type Options struct {
 	// of the built-in public sources. Used by tests and headless
 	// setups.
 	SkipDefaultSources bool
+
+	// Logger overrides the runtime log (the desktop entrypoint opens
+	// it early so boot failures are captured). When nil, a logger is
+	// created under <BaseDir>/logs.
+	Logger *logging.Logger
 }
 
 // DefaultOptions returns production defaults.
@@ -115,6 +121,9 @@ type App struct {
 
 	ingesting atomic.Bool
 	started   atomic.Bool
+
+	logger   *logging.Logger
+	settings Settings
 }
 
 // AppState is the application state surfaced to the UI.
@@ -145,12 +154,39 @@ func New(opts Options) (*App, error) {
 		return nil, err
 	}
 
+	// Persistent runtime log: opened BEFORE the store so storage and
+	// migration failures are captured (§16).
+	logger := opts.Logger
+
+	if logger == nil {
+		logger, err = logging.Open(logging.Options{
+			Dir:  layout.Logs,
+			Name: "freeiran.log",
+		})
+		if err != nil {
+			return nil, fmt.Errorf("app: open runtime log: %w", err)
+		}
+	}
+
+	logging.SetGlobal(logger)
+	logger.Info("app", "application_start",
+		"FreeIran %s starting (base %s)", version.String(), opts.BaseDir)
+
 	st, err := store.Open(store.Options{
 		Path: layout.Data,
 	})
 	if err != nil {
+		logger.Error("store", "store_error", "open", "environment",
+			"store open failed: %v", err)
+
+		_ = logger.Close()
+
 		return nil, fmt.Errorf("app: open store: %w", err)
 	}
+
+	logger.Info("store", "store_open",
+		"store ready (%d records, %d chunks)",
+		st.Count(), st.Snapshot().ChunkCount)
 
 	mreg := metrics.New()
 
@@ -187,6 +223,7 @@ func New(opts Options) (*App, error) {
 	app := &App{
 		opts:     opts,
 		layout:   layout,
+		logger:   logger,
 		store:    st,
 		pipe:     pipeline.New(opts.Pipeline, mreg),
 		metricsR: mreg,
@@ -233,6 +270,12 @@ func New(opts Options) (*App, error) {
 		return nil, err
 	}
 
+	app.settings = app.loadSettings()
+	app.applySettings(app.settings)
+
+	logger.Info("app", "application_ready",
+		"application ready (%d configurations)", st.Count())
+
 	return app, nil
 }
 
@@ -253,7 +296,17 @@ func (a *App) Start() {
 	// Core availability refresh is background work: the registry
 	// stays usable (selection fails gracefully) while discovery is
 	// still running.
-	go a.coreRegistry.Refresh(a.ctx)
+	go func() {
+		a.coreRegistry.Refresh(a.ctx)
+
+		for _, backend := range a.coreRegistry.Backends() {
+			if backend.Status == core.StatusAvailable {
+				a.logger.Info("core", "core_discovered",
+					"%s %s available at %s",
+					backend.Name, backend.Version, backend.Path)
+			}
+		}
+	}()
 
 	// Staged startup: verify storage and warm caches in the
 	// background so the UI is interactive immediately.
@@ -315,6 +368,10 @@ func (a *App) Context() context.Context {
 // No core process may outlive this call (the Windows guarantee:
 // process first, temp-config file second, store third).
 func (a *App) Shutdown() {
+	if a.logger != nil {
+		a.logger.Info("app", "shutdown_start", "stopping subsystems")
+	}
+
 	if a.scheduler != nil {
 		a.scheduler.Stop()
 	}
@@ -329,7 +386,17 @@ func (a *App) Shutdown() {
 		a.connMgr.Shutdown()
 	}
 
-	_ = a.store.Close()
+	if err := a.store.Close(); err != nil {
+		if a.logger != nil {
+			a.logger.Error("store", "store_error", "close", "environment",
+				"store close failed: %v", err)
+		}
+	}
+
+	if a.logger != nil {
+		a.logger.Info("app", "shutdown_complete", "all subsystems stopped")
+		_ = a.logger.Close()
+	}
 }
 
 // State returns the current application state.
@@ -367,6 +434,9 @@ func (a *App) runIngestionCycle(ctx context.Context) error {
 
 	sink := pipeline.NewStoreSink(a.store, 512)
 
+	a.logger.Info("source", "source_refresh_start",
+		"refreshing %d sources", len(sources))
+
 	stats, newHashes, err := a.pipe.Run(ctx, sources, sink, hashes)
 
 	// Merge: unchanged sources keep their previous hashes.
@@ -385,6 +455,21 @@ func (a *App) runIngestionCycle(ctx context.Context) error {
 
 	if saveErr := a.saveSources(); saveErr != nil && err == nil {
 		err = saveErr
+	}
+
+	if err != nil {
+		persisted := int64(0)
+
+		if stats != nil {
+			persisted = stats.Persisted
+		}
+
+		a.logger.Error("source", "source_refresh_error", "cycle", "pipeline",
+			"refresh failed after %d persisted: %v", persisted, err)
+	} else if stats != nil {
+		a.logger.Info("source", "source_refresh_success",
+			"refresh complete: %d discovered, %d persisted, %d duplicates",
+			stats.Discovered, stats.Persisted, stats.Duplicates)
 	}
 
 	return err

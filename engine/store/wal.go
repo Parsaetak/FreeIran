@@ -838,11 +838,21 @@ func (j *journal) legacyJournalPath() string {
 	return filepath.Join(j.dir, "journal.log")
 }
 
+// Lifecycle hooks for the legacy journal upgrade. Like the migration
+// hooks they make the close-BEFORE-remove ordering regression-testable
+// on every platform (Windows refuses to unlink open files).
+var (
+	closeLegacyJournal  = func(file *os.File) error { return file.Close() }
+	removeLegacyJournal = os.Remove
+)
+
 // migrateLegacyLog upgrades a v1 journal.log in place: records are
 // streamed (bounded memory), applied through the replay callback,
 // re-appended into the segmented WAL (one fsync) and only then is the
-// old file removed. Removing the file is safe on every platform
-// because its descriptor was opened and closed locally.
+// old file removed. The descriptor is closed EXPLICITLY (error-aware)
+// before every removal: on Windows an os.Remove against a file this
+// process still holds open fails with "the process cannot access the
+// file because it is being used by another process".
 func (j *journal) migrateLegacyLog(replay replayFunc) error {
 	path := j.legacyJournalPath()
 
@@ -856,7 +866,30 @@ func (j *journal) migrateLegacyLog(replay replayFunc) error {
 			Subsystem, "wal", "open legacy journal")
 	}
 
-	defer file.Close()
+	// closeAndRelease releases the legacy descriptor exactly once with
+	// its error checked; removal below is only attempted after a
+	// successful close. On close failure the legacy file is KEPT (the
+	// upgrade re-runs idempotently next boot).
+	closed := false
+
+	closeAndRelease := func() error {
+		if closed {
+			return nil
+		}
+
+		closed = true
+
+		if err := closeLegacyJournal(file); err != nil {
+			return firerrors.Wrap(err, firerrors.KindEnvironment,
+				Subsystem, "wal", "close legacy journal before upgrade")
+		}
+
+		return nil
+	}
+
+	defer func() {
+		_ = file.Close() // no-op when closeAndRelease already ran
+	}()
 
 	reader := bufio.NewReaderSize(file, 64<<10)
 
@@ -864,7 +897,19 @@ func (j *journal) migrateLegacyLog(replay replayFunc) error {
 
 	if _, err := io.ReadFull(reader, head); err != nil {
 		// Empty or unreadably short legacy journal: nothing to keep.
-		return os.Remove(path)
+		// The descriptor must be released before the file is removed.
+		// A close/removal failure here keeps the file for the next
+		// boot: an empty journal can never lose data, so the upgrade
+		// is deferred rather than failing the store open.
+		if closeErr := closeAndRelease(); closeErr != nil {
+			return nil
+		}
+
+		if err := removeLegacyJournal(path); err != nil && !os.IsNotExist(err) {
+			return nil // deferred: retried on the next open
+		}
+
+		return nil
 	}
 
 	if string(head[0:4]) != walMagic {
@@ -909,7 +954,21 @@ func (j *journal) migrateLegacyLog(replay replayFunc) error {
 		}
 	}
 
-	return os.Remove(path)
+	// Close-before-remove: release the legacy descriptor (error-aware)
+	// and only then unlink the file. At this point every record is
+	// already durably re-journaled into the segmented WAL, so a
+	// close/removal failure can no longer lose data: the upgrade is
+	// DEFERRED (retried on the next open) instead of failing the store
+	// open — a third-party file lock must never brick the application.
+	if err := closeAndRelease(); err != nil {
+		return nil
+	}
+
+	if err := removeLegacyJournal(path); err != nil && !os.IsNotExist(err) {
+		return nil // deferred: retried on the next open
+	}
+
+	return nil
 }
 
 // Close syncs and closes the active segment.

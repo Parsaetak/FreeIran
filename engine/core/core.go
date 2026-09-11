@@ -19,6 +19,7 @@ import (
 
 	"github.com/Parsaetak/FreeIran/engine/config"
 	firerrors "github.com/Parsaetak/FreeIran/engine/errors"
+	"github.com/Parsaetak/FreeIran/internal/logging"
 	"github.com/Parsaetak/FreeIran/system"
 )
 
@@ -266,9 +267,31 @@ func (i *Instance) markReady(err error) {
 			i.state = StateRunning
 		}
 
+		name := i.coreName()
+		pid := i.proc.PID()
+
 		i.mu.Unlock()
+
+		if err == nil {
+			logging.E("core", "core_ready",
+				"core %s (pid %d) is ready on %s", name, pid, i.listen)
+		} else {
+			logging.Err("core", "core_error", "wait_ready", "process",
+				"core %s (pid %d) failed to become ready: %v", name, pid, err)
+		}
+
 		close(i.ready)
 	})
+}
+
+// coreName resolves the owning backend's name defensively: test
+// instances and teardown paths may carry a nil backend.
+func (i *Instance) coreName() string {
+	if i.core == nil {
+		return "unknown"
+	}
+
+	return i.core.Name()
 }
 
 // WaitReady blocks until the local listener accepts connections, the
@@ -394,7 +417,12 @@ func (i *Instance) Close() error {
 			i.mu.Lock()
 			i.stopErr = err
 			i.state = StateStopped
+			name := i.core.Name()
 			i.mu.Unlock()
+
+			logging.W("core", "core_exit",
+				"core %s (pid %d) stop returned an error: %v",
+				name, i.proc.PID(), err)
 
 			// The process may still hold the config file open; still
 			// attempt removal (bounded retry) before returning.
@@ -409,7 +437,11 @@ func (i *Instance) Close() error {
 	i.mu.Lock()
 	i.stopErr = err
 	i.state = StateStopped
+	name := i.coreName()
 	i.mu.Unlock()
+
+	logging.E("core", "core_exit",
+		"core %s (pid %d) stopped cleanly", name, i.proc.PID())
 
 	return err
 }
@@ -498,6 +530,10 @@ func Launch(
 		ready:   make(chan struct{}),
 		state:   StateStarting,
 	}
+
+	logging.E("core", "core_start",
+		"core %s started (pid %d, listener %s)",
+		backend.Name(), proc.PID(), listen)
 
 	// Observe readiness in the background; WaitReady consumers get
 	// the result through the ready channel.

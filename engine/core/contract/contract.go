@@ -13,17 +13,21 @@ package contract
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/Parsaetak/FreeIran/engine/config"
 	"github.com/Parsaetak/FreeIran/engine/core"
+	"github.com/Parsaetak/FreeIran/system"
 )
 
 // Case is one capability expectation for a backend.
@@ -412,49 +416,165 @@ func runLifecycleSuite(t *testing.T, suite Suite) {
 	})
 }
 
-// BuildFakeCore compiles the fake protocol-core helper with the
-// local Go toolchain and returns its path. It skips the calling test
-// when no toolchain is available.
+// BuildFakeCore provides the compiled fake protocol-core binary.
+//
+// Resolution order (deterministic, CI-friendly):
+//
+//  1. FREEIRAN_TEST_CORES environment variable: when set, it names a
+//     fixture directory containing PRE-BUILT fake cores (the CI jobs
+//     build them there: fakecore[.exe], fake-xray[.exe],
+//     fake-v2ray[.exe], fake-sing-box[.exe]). A missing fixture is a
+//     hard test failure — CI promised the fixture, so silently
+//     skipping would hide a broken harness. Tests never depend on
+//     whatever happens to be in PATH and never install real cores.
+//  2. Otherwise the fake core is compiled from
+//     engine/core/testdata/fakecore with the local Go toolchain
+//     (developer machines). Without a toolchain the calling test is
+//     skipped.
 //
 // The source path is resolved from THIS file's location through
 // runtime.Caller — never from the test's working directory — so the
 // helper is buildable from every consuming package (engine/core/*,
-// engine/connection, engine/app) regardless of cwd.
+// engine/connection, engine/app) regardless of cwd. The compiled
+// binary is built once per test process and copied for every caller,
+// so suites that spawn the fake core repeatedly stay fast.
 func BuildFakeCore(tb testing.TB) string {
 	tb.Helper()
 
-	goTool, err := exec.LookPath("go")
-	if err != nil {
-		tb.Skipf("no Go toolchain available to build the fake core: %v", err)
+	if dir := os.Getenv("FREEIRAN_TEST_CORES"); dir != "" {
+		for _, name := range []string{"fakecore", "fake-xray", "fake-v2ray", "fake-sing-box"} {
+			candidate := filepath.Join(dir, system.ExecutableName(name))
+			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+				return copyFakeCore(tb, candidate)
+			}
+		}
+
+		tb.Fatalf("FREEIRAN_TEST_CORES=%s contains no fake core fixture "+
+			"(expected %s); the CI harness must build it before running tests",
+			dir, system.ExecutableName("fakecore"))
 	}
 
-	binary := filepath.Join(tb.TempDir(), "fakecore")
+	return copyFakeCore(tb, buildFakeCoreOnce(tb))
+}
+
+// StageFakeCore copies the fake core into dir under the
+// platform-correct executable name for the given core ("v2ray" →
+// "v2ray.exe" on Windows) and returns the destination path. All test
+// staging MUST go through this helper: staging an extensionless
+// binary on Windows makes the registry discovery miss it (the exact
+// v0.4.x Windows CI failure).
+func StageFakeCore(tb testing.TB, dir, coreName string) string {
+	tb.Helper()
+
+	source := BuildFakeCore(tb)
+
+	dest := filepath.Join(dir, system.ExecutableName(coreName))
+
+	copyBinary(tb, source, dest)
+
+	return dest
+}
+
+// buildCache serializes the one-per-process compilation.
+var buildCache = struct {
+	sync.Once
+	path string
+	err  error
+}{}
+
+// buildFakeCoreOnce compiles the fake core helper once per process.
+func buildFakeCoreOnce(tb testing.TB) string {
+	tb.Helper()
+
+	buildCache.Do(func() {
+		goTool, err := exec.LookPath("go")
+		if err != nil {
+			buildCache.err = err
+
+			return
+		}
+
+		shared, err := os.MkdirTemp("", "freeiran-fakecore-")
+		if err != nil {
+			buildCache.err = err
+
+			return
+		}
+
+		binary := filepath.Join(shared, "fakecore")
+
+		if runtime.GOOS == "windows" {
+			binary += ".exe"
+		}
+
+		_, thisFile, _, ok := runtime.Caller(0)
+		if !ok {
+			buildCache.err = errors.New("cannot locate the contract package source")
+
+			return
+		}
+
+		source, err := filepath.Abs(filepath.Join(
+			filepath.Dir(thisFile), "..", "testdata", "fakecore", "main.go"))
+		if err != nil {
+			buildCache.err = err
+
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+
+		build := exec.CommandContext(ctx, goTool, "build", "-o", binary, source)
+
+		if out, err := build.CombinedOutput(); err != nil {
+			buildCache.err = fmt.Errorf("fake core build failed: %v: %s", err, out)
+
+			return
+		}
+
+		buildCache.path = binary
+	})
+
+	if buildCache.err != nil {
+		tb.Skipf("fake core unavailable: %v", buildCache.err)
+	}
+
+	return buildCache.path
+}
+
+// copyFakeCore copies the shared fake core binary into the caller's
+// private temp directory (cleanup is automatic through testing).
+func copyFakeCore(tb testing.TB, source string) string {
+	tb.Helper()
+
+	dest := filepath.Join(tb.TempDir(), "fakecore")
 
 	if runtime.GOOS == "windows" {
-		binary += ".exe"
+		dest += ".exe"
 	}
 
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		tb.Fatalf("cannot locate the contract package source")
-	}
+	copyBinary(tb, source, dest)
 
-	source, err := filepath.Abs(filepath.Join(
-		filepath.Dir(thisFile), "..", "testdata", "fakecore", "main.go"))
+	return dest
+}
+
+// copyBinary copies an executable and restores its permission bits.
+// Re-copying a binary that a previous test already executed is safe:
+// the destination is a fresh path per test (on Windows, running a
+// file locks only that file's own path, and every test receives its
+// own copy).
+func copyBinary(tb testing.TB, source, dest string) {
+	tb.Helper()
+
+	data, err := os.ReadFile(source)
 	if err != nil {
-		tb.Fatalf("resolve fakecore source: %v", err)
+		tb.Fatalf("read fake core %s: %v", source, err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	build := exec.CommandContext(ctx, goTool, "build", "-o", binary, source)
-
-	if out, err := build.CombinedOutput(); err != nil {
-		tb.Skipf("fake core build failed (%v): %s", err, out)
+	if err := os.WriteFile(dest, data, 0o755); err != nil {
+		tb.Fatalf("stage fake core %s: %v", dest, err)
 	}
-
-	return binary
 }
 
 // assertNoSecrets fails when credential material appears in text.

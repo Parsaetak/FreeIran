@@ -12,6 +12,9 @@ import * as dataService from "../../bindings/github.com/Parsaetak/FreeIran/engin
 import * as storageService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/storageservice.js";
 import * as diagnosticsService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/diagnosticsservice.js";
 import * as connectionService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/connectionservice.js";
+import * as logService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/logservice.js";
+import * as settingsService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/settingsservice.js";
+import * as loggingModels from "../../bindings/github.com/Parsaetak/FreeIran/internal/logging/models.js";
 
 export {
   appService,
@@ -20,6 +23,9 @@ export {
   storageService,
   diagnosticsService,
   connectionService,
+  logService,
+  settingsService,
+  loggingModels,
 };
 
 // Generated model types (synchronized with the Go backend by the
@@ -41,6 +47,10 @@ export type ConnectionAttempt = import("../../bindings/github.com/Parsaetak/Free
 export type BackendView = import("../../bindings/github.com/Parsaetak/FreeIran/engine/app/models.js").BackendView;
 export type ConfigDetail = import("../../bindings/github.com/Parsaetak/FreeIran/engine/app/models.js").ConfigDetail;
 export type CoreHealthReport = import("../../bindings/github.com/Parsaetak/FreeIran/engine/core/models.js").HealthReport;
+export type LogEntry = import("../../bindings/github.com/Parsaetak/FreeIran/internal/logging/models.js").Entry;
+export type LogFilter = import("../../bindings/github.com/Parsaetak/FreeIran/engine/app/models.js").LogFilter;
+export type LogPage = import("../../bindings/github.com/Parsaetak/FreeIran/engine/app/models.js").LogPage;
+export type Settings = import("../../bindings/github.com/Parsaetak/FreeIran/engine/app/models.js").Settings;
 
 /**
  * Wraps a binding call so UI code receives a single, readable error.

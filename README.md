@@ -8,8 +8,37 @@ proxy/VPN configurations.
 **Project:** FreeIran
 **Architect:** Parsa Tak / SHEYTAN
 **Repository:** https://github.com/Parsaetak/FreeIran
-**Current version:** 0.4.1 (see `VERSION`)
+**Current version:** 0.5.0 (see `VERSION`)
 **Status:** production architecture — multi-core protocol runtime with chunked local storage
+
+---
+
+## What's new in v0.5.0
+
+- **Windows lifecycle repair.** Legacy-store migration now closes the
+  legacy file (error-aware) before the `.migrated` rename, and the v1
+  `journal.log` upgrade closes before removal — the two Windows
+  "file in use" failure classes are fixed at the root and guarded by
+  ordering regression tests that run on every platform.
+- **Deterministic fake-core test harness.** All lifecycle tests run
+  against controlled fake `xray`/`v2ray`/`sing-box` executables built
+  from `engine/core/testdata/fakecore` and exposed through
+  `FREEIRAN_TEST_CORES`. Test staging uses platform-correct
+  executable names (`system.ExecutableName`), fixing the Windows
+  discovery failures. Real-core verification stays a separate CI job.
+- **Persistent runtime logging.** Structured JSON log
+  (`<AppData>/FreeIran/logs/freeiran.log`) with size rotation,
+  bounded backups, startup recovery and mandatory redaction of
+  credentials/UUIDs/protocol URLs; every subsystem emits lifecycle
+  events (store, migration, sources, cores, connection, shutdown).
+- **Professional UI.** Rebuilt dashboard, virtualized configuration
+  list, core management cards, professional diagnostics log viewer
+  (live tail, filters, search, pause/resume, copy, open location),
+  new settings page, unified design system and per-function motion
+  language with full `prefers-reduced-motion` support.
+- **Settings.** Preferred backend, refresh cadence, testing policy,
+  log level/size/rotation and reduced-motion preferences persist
+  under the app config directory and apply live.
 
 ---
 
@@ -253,7 +282,7 @@ FreeIran/
 ├── .github/workflows/     CI, release and security pipelines
 ├── docs/                  Architecture, storage format, performance,
 │                          CI and security docs
-├── VERSION                Application version (0.4.1)
+├── VERSION                Application version (0.5.0)
 └── worklog.md             Engineering worklog
 ```
 

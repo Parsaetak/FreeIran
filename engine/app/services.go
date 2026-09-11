@@ -413,13 +413,45 @@ func (s *StorageService) Verify() (VerifyResult, error) {
 
 // Compact reclaims dead records.
 func (s *StorageService) Compact() error {
-	return s.app.store.Compact(context.Background())
+	s.app.logger.Info("store", "compaction_start", "compaction started")
+
+	err := s.app.store.Compact(context.Background())
+
+	if err != nil {
+		s.app.logger.Error("store", "compaction_error", "compact", "storage",
+			"compaction failed: %v", err)
+
+		return err
+	}
+
+	s.app.logger.Info("store", "compaction_success",
+		"compaction complete (%d records)", s.app.store.Count())
+
+	return nil
 }
 
 // MigrateLegacy imports a legacy JSON database file into the store.
+// The full migration lifecycle is written to the runtime log: start,
+// success (with counts) and failure (with the storage error).
 func (s *StorageService) MigrateLegacy(path string) (store.MigrationResult, error) {
-	return s.app.store.MigrateFromJSON(context.Background(),
+	s.app.logger.Info("store", "migration_start",
+		"legacy JSON migration started from %s", path)
+
+	result, err := s.app.store.MigrateFromJSON(context.Background(),
 		store.MigrateOptions{LegacyPath: path, Strict: false})
+
+	if err != nil {
+		s.app.logger.Error("store", "migration_error", "migrate", "storage",
+			"legacy migration failed (%d migrated): %v", result.Migrated, err)
+
+		return result, err
+	}
+
+	s.app.logger.Info("store", "migration_success",
+		"legacy migration complete: %d migrated, %d skipped, renamed=%v",
+		result.Migrated, result.Skipped, result.Renamed)
+
+	return result, nil
 }
 
 // VerifyResult reports the outcome of a storage verification.

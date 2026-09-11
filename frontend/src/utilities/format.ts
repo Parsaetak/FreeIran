@@ -52,3 +52,56 @@ export function relativeTime(unixMS: number): string {
 
   return `${Math.floor(delta / 86_400_000)}d ago`;
 }
+
+/** Monospace-friendly latency label; "—" for untested/invalid values. */
+export function formatLatency(ms: number | undefined | null): string {
+  if (ms === undefined || ms === null || !Number.isFinite(ms) || ms <= 0) {
+    return "—";
+  }
+
+  return `${Math.round(ms)} ms`;
+}
+
+/** Severity class for latency color coding (<300 ok, <800 warn, else error). */
+export function latencyClass(
+  ms: number | undefined | null,
+): "ok" | "warn" | "err" | "none" {
+  if (ms === undefined || ms === null || !Number.isFinite(ms) || ms <= 0) {
+    return "none";
+  }
+
+  if (ms < 300) return "ok";
+  if (ms < 800) return "warn";
+
+  return "err";
+}
+
+/** Local wall-clock time (HH:MM:SS) for RFC3339 log timestamps. */
+export function formatClock(ts: string): string {
+  if (!ts) return "";
+
+  const date = new Date(ts);
+
+  if (Number.isNaN(date.getTime())) return ts;
+
+  const pad = (n: number) => String(n).padStart(2, "0");
+
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+/** Human uptime for running sessions (e.g. "2m 07s", "3h 12m", "2d 4h"). */
+export function formatUptime(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return "0s";
+
+  const totalSeconds = Math.floor(ms / 1000);
+  const days = Math.floor(totalSeconds / 86_400);
+  const hours = Math.floor((totalSeconds % 86_400) / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${String(minutes).padStart(2, "0")}m`;
+  if (minutes > 0) return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+
+  return `${seconds}s`;
+}

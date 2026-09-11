@@ -1,158 +1,230 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { useConnectionStore } from "../state/connectionStore";
-import { useConfigsStore } from "../state/stores";
-import { call } from "../services";
-import { connectionService } from "../services";
-import type { BackendView, ConfigDetail, ConnectionSnapshot } from "../services";
-import { formatDuration } from "../utilities/format";
+import { useConfigsStore, makeSearchRunner } from "../state/stores";
+import { useSettingsStore } from "../state/settingsStore";
+import { type BackendView, type Config } from "../services";
+import { formatDuration, formatLatency, formatNumber, formatUptime, truncate } from "../utilities/format";
+import {
+  BootDots,
+  CONNECTION_STATE_LABELS,
+  CONNECT_STEPS,
+  OrbIcon,
+  connectStepIndex,
+  connectionUiState,
+} from "../components/common";
+import {
+  IconPlay,
+  IconRefresh,
+  IconSearch,
+  IconStar,
+  IconStop,
+} from "../components/Icons";
+import { toast } from "../state/toastStore";
+
+const searchRunner = makeSearchRunner(250);
 
 /**
- * Connection page: protocol-core backend cards, the connection state
- * machine, configuration selection and the attempt history. All
- * credential material is redacted by the backend before it reaches
- * this view.
+ * Connection page: the connection state machine with per-state
+ * animations, quick actions, configuration picker, attempt history
+ * and the protocol-core inventory (§29).
  */
 export function ConnectionPage() {
   const snapshot = useConnectionStore((state) => state.snapshot);
   const backends = useConnectionStore((state) => state.backends);
   const busy = useConnectionStore((state) => state.busy);
   const error = useConnectionStore((state) => state.error);
-  const connect = useConnectionStore((state) => state.connect);
   const disconnect = useConnectionStore((state) => state.disconnect);
   const reconnect = useConnectionStore((state) => state.reconnect);
   const refreshBackends = useConnectionStore((state) => state.refreshBackends);
 
-  const items = useConfigsStore((state) => state.items);
-  const loadPage = useConfigsStore((state) => state.loadPage);
+  const uiState = snapshot ? connectionUiState(snapshot.state) : "disconnected";
+  const connected = uiState === "connected";
 
-  const [selected, setSelected] = useState("");
-  const [detail, setDetail] = useState<ConfigDetail | null>(null);
+  const [scanning, setScanning] = useState(false);
+
+  // Uptime ticker — only runs while a session is live.
+  const [, setTick] = useState(0);
 
   useEffect(() => {
-    if (items.length === 0) {
-      void loadPage(0);
+    if (!connected) return;
+
+    const timer = window.setInterval(() => setTick((t) => t + 1), 1000);
+
+    return () => window.clearInterval(timer);
+  }, [connected]);
+
+  const rescan = async () => {
+    setScanning(true);
+
+    try {
+      await refreshBackends();
+      toast("info", "Core scan complete", "Protocol-core availability refreshed.");
+    } finally {
+      setScanning(false);
     }
-  }, [items.length, loadPage]);
+  };
 
-  useEffect(() => {
-    if (!selected) {
-      setDetail(null);
+  const primaryConnect = () => {
+    if (!snapshot?.config_id) {
+      document.getElementById("config-picker")?.scrollIntoView({ behavior: "smooth" });
+
       return;
     }
 
-    let cancelled = false;
+    void reconnect().then(() => {
+      const failure = useConnectionStore.getState().error;
 
-    void call(() => connectionService.ConfigDetails(selected)).then((result) => {
-      if (!cancelled) setDetail(result ?? null);
+      if (failure) toast("error", "Reconnect failed", failure);
     });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [selected]);
-
-  const connected = snapshot?.state === "connected";
-  const active = snapshot !== null && isBusyState(snapshot.state);
+  };
 
   return (
     <div>
-      <h2>Connection</h2>
-
-      <ConnectionStatusCard snapshot={snapshot} />
-
-      <div className="card" style={{ marginTop: 16 }}>
-        <h3 className="card-title">Protocol cores</h3>
-
-        <div className="stat-grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
-          {backends.map((backend) => (
-            <BackendCard key={backend.name} backend={backend} />
-          ))}
+      <div className="page-header">
+        <div>
+          <h1 className="page-title">Connection</h1>
+          <div className="page-subtitle">
+            Credential-free view — all configuration material is redacted by the engine.
+          </div>
         </div>
-
-        <button
-          className="secondary"
-          style={{ marginTop: 12 }}
-          onClick={() => void refreshBackends()}
-        >
-          Re-detect cores
-        </button>
       </div>
 
-      <div className="card" style={{ marginTop: 16 }}>
-        <h3 className="card-title">Connect a configuration</h3>
+      {/* State machine panel */}
+      <section className="conn-panel" aria-label="Connection state">
+        <div className={`orb-wrap ${uiState}`}>
+          <div className="orb">
+            <span className="orb-icon" aria-hidden>
+              <OrbIcon state={uiState} />
+            </span>
+          </div>
+        </div>
 
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-          <select
-            value={selected}
-            onChange={(event) => setSelected(event.target.value)}
-            style={{ minWidth: 320 }}
-            disabled={active || busy}
-          >
-            <option value="">Select a configuration…</option>
-            {items.map((item) => (
-              <option key={item.id} value={item.id}>
-                {item.name || item.address} · {item.type} · {item.address}
-              </option>
-            ))}
-          </select>
+        <div className="conn-meta">
+          <div className="conn-state-line">
+            <span className="conn-state-label">
+              {snapshot
+                ? CONNECTION_STATE_LABELS[snapshot.state] ?? snapshot.state
+                : "Disconnected"}
+            </span>
+            {(uiState === "connecting" || uiState === "disconnecting") && <BootDots />}
+          </div>
 
+          {snapshot && (
+            <div className="conn-facts">
+              <span className="conn-fact">
+                <span>config</span>
+                <b>{snapshot.config_name || snapshot.config_display || "—"}</b>
+              </span>
+              <span className="conn-fact">
+                <span>core</span>
+                <b>{snapshot.core ? `${snapshot.core} ${snapshot.core_version ?? ""}` : "—"}</b>
+              </span>
+              <span className="conn-fact">
+                <span>latency</span>
+                <b>{connected ? formatLatency(snapshot.latency_ms) : "—"}</b>
+              </span>
+              <span className="conn-fact hide-md">
+                <span>endpoint</span>
+                <b>{connected ? snapshot.endpoint || "—" : "—"}</b>
+              </span>
+              {connected && snapshot.started_at ? (
+                <span className="conn-fact">
+                  <span>uptime</span>
+                  <b>{formatUptime(Date.now() - snapshot.started_at)}</b>
+                </span>
+              ) : null}
+              {snapshot.fallbacks_used ? (
+                <span className="conn-fact">
+                  <span>fallbacks</span>
+                  <b>{formatNumber(snapshot.fallbacks_used)}</b>
+                </span>
+              ) : null}
+            </div>
+          )}
+
+          {uiState === "connecting" && snapshot && (
+            <div className="conn-steps" aria-label="Connection progress">
+              {CONNECT_STEPS.map((step, index) => {
+                const current = connectStepIndex(snapshot.state);
+
+                return (
+                  <Fragment key={step.key}>
+                    {index > 0 && <span className="conn-step-sep" aria-hidden />}
+                    <span
+                      className={`conn-step ${index < current ? "done" : index === current ? "current" : ""}`}
+                    >
+                      {step.label}
+                    </span>
+                  </Fragment>
+                );
+              })}
+            </div>
+          )}
+
+          {snapshot?.last_error && uiState === "failed" && (
+            <div className="error-banner flush-bottom">{snapshot.last_error}</div>
+          )}
+
+          {uiState === "disconnected" && (
+            <div className="page-subtitle">No active session. Pick a configuration below and connect.</div>
+          )}
+        </div>
+
+        <div className="conn-actions">
           <button
-            disabled={!selected || active || busy}
-            onClick={() => void connect(selected)}
+            type="button"
+            className="btn primary lg"
+            disabled={connected || uiState === "connecting" || uiState === "disconnecting" || busy}
+            onClick={primaryConnect}
           >
-            Connect
+            <IconPlay size={14} />
+            {snapshot?.config_id ? "Reconnect" : "Connect"}
           </button>
 
           <button
-            disabled={!connected || active || busy}
+            type="button"
+            className="btn danger lg"
+            disabled={(!connected && uiState !== "connecting") || busy}
             onClick={() => void disconnect()}
           >
+            <IconStop size={14} />
             Disconnect
           </button>
-
-          <button
-            disabled={connected || active || busy || !snapshot?.config_id}
-            onClick={() => void reconnect()}
-          >
-            Reconnect
-          </button>
         </div>
+      </section>
 
-        {error && (
-          <div className="error-banner" style={{ marginTop: 12 }}>
-            {error}
-          </div>
-        )}
+      {error && <div className="error-banner">{error}</div>}
 
-        {detail && <ConfigDetailsPanel detail={detail} />}
-      </div>
+      <ConfigPicker disabled={uiState === "connecting" || connected || busy} />
+
+      <CoresCard backends={backends} scanning={scanning} onRescan={() => void rescan()} />
 
       {snapshot && (snapshot.attempts?.length ?? 0) > 0 && (
-        <div className="card" style={{ marginTop: 16 }}>
-          <h3 className="card-title">Attempt history</h3>
+        <div className="card">
+          <div className="card-header">
+            <h3 className="card-title eyebrow">Attempt history</h3>
+          </div>
 
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <table className="data-table">
             <thead>
-              <tr style={{ color: "var(--text-dim)", textAlign: "left" }}>
-                <th style={cellStyle}>Backend</th>
-                <th style={cellStyle}>Result</th>
-                <th style={cellStyle}>Duration</th>
-                <th style={cellStyle}>Detail</th>
+              <tr>
+                <th>Backend</th>
+                <th>Result</th>
+                <th>Duration</th>
+                <th>Detail</th>
               </tr>
             </thead>
             <tbody>
               {snapshot.attempts?.map((attempt, index) => (
-                <tr key={`${attempt.backend}-${index}`} style={{ borderTop: "1px solid var(--border)" }}>
-                  <td style={cellStyle}>{attempt.backend}</td>
-                  <td style={cellStyle}>
-                    {attempt.ok ? (
-                      <span className="badge working">started</span>
-                    ) : (
-                      <span className="badge failed">failed</span>
-                    )}
+                <tr key={`${attempt.backend}-${index}`}>
+                  <td className="mono-cell">{attempt.backend}</td>
+                  <td>
+                    <span className={`badge ${attempt.ok ? "success" : "error"}`}>
+                      {attempt.ok ? "started" : "failed"}
+                    </span>
                   </td>
-                  <td style={monoCell}>{formatDuration(attempt.duration_ms)}</td>
-                  <td style={cellStyle}>{attempt.error || "—"}</td>
+                  <td className="mono-cell">{formatDuration(attempt.duration_ms)}</td>
+                  <td>{attempt.error || "—"}</td>
                 </tr>
               ))}
             </tbody>
@@ -163,211 +235,229 @@ export function ConnectionPage() {
   );
 }
 
-function ConnectionStatusCard({ snapshot }: { snapshot: ConnectionSnapshot | null }) {
-  if (!snapshot || snapshot.state === "disconnected") {
-    return (
-      <div className="card">
-        <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-          <span className="badge unknown">disconnected</span>
-          <span style={{ color: "var(--text-dim)" }}>
-            No active session. Pick a configuration below and connect.
-          </span>
-        </div>
+/** Searchable configuration picker feeding the connect action. */
+function ConfigPicker({ disabled }: { disabled: boolean }) {
+  const items = useConfigsStore((state) => state.items);
+  const loadPage = useConfigsStore((state) => state.loadPage);
+  const setSearchQuery = useConfigsStore((state) => state.setSearchQuery);
+  const searchQuery = useConfigsStore((state) => state.searchQuery);
+  const connect = useConnectionStore((state) => state.connect);
+
+  const [selected, setSelected] = useState("");
+
+  useEffect(() => {
+    if (items.length === 0) void loadPage(0);
+  }, [items.length, loadPage]);
+
+  const top = useMemo(() => items.slice(0, 60), [items]);
+
+  const connectSelected = (id: string) => {
+    void connect(id).then(() => {
+      const failure = useConnectionStore.getState().error;
+
+      if (failure) toast("error", "Connection failed", failure);
+    });
+  };
+
+  return (
+    <div className="card" id="config-picker">
+      <div className="card-header">
+        <h3 className="card-title eyebrow">Connect a configuration</h3>
       </div>
-    );
-  }
+
+      <div className="card-body">
+        <div className="toolbar">
+          <input
+            className="input"
+            placeholder="Search configurations…"
+            aria-label="Search configurations"
+            value={searchQuery}
+            onChange={(event) => {
+              setSearchQuery(event.target.value);
+              searchRunner();
+            }}
+          />
+        </div>
+
+        {top.length === 0 ? (
+          <div className="log-empty">
+            <IconSearch size={16} /> No configurations loaded yet.
+          </div>
+        ) : (
+          <div className="picker-list" role="listbox" aria-label="Configurations">
+            {top.map((config) => (
+              <PickerRow
+                key={String(config["id"])}
+                config={config}
+                selected={selected === String(config["id"])}
+                disabled={disabled}
+                onSelect={() => setSelected(String(config["id"]))}
+                onConnect={() => connectSelected(String(config["id"]))}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PickerRow({
+  config,
+  selected,
+  disabled,
+  onSelect,
+  onConnect,
+}: {
+  config: Config;
+  selected: boolean;
+  disabled: boolean;
+  onSelect: () => void;
+  onConnect: () => void;
+}) {
+  return (
+    <div
+      role="option"
+      aria-selected={selected}
+      tabIndex={0}
+      className={`row hoverable selectable ${selected ? "selected" : ""}`}
+      onClick={onSelect}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onSelect();
+        }
+      }}
+    >
+      <span className={`proto-badge proto-${config["type"] || "unknown"}`}>
+        {String(config["type"] || "—")}
+      </span>
+
+      <span className="cell-main">
+        <div className="cell-title">{String(config["name"] || "unnamed")}</div>
+        <div className="cell-sub">
+          {truncate(String(config["address"]), 36)}:{String(config["port"])}
+        </div>
+      </span>
+
+      <button
+        type="button"
+        className="btn sm primary"
+        disabled={disabled || !selected}
+        onClick={(event) => {
+          event.stopPropagation();
+          onConnect();
+        }}
+      >
+        <IconPlay size={11} />
+        Connect
+      </button>
+    </div>
+  );
+}
+
+/** Protocol-core inventory (§29): status, version, path, notes, preference. */
+function CoresCard({
+  backends,
+  scanning,
+  onRescan,
+}: {
+  backends: BackendView[];
+  scanning: boolean;
+  onRescan: () => void;
+}) {
+  const settings = useSettingsStore((state) => state.settings);
+  const preferred = settings?.preferred_backend ?? "";
 
   return (
     <div className="card">
-      <div className="stat-grid">
-        <div className="stat">
-          <div className="stat-value" style={{ fontSize: 18 }}>
-            {snapshot.core || "—"}
-          </div>
-          <div className="stat-label">Core</div>
-        </div>
+      <div className="card-header">
+        <h3 className="card-title eyebrow">Protocol cores</h3>
 
-        <div className="stat">
-          <div className="stat-value" style={{ fontSize: 18 }}>
-            {snapshot.core_version || "—"}
-          </div>
-          <div className="stat-label">Version</div>
-        </div>
-
-        <div className="stat">
-          <div className="stat-value" style={{ fontSize: 18 }}>
-            <StateBadge state={snapshot.state} />
-          </div>
-          <div className="stat-label">State</div>
-        </div>
-
-        <div className="stat">
-          <div className="stat-value" style={{ fontSize: 18 }}>
-            {snapshot.latency_ms !== undefined && snapshot.latency_ms > 0
-              ? `${snapshot.latency_ms} ms`
-              : "—"}
-          </div>
-          <div className="stat-label">Latency</div>
-        </div>
-
-        <div className="stat">
-          <div className="stat-value" style={{ fontSize: 18 }}>
-            {snapshot.config_name || snapshot.config_display || "—"}
-          </div>
-          <div className="stat-label">Configuration</div>
-        </div>
-
-        <div className="stat">
-          <div className="stat-value" style={{ fontSize: 18 }}>
-            {snapshot.endpoint || "—"}
-          </div>
-          <div className="stat-label">Local endpoint</div>
-        </div>
+        {scanning ? (
+          <span className="chip">
+            scanning <BootDots />
+          </span>
+        ) : (
+          <button type="button" className="btn sm" onClick={onRescan}>
+            <IconRefresh size={13} />
+            Re-scan
+          </button>
+        )}
       </div>
 
-      {snapshot.last_error && (
-        <div className="error-banner" style={{ marginTop: 10 }}>
-          {snapshot.last_error}
+      {backends.length === 0 ? (
+        <div className="log-empty">
+          {scanning
+            ? "Scanning for protocol cores…"
+            : "No protocol cores discovered. Place xray, v2ray or sing-box executables in the managed cores directory or PATH."}
+        </div>
+      ) : (
+        <div className="stat-grid cores-grid">
+          {backends.map((backend) => (
+            <CoreCard key={backend.name} backend={backend} preferred={preferred === backend.name} />
+          ))}
         </div>
       )}
     </div>
   );
 }
 
-function StateBadge({ state }: { state: string }) {
-  const className =
-    state === "connected"
-      ? "badge working"
-      : state === "connection_failed"
-        ? "badge failed"
-        : "badge unknown";
-
-  return <span className={className}>{state.replace(/_/g, " ")}</span>;
-}
-
-function BackendCard({ backend }: { backend: BackendView }) {
+function CoreCard({ backend, preferred }: { backend: BackendView; preferred: boolean }) {
   const statusClass =
     backend.status === "available"
-      ? "badge working"
+      ? "success"
       : backend.status === "invalid"
-        ? "badge failed"
-        : "badge unknown";
+        ? "error"
+        : "neutral";
 
   return (
-    <div className="stat" style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12 }}>
-      <div className="stat-value" style={{ fontSize: 16 }}>
-        {backend.name}
+    <div className={`stat core-tile ${preferred ? "preferred" : ""}`}>
+      <div className="core-tile-head">
+        <span className="core-name">{backend.name}</span>
+        {preferred && (
+          <span className="core-preferred" data-tip="Preferred backend (Settings)">
+            <IconStar size={12} filled />
+            preferred
+          </span>
+        )}
       </div>
-      <div className="stat-label" style={{ display: "flex", gap: 6, alignItems: "center" }}>
-        <span className={statusClass}>{backend.status}</span>
-        {backend.version && <span>{backend.version}</span>}
+
+      <div className="core-tile-status">
+        <span className={`badge ${statusClass}`}>{backend.status || "unknown"}</span>
+        {backend.version && <span className="mono-cell">{backend.version}</span>}
       </div>
-      {backend.status !== "available" && (
-        <div style={{ marginTop: 6, color: "var(--text-dim)", fontSize: 12 }}>
-          Install {backend.name} into the managed cores directory or PATH
-          {backend.pinned_version ? ` (verified reference: ${backend.pinned_version})` : ""}.
+
+      {backend.path && (
+        <div className="cell-sub" data-tip={backend.path}>
+          {truncate(backend.path, 34)}
         </div>
       )}
-      {backend.summary && (
-        <div style={{ marginTop: 6, color: "var(--text-dim)", fontSize: 12 }}>
-          {backend.summary}
+
+      {(backend.pinned_version || backend.source) && (
+        <div className="core-fact">
+          pinned {backend.pinned_version || "—"}
+          {backend.source ? ` · ${backend.source}` : ""}
+        </div>
+      )}
+
+      {backend.summary && <div className="core-fact">{backend.summary}</div>}
+
+      {backend.note && <div className="core-fact warn">{backend.note}</div>}
+
+      {backend.notes && backend.notes.length > 0 && (
+        <div className="core-fact">{backend.notes.join(" · ")}</div>
+      )}
+
+      {backend.last_check ? (
+        <div className="core-fact dim">last check {new Date(backend.last_check).toLocaleString()}</div>
+      ) : null}
+
+      {backend.status !== "available" && !backend.note && (
+        <div className="core-fact dim">
+          Install {backend.name} into the managed cores directory or PATH.
         </div>
       )}
     </div>
   );
 }
-
-function ConfigDetailsPanel({ detail }: { detail: ConfigDetail }) {
-  return (
-    <div style={{ marginTop: 16, borderTop: "1px solid var(--border)", paddingTop: 12 }}>
-      <h4 style={{ margin: "0 0 8px" }}>Configuration details</h4>
-
-      <dl className="detail-grid">
-        <dt>Protocol</dt>
-        <dd style={monoCell}>{detail.type}</dd>
-
-        <dt>Address</dt>
-        <dd style={monoCell}>
-          {detail.address}:{detail.port}
-        </dd>
-
-        <dt>Transport</dt>
-        <dd style={monoCell}>{detail.network || "tcp"}</dd>
-
-        <dt>Security</dt>
-        <dd style={monoCell}>{detail.security || "none"}</dd>
-
-        {detail.path && (
-          <>
-            <dt>Path</dt>
-            <dd style={monoCell}>{detail.path}</dd>
-          </>
-        )}
-
-        {detail.host && (
-          <>
-            <dt>Host</dt>
-            <dd style={monoCell}>{detail.host}</dd>
-          </>
-        )}
-
-        {detail.service && (
-          <>
-            <dt>Service</dt>
-            <dd style={monoCell}>{detail.service}</dd>
-          </>
-        )}
-
-        <dt>Backends</dt>
-        <dd>{detail.compatible_backends?.join(", ") || "none compatible"}</dd>
-
-        <dt>Status</dt>
-        <dd>
-          {detail.working ? (
-            <span className="badge working">working</span>
-          ) : (
-            <span className="badge unknown">untested</span>
-          )}
-          {detail.latency_ms !== undefined && detail.latency_ms > 0 && (
-            <span> · {detail.latency_ms} ms</span>
-          )}
-        </dd>
-
-        {detail.source && (
-          <>
-            <dt>Source</dt>
-            <dd>{detail.source}</dd>
-          </>
-        )}
-
-        <dt>Credentials</dt>
-        <dd style={{ color: "var(--text-dim)" }}>
-          {credentialSummary(detail)}
-        </dd>
-      </dl>
-    </div>
-  );
-}
-
-function credentialSummary(detail: ConfigDetail): string {
-  const parts: string[] = [];
-
-  if (detail.has_uuid) parts.push("UUID (redacted)");
-  if (detail.has_password) parts.push("password (redacted)");
-  if (detail.has_public_key) parts.push("public key (redacted)");
-
-  return parts.length > 0 ? parts.join(", ") : "none";
-}
-
-function isBusyState(state: string): boolean {
-  return (
-    state === "selecting" ||
-    state === "preparing" ||
-    state === "starting_core" ||
-    state === "waiting_for_ready" ||
-    state === "disconnecting"
-  );
-}
-
-const cellStyle = { padding: "6px 8px" } as const;
-const monoCell = { padding: "6px 8px", fontFamily: "var(--mono)" } as const;

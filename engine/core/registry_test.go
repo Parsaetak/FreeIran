@@ -2,7 +2,6 @@ package core_test
 
 import (
 	"context"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -155,16 +154,11 @@ func TestSelectionPrefersPriority(t *testing.T) {
 // registry availability state using the real adapters and a locator
 // that discovers a fake binary as "v2ray".
 func TestSelectionWithRealBackends(t *testing.T) {
-	fake := contract.BuildFakeCore(t)
-
 	dir := t.TempDir()
 
-	// Place the fake binary where the locator looks for "v2ray".
-	target := dir + "/v2ray"
-
-	if err := copyFile(fake, target); err != nil {
-		t.Fatalf("stage fake v2ray: %v", err)
-	}
+	// Stage the fake binary where the locator looks for "v2ray" with
+	// the platform-correct executable name (v2ray.exe on Windows).
+	contract.StageFakeCore(t, dir, "v2ray")
 
 	locator := system.NewCoreLocator(dir)
 	registry := core.NewRegistry(locator)
@@ -250,14 +244,10 @@ func TestSelectionWithRealBackends(t *testing.T) {
 // TestSelectionPreferenceOverridesPriority verifies user preference
 // wins over priority when compatible and available.
 func TestSelectionPreferenceOverridesPriority(t *testing.T) {
-	fake := contract.BuildFakeCore(t)
-
 	dir := t.TempDir()
 
 	for _, name := range []string{"v2ray", "xray"} {
-		if err := copyFile(fake, dir+"/"+name); err != nil {
-			t.Fatalf("stage fake %s: %v", name, err)
-		}
+		contract.StageFakeCore(t, dir, name)
 	}
 
 	locator := system.NewCoreLocator(dir)
@@ -488,14 +478,4 @@ func vlessConfig() config.Config {
 		Port:    443,
 		UUID:    "11111111-1111-1111-1111-111111111111",
 	}
-}
-
-// copyFile duplicates a file with executable permissions.
-func copyFile(source, target string) error {
-	data, err := os.ReadFile(source)
-	if err != nil {
-		return err
-	}
-
-	return os.WriteFile(target, data, 0o755)
 }

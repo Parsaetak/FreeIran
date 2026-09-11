@@ -5,6 +5,7 @@ import {
   call,
   type Config,
   type SourceView,
+  type IngestionStats,
 } from "../services";
 
 interface SourcesStore {
@@ -13,11 +14,15 @@ interface SourcesStore {
   refreshing: boolean;
   lastError: string | null;
 
+  /** Result of the most recent explicit "refresh now" (null = none). */
+  lastIngestion: IngestionStats | null;
+  lastRefreshAt: number;
+
   load: () => Promise<void>;
   setEnabled: (id: string, enabled: boolean) => Promise<void>;
   add: (id: string, name: string, url: string) => Promise<void>;
   remove: (id: string) => Promise<void>;
-  refresh: () => Promise<void>;
+  refresh: () => Promise<IngestionStats | null>;
 }
 
 export const useSourcesStore = create<SourcesStore>((set, get) => ({
@@ -25,6 +30,8 @@ export const useSourcesStore = create<SourcesStore>((set, get) => ({
   loading: false,
   refreshing: false,
   lastError: null,
+  lastIngestion: null,
+  lastRefreshAt: 0,
 
   load: async () => {
     set({ loading: true });
@@ -63,11 +70,16 @@ export const useSourcesStore = create<SourcesStore>((set, get) => ({
     set({ refreshing: true });
 
     try {
-      await call(() => sourceService.RefreshNow());
+      const stats = await call(() => sourceService.RefreshNow());
 
       await get().load();
-    } finally {
+
+      set({ refreshing: false, lastIngestion: stats ?? null, lastRefreshAt: Date.now() });
+
+      return stats ?? null;
+    } catch (error) {
       set({ refreshing: false });
+      throw error;
     }
   },
 }));
@@ -78,11 +90,16 @@ interface ConfigsStore {
   items: Config[];
   total: number;
   loading: boolean;
-  searchQuery: string;
   searching: boolean;
+  searchQuery: string;
   lastError: string | null;
 
+  /** Pagination cursor for the unfiltered list (infinite scroll). */
+  offset: number;
+  hasMore: boolean;
+
   loadPage: (offset: number) => Promise<void>;
+  loadMore: () => Promise<void>;
   setSearchQuery: (query: string) => void;
   runSearch: () => Promise<void>;
 }
@@ -91,9 +108,11 @@ export const useConfigsStore = create<ConfigsStore>((set, get) => ({
   items: [],
   total: 0,
   loading: false,
-  searchQuery: "",
   searching: false,
+  searchQuery: "",
   lastError: null,
+  offset: 0,
+  hasMore: false,
 
   loadPage: async (offset) => {
     set({ loading: true });
@@ -110,6 +129,8 @@ export const useConfigsStore = create<ConfigsStore>((set, get) => ({
       set({
         items: page.items,
         total: page.total,
+        offset,
+        hasMore: page.has_more,
         loading: false,
         lastError: null,
       });
@@ -121,7 +142,40 @@ export const useConfigsStore = create<ConfigsStore>((set, get) => ({
     }
   },
 
-  setSearchQuery: (query) => set({ searchQuery: query }),
+  /** Appends the next page when the unfiltered list scrolls near the end. */
+  loadMore: async () => {
+    const { loading, hasMore, searchQuery, offset } = get();
+
+    if (loading || !hasMore || searchQuery.trim() !== "") return;
+
+    set({ loading: true });
+
+    try {
+      const page = await call(() => dataService.ListConfigs(offset + PAGE_SIZE, PAGE_SIZE));
+
+      if (page == null) {
+        set({ loading: false });
+
+        return;
+      }
+
+      set((state) => ({
+        items: [...state.items, ...page.items],
+        total: page.total,
+        offset: offset + PAGE_SIZE,
+        hasMore: page.has_more,
+        loading: false,
+        lastError: null,
+      }));
+    } catch (error) {
+      set({
+        loading: false,
+        lastError: error instanceof Error ? error.message : String(error),
+      });
+    }
+  },
+
+  setSearchQuery: (query) => set({ searchQuery: query, offset: 0, hasMore: false }),
 
   runSearch: async () => {
     const query = get().searchQuery.trim();
@@ -131,10 +185,17 @@ export const useConfigsStore = create<ConfigsStore>((set, get) => ({
     try {
       if (query === "") {
         await get().loadPage(0);
+        set({ searching: false });
       } else {
         const results = await call(() => dataService.SearchConfigs(query, 200));
 
-        set({ items: results, searching: false, lastError: null });
+        set({
+          items: results,
+          searching: false,
+          offset: 0,
+          hasMore: false,
+          lastError: null,
+        });
       }
     } catch (error) {
       set({

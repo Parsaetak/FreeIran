@@ -29,25 +29,25 @@ func newConnectionTestApp(t *testing.T) *App {
 
 	t.Cleanup(application.Shutdown)
 
-	// Stage the fake core binary as the managed "v2ray" runtime.
-	fake := contract.BuildFakeCore(t)
-
-	coresDir := filepath.Join(application.opts.BaseDir, "cores")
-
-	if err := os.MkdirAll(coresDir, 0o700); err != nil {
-		t.Fatalf("cores dir: %v", err)
-	}
-
-	data, err := os.ReadFile(fake)
-	if err != nil {
-		t.Fatalf("read fake core: %v", err)
-	}
-
-	if err := os.WriteFile(filepath.Join(coresDir, "v2ray"), data, 0o755); err != nil {
-		t.Fatalf("stage fake v2ray: %v", err)
-	}
+	// Stage the fake core binary as the managed "v2ray" runtime using
+	// the platform-correct executable name (v2ray.exe on Windows) —
+	// extensionless staging is exactly what broke Windows discovery.
+	contract.StageFakeCore(t, ensureCoresDir(application.opts.BaseDir), "v2ray")
 
 	return application
+}
+
+// ensureCoresDir resolves and creates the managed cores directory for
+// a base directory. The locator discovers executables there before
+// falling back to PATH.
+func ensureCoresDir(base string) string {
+	dir := filepath.Join(base, "cores")
+
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return dir
+	}
+
+	return dir
 }
 
 // storeConfig persists a synthetic configuration through the data
@@ -290,22 +290,7 @@ func TestAppShutdownDisconnectsSession(t *testing.T) {
 		t.Fatalf("app.New() = %v", err)
 	}
 
-	fake := contract.BuildFakeCore(t)
-
-	coresDir := filepath.Join(base, "cores")
-
-	if err := os.MkdirAll(coresDir, 0o700); err != nil {
-		t.Fatalf("cores dir: %v", err)
-	}
-
-	data, err := os.ReadFile(fake)
-	if err != nil {
-		t.Fatalf("read fake core: %v", err)
-	}
-
-	if err := os.WriteFile(filepath.Join(coresDir, "v2ray"), data, 0o755); err != nil {
-		t.Fatalf("stage fake v2ray: %v", err)
-	}
+	contract.StageFakeCore(t, ensureCoresDir(base), "v2ray")
 
 	service := NewConnectionService(application)
 

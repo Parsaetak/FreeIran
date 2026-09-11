@@ -106,3 +106,35 @@ publishes broken artifacts.
 
 Runs on push, PRs and weekly on schedule. Dependency vulnerabilities,
 secret scanning and static analysis with real failure conditions.
+
+## Deterministic fake-core fixtures (v0.5.0)
+
+Every ordinary unit/integration test runs against controlled fake
+protocol-core executables — never real VPN binaries and never whatever
+happens to be installed in the runner's `PATH`.
+
+```text
+engine/core/testdata/fakecore (Go source, single binary)
+        ↓ go build during CI (fakecore[.exe] + fake-xray/-v2ray/-sing-box copies)
+        ↓ $RUNNER_TEMP/freeiran-test-cores/
+        ↓ FREEIRAN_TEST_CORES environment variable
+        ↓ engine/core/contract.BuildFakeCore / StageFakeCore
+        ↓ registry discovery → full lifecycle test matrix
+```
+
+Properties:
+
+- the fake cores answer `version`/`--version`/`-version`, validate
+  generated configuration documents (`check -c`), bind the declared
+  local inbound, shut down on signal and support deterministic failure
+  injection (`FAKECORE_FAIL_FAST`, `FAKECORE_CRASH_AFTER_START`,
+  `FAKECORE_HANG`);
+- `FREEIRAN_TEST_CORES` is authoritative in CI: a missing fixture is a
+  HARD test failure, never a silent skip;
+- test staging uses `contract.StageFakeCore` → `system.ExecutableName`,
+  so the Windows job stages `v2ray.exe` (the extensionless staging that
+  broke Windows discovery in v0.4.x is structurally impossible now);
+- the Windows job builds the fixtures BEFORE running the test matrix
+  and keeps the full matrix (no package skipped);
+- real Xray/V2Ray/sing-box binaries remain in the dedicated
+  `protocol-cores` job only (pinned versions + SHA-256 verified).
