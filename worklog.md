@@ -1966,3 +1966,159 @@ documents the duplicate-key + checksum policies).
   scans (sh -c, hardcoded credentials) — clean
 - Wails binding contract: 30/30 method IDs FNV-verified against Go
 - Strict duplicate-key YAML validation for all three workflows — pass
+
+## v0.5.0-fixed — Windows lifecycle close-error fix + CI/smoke/release hardening
+
+**Base:** fbdc9cf (v0.5.0). **Failing run:** CI 34631628565
+
+### Root cause fixed (engine/store/migrate.go)
+
+The v0.5.0 `closeNow()` flipped `closed = true` BEFORE calling
+`closeLegacyFile(file)`. When `closeLegacyFile` returned an
+injected/real error, the deferred safety net (`_ = closeNow()`) was
+a no-op — the underlying OS descriptor stayed open. On Windows the
+retry rename then failed with "the process cannot access the file"
+and the TempDir cleanup also failed.
+
+**Fix:** `closed` flips to true ONLY after `closeLegacyFile` returns
+nil. The deferred safety net checks `closed` and, when false, calls
+`file.Close()` DIRECTLY (bypassing the testable hook) so a
+hook-injected error cannot defeat the OS-handle release. This is the
+Windows-critical guarantee: no descriptor outlives MigrateFromJSON,
+so the retry rename and the TempDir cleanup always succeed.
+
+The same lifecycle discipline was applied to `migrateLegacyLog` in
+engine/store/wal.go (the legacy journal upgrade path) for
+consistency, even though the previous deferred `file.Close()` already
+released the handle there.
+
+### Logger lifecycle fixed (engine/app/app.go)
+
+Every `New()` failure path after logger creation now closes the
+logger before returning. A `fail` helper centralizes the cleanup
+(cancel context, close store, close logger — in that order, logger
+last). `Shutdown()` is now idempotent through `sync.Once` and closes
+subsystems first (scheduler → context → connection manager → store)
+and the logger LAST. No goroutine, file handle or WAL segment leaks.
+
+### CI architecture repaired (.github/workflows/ci.yml)
+
+The Windows job no longer depends on `protocol-cores` — it only
+needs `[go, frontend]`. The fake-core matrix is self-contained on
+Windows. `protocol-cores` runs independently as the real-binary
+gate. No real-core job was weakened.
+
+### Smoke test made deterministic (cmd/freeiran/main.go)
+
+Removed the unused `FREEIRAN_SMOKE_TEST` env var. The smoke test now
+uses a process-local temp base directory (never the user's AppData),
+sets `RunIngestionOnStart=false` + `SkipDefaultSources=true`, never
+calls `Start()` (no scheduler, no background ingestion, no core
+refresh), verifies boot state + storage count + log entries + clean
+shutdown, removes the temp directory, and exits 0 only when every
+check passes.
+
+### Release validation strengthened (.github/workflows/release.yml)
+
+The verify job now checks: VERSION ↔ tag, frontend/package.json
+version, Go version metadata, gofmt, go vet, fake-core build, full
+Go tests, race tests, native tests, frontend typecheck/tests/build,
+and a windows/amd64 compile validation. The build job (Windows)
+runs the full Go test matrix, the runtime smoke test, the desktop
+build, an executable sanity check, and packages the artifact. A
+release never publishes unless the full matrix is green.
+
+### Runtime logging audit (internal/logging)
+
+Redaction adversarial tests added for every credential-bearing
+protocol URL family (VLESS, VMess, Trojan, Shadowsocks, Hysteria,
+Hysteria2, TUIC, Juicity, Naive+HTTPS), JSON-shaped secrets
+(password/passwd/pwd/token/secret/api_key/api-key/private_key/
+private-key/auth/authorization), URL query secrets, explicit
+caller-registered secrets, and bare UUIDs. All pass; no credential
+material reaches the file, ring or subscribers.
+
+### Frontend dependency audit (frontend/package.json)
+
+Upgraded dev dependencies to fix the 5 vulnerabilities (3 moderate,
+1 high, 1 critical) reported by npm audit:
+- vite ^5.4.11 → ^7.3.6 (fixes CVEs in vite + esbuild)
+- vitest ^2.1.8 → ^5.0.0 (fixes CVEs in vitest + @vitest/mocker + vite-node)
+- @vitejs/plugin-react ^4.3.4 → ^5.2.0 (compatible with vite 7)
+
+All 28 frontend unit tests still pass; typecheck clean; production
+build clean. `npm audit` now reports 0 vulnerabilities. No
+production dependency was changed; no telemetry or remote services
+introduced.
+
+### Regression tests added
+
+- engine/store/migrate_test.go: TestMigrationCloseFailureReleasesDescriptor,
+  TestMigrationCloseFailureReleasesTempDir,
+  TestMigrationRenameFailureReleasesTempDir,
+  TestMigrationCancellationReleasesDescriptor,
+  TestLegacyJournalCloseFailureReleasesDescriptor,
+  TestMigrationRetryAfterCloseFailureSucceedsOnRename
+- engine/app/app_test.go: TestAppShutdownIsIdempotent,
+  TestAppNewFailureClosesLogger, TestAppShutdownReleasesAllHandles
+- internal/logging/logging_test.go: TestRedactProtocolURLsAdversarial,
+  TestRedactJSONKeyValueSecrets, TestRedactURLQuerySecrets,
+  TestRedactExplicitSecrets, TestRedactUUIDs
+
+### Verification performed (all green)
+
+- gofmt -l ./engine ./system ./cmd ./internal — clean
+- go vet ./engine/... ./system/... ./internal/... — clean
+- GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go vet ./cmd/... — clean
+- go build ./engine/... ./system/... ./internal/... — clean
+- GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/freeiran — clean
+- go test -count=1 ./engine/... ./system/... ./internal/... — all pass
+- go test -race -count=1 ./engine/... ./system/... ./internal/... — all pass
+- make -C native test — all pass
+- CGO_ENABLED=1 go test -tags native_accel -count=1 ./engine/native — pass
+- CGO_ENABLED=1 go test -tags native_accel -bench=Native -benchtime=1x -run=NONE ./engine/native — pass
+- Benchmark smoke (chunks, store, pipeline, core, core/v2ray, internal/logging) — pass
+- Frontend: npm run typecheck — clean; npm test — 28/28 pass; npm run build — clean
+- npm audit — 0 vulnerabilities
+- Duplicate YAML key validation (ci.yml, release.yml, security.yml) — clean
+- Wails bindings audit — 1:1 match between Go services and JS bindings
+- No test skipped; no assertion weakened; no fake-core shortcut replacing real-core verification
+
+### Project-goal verification
+
+- local-first architecture: preserved (chunked store, no cloud)
+- high-performance chunked storage: preserved (chunks.go unchanged)
+- WAL durability: preserved (wal.go segmented journal unchanged)
+- Windows-safe lifecycle management: FIXED (the close-error bug)
+- C++ optional acceleration: preserved (native/ + build tags)
+- deterministic fake-core testing: preserved (contract harness)
+- real Xray/V2Ray/sing-box support: preserved (adapters unchanged)
+- persistent diagnostics: preserved (internal/logging)
+- professional Wails UI: preserved (6 pages, components, motion)
+
+### Files changed
+
+- engine/store/migrate.go (close-lifecycle fix + comments)
+- engine/store/wal.go (same lifecycle discipline for journal upgrade)
+- engine/store/migrate_test.go (6 new regression tests)
+- engine/app/app.go (logger lifecycle, idempotent Shutdown)
+- engine/app/app_test.go (3 new lifecycle tests)
+- engine/app/helpers_test.go (listOpenFilesUnder helper)
+- cmd/freeiran/main.go (deterministic smoke test, filepath import)
+- .github/workflows/ci.yml (Windows job needs only go+frontend)
+- .github/workflows/release.yml (full verification matrix)
+- internal/logging/logging_test.go (5 new redaction test groups)
+- frontend/package.json (vite/vitest/plugin-react upgrade)
+- frontend/package-lock.json (regenerated)
+- REPLACEMENT_MANIFEST.md (updated)
+
+### Known limitations
+
+- The Windows smoke test boots the engine headlessly; the webview
+  itself is validated by the desktop build step, not interactively
+  (CI runners have no interactive desktop session).
+- Real-core behavior on exotic protocols is validated by the
+  dedicated real-binary CI job (protocol-cores), not by the
+  fake-core matrix.
+- Linux desktop build requires GTK development packages (the CI
+  builds for the Windows target, which needs no GTK).

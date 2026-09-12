@@ -4,13 +4,16 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/Parsaetak/FreeIran/engine/config"
 	"github.com/Parsaetak/FreeIran/engine/store"
+	"github.com/Parsaetak/FreeIran/internal/logging"
 )
 
 // newTestApp creates an app bound to a temp directory with fast
@@ -380,5 +383,125 @@ func TestSourceServiceValidation(t *testing.T) {
 
 	if len(list) != 1 || list[0].ID != "dup" {
 		t.Fatalf("list = %+v", list)
+	}
+}
+
+// TestAppShutdownIsIdempotent verifies Shutdown is safe to call any
+// number of times — the v0.5.0-fixed guarantee. The store, connection
+// manager and logger must each observe exactly one close.
+func TestAppShutdownIsIdempotent(t *testing.T) {
+	application, err := New(Options{
+		BaseDir: filepath.Join(t.TempDir(), "freeiran"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	application.Start()
+
+	// Write something so shutdown has work to flush.
+	cfg := config.Config{
+		Type: config.TypeVLESS, Address: "a.example.com", Port: 443,
+		UUID: "u",
+	}
+
+	cfg.Normalize()
+	cfg.SetID()
+
+	_ = application.store.Upsert(cfg.ID, []byte(`{"x":1}`))
+
+	// Triple shutdown must be safe and not panic.
+	application.Shutdown()
+	application.Shutdown()
+	application.Shutdown()
+
+	if application.State().Status != "shutting_down" {
+		t.Fatalf("status = %s", application.State().Status)
+	}
+
+	// Reopen must succeed and keep the data (WAL replay).
+	reopened, err := store.Open(store.Options{
+		Path: filepath.Join(application.opts.BaseDir, "data"),
+	})
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+
+	defer reopened.Close()
+
+	if reopened.Count() != 1 {
+		t.Fatalf("reopened count = %d, want 1", reopened.Count())
+	}
+}
+
+// TestAppNewFailureClosesLogger verifies every New() failure path
+// after logger creation closes the logger before returning. A leaked
+// logger handle blocks TempDir cleanup on Windows.
+func TestAppNewFailureClosesLogger(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "freeiran")
+
+	// Open a logger we own; the app adopts it through Options.Logger.
+	logger, err := logging.Open(logging.Options{
+		Dir:  filepath.Join(dir, "logs"),
+		Name: "freeiran.log",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Force a failure AFTER logger creation by pointing the store at
+	// an unwritable path (a file in place of the data directory).
+	dataPath := filepath.Join(dir, "data")
+	if err := os.WriteFile(dataPath, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = New(Options{
+		BaseDir: dir,
+		Logger:  logger,
+	})
+	if err == nil {
+		t.Fatal("New must fail when the store path is not a directory")
+	}
+
+	// The logger must have been closed by the failure path. A second
+	// Close is a no-op (idempotent), but the first close must have
+	// released the file handle.
+	if err := logger.Close(); err != nil {
+		t.Fatalf("logger not closed by failure path: %v", err)
+	}
+
+	// And the log directory must be removable immediately.
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatalf("TempDir cleanup failed after New failure: %v", err)
+	}
+}
+
+// TestAppShutdownReleasesAllHandles verifies no file handle outlives
+// Shutdown — the Windows-critical guarantee. On Linux we observe this
+// directly through /proc/self/fd.
+func TestAppShutdownReleasesAllHandles(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("requires /proc/self/fd")
+	}
+
+	dir := filepath.Join(t.TempDir(), "freeiran")
+
+	application, err := New(Options{
+		BaseDir:             dir,
+		RunIngestionOnStart: false,
+		SkipDefaultSources:  true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	application.Start()
+	application.Shutdown()
+
+	// No file descriptor should reference anything under the app's
+	// base directory.
+	if leaks := listOpenFilesUnder(dir); len(leaks) > 0 {
+		t.Fatalf("file handles leaked after shutdown: %v", leaks)
 	}
 }

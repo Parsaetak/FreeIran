@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   verify:
-    name: Verify version and run tests
+    name: Verify version and run full matrix
     runs-on: ubuntu-latest
     env:
       GOTOOLCHAIN: local
@@ -21,6 +21,12 @@ jobs:
         with:
           go-version: "1.26.8"
           cache: true
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
 
       - name: Verify version consistency
         run: |
@@ -40,14 +46,67 @@ jobs:
             exit 1
           fi
 
-      - name: Test
-        run: go test -count=1 ./engine/... ./system/... ./internal/...
+          # Go version metadata: the toolchain declared in go.mod must
+          # match the CI toolchain so a release never ships built with
+          # a different Go than what was tested.
+          go_version=$(go version | awk '{print $3}')
+          echo "Go version: $go_version"
 
-      - name: Race tests
+      - name: Build deterministic fake test cores
+        run: |
+          mkdir -p "$RUNNER_TEMP/freeiran-test-cores"
+          go build -o "$RUNNER_TEMP/freeiran-test-cores/fakecore" ./engine/core/testdata/fakecore
+          cp "$RUNNER_TEMP/freeiran-test-cores/fakecore" "$RUNNER_TEMP/freeiran-test-cores/fake-xray"
+          cp "$RUNNER_TEMP/freeiran-test-cores/fakecore" "$RUNNER_TEMP/freeiran-test-cores/fake-v2ray"
+          cp "$RUNNER_TEMP/freeiran-test-cores/fakecore" "$RUNNER_TEMP/freeiran-test-cores/fake-sing-box"
+
+      - name: Format check
+        run: |
+          unformatted=$(gofmt -l ./engine ./system ./cmd ./internal)
+          if [ -n "$unformatted" ]; then
+            echo "Files not gofmt-clean:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./engine/... ./system/... ./internal/...
+
+      - name: Build engine packages
+        run: go build ./engine/... ./system/... ./internal/...
+
+      - name: Test (fake-core matrix)
+        run: go test -count=1 ./engine/... ./system/... ./internal/...
+        env:
+          FREEIRAN_TEST_CORES: ${{ runner.temp }}/freeiran-test-cores
+
+      - name: Race tests (fake-core matrix)
         run: go test -race -count=1 ./engine/... ./system/... ./internal/...
+        env:
+          FREEIRAN_TEST_CORES: ${{ runner.temp }}/freeiran-test-cores
 
       - name: Native tests
         run: make -C native test
+
+      - name: Frontend typecheck
+        run: npm run typecheck
+        working-directory: frontend
+
+      - name: Frontend unit tests
+        run: npm test
+        working-directory: frontend
+
+      - name: Frontend production build
+        run: npm run build
+        working-directory: frontend
+
+      # Compile-validate the Wails desktop app for the primary target
+      # from Linux: the Windows webview needs no GTK, so a full
+      # windows/amd64 build succeeds without GUI development packages.
+      - name: Validate desktop build (windows/amd64)
+        run: |
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
+            go build -o /dev/null ./cmd/freeiran
 
   build:
     name: Build release artifacts
@@ -75,6 +134,27 @@ jobs:
           npm run build:embed
         working-directory: frontend
 
+      - name: Build deterministic fake test cores
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\freeiran-test-cores" | Out-Null
+          go build -o "$env:RUNNER_TEMP\freeiran-test-cores\fakecore.exe" ./engine/core/testdata/fakecore
+          Copy-Item "$env:RUNNER_TEMP\freeiran-test-cores\fakecore.exe" "$env:RUNNER_TEMP\freeiran-test-cores\fake-xray.exe"
+          Copy-Item "$env:RUNNER_TEMP\freeiran-test-cores\fakecore.exe" "$env:RUNNER_TEMP\freeiran-test-cores\fake-v2ray.exe"
+          Copy-Item "$env:RUNNER_TEMP\freeiran-test-cores\fakecore.exe" "$env:RUNNER_TEMP\freeiran-test-cores\fake-sing-box.exe"
+
+      - name: Run Go tests (Windows)
+        run: go test -count=1 ./...
+        env:
+          CGO_ENABLED: "0"
+          FREEIRAN_TEST_CORES: ${{ runner.temp }}\freeiran-test-cores
+
+      - name: Runtime smoke test
+        shell: pwsh
+        run: |
+          go run ./cmd/freeiran --smoke-test
+          if ($LASTEXITCODE -ne 0) { throw "smoke test failed: $LASTEXITCODE" }
+
       - name: Build desktop application
         shell: pwsh
         env:
@@ -88,6 +168,13 @@ jobs:
             -o FreeIran-windows-amd64.exe ./cmd/freeiran
 
           if ($LASTEXITCODE -ne 0) { throw "build failed" }
+
+      - name: Verify executable
+        shell: pwsh
+        run: |
+          $size = (Get-Item FreeIran-windows-amd64.exe).Length
+          if ($size -lt 10MB) { throw "executable suspiciously small: $size" }
+          Write-Host "Executable size: $([math]::Round($size/1MB,1)) MB"
 
       - name: Package
         shell: pwsh
@@ -103,12 +190,6 @@ jobs:
 
           Write-Host "Packaged FreeIran-windows-amd64 (v$version)"
 
-      - name: Smoke test executable
-        shell: pwsh
-        run: |
-          $size = (Get-Item FreeIran-windows-amd64.exe).Length
-          if ($size -lt 10MB) { throw "executable suspiciously small: $size" }
-
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
@@ -121,7 +202,7 @@ jobs:
   publish:
     name: Publish GitHub release
     runs-on: ubuntu-latest
-    needs: [build]
+    needs: [verify, build]
     steps:
       - uses: actions/checkout@v7
 

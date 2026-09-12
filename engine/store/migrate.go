@@ -97,10 +97,20 @@ func (s *Store) MigrateFromJSON(
 			Subsystem, "migrate", "read legacy database")
 	}
 
-	// The deferred close covers every ERROR exit path below. The
-	// SUCCESS path closes the file EXPLICITLY (with its error checked)
-	// before the rename, because the rename that preserves the legacy
-	// file cannot succeed on Windows while the descriptor is open.
+	// Resource-ownership discipline (the Windows-safe lifecycle):
+	//
+	//   open → read (pass 1) → flush → verify (pass 2) →
+	//   close underlying descriptor (error-aware) → only then rename.
+	//
+	// `closed` flips to true ONLY after a close has been acknowledged
+	// (closeLegacyFile returned nil). On a close failure `closed` stays
+	// false so the deferred safety net can retry the underlying OS
+	// release directly through file.Close() — bypassing the testable
+	// hook — guaranteeing no descriptor outlives MigrateFromJSON even
+	// when the hook injects an error. This is the Windows-critical
+	// guarantee: a leaked descriptor blocks the retry rename and the
+	// TempDir cleanup, so the OS handle must be released through
+	// guaranteed cleanup regardless of what the hook reports.
 	closed := false
 
 	closeNow := func() error {
@@ -108,13 +118,26 @@ func (s *Store) MigrateFromJSON(
 			return nil
 		}
 
+		if err := closeLegacyFile(file); err != nil {
+			return err // closed stays false; deferred cleanup will release
+		}
+
 		closed = true
 
-		return closeLegacyFile(file)
+		return nil
 	}
 
 	defer func() {
-		_ = closeNow()
+		if closed {
+			return
+		}
+
+		// Direct OS release — NOT closeLegacyFile — so a hook-injected
+		// error cannot defeat the lifecycle guarantee. The error is
+		// dropped because the caller has already received the explicit
+		// close error (or some earlier failure); the only goal here is
+		// releasing the descriptor.
+		_ = file.Close()
 	}()
 
 	version, err := legacyVersion(file)
@@ -184,6 +207,9 @@ func (s *Store) MigrateFromJSON(
 	// to rename a file this process still holds open; a close failure
 	// is fatal here (data is already migrated and verified, but the
 	// lifecycle contract requires the descriptor gone before rename).
+	// On a close failure `closed` stays false and the deferred safety
+	// net releases the OS handle directly so the retry attempt can
+	// succeed.
 	if err := closeNow(); err != nil {
 		return result, firerrors.Wrap(err, firerrors.KindEnvironment,
 			Subsystem, "migrate", "close legacy database before rename")

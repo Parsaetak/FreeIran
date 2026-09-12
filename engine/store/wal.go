@@ -870,6 +870,13 @@ func (j *journal) migrateLegacyLog(replay replayFunc) error {
 	// its error checked; removal below is only attempted after a
 	// successful close. On close failure the legacy file is KEPT (the
 	// upgrade re-runs idempotently next boot).
+	//
+	// `closed` flips to true ONLY after closeLegacyJournal returns nil,
+	// so a close failure leaves the deferred safety net active. The
+	// deferred net calls file.Close() DIRECTLY (bypassing the testable
+	// hook) so a hook-injected error cannot leak the OS handle on
+	// Windows — the retry rename/remove on the next boot would
+	// otherwise fail against a still-open handle.
 	closed := false
 
 	closeAndRelease := func() error {
@@ -877,18 +884,25 @@ func (j *journal) migrateLegacyLog(replay replayFunc) error {
 			return nil
 		}
 
-		closed = true
-
 		if err := closeLegacyJournal(file); err != nil {
 			return firerrors.Wrap(err, firerrors.KindEnvironment,
 				Subsystem, "wal", "close legacy journal before upgrade")
 		}
 
+		closed = true
+
 		return nil
 	}
 
 	defer func() {
-		_ = file.Close() // no-op when closeAndRelease already ran
+		if closed {
+			return
+		}
+
+		// Direct OS release; see migrate.go for the rationale. The
+		// error is dropped because the caller has already received the
+		// explicit close error.
+		_ = file.Close()
 	}()
 
 	reader := bufio.NewReaderSize(file, 64<<10)

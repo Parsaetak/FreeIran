@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -486,5 +487,235 @@ func TestLegacyJournalUpgradeRemoveFailureDefersUpgrade(t *testing.T) {
 	// The legacy file stays behind and the upgrade retries next boot.
 	if _, statErr := os.Stat(legacy); statErr != nil {
 		t.Fatalf("legacy journal must remain after a failed removal: %v", statErr)
+	}
+}
+
+// listOpenFilesForPath reports any file descriptor in /proc/self/fd
+// pointing at the given path (Linux only). It is the portable
+// observable for the Windows-critical "descriptor released" guarantee:
+// on Windows the same guarantee is observed indirectly through the
+// retry rename succeeding, but on Linux we can read it directly.
+func listOpenFilesForPath(path string) []string {
+	entries, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		return nil
+	}
+
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil
+	}
+
+	var leaks []string
+
+	for _, entry := range entries {
+		target, err := os.Readlink(filepath.Join("/proc/self/fd", entry.Name()))
+		if err != nil {
+			continue
+		}
+
+		if target == abs {
+			leaks = append(leaks, target)
+		}
+	}
+
+	return leaks
+}
+
+// TestMigrationCloseFailureReleasesDescriptor is the Windows-critical
+// regression for the v0.5.0-fixed lifecycle: when closeLegacyFile
+// returns an error, the underlying OS descriptor MUST still be
+// released by the deferred safety net. The previous implementation
+// flipped `closed` to true before calling closeLegacyFile, so a
+// hook-injected (or real) close error left the descriptor open — on
+// Windows the retry rename then failed with "the process cannot
+// access the file" and the TempDir cleanup also failed.
+//
+// On Linux we observe the descriptor directly via /proc/self/fd; on
+// other platforms the TestMigrationCloseErrorPreservesLegacyFile retry
+// (which renames the file) covers the same guarantee.
+func TestMigrationCloseFailureReleasesDescriptor(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("requires /proc/self/fd")
+	}
+
+	s := openTestStore(t, Options{})
+
+	dir := t.TempDir()
+	path := legacyFixture(t, dir, 3)
+
+	rec := &lifecycleRecorder{closeErr: errors.New("injected close failure")}
+	rec.install(t)
+
+	_, err := s.MigrateFromJSON(context.Background(), MigrateOptions{LegacyPath: path})
+	if err == nil {
+		t.Fatal("close error must propagate")
+	}
+
+	if leaks := listOpenFilesForPath(path); len(leaks) > 0 {
+		t.Fatalf("legacy descriptor leaked after close failure: %v", leaks)
+	}
+
+	// Recovery path: with the failure cleared, the retry must
+	// succeed — which on Windows requires the first attempt's
+	// descriptor to be gone.
+	rec.closeErr = nil
+
+	result, err := s.MigrateFromJSON(context.Background(), MigrateOptions{LegacyPath: path})
+	if err != nil {
+		t.Fatalf("retry after close failure: %v", err)
+	}
+
+	if !result.Renamed {
+		t.Fatal("retry must complete the rename")
+	}
+}
+
+// TestMigrationCloseFailureReleasesTempDir verifies the TempDir
+// cleanup succeeds after every failure path — the Windows acceptance
+// criterion. A leaked descriptor blocks RemoveAll on Windows; on Linux
+// it does not block, but the test still proves the lifecycle is clean.
+func TestMigrationCloseFailureReleasesTempDir(t *testing.T) {
+	s := openTestStore(t, Options{})
+
+	dir := t.TempDir()
+	path := legacyFixture(t, dir, 2)
+
+	rec := &lifecycleRecorder{closeErr: errors.New("injected close failure")}
+	rec.install(t)
+
+	_, _ = s.MigrateFromJSON(context.Background(), MigrateOptions{LegacyPath: path})
+
+	// The TempDir must be removable immediately. On Windows this
+	// fails loudly while any handle is still open; on Linux it
+	// catches leftover descriptors through the test harness.
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatalf("TempDir cleanup failed after close-failure path: %v", err)
+	}
+}
+
+// TestMigrationRenameFailureReleasesTempDir verifies the rename-failure
+// path also leaves no descriptor behind.
+func TestMigrationRenameFailureReleasesTempDir(t *testing.T) {
+	s := openTestStore(t, Options{})
+
+	dir := t.TempDir()
+	path := legacyFixture(t, dir, 2)
+
+	rec := &lifecycleRecorder{renameErr: errors.New("access denied")}
+	rec.install(t)
+
+	_, _ = s.MigrateFromJSON(context.Background(), MigrateOptions{LegacyPath: path})
+
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatalf("TempDir cleanup failed after rename-failure path: %v", err)
+	}
+}
+
+// TestMigrationCancellationReleasesDescriptor verifies a cancelled
+// migration does not leak the legacy descriptor.
+func TestMigrationCancellationReleasesDescriptor(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("requires /proc/self/fd")
+	}
+
+	s := openTestStore(t, Options{})
+
+	dir := t.TempDir()
+	path := legacyFixture(t, dir, 50)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, _ = s.MigrateFromJSON(ctx, MigrateOptions{LegacyPath: path})
+
+	if leaks := listOpenFilesForPath(path); len(leaks) > 0 {
+		t.Fatalf("legacy descriptor leaked after cancellation: %v", leaks)
+	}
+}
+
+// TestLegacyJournalCloseFailureReleasesDescriptor is the journal-side
+// analogue of TestMigrationCloseFailureReleasesDescriptor: a
+// closeLegacyJournal failure must not leak the journal descriptor.
+func TestLegacyJournalCloseFailureReleasesDescriptor(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("requires /proc/self/fd")
+	}
+
+	dir := t.TempDir()
+	legacy := filepath.Join(dir, "journal.log")
+
+	writeLegacyV1Journal(t, legacy, 3)
+
+	rec := &lifecycleRecorder{closeErr: errors.New("injected close failure")}
+	rec.install(t)
+
+	j, err := openJournal(dir, 0, 0, func(
+		op walOp,
+		key [32]byte,
+		value []byte,
+		lsn uint64,
+	) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("open with legacy journal: %v", err)
+	}
+
+	_ = j.Close()
+
+	if leaks := listOpenFilesForPath(legacy); len(leaks) > 0 {
+		t.Fatalf("legacy journal descriptor leaked after close failure: %v", leaks)
+	}
+}
+
+// TestMigrationRetryAfterCloseFailureSucceedsOnRename is the explicit
+// Windows-guarantee test for the retry path: even after a close
+// failure leaves the first attempt's state behind, the second attempt
+// must reach the rename. This is the lifecycle the previous
+// implementation broke on Windows (leaked descriptor → retry rename
+// failed). On Linux the rename never fails for descriptor reasons,
+// but the test still proves the retry completes the full lifecycle.
+func TestMigrationRetryAfterCloseFailureSucceedsOnRename(t *testing.T) {
+	s := openTestStore(t, Options{})
+
+	dir := t.TempDir()
+	path := legacyFixture(t, dir, 4)
+
+	rec := &lifecycleRecorder{closeErr: errors.New("injected")}
+	rec.install(t)
+
+	// First attempt: close fails, rename must NOT run.
+	_, err := s.MigrateFromJSON(context.Background(), MigrateOptions{LegacyPath: path})
+	if err == nil {
+		t.Fatal("first attempt must fail")
+	}
+
+	for _, event := range rec.events {
+		if event == "rename" {
+			t.Fatal("rename must not run after a close failure")
+		}
+	}
+
+	// Second attempt: close succeeds, rename must run.
+	rec.closeErr = nil
+	rec.events = nil
+
+	result, err := s.MigrateFromJSON(context.Background(), MigrateOptions{LegacyPath: path})
+	if err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+
+	if !result.Renamed {
+		t.Fatal("retry must rename")
+	}
+
+	if eventsJoined(rec.events) != "close,rename" {
+		t.Fatalf("retry lifecycle = [%s], want [close,rename]",
+			eventsJoined(rec.events))
+	}
+
+	if s.Count() != 4 {
+		t.Fatalf("count = %d, want 4", s.Count())
 	}
 }

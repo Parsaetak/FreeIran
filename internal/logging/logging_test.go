@@ -491,3 +491,203 @@ func TestRedactNeverPanicsOnHostileInput(t *testing.T) {
 		_ = Redact(input)
 	}
 }
+
+// TestRedactProtocolURLsAdversarial verifies every credential-bearing
+// protocol URL family is redacted — VLESS, VMess, Trojan, Shadowsocks
+// (ss), Hysteria2, TUIC, Juicity and Naive+HTTPS. The credential
+// portion (UUID, password, base64 userinfo) must NEVER survive
+// redaction, while the scheme prefix stays useful for diagnostics.
+func TestRedactProtocolURLsAdversarial(t *testing.T) {
+	cases := []struct {
+		name    string
+		input   string
+		mustGo  string // must contain
+		mustNot string // must NOT contain
+	}{
+		{
+			name:    "vless uuid",
+			input:   "vless://a3f5b8e2-1c4d-4e2a-9f8b-7c6d5e4f3a2b@srv.example.com:443?type=ws",
+			mustGo:  "vless://[REDACTED]",
+			mustNot: "a3f5b8e2-1c4d-4e2a-9f8b-7c6d5e4f3a2b",
+		},
+		{
+			name:    "vmess base64",
+			input:   "vmess://eyJ2IjoiMiIsInBzIjoibm9kZS1hIn0=@srv.example.com:443?security=tls",
+			mustGo:  "vmess://[REDACTED]",
+			mustNot: "eyJ2IjoiMiIsInBzIjoibm9kZS1hIn0",
+		},
+		{
+			name:    "trojan password",
+			input:   "trojan://secretpass123@srv.example.com:443#node-name",
+			mustGo:  "trojan://[REDACTED]",
+			mustNot: "secretpass123",
+		},
+		{
+			name:    "shadowsocks password",
+			input:   "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQxMjM=@srv.example.com:8388",
+			mustGo:  "ss://[REDACTED]",
+			mustNot: "YWVzLTI1Ni1nY206cGFzc3dvcmQxMjM",
+		},
+		{
+			name:    "hysteria2 password",
+			input:   "hysteria2://sup3rs3cr3t@srv.example.com:443?sni=example.com",
+			mustGo:  "hysteria2://[REDACTED]",
+			mustNot: "sup3rs3cr3t",
+		},
+		{
+			name:    "hysteria password",
+			input:   "hysteria://authkey456@srv.example.com:443",
+			mustGo:  "hysteria://[REDACTED]",
+			mustNot: "authkey456",
+		},
+		{
+			name:    "tuic uuid+password",
+			input:   "tuic://b8e3f2a1-4c5d-6e7f-8a9b-0c1d2e3f4a5b:tuicpass@srv.example.com:443",
+			mustGo:  "tuic://[REDACTED]",
+			mustNot: "b8e3f2a1-4c5d-6e7f-8a9b-0c1d2e3f4a5b",
+		},
+		{
+			name:    "juicity uuid+password",
+			input:   "juicity://c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e5f:juicitypass@srv:443",
+			mustGo:  "juicity://[REDACTED]",
+			mustNot: "c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e5f",
+		},
+		{
+			name:    "naive+https",
+			input:   "naive+https://user:pass@srv.example.com:443",
+			mustGo:  "naive+https://[REDACTED]",
+			mustNot: "pass",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := Redact(tc.input)
+
+			if !strings.Contains(out, tc.mustGo) {
+				t.Fatalf("redaction of %q = %q, must contain %q",
+					tc.input, out, tc.mustGo)
+			}
+
+			if strings.Contains(out, tc.mustNot) {
+				t.Fatalf("redaction of %q leaked %q: %q",
+					tc.input, tc.mustNot, out)
+			}
+		})
+	}
+}
+
+// TestRedactJSONKeyValueSecrets verifies JSON-shaped and key=value
+// secret parameters are redacted across every recognized key name.
+func TestRedactJSONKeyValueSecrets(t *testing.T) {
+	cases := []struct {
+		name    string
+		input   string
+		mustNot string
+	}{
+		{"password=json", `{"password":"hunter2"}`, "hunter2"},
+		{"passwd=json", `{"passwd":"secret123"}`, "secret123"},
+		{"pwd=json", `{"pwd":"abc"}`, "abc"},
+		{"token=json", `{"token":"tok-xyz"}`, "tok-xyz"},
+		{"secret=json", `{"secret":"s3cr3t"}`, "s3cr3t"},
+		{"api_key=json", `{"api_key":"ak-123"}`, "ak-123"},
+		{"api-key=json", `{"api-key":"ak-456"}`, "ak-456"},
+		{"private_key=json", `{"private_key":"pk-xyz"}`, "pk-xyz"},
+		{"private-key=json", `{"private-key":"pk-abc"}`, "pk-abc"},
+		{"auth=json", `{"auth":"bearer-xyz"}`, "bearer-xyz"},
+		{"authorization=json", `{"authorization":"Basic abc"}`, "Basic abc"},
+		{"password=kv", "password=hunter2", "hunter2"},
+		{"passwd:kv", "passwd: secret123", "secret123"},
+		{"token = kv", "token = tok-xyz", "tok-xyz"},
+		{"api_key:kv", "api_key: ak-123", "ak-123"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := Redact(tc.input)
+
+			if strings.Contains(out, tc.mustNot) {
+				t.Fatalf("redaction of %q leaked %q: %q",
+					tc.input, tc.mustNot, out)
+			}
+		})
+	}
+}
+
+// TestRedactURLQuerySecrets verifies secret-bearing URL query
+// parameters are redacted while benign parameters survive.
+func TestRedactURLQuerySecrets(t *testing.T) {
+	cases := []struct {
+		name    string
+		input   string
+		mustGo  string
+		mustNot string
+	}{
+		{"password query", "https://ex.com/?password=secret&page=2", "[REDACTED]", "secret"},
+		{"token query", "https://ex.com/?token=tok123&x=1", "[REDACTED]", "tok123"},
+		{"secret query", "https://ex.com/?secret=s&y=2", "[REDACTED]", "secret=s"},
+		{"key query", "https://ex.com/?key=k123", "[REDACTED]", "k123"},
+		{"auth query", "https://ex.com/?auth=a1", "[REDACTED]", "a1"},
+		{"benign query", "https://ex.com/?page=2&sort=asc", "page=2", ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := Redact(tc.input)
+
+			if tc.mustNot != "" && strings.Contains(out, tc.mustNot) {
+				t.Fatalf("redaction of %q leaked %q: %q",
+					tc.input, tc.mustNot, out)
+			}
+
+			if tc.mustGo != "" && !strings.Contains(out, tc.mustGo) {
+				t.Fatalf("redaction of %q = %q, must contain %q",
+					tc.input, out, tc.mustGo)
+			}
+		})
+	}
+}
+
+// TestRedactExplicitSecrets verifies caller-registered secret values
+// are replaced verbatim before pattern redaction runs.
+func TestRedactExplicitSecrets(t *testing.T) {
+	secrets := []string{
+		"super-secret-value",
+		"another-secret",
+	}
+
+	out := RedactWithSecrets(
+		"connect to super-secret-value then another-secret",
+		secrets,
+	)
+
+	if strings.Contains(out, "super-secret-value") {
+		t.Fatalf("first explicit secret survived: %s", out)
+	}
+
+	if strings.Contains(out, "another-secret") {
+		t.Fatalf("second explicit secret survived: %s", out)
+	}
+
+	// Empty secrets are skipped (no replacement of empty string).
+	empty := RedactWithSecrets("text", []string{""})
+	if empty != "text" {
+		t.Fatalf("empty secret should be skipped: %q", empty)
+	}
+}
+
+// TestRedactUUIDs verifies bare UUID-shaped values are redacted.
+func TestRedactUUIDs(t *testing.T) {
+	uuids := []string{
+		"11111111-1111-1111-1111-111111111111",
+		"a3f5b8e2-1c4d-4e2a-9f8b-7c6d5e4f3a2b",
+		"ABCDEF12-3456-7890-ABCD-EF1234567890",
+	}
+
+	for _, uuid := range uuids {
+		out := Redact("config id " + uuid)
+		if strings.Contains(out, uuid) {
+			t.Fatalf("UUID %q survived redaction: %s", uuid, out)
+		}
+	}
+}

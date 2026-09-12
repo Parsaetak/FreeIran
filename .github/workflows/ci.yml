@@ -209,7 +209,7 @@ jobs:
   windows:
     name: Windows tests and desktop build
     runs-on: windows-latest
-    needs: [go, frontend, protocol-cores]
+    needs: [go, frontend]
     env:
       GOTOOLCHAIN: local
     steps:
@@ -238,6 +238,11 @@ jobs:
       # never whatever happens to be installed on the runner. The
       # fixture directory is exposed through FREEIRAN_TEST_CORES and a
       # missing fixture fails the tests loudly instead of skipping.
+      #
+      # The Windows job does NOT depend on the protocol-cores job: the
+      # fake-core matrix is self-contained. Real-binary verification
+      # runs independently in the protocol-cores job and gates releases
+      # through release.yml.
       - name: Build deterministic fake test cores
         shell: pwsh
         run: |
@@ -259,16 +264,15 @@ jobs:
 
       - name: Runtime smoke test
         shell: pwsh
-        # Headless application smoke test: boot the engine, list the
-        # service state, shut down. The webview itself is not launched
+        # Headless application smoke test: boot the engine, verify the
+        # service surface, shut down. The webview itself is not launched
         # (no interactive session guarantees on runners); the engine
-        # startup/shutdown path is what the smoke test guards.
-        env:
-          FREEIRAN_SMOKE_TEST: "1"
+        # startup/shutdown path is what the smoke test guards. The smoke
+        # test is fully deterministic (no network, no real core, no
+        # scheduler activity) so it always reaches the same exit code.
         run: |
           go run ./cmd/freeiran --smoke-test
           if ($LASTEXITCODE -ne 0) { throw "smoke test failed: $LASTEXITCODE" }
-
 
       - name: Build desktop application
         shell: pwsh

@@ -124,6 +124,12 @@ type App struct {
 
 	logger   *logging.Logger
 	settings Settings
+
+	// shutdownOnce guarantees Shutdown runs exactly once: subsystems
+	// stop first (scheduler, connection manager, store), then the
+	// logger closes last. Double-Shutdown is a safe no-op.
+	shutdownOnce sync.Once
+	shutdownErr  error
 }
 
 // AppState is the application state surfaced to the UI.
@@ -196,25 +202,30 @@ func New(opts Options) (*App, error) {
 	// discovery: xray (priority 0), v2ray (1), sing-box (2).
 	coreRegistry := core.NewRegistry(system.NewCoreLocator(layout.Cores))
 
-	if err := coreRegistry.Register(xray.New(), 0); err != nil {
+	// fail closes every resource already created by New so the
+	// caller never has to clean up after a partial boot. The logger
+	// is closed LAST so the failure itself is recorded.
+	fail := func(stage string, ferr error) (*App, error) {
+		logger.Error("app", "application_start", "boot", "fatal",
+			"boot failed at %s: %v", stage, ferr)
+
 		cancel()
 		_ = st.Close()
+		_ = logger.Close()
 
-		return nil, err
+		return nil, fmt.Errorf("app: %s: %w", stage, ferr)
+	}
+
+	if err := coreRegistry.Register(xray.New(), 0); err != nil {
+		return fail("register xray", err)
 	}
 
 	if err := coreRegistry.Register(v2ray.New(), 1); err != nil {
-		cancel()
-		_ = st.Close()
-
-		return nil, err
+		return fail("register v2ray", err)
 	}
 
 	if err := coreRegistry.Register(singbox.New(), 2); err != nil {
-		cancel()
-		_ = st.Close()
-
-		return nil, err
+		return fail("register sing-box", err)
 	}
 
 	// Availability refresh runs in the background: the app must boot
@@ -264,10 +275,7 @@ func New(opts Options) (*App, error) {
 	app.cancel = cancel
 
 	if err := app.loadSources(); err != nil {
-		cancel()
-		_ = st.Close()
-
-		return nil, err
+		return fail("load sources", err)
 	}
 
 	app.settings = app.loadSettings()
@@ -363,40 +371,46 @@ func (a *App) Context() context.Context {
 //	stop scheduler (no new ingestion) → cancel background work →
 //	disconnect the active session (stops the protocol core and
 //	removes temporary runtime configs BEFORE the store closes) →
-//	flush and close the store.
+//	flush and close the store → close the runtime logger LAST.
 //
-// No core process may outlive this call (the Windows guarantee:
-// process first, temp-config file second, store third).
+// Idempotent: safe to call any number of times. No core process may
+// outlive this call (the Windows guarantee: process first, temp-config
+// file second, store third, logger last). No goroutine, file handle
+// or WAL segment leaks.
 func (a *App) Shutdown() {
-	if a.logger != nil {
-		a.logger.Info("app", "shutdown_start", "stopping subsystems")
-	}
-
-	if a.scheduler != nil {
-		a.scheduler.Stop()
-	}
-
-	a.cancel()
-
-	a.mu.Lock()
-	a.state.Status = "shutting_down"
-	a.mu.Unlock()
-
-	if a.connMgr != nil {
-		a.connMgr.Shutdown()
-	}
-
-	if err := a.store.Close(); err != nil {
+	a.shutdownOnce.Do(func() {
 		if a.logger != nil {
-			a.logger.Error("store", "store_error", "close", "environment",
-				"store close failed: %v", err)
+			a.logger.Info("app", "shutdown_start", "stopping subsystems")
 		}
-	}
 
-	if a.logger != nil {
-		a.logger.Info("app", "shutdown_complete", "all subsystems stopped")
-		_ = a.logger.Close()
-	}
+		if a.scheduler != nil {
+			a.scheduler.Stop()
+		}
+
+		if a.cancel != nil {
+			a.cancel()
+		}
+
+		a.mu.Lock()
+		a.state.Status = "shutting_down"
+		a.mu.Unlock()
+
+		if a.connMgr != nil {
+			a.connMgr.Shutdown()
+		}
+
+		if a.store != nil {
+			if err := a.store.Close(); err != nil && a.logger != nil {
+				a.logger.Error("store", "store_error", "close", "environment",
+					"store close failed: %v", err)
+			}
+		}
+
+		if a.logger != nil {
+			a.logger.Info("app", "shutdown_complete", "all subsystems stopped")
+			_ = a.logger.Close()
+		}
+	})
 }
 
 // State returns the current application state.

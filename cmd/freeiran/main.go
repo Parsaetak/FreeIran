@@ -18,6 +18,7 @@ import (
 	"log"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -139,10 +140,32 @@ func main() {
 //	open the runtime log → boot the engine → verify the service
 //	surface → shut down cleanly → exit 0.
 //
+// The smoke test is fully DETERMINISTIC:
+//   - no network refresh (RunIngestionOnStart=false);
+//   - no public-source download (SkipDefaultSources=true);
+//   - no scheduler activity (Start is never called);
+//   - no real VPN core required (the registry boots with zero cores
+//     available and the smoke test never connects);
+//   - the base directory is a process-local temp root removed at the
+//     end so the smoke test never touches the user's AppData.
+//
 // Any failure prints a readable diagnostic and exits non-zero.
 func smokeTest() int {
+	// Isolated base directory: the smoke test must not read or write
+	// the user's real FreeIran data, and the directory must be
+	// removable on every platform after Shutdown releases every
+	// handle (the Windows lifecycle guarantee).
+	baseDir := filepath.Join(os.TempDir(),
+		fmt.Sprintf("freeiran-smoke-%d", time.Now().UnixNano()))
+
+	defer func() {
+		_ = os.RemoveAll(baseDir)
+	}()
+
+	layout := system.Layout(baseDir)
+
 	logger, err := logging.Open(logging.Options{
-		Dir:          system.Layout(system.DefaultBaseDir()).Logs,
+		Dir:          layout.Logs,
 		Name:         "freeiran.log",
 		MirrorStderr: true,
 	})
@@ -160,8 +183,10 @@ func smokeTest() int {
 	}
 
 	applicationInstance, err := app.New(app.Options{
-		BaseDir: system.DefaultBaseDir(),
-		Logger:  logger,
+		BaseDir:             baseDir,
+		Logger:              logger,
+		RunIngestionOnStart: false,
+		SkipDefaultSources:  true,
 	})
 	if err != nil {
 		if logger != nil {
@@ -181,6 +206,10 @@ func smokeTest() int {
 
 		applicationInstance.Shutdown()
 
+		if logger != nil {
+			_ = logger.Close()
+		}
+
 		return 1
 	}
 
@@ -189,26 +218,63 @@ func smokeTest() int {
 
 		applicationInstance.Shutdown()
 
+		if logger != nil {
+			_ = logger.Close()
+		}
+
 		return 1
 	}
 
-	// Service surface probe: storage stats must be readable.
+	// Storage service probe: chunked-store stats must be readable and
+	// the store must report zero records for a fresh base directory.
 	storage := app.NewStorageService(applicationInstance)
-	_ = storage.Stats()
+	stats := storage.Stats()
 
-	applicationInstance.Start()
+	if stats.Count != 0 {
+		fmt.Printf("smoke: fresh store count = %d, want 0\n", stats.Count)
 
-	if logger != nil {
-		logger.Info("app", "application_ready", "smoke test state verified")
+		applicationInstance.Shutdown()
+
+		if logger != nil {
+			_ = logger.Close()
+		}
+
+		return 1
 	}
 
+	// Log service probe: the runtime logger must expose at least the
+	// startup entries written above.
+	logSvc := app.NewLogService(applicationInstance)
+	recent := logSvc.Recent(app.LogFilter{Limit: 100})
+
+	if len(recent.Entries) == 0 {
+		fmt.Println("smoke: runtime log is empty after boot")
+
+		applicationInstance.Shutdown()
+
+		if logger != nil {
+			_ = logger.Close()
+		}
+
+		return 1
+	}
+
+	if logger != nil {
+		logger.Info("app", "application_ready",
+			"smoke test state verified (storage count=%d, log entries=%d)",
+			stats.Count, len(recent.Entries))
+	}
+
+	// Shutdown WITHOUT calling Start: no scheduler, no background
+	// ingestion, no core refresh — the smoke test verifies the clean
+	// startup→shutdown path only.
 	applicationInstance.Shutdown()
 
 	if logger != nil {
 		_ = logger.Close()
 	}
 
-	fmt.Println("smoke: OK (boot, state, services, shutdown)")
+	fmt.Println("smoke: OK (boot, state, storage, log, shutdown)")
 
 	return 0
 }
