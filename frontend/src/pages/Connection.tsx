@@ -3,6 +3,7 @@ import { useConnectionStore } from "../state/connectionStore";
 import { useConfigsStore, makeSearchRunner } from "../state/stores";
 import { useSettingsStore } from "../state/settingsStore";
 import { type BackendView, type Config } from "../services";
+import { call, tunnelService } from "../services";
 import { formatDuration, formatLatency, formatNumber, formatUptime, truncate } from "../utilities/format";
 import {
   BootDots,
@@ -197,6 +198,8 @@ export function ConnectionPage() {
 
       <ConfigPicker disabled={uiState === "connecting" || connected || busy} />
 
+      <TunnelModeCard connected={connected} endpoint={snapshot?.endpoint ?? ""} />
+
       <CoresCard backends={backends} scanning={scanning} onRescan={() => void rescan()} />
 
       {snapshot && (snapshot.attempts?.length ?? 0) > 0 && (
@@ -233,6 +236,116 @@ export function ConnectionPage() {
       )}
     </div>
   );
+}
+
+/** TunnelModeCard controls the system-level integration modes
+ * (system proxy / TUN). The actions reach the backend through the
+ * v0.8 TunnelService bindings — the wiring gap v0.7 shipped with
+ * (service existed, was never registered) is closed.
+ * Modes require a live session: the tunnel routes system traffic
+ * through the connected core's local inbound. */
+function TunnelModeCard({ connected, endpoint }: { connected: boolean; endpoint: string }) {
+  const [mode, setMode] = useState<"off" | "system_proxy" | "tun" | "">("");
+  const [busy, setBusy] = useState(false);
+
+  const [host, port] = useMemo(() => {
+    const idx = endpoint.lastIndexOf(":");
+    if (idx <= 0) return ["127.0.0.1", 0];
+    const parsed = Number.parseInt(endpoint.slice(idx + 1), 10);
+    return [endpoint.slice(0, idx), Number.isFinite(parsed) ? parsed : 0];
+  }, [endpoint]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void call(() => tunnelService.State())
+      .then((state) => {
+        if (cancelled) return;
+        const value = String(state ?? "off");
+        if (value === "system_proxy" || value === "tun" || value === "off") {
+          setMode(value);
+        } else {
+          setMode("");
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setMode("off");
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const apply = async (action: "proxy" | "tun" | "off") => {
+    setBusy(true);
+
+    try {
+      if (action === "proxy") {
+        await call(() => tunnelService.EnableSystemProxy(host, port, false, null));
+        setMode("system_proxy");
+      } else if (action === "tun") {
+        await call(() => tunnelService.EnableTUN(host, port));
+        setMode("tun");
+      } else {
+        await call(() => tunnelService.Disable());
+        setMode("off");
+      }
+    } catch (error) {
+      toast("error", "Tunnel mode change failed", describeErrorTunnel(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="card">
+      <div className="card-header">
+        <h3 className="card-title">System integration</h3>
+        <span className={`badge ${mode === "off" || mode === "" ? "info" : "success"}`}>
+          {mode === "" ? "unknown" : mode === "system_proxy" ? "system proxy" : mode}
+        </span>
+      </div>
+
+      <p className="card-subtitle">
+        {connected
+          ? `Route system traffic through the local inbound at ${host}:${port}.`
+          : "Connect first: system proxy and TUN need a live local inbound."}
+      </p>
+
+      <div className="toolbar">
+        <button
+          type="button"
+          className="btn sm"
+          disabled={!connected || busy || port === 0}
+          onClick={() => void apply("proxy")}
+        >
+          Enable system proxy
+        </button>
+        <button
+          type="button"
+          className="btn sm"
+          disabled={!connected || busy || port === 0}
+          onClick={() => void apply("tun")}
+        >
+          Enable TUN
+        </button>
+        <button
+          type="button"
+          className="btn sm"
+          disabled={busy || mode === "off" || mode === ""}
+          onClick={() => void apply("off")}
+        >
+          Disable
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** describeErrorTunnel normalizes backend rejection messages. */
+function describeErrorTunnel(error: unknown): string {
+  return error instanceof Error ? error.message : String(error ?? "unknown error");
 }
 
 /** Searchable configuration picker feeding the connect action. */

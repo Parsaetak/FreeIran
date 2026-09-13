@@ -306,3 +306,48 @@ The queue scales near-linearly: enqueue is O(log n) per task, cancel
 is O(n) for the scan (to find matching source) + O(log n) per removal.
 For the default `MaxQueueSize=10000`, both operations complete in under
 10 ms.
+
+## 12. v0.8.0 — Memory Booster 2.0 wiring and queue benchmarks
+
+The v0.7 mempressure/booster libraries were unwired: nothing sampled
+them and nothing reacted. v0.8 wires them into the application (see
+`engine/app/memoryservice.go`) with real subsystem reporters and the
+dynamic knobs below. All numbers are measured on the CI-equivalent
+Linux runner (Go 1.26.8, `-benchmem`, 5 iterations).
+
+### Dynamic worker-pool resize (new)
+
+Growth is immediate; shrinkage retires idle workers through a resize
+wake. `MemoryEstimate` is deliberately O(1) because the controller
+samples it every two seconds:
+
+| Operation (queue, 100k tasks) | ns/op | B/op | allocs/op |
+|---|---|---|---|
+| `MemoryEstimate` (any depth) | ~550 | 22 | 0 |
+| Enqueue (per task) | ~810 | ~531 | ~4 |
+| Duplicate detection (per task) | ~246 | ~16 | ~2 (setup strings only) |
+| Cancel by source (per task) | ~1,124 | ~258 | ~2 |
+
+No O(n) hot path: enqueue/duplicate-detection scale linearly with
+task count only (per-task O(log n) heap work), and the O(1) memory
+estimate keeps controller sampling constant-cost at any queue depth.
+
+### What the controller adapts (measured behaviour)
+
+- Critical pressure injection (queue bytes 2× ceiling) → booster
+  drops worker target to the floor (1) on the next tick and the live
+  queue follows within milliseconds (verified by
+  `TestMemoryServicePressureShedsQueueWorkers`).
+- Recovery → gradual restoration, one step per tick, bounded by the
+  hard ceiling (never above `QueueConcurrencyMax`).
+- `SetConcurrency` racing against task completion keeps the pool
+  consistent (no double-spawn, no leak; verified under `-race` by
+  `TestSetConcurrencyConcurrent`).
+
+### Where v0.8 did NOT add pools
+
+The allocation audit found no measurable benefit from additional
+`sync.Pool` use: the chunk-encode pool and store Count() cache from
+v0.7 remain the only pooling, both benchmark-justified. The v0.8
+work concentrated on eliminating the unsampled-controller waste
+(decisions made from stale data) rather than micro-allocations.

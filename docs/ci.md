@@ -138,3 +138,28 @@ Properties:
   and keeps the full matrix (no package skipped);
 - real Xray/V2Ray/sing-box binaries remain in the dedicated
   `protocol-cores` job only (pinned versions + SHA-256 verified).
+
+## v0.8.0 — Windows lifecycle battery in the standard matrix
+
+The Windows job (`Windows tests and desktop build`) runs
+`go test -count=1 ./...`, which now includes the process-supervision
+lifecycle battery in `system/process_test.go` (15 tests):
+
+- launch with no visible console (behavioural: the child never
+  attaches to the parent console; `GetConsoleProcessList`)
+- stdout AND stderr capture through separate writers (deterministic
+  flush via the exited channel — no sleeps)
+- natural exit with exit-code classification
+- context cancellation (`cancelled` state, `context.Canceled` from Wait)
+- forced termination within the hard-kill deadline
+- repeated Stop (idempotent) and concurrent Stop (synchronizing)
+- startup-failure cleanup (no process, `dependency_unavailable`)
+- job-binding-failure fallback (injected: launch still succeeds,
+  degradation visible, cleanup still deterministic)
+- restricted-environment retry (injected `ERROR_ACCESS_DENIED`)
+- grandchild cannot survive supervisor shutdown (observed through
+  the job member list / process tree)
+
+The fake-core contract tests and the process battery share the same
+supervision path, so the `bind kill-on-close job` regression class
+the v0.7.0 Windows run exhibited is covered on every platform.

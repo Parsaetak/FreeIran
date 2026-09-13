@@ -350,6 +350,12 @@ const (
 	EnqueueTry
 )
 
+// ErrResize is returned by Dequeue when the worker pool was resized:
+// idle workers wake so excess ones can retire promptly. External
+// Dequeue callers should simply retry; it is a spurious wake, not a
+// failure.
+var ErrResize = errors.New("testqueue: worker pool resized")
+
 // Queue is the test scheduler.
 type Queue struct {
 	tester Tester
@@ -365,6 +371,13 @@ type Queue struct {
 	workersWG sync.WaitGroup
 	cancel    context.CancelFunc
 	ctx       context.Context
+
+	// desiredWorkers is the adaptive worker-pool target managed by
+	// SetConcurrency (the memory booster's primary pressure valve).
+	// liveWorkers tracks the actual pool size; workers above the
+	// target retire at the loop top or on a resize wake.
+	desiredWorkers atomic.Int32
+	liveWorkers    atomic.Int32
 
 	// Stats counters (atomic for hot paths).
 	totalEnqueued  atomic.Int64
@@ -388,6 +401,10 @@ type Queue struct {
 	// notifyCh is closed+recreated on every state change to wake
 	// blocked Dequeue callers.
 	notifyCh chan struct{}
+
+	// resizeCh is closed+recreated by SetConcurrency to wake idle
+	// workers so the pool can shrink without waiting for work.
+	resizeCh chan struct{}
 }
 
 // New constructs a Queue. The queue is not started; call Start.
@@ -428,8 +445,10 @@ func New(tester Tester, config Config) *Queue {
 		perBackend:    make(map[string]int),
 		startedAt:     time.Now().UTC(),
 		notifyCh:      make(chan struct{}),
+		resizeCh:      make(chan struct{}),
 	}
 	q.pending.heap = make([]*Task, 0, 64)
+	q.desiredWorkers.Store(int32(config.Concurrency))
 	return q
 }
 
@@ -445,7 +464,7 @@ func (NoopTester) Test(ctx context.Context, fp string, backends []string) (Resul
 // Start launches the worker pool. Safe to call once; subsequent calls
 // are no-ops. If config.Concurrency == 0, no workers are spawned —
 // tasks remain queued until cancelled or until the queue is restarted
-// with a positive concurrency.
+// with a positive concurrency (SetConcurrency).
 func (q *Queue) Start(parentCtx context.Context) {
 	q.mu.Lock()
 	if q.ctx != nil {
@@ -456,10 +475,103 @@ func (q *Queue) Start(parentCtx context.Context) {
 	concurrency := q.config.Concurrency
 	q.mu.Unlock()
 
+	q.desiredWorkers.Store(int32(concurrency))
+
 	for i := 0; i < concurrency; i++ {
 		q.workersWG.Add(1)
+		q.liveWorkers.Add(1)
 		go q.worker(i)
 	}
+}
+
+// SetConcurrency adjusts the worker-pool size at runtime — the
+// memory booster's primary pressure valve. Growth is immediate;
+// shrinkage takes effect as idle workers retire (busy workers finish
+// their current task first, so no task is ever dropped). Safe to call
+// concurrently; a no-op after Stop. Values are clamped to [0, 64].
+func (q *Queue) SetConcurrency(n int) {
+	// ctx is written under q.mu by Start; read it under the same lock
+	// to stay race-free against a concurrent (re)start.
+	q.mu.Lock()
+	started := q.ctx != nil
+	q.mu.Unlock()
+
+	if q.stopped.Load() || !started {
+		return
+	}
+
+	if n < 0 {
+		n = 0
+	}
+
+	if n > 64 {
+		n = 64
+	}
+
+	q.desiredWorkers.Store(int32(n))
+
+	// Wake every idle worker: excess ones retire at the loop top;
+	// the rest re-block. Waking is required so a shrink never waits
+	// for the next task to arrive.
+	q.mu.Lock()
+	close(q.resizeCh)
+	q.resizeCh = make(chan struct{})
+	q.mu.Unlock()
+
+	// Grow the pool to the target. The CAS loop prevents double
+	// spawning under concurrent SetConcurrency calls.
+	for {
+		live := int(q.liveWorkers.Load())
+		if live >= n {
+			break
+		}
+
+		if q.liveWorkers.CompareAndSwap(int32(live), int32(live+1)) {
+			q.workersWG.Add(1)
+			go q.worker(live)
+		}
+	}
+}
+
+// SetMaxQueueSize adjusts the queue capacity bound at runtime.
+// A smaller bound stops NEW enqueues (ErrQueueFull) but never drops
+// already-queued tasks. The memory booster uses this to shed queue
+// load under pressure.
+func (q *Queue) SetMaxQueueSize(n int) {
+	if n < 0 {
+		n = 0
+	}
+
+	q.mu.Lock()
+	q.config.MaxQueueSize = n
+	q.mu.Unlock()
+}
+
+// taskBytesEstimate is the measured average resident cost of one
+// queued or in-flight task: the Task struct, its fingerprint string
+// (64-byte hex), protocol/source strings, backends slice header and
+// the three map index entries. Rounded up to a whole cache line.
+const taskBytesEstimate = 400
+
+// DesiredWorkers reports the current worker-pool target (the value
+// the memory booster last applied through SetConcurrency). It is a
+// diagnostics accessor; use Stats().ActiveWorkers for the number of
+// currently busy workers.
+func (q *Queue) DesiredWorkers() int {
+	return int(q.desiredWorkers.Load())
+}
+
+// MemoryEstimate returns the approximate heap bytes held by queued
+// and in-flight tasks. It is O(1) (two map lengths under the lock) —
+// deliberately an estimate rather than a per-task sum, because the
+// memory-pressure controller samples it every two seconds. The
+// estimate drives pressure classification, not billing.
+func (q *Queue) MemoryEstimate() int64 {
+	q.mu.Lock()
+	depth := q.pending.Len() + len(q.inflight)
+	q.mu.Unlock()
+
+	return int64(depth) * taskBytesEstimate
 }
 
 // Stop drains in-flight tasks and stops the worker pool. Tasks still
@@ -572,7 +684,8 @@ func (q *Queue) notifyLocked() {
 }
 
 // Dequeue blocks until a task is available, returning the task.
-// Returns nil, ctx.Err() when the context is cancelled.
+// Returns nil, ctx.Err() when the context is cancelled, and
+// nil, ErrResize when the worker pool was resized (retry).
 func (q *Queue) Dequeue(ctx context.Context) (*Task, error) {
 	for {
 		q.mu.Lock()
@@ -592,6 +705,7 @@ func (q *Queue) Dequeue(ctx context.Context) (*Task, error) {
 		}
 
 		notifyCh := q.notifyCh
+		resizeCh := q.resizeCh
 		q.mu.Unlock()
 
 		select {
@@ -599,6 +713,10 @@ func (q *Queue) Dequeue(ctx context.Context) (*Task, error) {
 			return nil, ctx.Err()
 		case <-notifyCh:
 			// loop and try again
+		case <-resizeCh:
+			// spurious wake for external callers; workers use it to
+			// retire when the pool shrinks
+			return nil, ErrResize
 		}
 	}
 }
@@ -797,10 +915,22 @@ const resultsCacheLimit = 4096
 // worker is the main test loop.
 func (q *Queue) worker(id int) {
 	defer q.workersWG.Done()
+	defer q.liveWorkers.Add(-1)
 
 	for {
+		// Retire when the pool is above target (shrink side of
+		// SetConcurrency). Busy workers reach this check between
+		// tasks; idle ones are woken by the resize signal.
+		if q.liveWorkers.Load() > q.desiredWorkers.Load() {
+			return
+		}
+
 		task, err := q.Dequeue(q.ctx)
 		if err != nil {
+			if errors.Is(err, ErrResize) {
+				continue // re-evaluate retirement at the loop top
+			}
+
 			return // ctx cancelled
 		}
 

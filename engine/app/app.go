@@ -126,6 +126,11 @@ type App struct {
 	testQueueCfg testqueue.Config
 	tunnelCtrl   *tunnel.Controller
 
+	// memory is the unified adaptive memory controller (Memory
+	// Booster 2.0): pressure sampling + adaptive settings for the
+	// queue, caches and ingestion knobs.
+	memory *MemoryService
+
 	ctx    context.Context
 	cancel context.CancelFunc
 
@@ -278,6 +283,11 @@ func New(opts Options) (*App, error) {
 
 	app.tester = tester.New(tester.NewTCPProbe())
 
+	// Memory Booster 2.0: the adaptive controller observes the store,
+	// caches and (once created) the test queue; Start() launches its
+	// sampling goroutine.
+	app.memory = newMemoryService(app)
+
 	if !opts.SkipDefaultSources {
 		app.sources = source.DefaultSources()
 	}
@@ -307,6 +317,12 @@ func New(opts Options) (*App, error) {
 func (a *App) Start() {
 	if a.started.Swap(true) {
 		return
+	}
+
+	// Memory Booster 2.0 begins sampling before any workload starts,
+	// so pressure reactions apply from the first ingestion cycle.
+	if a.memory != nil {
+		a.memory.Start()
 	}
 
 	a.scheduler = scheduler.New(scheduler.Options{
@@ -402,6 +418,12 @@ func (a *App) Shutdown() {
 	a.shutdownOnce.Do(func() {
 		if a.logger != nil {
 			a.logger.Info("app", "shutdown_start", "stopping subsystems")
+		}
+
+		// The memory controller stops first: it observes the very
+		// subsystems being torn down below.
+		if a.memory != nil {
+			a.memory.Stop()
 		}
 
 		if a.scheduler != nil {

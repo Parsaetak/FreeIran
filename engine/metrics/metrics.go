@@ -51,6 +51,11 @@ type Registry struct {
 	coreCrashes    atomic.Int64
 	coreStartupNS  atomic.Int64
 	coreStartupCnt atomic.Int64
+
+	// Memory Booster 2.0 gauges (v0.8): the unified controller's
+	// live classification, mirrored each sample.
+	memoryPressure atomic.Value // string
+	rssBytes       atomic.Int64
 }
 
 // New creates an empty registry.
@@ -241,6 +246,23 @@ func (r *Registry) SetQueueDepth(n int64) {
 	}
 }
 
+// SetMemoryPressure reports the current memory-pressure state name
+// (normal / elevated / high / critical) so the metrics snapshot and
+// the memory diagnostics page agree on one classification.
+func (r *Registry) SetMemoryPressure(state string) {
+	if r != nil {
+		r.memoryPressure.Store(state)
+	}
+}
+
+// SetRSSBytes reports the measured process RSS so the metrics
+// snapshot tracks the same number the pressure controller samples.
+func (r *Registry) SetRSSBytes(n int64) {
+	if r != nil {
+		r.rssBytes.Store(n)
+	}
+}
+
 // Snapshot is a point-in-time view of all counters, safe to serialize
 // to the UI.
 type Snapshot struct {
@@ -275,6 +297,16 @@ type Snapshot struct {
 	CoreCrashes        int64   `json:"core_crashes"`
 	AvgCoreStartupMS   float64 `json:"avg_core_startup_ms"`
 	NumGoroutine       int     `json:"num_goroutine"`
+
+	// Memory Booster 2.0 surface: the unified controller's live
+	// classification and measurements, mirrored into the metrics
+	// snapshot so one report answers "what is the machine doing about
+	// memory".
+	MemoryPressure string  `json:"memory_pressure"`
+	RSSBytes       int64   `json:"rss_bytes"`
+	HeapAllocBytes int64   `json:"heap_alloc_bytes"`
+	HeapLiveBytes  int64   `json:"heap_live_bytes"`
+	GCCPUPct       float64 `json:"gc_cpu_pct"`
 }
 
 // ms converts cumulative nanoseconds and a call count into total
@@ -306,6 +338,13 @@ func (r *Registry) Snapshot() Snapshot {
 
 	if total := hits + misses; total > 0 {
 		hitRate = float64(hits) / float64(total)
+	}
+
+	pressure := ""
+	if v := r.memoryPressure.Load(); v != nil {
+		if s, ok := v.(string); ok {
+			pressure = s
+		}
 	}
 
 	return Snapshot{
@@ -340,5 +379,10 @@ func (r *Registry) Snapshot() Snapshot {
 		CoreCrashes:        r.coreCrashes.Load(),
 		AvgCoreStartupMS:   ms(r.coreStartupNS.Load(), r.coreStartupCnt.Load()),
 		NumGoroutine:       runtime.NumGoroutine(),
+		MemoryPressure:     pressure,
+		RSSBytes:           r.rssBytes.Load(),
+		HeapAllocBytes:     int64(mem.HeapAlloc),
+		HeapLiveBytes:      int64(mem.HeapSys - mem.HeapReleased),
+		GCCPUPct:           mem.GCCPUFraction * 100,
 	}
 }

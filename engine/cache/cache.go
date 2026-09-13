@@ -209,6 +209,24 @@ func (l *Layer) Clear() {
 	l.bytes = 0
 }
 
+// SetMaxEntries adjusts the entry target at runtime — the memory
+// booster shrinks cache targets under pressure and grows them back on
+// recovery. Entries beyond the new target are evicted immediately,
+// oldest first. The bound follows the layer's existing contract:
+// values > 0 bound the entry count, 0 hard-disables the layer (new
+// puts are dropped, matching Put's documented behaviour).
+func (l *Layer) SetMaxEntries(n int) {
+	if n < 0 {
+		n = 0
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	l.opts.MaxEntries = n
+	l.evictOverflow()
+}
+
 // Len returns the number of live entries.
 func (l *Layer) Len() int {
 	l.mu.Lock()

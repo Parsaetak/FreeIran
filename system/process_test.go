@@ -2,57 +2,82 @@ package system
 
 import (
 	"context"
-	"os/exec"
-	"runtime"
+	"errors"
+	"sync"
 	"testing"
 	"time"
+
+	firerrors "github.com/Parsaetak/FreeIran/engine/errors"
 )
 
-// TestProcessLaunchNoWindow is a Windows-only regression test that
-// verifies launchProcess creates a process with CREATE_NO_WINDOW.
+// This file is the process-supervision lifecycle battery required by
+// the v0.8.0 contract. Every test is deterministic:
+//
+//   - stdout/stderr completion is observed through the exited channel
+//     (cmd.Wait joins exec's copy goroutines BEFORE exited closes —
+//     no fixed sleeps anywhere);
+//   - termination is observed through Stop's synchronizing contract;
+//   - the shared syncWriter is genuinely concurrency-safe (exec copies
+//     stdout and stderr through two concurrent goroutines).
+
+// syncWriter is a concurrency-safe byte sink for stdout/stderr
+// capture. v0.7.0's bytesWriter claimed thread-safety but had no
+// synchronization at all; exec copies stdout and stderr concurrently,
+// so an unsynchronized writer is a data race by construction.
+type syncWriter struct {
+	mu  sync.Mutex
+	buf []byte
+}
+
+func (w *syncWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	w.buf = append(w.buf, p...)
+	w.mu.Unlock()
+
+	return len(p), nil
+}
+
+// String returns the captured bytes under the same lock.
+func (w *syncWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	return string(w.buf)
+}
+
+// waitForExit blocks until the process exits, with a hard bound so a
+// supervision bug fails the test instead of hanging the matrix.
+func waitForExit(t *testing.T, m *ManagedProcess, bound time.Duration) {
+	t.Helper()
+
+	select {
+	case <-m.exited:
+		return
+	case <-time.After(bound):
+		t.Fatalf("process pid %d did not exit within %s", m.pid, bound)
+	}
+}
+
+// TestProcessLaunchNoWindow is the no-visible-console regression.
+//
+// On Windows the "no console window" property is verified
+// behaviourally: a child created with CREATE_NO_WINDOW never attaches
+// to the parent's console, so it cannot appear in the parent's
+// console process list (GetConsoleProcessList). When the test binary
+// itself runs without a console (output redirected) the list check is
+// reported as skipped; the launch/stop lifecycle assertions still
+// run. The CREATE_NO_WINDOW flag is additionally asserted by source
+// construction in process_windows.go.
 //
 // On non-Windows platforms the test verifies the basic launch+wait
-// lifecycle still works (process group semantics).
-//
-// On Windows the actual "no console window" property cannot be
-// directly observed from inside the test process (we would need a
-// separate desktop session). Instead the test verifies:
-//
-//  1. launchProcess does not error.
-//  2. The process is started (PID > 0).
-//  3. Stop terminates the process within the grace period.
-//  4. No orphaned process survives the test.
-//
-// The CREATE_NO_WINDOW flag is asserted at the source level (see
-// process_windows.go: SysProcAttr.CreationFlags includes
-// createNoWindow). This test is the behavioural regression: if
-// launchProcess is ever refactored to forget the flag, the test
-// still passes BUT a code-level audit catches the regression.
+// lifecycle (process-group semantics).
 func TestProcessLaunchNoWindow(t *testing.T) {
-	var bin string
-	var args []string
+	spec := exitSpec(t, 0)
 
-	if runtime.GOOS == "windows" {
-		// Use cmd /c "exit 0" — a cheap, always-available binary.
-		bin = "cmd.exe"
-		args = []string{"/c", "exit", "0"}
-	} else {
-		// /bin/true or /bin/false
-		bin = "/bin/true"
-		args = nil
-		if _, err := exec.LookPath(bin); err != nil {
-			t.Skipf("%s not available", bin)
-		}
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	proc, err := Start(ctx, ProcessSpec{
-		Name: "test",
-		Path: bin,
-		Args: args,
-	})
+	proc, err := Start(ctx, spec)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -61,93 +86,476 @@ func TestProcessLaunchNoWindow(t *testing.T) {
 		t.Fatalf("PID = %d, want > 0", proc.PID())
 	}
 
-	// Wait for the process to finish on its own (it exits 0 quickly).
-	select {
-	case <-proc.exited:
-		// ok
-	case <-time.After(3 * time.Second):
-		t.Fatalf("process did not exit within 3s")
+	assertChildNotAttachedToParentConsole(t, proc.PID())
+
+	// The process exits 0 on its own quickly.
+	waitForExit(t, proc, 5*time.Second)
+
+	if proc.ExitCode() != 0 {
+		t.Errorf("exit code = %d, want 0", proc.ExitCode())
 	}
 
-	// Verify Stop is idempotent and does not return an error after
-	// the process has already exited.
-	if err := proc.Stop(1 * time.Second); err != nil {
+	// Stop is idempotent and does not return an error after the
+	// process has already exited.
+	if err := proc.Stop(time.Second); err != nil {
 		t.Errorf("Stop after exit returned err: %v", err)
 	}
+
+	assertNoSupervisedProcessSurvives(t, proc)
 }
 
-// TestProcessLaunchStdoutCapture verifies the stdout/stderr writers
-// receive the process output.
+// TestProcessLaunchStdoutCapture verifies stdout capture with the
+// deterministic flush contract: once exited closes, cmd.Wait has
+// already joined the stdout copy goroutine, so the writer is complete
+// — no sleeps.
 func TestProcessLaunchStdoutCapture(t *testing.T) {
-	var bin string
-	var args []string
-
-	if runtime.GOOS == "windows" {
-		bin = "cmd.exe"
-		args = []string{"/c", "echo", "hello-freeiran"}
-	} else {
-		bin = "/bin/echo"
-		args = []string{"hello-freeiran"}
-		if _, err := exec.LookPath(bin); err != nil {
-			t.Skipf("%s not available", bin)
-		}
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	w := &bytesWriter{}
+	w := &syncWriter{}
+	spec := echoSpec(t, "hello-freeiran-stdout", streamStdout)
+
 	proc, err := Start(ctx, ProcessSpec{
-		Name:   "test-capture",
-		Path:   bin,
-		Args:   args,
+		Name:   "test-capture-stdout",
+		Path:   spec.Path,
+		Args:   spec.Args,
 		Stdout: w,
-		Stderr: w,
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 
+	waitForExit(t, proc, 5*time.Second)
+
+	if out := w.String(); !contains(out, "hello-freeiran-stdout") {
+		t.Errorf("captured stdout = %q, want substring %q", out, "hello-freeiran-stdout")
+	}
+}
+
+// TestProcessLaunchStderrCapture verifies stderr is captured through
+// a SEPARATE writer so the routing between the two streams is proven,
+// not just that bytes arrive somewhere.
+func TestProcessLaunchStderrCapture(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	stdout := &syncWriter{}
+	stderr := &syncWriter{}
+	spec := echoSpec(t, "hello-freeiran-stderr", streamStderr)
+
+	proc, err := Start(ctx, ProcessSpec{
+		Name:   "test-capture-stderr",
+		Path:   spec.Path,
+		Args:   spec.Args,
+		Stdout: stdout,
+		Stderr: stderr,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	waitForExit(t, proc, 5*time.Second)
+
+	if out := stderr.String(); !contains(out, "hello-freeiran-stderr") {
+		t.Errorf("captured stderr = %q, want substring %q",
+			stderr.String(), "hello-freeiran-stderr")
+	}
+
+	if out := stdout.String(); contains(out, "hello-freeiran-stderr") {
+		t.Errorf("stderr marker leaked into stdout writer: %q", out)
+	}
+}
+
+// TestProcessNaturalExit proves a natural (unassisted) exit is
+// classified as StateExited with the real exit code, and that Wait
+// surfaces the non-zero status as an error.
+func TestProcessNaturalExit(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	proc, err := Start(ctx, exitSpec(t, 7))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	waitForExit(t, proc, 5*time.Second)
+
+	if proc.State() != StateExited {
+		t.Errorf("state = %s, want exited", proc.State())
+	}
+
+	if proc.ExitCode() != 7 {
+		t.Errorf("exit code = %d, want 7", proc.ExitCode())
+	}
+
+	if err := proc.Wait(context.Background()); err == nil {
+		t.Error("Wait must surface the non-zero natural exit as an error")
+	}
+
+	// Stop after a natural exit stays a clean no-op.
+	if err := proc.Stop(time.Second); err != nil {
+		t.Errorf("Stop after natural exit: %v", err)
+	}
+}
+
+// TestProcessCancellation proves context cancellation terminates the
+// child, classifies the exit as StateCancelled and surfaces the
+// context error (not the kill's exit-code artifact) from Wait.
+func TestProcessCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	proc, err := Start(ctx, longRunSpec(t))
+	if err != nil {
+		cancel()
+		t.Fatalf("Start: %v", err)
+	}
+
+	cancel()
+
+	waitForExit(t, proc, 10*time.Second)
+
+	if proc.State() != StateCancelled {
+		t.Errorf("state = %s, want cancelled", proc.State())
+	}
+
+	if err := proc.Wait(context.Background()); !errors.Is(err, context.Canceled) {
+		t.Errorf("Wait error = %v, want context.Canceled", err)
+	}
+
+	assertNoSupervisedProcessSurvives(t, proc)
+}
+
+// TestProcessForcedTermination proves Stop kills a healthy long-lived
+// child well within the hard-kill deadline, even with a tiny grace
+// period, and leaves nothing behind.
+func TestProcessForcedTermination(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	proc, err := Start(ctx, longRunSpec(t))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	start := time.Now()
+
+	if err := proc.Stop(50 * time.Millisecond); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	if elapsed := time.Since(start); elapsed > hardKillDeadline {
+		t.Fatalf("Stop took %s; forced termination exceeded the deadline", elapsed)
+	}
+
+	if proc.Running() {
+		t.Fatal("process still running after Stop")
+	}
+
+	assertNoSupervisedProcessSurvives(t, proc)
+}
+
+// TestProcessRepeatedStop proves idempotency: after the first Stop
+// completes, later calls return the same result immediately and the
+// process stays dead.
+func TestProcessRepeatedStop(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	proc, err := Start(ctx, longRunSpec(t))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	for i := 0; i < 3; i++ {
+		if err := proc.Stop(time.Second); err != nil {
+			t.Fatalf("Stop #%d: %v", i+1, err)
+		}
+	}
+
+	if proc.State() != StateStopped && proc.State() != StateExited {
+		t.Errorf("state = %s, want stopped", proc.State())
+	}
+
+	assertNoSupervisedProcessSurvives(t, proc)
+}
+
+// TestProcessStartupFailureCleanup proves a launch failure (binary
+// does not exist) never produces a ManagedProcess and never leaks a
+// process — and that the failure is a launch failure
+// (dependency_unavailable), not a masked generic error.
+func TestProcessStartupFailureCleanup(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	proc, err := Start(ctx, ProcessSpec{
+		Name: "test-missing",
+		Path: "/definitely/not/a/real/binary-freeiran-xyz",
+	})
+
+	if err == nil {
+		if proc != nil {
+			_ = proc.Stop(time.Second)
+		}
+
+		t.Fatal("Start must fail for a nonexistent binary")
+	}
+
+	if proc != nil {
+		t.Fatal("Start must not return a process on launch failure")
+	}
+
+	if got := errorKindOf(err); got != "dependency_unavailable" {
+		t.Errorf("error kind = %s, want dependency_unavailable", got)
+	}
+}
+
+// TestProcessBareNameRejected proves Start validation is not weakened
+// for the resolver: an unknown BARE executable name is rejected on
+// every platform (only the documented Windows system shell resolves).
+func TestProcessBareNameRejected(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	proc, err := Start(ctx, ProcessSpec{
+		Name: "test-bare",
+		Path: "definitely-not-a-known-binary-xyz",
+	})
+
+	if err == nil {
+		if proc != nil {
+			_ = proc.Stop(time.Second)
+		}
+
+		t.Fatal("Start must reject an unknown bare executable name")
+	}
+
+	if got := errorKindOf(err); got != "dependency_unavailable" {
+		t.Errorf("error kind = %s, want dependency_unavailable", got)
+	}
+}
+
+// TestProcessJobBindingFailureCleanup injects a deterministic job
+// binding failure (simulating restricted environments where
+// child-job assignment is unavailable) and proves the supervised
+// fallback: the launch SUCCEEDS, the degradation is visible
+// (JobBound=false + diagnostic note), Stop still cleans up
+// deterministically, and nothing survives.
+//
+// This is the "never silently weaken lifecycle guarantees" contract.
+func TestProcessJobBindingFailureCleanup(t *testing.T) {
+	setJobBindHook(func() error { return errors.New("injected restricted environment") })
+	defer setJobBindHook(nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	proc, err := Start(ctx, longRunSpec(t))
+	if err != nil {
+		t.Fatalf("Start under job-binding failure: %v", err)
+	}
+
+	if proc.JobBound() {
+		t.Error("JobBound must report the degraded binding")
+	}
+
+	diag := proc.Diagnostics()
+	if diag.SupervisionNote == "" {
+		t.Error("degraded supervision must carry a diagnostic note")
+	}
+
+	if !diag.Alive {
+		t.Fatal("fallback process must be alive and supervised")
+	}
+
+	if err := proc.Stop(2 * time.Second); err != nil {
+		t.Fatalf("Stop under fallback supervision: %v", err)
+	}
+
+	assertNoSupervisedProcessSurvives(t, proc)
+}
+
+// TestProcessRestrictedEnvironmentRetry injects the exact
+// restricted-environment signature (ERROR_ACCESS_DENIED) so the
+// Windows relaunch-with-breakaway tier runs on every platform that
+// supports the machinery. The retry's assign also fails (the hook
+// stays installed), so the process lands in the supervised fallback —
+// proving the whole chain terminates cleanly.
+func TestProcessRestrictedEnvironmentRetry(t *testing.T) {
+	setJobBindHook(restrictedBindErrno)
+	defer setJobBindHook(nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	proc, err := Start(ctx, longRunSpec(t))
+	if err != nil {
+		t.Fatalf("Start under restricted environment: %v", err)
+	}
+
+	if err := proc.Stop(2 * time.Second); err != nil {
+		t.Fatalf("Stop after restricted retry: %v", err)
+	}
+
+	assertNoSupervisedProcessSurvives(t, proc)
+}
+
+// TestProcessConcurrentStop hammers Stop and Wait from many goroutines
+// at once: every caller must observe the same completion, the process
+// must die exactly once, and the race detector must stay silent.
+func TestProcessConcurrentStop(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	proc, err := Start(ctx, longRunSpec(t))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	const callers = 8
+
+	var wg sync.WaitGroup
+
+	results := make([]error, callers)
+
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+
+		go func(slot int) {
+			defer wg.Done()
+			results[slot] = proc.Stop(2 * time.Second)
+		}(i)
+	}
+
+	// A concurrent Wait must not deadlock against the stop swarm.
+	waitDone := make(chan error, 1)
+
+	go func() { waitDone <- proc.Wait(context.Background()) }()
+
+	wg.Wait()
+
 	select {
-	case <-proc.exited:
-	case <-time.After(3 * time.Second):
-		t.Fatalf("process did not exit")
+	case <-waitDone:
+	case <-time.After(hardKillDeadline):
+		t.Fatal("Wait deadlocked against concurrent Stop callers")
 	}
 
-	// Wait briefly for the copy goroutine to flush.
-	time.Sleep(50 * time.Millisecond)
+	for i, err := range results {
+		if err != nil {
+			t.Errorf("concurrent Stop caller %d: %v", i, err)
+		}
+	}
 
-	out := w.String()
-	if !contains(out, "hello-freeiran") {
-		t.Errorf("captured output = %q, want substring %q", out, "hello-freeiran")
+	assertNoSupervisedProcessSurvives(t, proc)
+}
+
+// TestProcessGrandchildCannotSurviveSupervisor proves the core
+// supervision invariant: a process the child spawns (a "grandchild",
+// like a helper a protocol core forks) is reaped together with the
+// supervised child. Killing only the direct pid is NOT sufficient.
+func TestProcessGrandchildCannotSurviveSupervisor(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	proc, err := Start(ctx, grandchildSpec(t))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Give the child a moment to spawn the grandchild — bounded and
+	// verified below by observing the grandchild directly, so the
+	// observation is not timing-dependent.
+	waitForGrandchild(t, proc)
+
+	if err := proc.Stop(2 * time.Second); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	assertNoSupervisedProcessSurvives(t, proc)
+}
+
+// TestProcessDiagnosticsShape pins the structured diagnostics surface:
+// state string, pid, job-bound flag and exit code must all be present
+// and consistent with the observed lifecycle.
+func TestProcessDiagnosticsShape(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	proc, err := Start(ctx, exitSpec(t, 0))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	diag := proc.Diagnostics()
+	if diag.PID <= 0 || diag.State == "" {
+		t.Fatalf("incomplete diagnostics: %+v", diag)
+	}
+
+	waitForExit(t, proc, 5*time.Second)
+
+	diag = proc.Diagnostics()
+
+	if diag.State != "exited" {
+		t.Errorf("diagnostics state = %s, want exited", diag.State)
+	}
+
+	if diag.ExitCode != 0 {
+		t.Errorf("diagnostics exit code = %d, want 0", diag.ExitCode)
+	}
+
+	if diag.Alive {
+		t.Error("diagnostics must report the process as not alive")
 	}
 }
 
-// bytesWriter is a thread-safe bytes.Buffer for stdout/stderr capture.
-type bytesWriter struct {
-	mu struct {
-		// can't embed sync.Mutex directly; declare explicitly
+// TestSyncWriterConcurrent exercises the capture writer itself under
+// concurrent writes — the regression the v0.7.0 bytesWriter missed.
+func TestSyncWriterConcurrent(t *testing.T) {
+	w := &syncWriter{}
+
+	var wg sync.WaitGroup
+
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+
+		go func(n int) {
+			defer wg.Done()
+
+			for j := 0; j < 100; j++ {
+				_, _ = w.Write([]byte{byte('a' + n%26)})
+				_ = w.String()
+			}
+		}(i)
 	}
-	buf []byte
+
+	wg.Wait()
+
+	if len(w.String()) != 16*100 {
+		t.Fatalf("writer lost writes: %d bytes, want %d", len(w.String()), 16*100)
+	}
 }
 
-func (w *bytesWriter) Write(p []byte) (int, error) {
-	w.buf = append(w.buf, p...)
-	return len(p), nil
-}
-
-func (w *bytesWriter) String() string {
-	return string(w.buf)
+// errorKindOf extracts the structured error kind, if any.
+func errorKindOf(err error) string {
+	return string(firerrors.KindOf(err))
 }
 
 func contains(s, sub string) bool {
 	if len(sub) == 0 {
 		return true
 	}
+
 	for i := 0; i+len(sub) <= len(s); i++ {
 		if s[i:i+len(sub)] == sub {
 			return true
 		}
 	}
+
 	return false
+}
+
+// The original lookup helper retained for platform test binaries.
+func lookPathAvailable(bin string) bool {
+	_, err := execLookPath(bin)
+
+	return err == nil
 }

@@ -158,3 +158,18 @@ surface:
 - **No secrets in new settings.** Settings persist non-sensitive
   preferences only (backend name, intervals, log limits, motion
   preference) under the config directory with 0600 permissions.
+
+## v0.8.0 — process supervision security properties
+
+The no-orphan guarantee is now enforced on every exit path, not only
+on explicit Stop: job kill-on-close (Windows bound mode), process-
+group SIGKILL (Unix), or Toolhelp32 tree termination (Windows
+fallback) run when the supervised child exits for ANY reason —
+natural exit, cancellation, forced termination — so a protocol core
+or its descendants cannot outlive the supervisor even when the core
+process itself exits first. Win32 return-value validation follows
+the documented BOOL/HANDLE protocol; stale `GetLastError()` values
+are never treated as failures. Executable resolution for system
+shell binaries validates `%COMSPEC%` (must actually name cmd.exe)
+before use and falls back to the validated `%SystemRoot%\System32`
+location — a hijacked COMSPEC cannot smuggle an arbitrary binary.

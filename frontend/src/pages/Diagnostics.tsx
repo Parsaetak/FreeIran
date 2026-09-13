@@ -32,11 +32,14 @@ import type {
   CacheStats,
   CoreBinary,
   LogEntry,
+  MemorySnapshotView,
   MetricsSnapshot,
+  QueueStatsView,
   StorageDiagnostics,
   SystemInfo,
   VerifyResult,
 } from "../services";
+import { testQueueService } from "../services";
 
 const LOG_CAP = 600;
 const POLL_MS = 1000;
@@ -388,6 +391,8 @@ function MaintenanceCards() {
 
   const [cacheStats, setCacheStats] = useState<CacheStats | null>(null);
   const [metrics, setMetrics] = useState<MetricsSnapshot | null>(null);
+  const [memory, setMemory] = useState<MemorySnapshotView | null>(null);
+  const [queue, setQueue] = useState<QueueStatsView | null>(null);
   const [storeDiag, setStoreDiag] = useState<StorageDiagnostics | null>(null);
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
   const [cores, setCores] = useState<CoreBinary[]>([]);
@@ -397,12 +402,14 @@ function MaintenanceCards() {
 
   const reload = useCallback(async () => {
     try {
-      const [caches, snap, diag, info, coreList] = await Promise.all([
+      const [caches, snap, diag, info, coreList, mem, queueStats] = await Promise.all([
         call(() => appService.CacheStats()),
         call(() => diagnosticsService.Metrics()),
         call(() => diagnosticsService.StoreDiagnostics()),
         call(() => diagnosticsService.SystemInfo()),
         call(() => diagnosticsService.Cores()),
+        call(() => diagnosticsService.Memory()),
+        call(() => testQueueService.Stats()).catch(() => null),
       ]);
 
       setCacheStats(caches);
@@ -410,6 +417,8 @@ function MaintenanceCards() {
       setStoreDiag(diag);
       setSystemInfo(info);
       setCores(coreList);
+      setMemory(mem as MemorySnapshotView | null);
+      setQueue(queueStats as QueueStatsView | null);
     } catch (error) {
       toast("error", "Diagnostics unavailable", describeError(error));
     }
@@ -490,6 +499,16 @@ function MaintenanceCards() {
     }
   };
 
+  const cancelQueueAll = async () => {
+    try {
+      const cancelled = await call(() => testQueueService.CancelAll());
+      await reload();
+      toast("success", "Queue cancelled", `${formatNumber(Number(cancelled))} tasks cancelled.`);
+    } catch (error) {
+      toast("error", "Could not cancel queue", describeError(error));
+    }
+  };
+
   return (
     <>
       {metrics && (
@@ -519,6 +538,88 @@ function MaintenanceCards() {
             />
             <StatTile label="Native fallbacks" value={formatNumber(metrics.native_fallback_hits)} />
             <StatTile label="Goroutines" value={formatNumber(metrics.num_goroutine)} />
+          </div>
+        </div>
+      )}
+
+      {memory && (
+        <div className="card">
+          <div className="card-header">
+            <h3 className="card-title">Memory Booster 2.0</h3>
+            <span
+              className={
+                "badge " +
+                (memory.pressure.state === "critical"
+                  ? "error"
+                  : memory.pressure.state === "high"
+                    ? "warn"
+                    : memory.pressure.state === "elevated"
+                      ? "info"
+                      : "success")
+              }
+            >
+              {memory.pressure.state}
+            </span>
+          </div>
+
+          <div className="stat-grid">
+            <StatTile
+              label="Heap in use"
+              value={formatBytes(memory.pressure.heap_in_use)}
+            />
+            <StatTile label="RSS" value={formatBytes(memory.pressure.rss)} />
+            <StatTile
+              label="GC pressure"
+              value={formatPercent(memory.pressure.gc_cpu_fraction)}
+            />
+            <StatTile
+              label="Usage fraction"
+              value={formatPercent(memory.pressure.usage_fraction)}
+            />
+            <StatTile label="Cache bytes" value={formatBytes(memory.cache_bytes)} />
+            <StatTile label="Queue bytes" value={formatBytes(memory.queue_bytes)} />
+            <StatTile
+              label="Pending writes (memtable + WAL)"
+              value={formatBytes(memory.pending_write_bytes)}
+            />
+            <StatTile
+              label="Adaptive workers"
+              value={formatNumber(memory.booster.QueueConcurrency)}
+              sub={`depth ${formatNumber(memory.booster.QueueDepth)}`}
+            />
+          </div>
+        </div>
+      )}
+
+      {queue && (
+        <div className="card">
+          <div className="card-header">
+            <h3 className="card-title">Test queue</h3>
+            <button
+              type="button"
+              className="btn sm"
+              onClick={() => void cancelQueueAll()}
+            >
+              Cancel all
+            </button>
+          </div>
+
+          <div className="stat-grid">
+            <StatTile label="Queue depth" value={formatNumber(queue.queue_depth)} />
+            <StatTile
+              label="Active workers"
+              value={formatNumber(queue.active_workers)}
+            />
+            <StatTile label="Tests / sec" value={formatNumber(queue.tests_per_sec)} />
+            <StatTile
+              label="Completed"
+              value={formatNumber(queue.total_completed)}
+              sub={
+                `${formatNumber(queue.total_passed)} working, ` +
+                `${formatNumber(queue.total_failed)} failed, ` +
+                `${formatNumber(queue.total_timed_out)} timed out`
+              }
+            />
           </div>
         </div>
       )}

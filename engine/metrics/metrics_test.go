@@ -103,3 +103,32 @@ func TestConcurrentSnapshot(t *testing.T) {
 
 	wg.Wait()
 }
+
+// TestMemoryPressureGauge verifies the Memory Booster 2.0 gauges: the
+// pressure classification and RSS mirror into the metrics snapshot
+// with the exact values the controller reported.
+func TestMemoryPressureGauge(t *testing.T) {
+	r := New()
+
+	// Before any report: empty classification, no fabricated values.
+	snap := r.Snapshot()
+	if snap.MemoryPressure != "" {
+		t.Fatalf("unset memory pressure = %q, want empty", snap.MemoryPressure)
+	}
+
+	r.SetMemoryPressure("high")
+	r.SetRSSBytes(123456789)
+
+	snap = r.Snapshot()
+	if snap.MemoryPressure != "high" {
+		t.Fatalf("memory pressure = %q, want high", snap.MemoryPressure)
+	}
+
+	if snap.RSSBytes != 123456789 {
+		t.Fatalf("rss bytes = %d, want 123456789", snap.RSSBytes)
+	}
+
+	if snap.HeapAllocBytes <= 0 {
+		t.Fatalf("heap alloc = %d, want > 0 (live measurement)", snap.HeapAllocBytes)
+	}
+}

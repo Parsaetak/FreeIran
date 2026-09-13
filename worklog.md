@@ -2189,3 +2189,54 @@ fake-core harness or real-core CI verification was weakened.
 - CI workflow updates to add managed-core install tests
 - Fake-core harness extension with new failure modes
 - IP Helper API migration for TUN (replaces netsh)
+
+---
+
+## v0.8.0 — Windows CI repair, process supervision, Memory Booster 2.0
+
+### Windows job binding (P0)
+
+- Root cause: `SetInformationJobObject` is a BOOL API; v0.7 judged
+  success from the stale thread `GetLastError()` instead of the
+  return value → every process launch "failed" on Actions runners.
+- All Win32 calls now validate the actual return value; GetLastError
+  is a diagnostic only on genuine failure.
+- Three-tier binding: direct assign → breakaway relaunch on
+  ERROR_ACCESS_DENIED → supervised tree-kill fallback (non-silent).
+- `cmd.exe` resolution via validated COMSPEC / SystemRoot; strict
+  core-path validation preserved.
+
+### Lifecycle (system/)
+
+- Deterministic state machine (running/stopping/stopped/exited/
+  cancelled); synchronizing idempotent Stop; WaitDelay pipe bound;
+  descendants reaped on every exit path; ErrResize-style wake for
+  worker retirement; 15-test battery race-clean on Linux.
+
+### Memory Booster 2.0
+
+- engine/app/memoryservice.go wires mempressure+booster to the live
+  app: 2s sampling (cache/queue/store/heap/RSS/GC), 5s adaptive tick
+  applying Queue.SetConcurrency / SetMaxQueueSize / cache
+  SetMaxEntries; High/Critical shedding; metrics gauges; Diagnostics
+  surface; lazy queues start at adapted settings.
+
+### Desktop wiring repair
+
+- CoreService / TestQueueService / TunnelService registered in
+  main.go (were unreachable since v0.6); bindings added (ByName);
+  Connection page gains System-Proxy/TUN card; Diagnostics gains
+  Memory Booster + Test Queue cards.
+
+### Version/docs
+
+- VERSION, internal/version, frontend/package.json → 0.8.0; README
+  v0.8 section; architecture/performance/ci/development/security
+  docs updated; REPLACEMENT_MANIFEST rewritten for v0.8.0.
+
+### Verification
+
+- Full matrix green on Linux (test, race ×2, vet linux+windows,
+  gofmt, native, native_accel, real-core smoke ×3, bench smoke,
+  frontend typecheck/test/build/embed, windows cross-build + test
+  compile). See REPLACEMENT_MANIFEST.md for the exact commands.

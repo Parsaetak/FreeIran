@@ -96,6 +96,12 @@ func main() {
 			application.NewService(app.NewConnectionService(applicationInstance)),
 			application.NewService(app.NewLogService(applicationInstance)),
 			application.NewService(app.NewSettingsService(applicationInstance)),
+			// v0.6 service surface that v0.7 shipped unbound: the
+			// methods existed but were never registered, so no UI
+			// action could reach them. v0.8 closes the wiring gap.
+			application.NewService(app.NewCoreService(applicationInstance)),
+			application.NewService(app.NewTestQueueService(applicationInstance)),
+			application.NewService(app.NewTunnelService(applicationInstance)),
 		},
 		Assets: application.AssetOptions{
 			Handler: application.BundledAssetFileServer(assets),

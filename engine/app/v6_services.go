@@ -193,6 +193,20 @@ func (s *TestQueueService) ensureQueue() (*testqueue.Queue, error) {
 	}
 
 	cfg := testqueue.DefaultConfig()
+
+	// Start the queue at the memory booster's CURRENT adapted
+	// settings (worker count + queue depth), so a late-created queue
+	// respects the pressure regime the controller already computed.
+	// currentSettings is nil-receiver-safe and returns the static
+	// defaults when the controller is absent.
+	if settings := s.app.memory.currentSettings(); settings.QueueConcurrency > 0 {
+		cfg.Concurrency = settings.QueueConcurrency
+	}
+
+	if settings := s.app.memory.currentSettings(); settings.QueueDepth > 0 {
+		cfg.MaxQueueSize = settings.QueueDepth
+	}
+
 	adapter := &testerAdapter{app: s.app}
 	q := testqueue.New(adapter, cfg)
 	q.Start(s.app.ctx)

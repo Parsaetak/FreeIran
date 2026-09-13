@@ -135,3 +135,84 @@ func BenchmarkQueueTaskSize(b *testing.B) {
 		_ = t
 	}
 }
+
+// BenchmarkQueueCancelByID measures single-task cancellation from a
+// 10k-task queue: the by-ID index path (map lookup + heap removal).
+func BenchmarkQueueCancelByID(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		q := New(NoopTester{}, Config{
+			Concurrency:  0,
+			MaxQueueSize: 200000,
+			Timeout:      5 * time.Second,
+			MaxAttempts:  1,
+		})
+		q.Start(context.Background())
+
+		for j := 0; j < 10000; j++ {
+			q.Enqueue(fmt.Sprintf("fp-%d", j), "vless", nil, 100, "src", EnqueueDefault)
+		}
+		b.StartTimer()
+
+		for j := 1; j <= 1000; j++ {
+			q.Cancel(int64(j))
+		}
+
+		b.StopTimer()
+		q.Stop()
+	}
+}
+
+// BenchmarkQueueDuplicateDetection measures the duplicate-suppression
+// path: every enqueue hits the byFingerprint index and returns
+// ErrDuplicate without heap work.
+func BenchmarkQueueDuplicateDetection(b *testing.B) {
+	for _, n := range []int{1000, 10000, 100000} {
+		b.Run(fmt.Sprintf("n=%d", n), func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				b.StopTimer()
+				q := New(NoopTester{}, Config{
+					Concurrency:  0,
+					MaxQueueSize: 200000,
+					Timeout:      5 * time.Second,
+					MaxAttempts:  1,
+				})
+				q.Start(context.Background())
+
+				for j := 0; j < n; j++ {
+					q.Enqueue(fmt.Sprintf("fp-%d", j), "vless", nil, 100, "src", EnqueueDefault)
+				}
+				b.StartTimer()
+
+				for j := 0; j < n; j++ {
+					_, _ = q.Enqueue(fmt.Sprintf("fp-%d", j), "vless", nil, 100, "src", EnqueueDefault)
+				}
+
+				b.StopTimer()
+				q.Stop()
+			}
+		})
+	}
+}
+
+// BenchmarkQueueMemoryEstimate measures the O(1) memory estimate the
+// memory-pressure controller samples every two seconds: it must stay
+// in the nanosecond range regardless of queue depth.
+func BenchmarkQueueMemoryEstimate(b *testing.B) {
+	q := New(NoopTester{}, Config{
+		Concurrency:  0,
+		MaxQueueSize: 200000,
+	})
+	q.Start(context.Background())
+	defer q.Stop()
+
+	for j := 0; j < 100000; j++ {
+		q.Enqueue(fmt.Sprintf("fp-%d", j), "vless", nil, 100, "src", EnqueueDefault)
+	}
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		_ = q.MemoryEstimate()
+	}
+}

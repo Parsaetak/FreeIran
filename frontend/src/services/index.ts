@@ -14,6 +14,9 @@ import * as diagnosticsService from "../../bindings/github.com/Parsaetak/FreeIra
 import * as connectionService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/connectionservice.js";
 import * as logService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/logservice.js";
 import * as settingsService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/settingsservice.js";
+import * as coreService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/coreservice.js";
+import * as testQueueService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/testqueueservice.js";
+import * as tunnelService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/tunnelservice.js";
 import * as loggingModels from "../../bindings/github.com/Parsaetak/FreeIran/internal/logging/models.js";
 
 export {
@@ -25,6 +28,9 @@ export {
   connectionService,
   logService,
   settingsService,
+  coreService,
+  testQueueService,
+  tunnelService,
   loggingModels,
 };
 
@@ -74,4 +80,61 @@ export class BackendError extends Error {
 
     this.name = "BackendError";
   }
+}
+
+// v0.8 Memory Booster 2.0 view types. These mirror the Go structs in
+// engine/app/memoryservice.go / engine/booster / engine/mempressure
+// (field-for-field). When the wails3 generator is next run on a GUI
+// toolchain host, these can be swapped for generated models.
+export type MemoryPressureState = "normal" | "elevated" | "high" | "critical";
+
+export interface MemoryPressureSnapshot {
+  state: MemoryPressureState;
+  heap_alloc: number;
+  heap_in_use: number;
+  rss: number;
+  gc_cpu_fraction: number;
+  arena_bytes: number;
+  cache_bytes: number;
+  queue_bytes: number;
+  pending_write: number;
+  source_buffers: number;
+  parser_buffers: number;
+  usage_fraction: number;
+  sampled_at: string;
+}
+
+export interface BoosterSettings {
+  QueueConcurrency: number;
+  IngestionConcurrency: number;
+  ParserConcurrency: number;
+  BatchSize: number;
+  QueueDepth: number;
+  CacheEntries: number;
+  ChunkFlushBytes: number;
+}
+
+export interface MemorySnapshotView {
+  pressure: MemoryPressureSnapshot;
+  booster: BoosterSettings;
+  queue_bytes: number;
+  cache_bytes: number;
+  pending_write_bytes: number;
+  samples: number;
+}
+
+/** Test-queue statistics (engine/testqueue Stats). */
+export interface QueueStatsView {
+  queue_depth: number;
+  active_workers: number;
+  total_enqueued: number;
+  total_completed: number;
+  total_passed: number;
+  total_failed: number;
+  total_timed_out: number;
+  total_cancelled: number;
+  tests_per_sec: number;
+  avg_duration_ms: number;
+  per_backend: Record<string, number>;
+  started_at: string;
 }

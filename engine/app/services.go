@@ -476,6 +476,14 @@ func (s *DiagnosticsService) Metrics() metrics.Snapshot {
 	return s.app.metricsR.Snapshot()
 }
 
+// Memory returns the Memory Booster 2.0 report: pressure state,
+// Go/native memory picture, adaptive settings and the subsystem
+// measurements that produced them. Every value is a live measurement
+// or a live controller state — nothing is synthetic.
+func (s *DiagnosticsService) Memory() MemorySnapshot {
+	return s.app.memory.Snapshot()
+}
+
 // StoreDiagnostics returns the deep storage-subsystem report: open
 // file handles, cache hit rates, memtable pressure, WAL size, flush
 // and compaction timings. Every value is a live measurement.

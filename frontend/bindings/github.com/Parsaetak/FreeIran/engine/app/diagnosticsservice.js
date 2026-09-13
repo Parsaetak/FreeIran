@@ -77,3 +77,14 @@ const $$createType1 = $Create.Array($$createType0);
 const $$createType2 = metrics$0.Snapshot.createFrom;
 const $$createType3 = system$0.Info.createFrom;
 const $$createType4 = store$0.Diagnostics.createFrom;
+
+/**
+ * Memory returns the Memory Booster 2.0 report: pressure state,
+ * memory picture, adaptive settings and the subsystem measurements
+ * that produced them. (v0.8 addition: ByName path until the wails3
+ * generator is rerun on a GUI toolchain host.)
+ * @returns {$CancellablePromise<any>}
+ */
+export function Memory() {
+    return $Call.ByName("github.com/Parsaetak/FreeIran/engine.app.DiagnosticsService.Memory");
+}

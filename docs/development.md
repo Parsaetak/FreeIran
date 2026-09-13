@@ -244,3 +244,27 @@ is what registry discovery expects. Headless application smoke test:
 ```bash
 go run ./cmd/freeiran --smoke-test   # boot → state → services → shutdown
 ```
+
+## v0.8.0 — process lifecycle and memory-controller tests
+
+```sh
+# Full supervision battery (15 tests; runs on every platform, the
+# Windows-specific assertions activate on windows runners):
+go test -count=1 -run 'TestProcess|TestSyncWriter' ./system -v
+
+# Same battery under the race detector:
+go test -race -count=1 -run 'TestProcess|TestSyncWriter' ./system
+
+# Memory Booster 2.0 wiring + adaptive-shed integration:
+go test -count=1 -run 'TestMemory' ./engine/app -v
+
+# Dynamic worker-pool resize + queue memory estimate:
+go test -count=1 -run 'TestSetConcurrency|TestMemoryEstimate|TestSetMaxQueueSize' \
+  ./engine/testqueue -v
+
+# Cache-target resize:
+go test -count=1 -run 'TestSetMaxEntries' ./engine/cache -v
+```
+
+Windows code paths compile-verify from Linux with
+`GOOS=windows go vet ./...` and `GOOS=windows go test -c ./system`.

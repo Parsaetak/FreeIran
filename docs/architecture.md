@@ -171,6 +171,41 @@ writers, redaction), core binary discovery (`xray`, `v2ray`,
 reachability probing. Platform differences live in
 `process_unix.go` / `process_windows.go` / `paths_*`.
 
+**Process supervision (v0.8.0).** The supervision invariant — a
+protocol core must never become an unmanaged/orphaned process — is
+enforced through a deterministic lifecycle state machine
+(`running → stopping → stopped / exited / cancelled`) plus a
+platform kill domain:
+
+- **Windows, tier 1** — spawn, then `AssignProcessToJobObject` into a
+  `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` job. Windows 8+ nests job
+  hierarchies, so this succeeds even when the parent (a CI runner
+  agent, a shell sandbox) already runs inside a job.
+- **Windows, tier 2** — when assignment is denied with
+  `ERROR_ACCESS_DENIED` (pre-Windows-8 semantics or a non-nestable
+  hierarchy) and the child is still alive, the child is terminated
+  and respawned once with `CREATE_BREAKAWAY_FROM_JOB`, then assigned.
+- **Windows, tier 3** — supervised fallback: the launch succeeds
+  without a job; Stop performs a Toolhelp32 process-tree
+  termination, the degradation is logged and exposed through
+  `JobBound()` / `Diagnostics()`, and the launch is never silently
+  weakened.
+- **Unix** — the child is a process-group leader (setpgid); Stop
+  SIGTERMs the group, waits the grace period, then SIGKILLs it.
+
+Every exit path — natural, cancelled, stopped — additionally reaps
+the whole kill domain (job close on Windows-bound, group SIGKILL on
+Unix, tree kill in fallback), so a grandchild that ignores the
+polite signal cannot outlive the supervisor. Win32 calls are
+validated by their BOOL/HANDLE return values; `GetLastError()` is
+only consulted as a diagnostic on genuine failure (the v0.7 CI
+failure was exactly a stale-Last-error misread of a successful
+`SetInformationJobObject`). Executable resolution for system shell
+binaries goes through `%COMSPEC%` with a validated
+`%SystemRoot%\System32\cmd.exe` fallback — never the working
+directory or inherited PATH — while protocol-core paths keep strict
+explicit `os.Stat` validation.
+
 ## 8. Protocol cores (engine/core)
 
 The engine does not implement VPN protocols. `engine/core` is the
@@ -463,3 +498,47 @@ If the selected core fails, the manager records the failure, classifies
 it (network / auth / protocol / config / backend_down / timeout /
 cancelled / unknown) and tries the next compatible installed core.
 Incompatible cores are never retried for the same configuration.
+
+## v0.8.0 additions
+
+### Unified adaptive memory controller (Memory Booster 2.0)
+
+`engine/app/memoryservice.go` composes the v0.7 `mempressure` and
+`booster` libraries into the running application (previously they
+were standalone, unwired). One sampler goroutine pulls real
+measurements every 2 s — cache-layer bytes, `testqueue` memory
+estimate, store memtable + WAL bytes, Go heap, RSS, GC CPU fraction
+— classifies the pressure state, and mirrors it into the metrics
+registry. A booster tick (5 s) adapts settings within hard
+floor/ceiling limits with hysteresis; changes are applied live
+through the new dynamic knobs:
+
+- `testqueue.Queue.SetConcurrency(n)` — grows the worker pool
+  immediately; shrinkage retires idle workers through a resize wake
+  (busy workers finish their current task; no task is ever dropped).
+- `testqueue.Queue.SetMaxQueueSize(n)` — queue-depth shedding.
+- `cache.Layer.SetMaxEntries(n)` — cache target shrink/grow with
+  immediate oldest-first eviction.
+
+Hard pressure reactions: High clears the hot-config cache; Critical
+clears both cache layers and requests a GC. Every transition and
+adjustment is logged; the Diagnostics UI surfaces the whole picture
+(pressure state, measurements, adaptive settings) through
+`DiagnosticsService.Memory()`.
+
+### Desktop service wiring
+
+The v0.6 `CoreService`, `TestQueueService` and `TunnelService`
+existed in the Go backend but were never registered with the Wails
+runtime. v0.8 registers all three in `cmd/freeiran/main.go`, ships
+frontend bindings (`coreservice.js`, `testqueueservice.js`,
+`tunnelservice.js`, plus `DiagnosticsService.Memory`), and adds the
+system-integration (System Proxy / TUN) controls and live
+memory/test-queue panels to the UI.
+
+### Observability
+
+`metrics.Registry` gains live gauges (`memory_pressure`, `rss_bytes`,
+`heap_alloc_bytes`, `heap_live_bytes`, `gc_cpu_pct`) mirrored from
+the controller's samples, so the engine metrics snapshot and the
+memory diagnostics page always agree on one classification.

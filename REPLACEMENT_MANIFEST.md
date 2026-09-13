@@ -1,419 +1,218 @@
-# FreeIran Replacement Manifest — v0.7.0
+# FreeIran Replacement Manifest — v0.8.0
 
 ## Package
 
 | Field | Value |
 |-------|-------|
-| Version | 0.7.0 |
-| Previous version | 0.6.0 |
-| Base reference | `d8527cdb912514a844f2e0ab71d353f0b6b5e972` (v0.6.0, the failing commit) |
-| Package | `FreeIran-0.7.0.zip` — complete source repository replacement |
-| Verified by | Full build + test matrix re-run from the extracted tree (see "Verification performed") |
-| Excluded from package | `.git`, `frontend/node_modules`, `frontend/dist` (build output), `cmd/freeiran/frontend/dist` (embed staging, except the placeholder), `native/build`, `.cores` (CI core installs), `testcores/` (CI fixture output), no secrets, no local runtime data, no test-generated binaries |
+| Version | 0.8.0 |
+| Previous version | 0.7.0 |
+| Base reference | `3f7f394734f1442d79da4a1c8a69681ebe29bc7e` (v0.7.0) |
+| Package | `FreeIran-0.8.0.zip` — complete source repository replacement |
+| Verified by | Full build + test matrix re-run from the working tree (see "Verification performed") |
+| Excluded from package | `.git`, `frontend/node_modules`, `frontend/dist` (build output), `native/build`, `.cores` (local real-core installs), no secrets, no local runtime data, no test-generated binaries |
 
 ## Objective
 
-Fix the CI failure at its root, then audit the whole codebase for
-concurrency bugs, memory waste, and missing production-readiness
-infrastructure — all while preserving the existing FreeIran
-architecture and project goals.
-
-## 1. Root cause of the CI failure
-
-**Failing test:** `TestCancelBySource` in `engine/testqueue/queue_test.go`
-```
-queue_test.go:90: cancelled = 1, want 2
-queue_test.go:95: TotalCancelled = 1, want 2
-```
-
-**Root cause:** `Queue.New()` treated `Concurrency: 0` as "use
-defaults" and replaced the ENTIRE config with `DefaultConfig()`
-(Concurrency=4). The test intended `Concurrency: 0` to mean "no
-workers" (tasks stay queued), but 4 workers were spawned and dequeued
-the src-A tasks into inflight before `CancelBySource` ran.
-`CancelBySource` only scanned `pending`, so it found 0–1 src-A tasks
-instead of 2.
-
-**Secondary bugs discovered in the same audit:**
-1. `Cancel()` for inflight tasks set `task.State = StateCancelled`
-   but never cancelled the test's context — the in-flight test ran to
-   completion and overwrote the cancelled state.
-2. `runTask` called `testCancel()` before `classifyFailure()`, so
-   `testCtx.Err()` was always `context.Canceled` and every failure was
-   misclassified as `FailureCancelled`.
-3. `Stats().ActiveWorkers` formula was `Concurrency - depth + inflight
-   - inflight` which simplified to the wrong value.
-4. The pending list was an O(n) linear scan per dequeue/cancel.
-5. `totalCancelled` could double-count when both `Cancel` and the
-   worker's `complete` fired for the same task.
-
-## 2. Queue fixes (`engine/testqueue`)
-
-**Files:** `engine/testqueue/queue.go` (full rewrite), `queue_test.go`
-(expanded), `queue_bench_test.go` (new), `queue_mem_test.go` (new).
-
-### Single authoritative state-transition path
-
-`finishTask(task, state, result)` / `finishTaskLocked(...)` is now the
-ONLY function that moves a task to a terminal state and updates
-counters. It is idempotent (returns false if already terminal), so
-workers and cancellation paths can both call it safely without
-double-counting. It:
-- acquires `q.mu` (or is called by a holder of `q.mu`)
-- acquires `task.mu` to check/set state
-- calls `task.cancelFunc` (if set) to unblock the in-flight test
-- removes the task from `pending` (via `heap.Remove`), `inflight`, and
-  `byFingerprint`
-- caches the result
-- updates `totalCompleted` and the state-specific counter
-
-### Per-task context cancellation
-
-Each `Task` now carries a `cancelFunc context.CancelFunc` (guarded by
-`task.mu`). The worker publishes it before calling `tester.Test` and
-clears it after. `finishTask` calls it so an in-flight cancellation
-unblocks the test promptly. The worker checks for a racing cancellation
-at every transition point (before test, after test, before
-measurement, after measurement) and returns early if the task was
-cancelled, discarding its result.
-
-### Fixed `Concurrency: 0`
-
-`New()` now defaults individual fields instead of replacing the whole
-config. `Concurrency: 0` means "no workers" (tasks stay queued) —
-exactly what the test intended. `Start()` spawns zero workers in this
-mode.
-
-### Fixed failure classification
-
-`runTask` captures `testCtxErr := testCtx.Err()` BEFORE calling
-`testCancel()`. `classifyCtxFailure(err, testCtxErr)` uses the captured
-error so the real test outcome (network/auth/protocol/config/timeout)
-is preserved instead of being masked as "cancelled".
-
-### Heap-based priority queue
-
-`pendingHeap` implements `container/heap.Interface` with O(log n)
-Push/Pop/Remove/Fix. Each `Task` carries `heapIdx` (guarded by `q.mu`)
-so `Cancel(taskID)` removes a specific task in O(log n). Priority is
-`(Priority desc, CreatedAt asc)` — higher priority first, FIFO within
-a priority.
-
-### `CancelByFingerprint` (new)
-
-Cancels the task matching a fingerprint (pending or inflight). Returns
-1 if cancelled, 0 if not found or already terminal.
-
-### Fixed `Stats().ActiveWorkers`
-
-Now `min(inflight, Concurrency)` — the actual number of workers
-running a test.
-
-### Stress / regression tests (17 tests)
-
-- `TestCancelBySource` (original, now passes reliably under `-race -count=20`)
-- `TestCancelBySourceQueuedOnly` (50 + 30 tasks, only queued)
-- `TestCancelBySourceWhileWorkersDequeue` (200 + 200 tasks, 4 workers)
-- `TestCancelBySourceWhileTasksRunning` (4 inflight, verifies per-task ctx cancel)
-- `TestCancelByFingerprintDuringExecution` (cancel a 30s test, verify it returns)
-- `TestGlobalCancellation` (100 tasks, CancelAll)
-- `TestCancellationDuringRetryBackoff` (cancel during 1s backoff)
-- `TestCancellationDuringTimeout` (cancel after timeout — must be no-op)
-- `TestCancellationDuringShutdown` (Stop must return < 5s)
-- `TestConcurrentEnqueueCancel` (8 enqueuers + 4 cancellers, 500 ops each)
-- `TestDuplicateSuppressionAndCancel` (dup rejected, original cancellable, re-enqueue succeeds)
-- `TestRepeatedCancellation` (10 cancels of same task → TotalCancelled=1)
-- `TestReplaceIfHigher` (priority bump via EnqueueReplaceIfHigher)
-- `TestStatsActiveWorkers` (4 inflight → ActiveWorkers=4)
-- `TestStopWithoutStart` (safe no-op)
-- `TestEnqueueAfterStop` (ErrQueueStopped)
-- `TestQueueFull` (ErrQueueFull at capacity)
-- `TestQueueMemoryGrowth` (50k enqueue + cancel, no leak)
-- `TestQueueCancellationCleanup` (100 enqueue/cancel/re-enqueue cycles)
-
-### Benchmarks
-
-- `BenchmarkQueueEnqueue` at n=1k/10k/100k: 504/567/805 ns/task
-- `BenchmarkQueueCancelBySource` at n=1k/10k/100k: 483/864/1058 ns/cancel
-- `BenchmarkQueueTaskSize`: per-task allocation profile
-
-## 3. Codebase-wide concurrency fixes
-
-### `engine/coremgr` — manifest data race (HIGH)
-
-**Files:** `engine/coremgr/manager.go`, `health.go`, `install.go`,
-`update_check.go`.
-
-**Bug:** `manifestOrCreate` read/wrote `m.manifests[name]` and mutated
-`Manifest` fields WITHOUT holding `m.mu`, while `Info`/`All` read them
-under `m.mu.RLock()`. Confirmed data race on `Manifest.State`,
-`.Version`, `.BinaryPath`.
-
-**Fix:** Introduced `manifestOrCreateLocked` (caller MUST hold
-`m.mu.Lock`), `snapshotManifest` (value copy under `m.mu.RLock`),
-`updateManifest` (applies a mutation fn under `m.mu.Lock` then
-persists). All field mutations now go through `updateManifest`. Long
-operations (download, smoke test) snapshot the needed fields first,
-work outside the lock, then write back via `updateManifest`.
-
-**Regression test:** `TestManagerConcurrentAccess` — 4 readers + 4
-writers for 2s under `-race`.
-
-### `engine/app` — lazy-init race (HIGH)
-
-**Files:** `engine/app/app.go`, `v6_services.go`.
-
-**Bug:** `ensureCoreMgr`, `ensureQueue`, `ensureController` did
-check-then-set on `app.coreMgr`/`testQueue`/`tunnelCtrl` without
-holding any lock. Concurrent UI calls created duplicate managers,
-leaking the prior manager's worker goroutines. `SetMode` stopped the
-old queue and assigned a new one without synchronizing against
-concurrent `ensureQueue`.
-
-**Fix:** Added `initMu sync.Mutex` to `App`. All three `ensure*`
-methods acquire `initMu` before the check-then-set. `SetMode` acquires
-`initMu`, starts the new queue, swaps the pointer, THEN stops the old
-queue. `Shutdown` snapshots the lazy-init subsystems under `initMu`
-before stopping them.
-
-### `engine/native` — fallbackHook race (MEDIUM)
-
-**Files:** `engine/native/native.go`.
-
-**Bug:** `fallbackHook` was a package-level `var func()` read by
-`useNative()` on every dispatch and written by `SetFallbackHook`
-without synchronization. Data race if `SetFallbackHook` is called after
-init.
-
-**Fix:** Replaced with `fallbackHookPtr atomic.Pointer[func()]`,
-initialized to a no-op sentinel at init. `useNative` loads + derefs;
-`SetFallbackHook` stores. Safe for concurrent use.
-
-## 4. C++ memory acceleration layer (`native/` + `engine/native`)
-
-**ABI version bumped 1 → 2** (v1 functions unchanged; v2 adds arena +
-batch CRC32).
-
-**Files:** `native/include/freeiran.h`, `native/src/freeiran.cpp`,
-`native/tests/test_native.cpp`, `engine/native/native.go`,
-`engine/native/bridge_cgo.go`, `engine/native/bridge_stub.go`,
-`engine/native/native_test.go`.
-
-### Native arena
-
-New C ABI:
-```
-fir_arena_create(max_blocks) → fir_arena_t
-fir_arena_alloc(arena, size) → void*
-fir_arena_reset(arena)
-fir_arena_destroy(arena)
-fir_arena_stats(arena, *stats) → int32
-```
-
-- Bounded growth: `max_blocks` caps total 64 KiB blocks (default 256 =
-  16 MiB). Alloc returns NULL at capacity.
-- Thread-safe alloc (mutex-protected bump pointer).
-- Reset reclaims all blocks for reuse without deallocation.
-- Destroy releases all memory.
-- 16-byte alignment.
-- `-fno-exceptions` compatible (uses `new(std::nothrow)` + `malloc`).
-
-Go bridge (`native.Arena`):
-- `NewArena(maxBlocks)`, `Alloc(size)`, `Reset()`, `Destroy()`, `Stats()`
-- Transparent Go fallback when native layer not compiled in
-  (make([]byte) per alloc, mutex-guarded for concurrent safety)
-
-### Batch CRC-32
-
-New C ABI: `fir_crc32_batch(data, offsets, count, out_crcs)`.
-Each string hashed independently from seed 0. Go fallback
-(`crc32BatchGo`) uses `crc32.ChecksumIEEE` per string.
-
-### Native tests (C++)
-
-`testArenaBasic`, `testArenaBoundedGrowth`, `testArenaNullSafety`,
-`testArenaConcurrentAlloc` (8 threads × 1000 allocs),
-`testCrc32Batch`. All pass.
-
-### Go parity tests
-
-`TestCRC32Batch`, `TestArenaBasic`, `TestArenaReset`,
-`TestArenaDestroy`, `TestArenaConcurrent` (8 goroutines × 200 allocs
-under `-race`), `TestArenaBoundedGrowth`. All pass in both Go-fallback
-and native_accel modes.
-
-## 5. Memory pressure controller (`engine/mempressure`)
-
-**Files:** `engine/mempressure/mempressure.go`, `rss_linux.go`,
-`rss_other.go`, `mempressure_test.go` (new package).
-
-Tracks: Go heap (HeapAlloc), RSS (Linux /proc/self/statm), GC CPU
-fraction, native arena bytes, cache bytes, queue bytes, pending write
-bytes, source/parser buffer bytes.
-
-Four-level state with hysteresis (up/down thresholds):
-- Normal → Elevated: 0.60 / —
-- Elevated → High: 0.75 / 0.45 (down to Normal)
-- High → Critical: 0.88 / 0.60 (down to Elevated)
-- Critical → —: — / 0.72 (down to High)
-
-Single Sample() can transition multiple levels (e.g. Normal → Critical
-on a sudden spike). Subsystems register `Listener` callbacks.
-
-**Tests:** `TestStateString`, `TestDefaultCeiling`,
-`TestControllerHysteresis` (full up/down cycle, 6+ state changes),
-`TestControllerSetCeiling`, `TestControllerConcurrentSet` (10k
-concurrent Set* + 100 Sample under `-race`).
-
-## 6. Memory Booster (`engine/booster`)
-
-**Files:** `engine/booster/booster.go`, `booster_test.go` (new
-package).
-
-Adapts: QueueConcurrency, IngestionConcurrency, ParserConcurrency,
-BatchSize, QueueDepth, CacheEntries, ChunkFlushBytes.
-
-Inputs: QueueBacklog, CacheHitRate, Throughput, AvgLatencyMS,
-ActiveWorkers, CPUPressure (all atomic, settable from any goroutine).
-
-Behavior per pressure state:
-- Normal: grow concurrency if backlog deep + CPU < 70%; grow cache if
-  hit rate > 80%; grow batch if throughput > 100
-- Elevated: hold concurrency; shrink cache if hit rate < 50%; halve
-  batch
-- High: cut concurrency 25%; halve caches/buffers/chunk-flush
-- Critical: everything to floor
-
-NEVER exceeds hard `Limits` floors/ceilings. One step per Tick to
-avoid oscillation. `OnChange` listeners fire on actual changes.
-
-**Tests:** `TestDefaultLimits`, `TestNewClampsToLimits`,
-`TestTickCriticalHitsFloor`, `TestTickNormalGrowsOnBacklog`,
-`TestTickRespectsCeiling`, `TestOnChangeFires`,
-`TestInputsAccessors`.
-
-## 7. Store + chunk memory improvements
-
-**Files:** `engine/store/store.go`, `engine/store/compact.go`,
-`engine/chunks/chunks.go`.
-
-### `Count()` cache
-
-`store.Count()` caches the live-record count in `atomic.Int64`
-(-1 = dirty). Invalidated on every write (UpsertBatch, Delete,
-applyReplay, Compact). The UI hot path (`app.State()` → `Count()` on
-every poll) now hits the cache instead of allocating a
-`map[[32]byte]struct{}` per call.
-
-### Chunk encode buffer pool
-
-`chunks.WriteChunk` draws its payload buffer from a `sync.Pool`,
-eliminating the per-flush `make([]byte, payloadSize)` allocation.
-Buffers > 64 MiB are not pooled. Thread-safe, shared across flush
-workers.
-
-## 8. Documentation
-
-- `docs/performance.md` — added §11 covering mempressure, booster,
-  native arena, chunk pooling, Count cache, heap-based queue, and
-  benchmark results.
-- This manifest.
-
-## Verification performed (all green)
-
-### Go
+Fix the Windows CI failure at its root (the `bind kill-on-close job`
+class), then deliver the v0.8.0 production-readiness programme:
+deterministic process supervision, Memory Booster 2.0 wiring, desktop
+service-registration repair, observability and measured benchmark
+evidence — all while preserving the v0.7 architecture.
+
+## 1. Root cause of the Windows CI failure
+
+**Failing run:** 34735036772, job `103665043573 — Windows tests and
+desktop build`, `go test -count=1 ./...`. Every process-launching test
+(`engine/core/{singbox,v2ray,xray}/TestContract/*`, connection tests,
+app shutdown, tester core probe) failed with:
 
 ```
-gofmt -l ./engine ./system ./cmd ./internal          — clean
-go vet ./engine/... ./system/... ./internal/...       — clean
-go build ./engine/... ./system/... ./internal/...     — clean
-go test -count=1 ./engine/... ./system/... ./internal/...
-                                                       — all pass
-go test -race -count=1 ./engine/... ./system/... ./internal/...
-                                                       — all pass
-go test -race -count=5 ./engine/testqueue              — all pass (5 repeats)
+system/start: environment: bind kill-on-close job
 ```
 
-### Previously-failing test (repeated under -race)
+**Root cause:** a Win32 return-value protocol bug in
+`system/job_windows.go`. `SetInformationJobObject` returns a **BOOL**;
+the v0.7 code discarded the BOOL and judged success from the thread's
+`GetLastError()` value captured by `LazyProc.Call`. BOOL-returning
+APIs do not reset LastError on success, so the value is a **stale
+errno left by earlier syscalls** in the launch sequence
+(CreateProcessW internals, pipe setup). On GitHub Actions Windows
+runners the stale value is nonzero, so a *successful* job
+configuration was misread as a failure: the freshly spawned child was
+killed and the launch aborted. Desktop machines (whose stale value
+happened to be 0) kept passing, which is exactly why v0.7.0 shipped.
 
-```
-go test -race -count=20 -run TestCancelBySource ./engine/testqueue/
-  --- PASS: TestCancelBySource (0.00s)
-  ok      github.com/Parsaetak/FreeIran/engine/testqueue   1.012s
-```
+**Fix:** every Win32 call in the file is now validated by its actual
+return value (BOOL != 0, HANDLE != 0); `GetLastError()` is consulted
+only as a diagnostic on genuine failure.
 
-### Native C++
+**Secondary Windows bugs fixed in the same audit:**
 
-```
-make -C native clean test
-  g++ ... -c src/freeiran.cpp -o build/freeiran.o
-  g++ ... tests/test_native.cpp build/freeiran.o -o build/test_native
-  ./build/test_native
-  native: all tests passed
-```
+1. `Start()` validated `spec.Path` with `os.Stat` — CWD-relative, so
+   `cmd.exe` (the documented test stand-in) failed to resolve
+   anywhere cmd.exe was not in the working directory. Fixed with a
+   platform resolver: `%COMSPEC%` (validated to actually name
+   cmd.exe) with a validated `%SystemRoot%\System32\cmd.exe`
+   fallback; core paths keep strict explicit validation.
+2. `bytesWriter` in `process_test.go` claimed thread-safety with a
+   placeholder empty `mu struct{}` and no synchronization — a data
+   race by construction (exec copies stdout and stderr through two
+   concurrent goroutines). Replaced with a genuinely locked
+   `syncWriter`; the 50 ms post-exit sleep was removed (the exited
+   channel already guarantees writer completion — cmd.Wait joins the
+   copy goroutines first).
+3. Windows `terminateProcess` killed only the direct pid via
+   `os.FindProcess` and never used the job; concurrent `Stop` callers
+   did not synchronize; context-cancellation exits were classified as
+   errors; descendants surviving a politely-exited child were never
+   reaped.
 
-### Native-accelerated Go (cgo + race)
+## 2. Process supervision rewrite (`system/`)
 
-```
-make -C native
-CGO_ENABLED=1 go build -tags native_accel ./engine/native   — clean
-CGO_ENABLED=1 go test -tags native_accel -count=1 ./engine/native  — pass
-CGO_ENABLED=1 go test -race -tags native_accel -count=1 ./engine/native  — pass
-```
+**Files:** `job_windows.go` (rewritten), `process_windows.go`
+(rewritten), `process_unix.go` (rewritten), `system.go` (rewritten
+lifecycle), `job_other.go` (rewritten contract), `resolve_windows.go`
+(new), `resolve_other.go` (new).
 
-### Windows cross-build
+### Three-tier job binding strategy
 
-```
-GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /dev/null ./cmd/freeiran
-                                                       — clean
-```
+1. Direct `AssignProcessToJobObject` (Windows 8+ nests job
+   hierarchies — runner jobs are no obstacle).
+2. On `ERROR_ACCESS_DENIED` (checked via `errors.As` through the
+   structured-error wrapper): kill, respawn once with
+   `CREATE_BREAKAWAY_FROM_JOB`, assign again.
+3. Supervised fallback: launch succeeds WITHOUT a job; Stop performs
+   deterministic Toolhelp32 process-tree termination; the degradation
+   is logged, counted, and exposed (`JobBound()`, `Diagnostics()`) —
+   never silent, never a failed launch.
 
-### Benchmarks (smoke)
+### Deterministic lifecycle state machine
 
-```
-go test -bench=BenchmarkQueueEnqueue -benchtime=1x -run=NONE ./engine/testqueue/
-  BenchmarkQueueEnqueue/n=1000-2          504,399 ns/op
-  BenchmarkQueueEnqueue/n=10000-2       5,674,305 ns/op
-  BenchmarkQueueEnqueue/n=100000-2     80,509,723 ns/op
+`running → stopping → stopped / exited / cancelled` with distinct
+classifications for launch failure, natural exit (with exit code),
+context cancellation (Wait returns `context.Canceled`), and
+environment degradation. `Stop` is idempotent and synchronizing:
+concurrent callers all wait for the same termination and observe the
+same result. `WaitDelay` (5 s) bounds pipe drain so `cmd.Wait` — and
+therefore writer completion — is deterministic even if a stray
+descendant briefly holds the pipe.
 
-go test -bench=BenchmarkQueueCancelBySource -benchtime=1x -run=NONE ./engine/testqueue/
-  BenchmarkQueueCancelBySource/n=1000-2      483,031 ns/op
-  BenchmarkQueueCancelBySource/n=10000-2   8,646,925 ns/op
-  BenchmarkQueueCancelBySource/n=100000-2 105,810,328 ns/op
+### No-descendant-survives on every exit path
 
-go test -bench=BenchmarkHashBatch -benchtime=1x -run=NONE ./engine/native/
-  BenchmarkHashBatch-2        336,302 ns/op (4096 hashes, Go fallback)
-```
+`finish()` reaps the whole kill domain (job close / group SIGKILL /
+tree kill) before signalling exit observers, so grandchildren that
+ignore the polite signal cannot outlive the supervisor — including
+on natural and cancelled exits, not only explicit Stop.
 
-## New packages
+### Lifecycle battery (15 tests, `-race` clean)
 
-| Package | Purpose | LOC |
-|---------|---------|-----|
-| `engine/mempressure` | Central memory-pressure controller with hysteresis | ~340 |
-| `engine/booster` | Adaptive runtime optimisation controller | ~370 |
+No visible console (behavioural: the child never attaches to the
+parent console, `GetConsoleProcessList`), stdout AND stderr capture
+through separate writers, natural exit code, cancellation, forced
+termination, repeated Stop, concurrent Stop + Wait, startup-failure
+cleanup (kind `dependency_unavailable`, no process returned),
+job-binding-failure fallback (injected via the test hook),
+restricted-environment retry (injected `ERROR_ACCESS_DENIED`), and
+grandchild-cannot-survive-supervisor-shutdown (observed through the
+job member list on Windows / process-group probe on Unix).
 
-## Remaining limitations
+## 3. Memory Booster 2.0 (`engine/app/memoryservice.go`, new)
 
-- The mempressure controller tracks RSS on Linux only (reads
-  `/proc/self/statm`). On macOS/Windows RSS reads as 0; the heap
-  fraction from `runtime.MemStats` remains the primary signal.
-- The booster is wired as a library; integration into `app.App`
-  (actually applying the adjusted concurrency to the live test queue +
-  pipeline) is a follow-up. The controllers are tested in isolation.
-- The native arena Go-fallback does a `make([]byte)` per alloc (no
-  pooling); the native path is the high-throughput one. The fallback
-  preserves the API contract.
-- The v0.6 frontend UI pages for CoreService / TestQueueService /
-  TunnelService remain stubbed (v0.7 milestone was engine-side).
-- Wails binding regeneration is still a documented follow-up.
+The v0.7 `engine/mempressure` + `engine/booster` libraries were
+standalone and unwired. v0.8 composes them into one adaptive
+controller wired to the real subsystems:
 
-## Final status
+- **Reporters (2 s sampler):** cache-layer bytes (source + hot),
+  `testqueue.MemoryEstimate()` (new, O(1)), store memtable + WAL
+  bytes (`Inspect`), Go heap, RSS, GC CPU fraction; workload inputs
+  (backlog, active workers, throughput, cache hit rate) feed the
+  booster.
+- **Adaptive actions (5 s tick, applied live):**
+  `testqueue.Queue.SetConcurrency(n)` (new — immediate growth,
+  prompt idle-worker retirement through a resize wake; busy workers
+  finish their task; no task dropped), `SetMaxQueueSize(n)` (new),
+  `cache.Layer.SetMaxEntries(n)` (new — immediate oldest-first
+  eviction). Hard ceilings/floors and one-step-per-tick hysteresis
+  are preserved from v0.7.
+- **Hard reactions:** High clears the hot cache; Critical clears both
+  cache layers and requests GC.
+- **Integration:** the sampler starts in `App.Start()`, stops first
+  in `Shutdown()`; lazy-created queues start at the adapted settings
+  (`ensureQueue` consults the controller).
+- **Verification:** `TestMemoryServiceWiredOnBoot`,
+  `TestMemoryServicePressureShedsQueueWorkers` (critical injection →
+  floor workers on the live queue),
+  `TestSetConcurrencyGrowShrink`, `TestSetConcurrencyConcurrent`
+  (race-tested), `TestMemoryEstimate`, `TestSetMaxQueueSize`,
+  `TestSetMaxEntriesShrinksAndGrows`, `TestMemoryPressureGauge`.
 
-**READY** — `TestCancelBySource` passes reliably under `-race
--count=20`. The complete Go/native/Windows verification matrix is
-green. The codebase has a single authoritative queue state-transition
-path, real in-flight cancellation, a heap-based priority queue, a
-memory-pressure controller, an adaptive booster, a native arena, batch
-CRC-32, pooled chunk buffers, and a cached store Count(). Four data
-races (testqueue, coremgr, app lazy-init, native fallbackHook) are
-fixed with regression tests.
+## 4. Desktop wiring repair (§11 audit finding)
+
+The v0.6 `CoreService`, `TestQueueService` and `TunnelService`
+existed in the Go backend but were **never registered** with the
+Wails runtime and had no bindings — no UI action could ever reach
+them (acknowledged as a v0.7 follow-up in the old worklog). v0.8:
+
+- registers all three in `cmd/freeiran/main.go`;
+- ships frontend bindings `coreservice.js`, `testqueueservice.js`,
+  `tunnelservice.js` (stable `Call.ByName` path; regenerate with the
+  wails3 generator on a GUI toolchain host when convenient) plus
+  `DiagnosticsService.Memory`;
+- adds UI: system-integration card (System Proxy / TUN enable /
+  disable, live state) on the Connection page; Memory Booster 2.0
+  card (pressure state, heap/RSS/GC/usage, cache/queue/pending
+  bytes, adaptive settings) and Test Queue card (depth, workers,
+  throughput, completion classes, cancel-all) on the Diagnostics
+  page — every button reaches the backend through the bound service.
+
+## 5. Observability
+
+`metrics.Registry` gains live gauges — `memory_pressure`,
+`rss_bytes`, `heap_alloc_bytes`, `heap_live_bytes`, `gc_cpu_pct` —
+mirrored from the controller's samples so the engine metrics
+snapshot and the memory diagnostics page agree on one
+classification. The queue sampler already maintained
+`SetQueueDepth` / `SetActiveWorkers`.
+
+## 6. Benchmarks and evidence (§13)
+
+New: `BenchmarkQueueCancelByID`, `BenchmarkQueueDuplicateDetection`
+(1k/10k/100k), `BenchmarkQueueMemoryEstimate` (O(1), ~550 ns, 0
+allocs). Measured results are recorded in
+`docs/performance.md §12` — including the honest negative finding:
+the allocation audit justified NO new `sync.Pool` use beyond the
+v0.7 chunk-encode pool; v0.8 eliminated the unsampled-controller
+waste instead of micro-optimizing allocations.
+
+## Verification performed
+
+From the working tree (Linux, Go 1.26.8, matching the CI matrix):
+
+- `go build ./engine/... ./system/... ./internal/...` — pass
+- `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/freeiran` — pass
+- `GOOS=windows go vet ./system/... ./engine/... ./internal/...` — pass
+- `GOOS=windows go test -c ./system` (Windows test binary compiles) — pass
+- `go vet ./engine/... ./system/... ./internal/...` — pass
+- `gofmt -l ./engine ./system ./internal ./cmd` — clean
+- `go test -count=1 ./engine/... ./system/... ./internal/...` with
+  fake cores (`FREEIRAN_TEST_CORES`) — **all packages pass**
+- `go test -race -count=1 ./engine/... ./system/... ./internal/...` —
+  all pass (process battery repeated ×2 for stability)
+- Native C++: `make -C native test` — pass;
+  `go build -tags native_accel ./engine/native` — pass;
+  `CGO_ENABLED=1 go test -tags native_accel ./engine/native` — pass
+- Real cores (pinned, SHA-256-verified):
+  `TestV2RaySmokeRealBinary`, `TestXraySmokeRealBinary`,
+  `TestSingBoxSmokeRealBinary` — all pass
+- Benchmark smoke: `go test -bench=. -benchtime=1x -run=NONE
+  ./engine/chunks ./engine/store ./engine/pipeline ./engine/core
+  ./engine/core/v2ray ./internal/logging` + native bench — pass
+- Frontend: `npm run typecheck`, `npm test` (28 tests),
+  `npm run build`, `npm run build:embed` — pass
+
+**Windows runtime note:** the Windows-specific runtime behaviour is
+verified by construction (the battery is compiled for Windows and
+executed by the CI `windows` job), by the identical shared lifecycle
+code paths that pass under `-race` on Linux, and by
+cross-compilation. The actual Windows job must confirm at CI time —
+no Windows host was available to this verification environment.

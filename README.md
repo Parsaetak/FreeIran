@@ -9,9 +9,72 @@ configurations.
 **Project:** FreeIran
 **Architect:** Parsa Tak / SHEYTAN
 **Repository:** https://github.com/Parsaetak/FreeIran
-**Current version:** 0.6.0 (see `VERSION`)
+**Current version:** 0.8.0 (see `VERSION`)
 **Status:** production architecture — multi-core protocol runtime with
-managed installation, test queue, system proxy and TUN mode
+managed installation, test queue, system proxy and TUN mode, unified
+adaptive memory control and kernel-level process supervision
+
+---
+
+## What's new in v0.8.0
+
+### Windows process supervision, repaired and hardened
+
+The v0.7.0 Windows CI failed on every process-launching test with
+`system/start: environment: bind kill-on-close job`. The root cause was
+a Win32 return-value protocol bug, not an environment problem:
+`SetInformationJobObject` returns a BOOL, but the v0.7 launcher judged
+success from the thread's stale `GetLastError()` value — which
+BOOL-returning APIs do not reset on success. On GitHub Actions runners
+the stale errno is nonzero, so a **successful** job configuration was
+misread as a failure and the child was killed. v0.8 validates every
+Win32 call by its actual return value and consults `GetLastError()`
+only as a diagnostic on genuine failure.
+
+Supervision is now a three-tier strategy that stays deterministic in
+restricted environments: direct job assignment (Windows 8+ nests job
+hierarchies, so runner jobs are no obstacle) → a relaunch with
+`CREATE_BREAKAWAY_FROM_JOB` when assignment is access-denied → a
+supervised fallback with Toolhelp32 process-tree termination that
+keeps the no-orphan guarantee and *surfaces* the degradation through
+diagnostics instead of failing silently. `cmd.exe` and other test
+binaries resolve through `%COMSPEC%` / `%SystemRoot%\System32` with
+on-disk validation — never the working directory or inherited PATH —
+while protocol-core paths keep their strict explicit validation.
+
+### Deterministic lifecycle state machine
+
+Managed processes now expose `running → stopping → stopped / exited /
+cancelled` with distinct classifications for launch failure, natural
+exit, cancellation and environment degradation; `Stop` is
+idempotent, race-free and synchronizing for concurrent callers;
+stdout/stderr capture is genuinely concurrency-safe with a bounded
+pipe-drain deadline; and descendants are reaped on **every** exit
+path (a grandchild that ignores the polite signal cannot survive).
+The lifecycle battery (15 tests, `-race` clean) covers the
+no-visible-console, capture, cancellation, forced-termination,
+repeated/concurrent Stop, startup-failure, job-binding-failure and
+grandchild-cannot-survive guarantees.
+
+### Memory Booster 2.0
+
+The v0.7 `engine/mempressure` + `engine/booster` libraries are now
+actually wired into the running application as one adaptive
+controller: it samples the real subsystems (cache layers, test-queue
+memory, store memtable + WAL bytes, Go heap, RSS, GC pressure) every
+two seconds and adapts worker concurrency, queue depth and cache
+targets — with hard ceilings, floors and hysteresis, gradual
+recovery, cache shedding and a GC hint at critical pressure. Every
+adjustment is logged and visible in the new Diagnostics memory panel;
+nothing degrades silently.
+
+### Desktop wiring audit
+
+The v0.6 Core Manager, Test Queue and Tunnel services existed in the
+Go backend but were never registered with the Wails runtime, so no
+frontend action could reach them. v0.8 registers all three, ships
+bindings for them, and adds the system-integration (System Proxy /
+TUN) controls plus live memory and test-queue panels to the UI.
 
 ---
 
