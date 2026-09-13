@@ -15,12 +15,16 @@ Go application orchestration (engine/app)
         ├── engine/chunks        deterministic chunk format (FIRC)
         ├── engine/cache         bounded cache layers
         ├── engine/parser        multi-format configuration parsing
-        ├── engine/source        sources + HTTP fetching
+        ├── engine/source        sources + HTTP fetching + metadata
         ├── engine/tester        probe interface + TCP reachability
         ├── engine/core          protocol-core execution boundary
+        ├── engine/coremgr       [v0.6] managed core install/update/rollback
+        ├── engine/testqueue     [v0.6] bounded-worker test queue
+        ├── engine/tunnel        [v0.6] system proxy (WinINet) + TUN (Wintun)
         ├── engine/scheduler     interval scheduling
         ├── engine/native        optional C++ acceleration bridge
         └── system               filesystem, processes, network, platform
+                                  (Windows: CREATE_NO_WINDOW + job objects)
 ```
 
 Design rules:
@@ -29,9 +33,11 @@ Design rules:
   never rewrites the whole dataset; the native layer is optional for
   every operation it accelerates.
 - Services are grouped by responsibility (AppService, SourceService,
-  DataService, StorageService, DiagnosticsService) and bound to the
-  frontend through Wails. Interfaces exist where a real boundary exists
-  (Core, Probe, Sink); otherwise concrete types are shared.
+  DataService, StorageService, DiagnosticsService, CoreService,
+  TestQueueService, TunnelService) and bound to the frontend through
+  Wails. Interfaces exist where a real boundary exists (Core, Probe,
+  Sink, Tester, SystemProxyBackend, TUNBackend); otherwise concrete
+  types are shared.
 
 ## 2. Application lifecycle
 
@@ -302,3 +308,158 @@ Every subsystem reports structured errors (`engine/errors`): kind
 dependency_unavailable, corrupt_data, fatal), subsystem, operation and
 cause. Kinds drive UI presentation and retry policy; causes never carry
 credentials.
+
+---
+
+## v0.6.0 additions
+
+### Managed Core Manager (`engine/coremgr`)
+
+A dedicated subsystem responsible for install, discover, inspect,
+verify, update, rollback, enable/disable, remove, health-check and
+version reporting for Xray, V2Ray and sing-box.
+
+**Directory layout:**
+
+```
+<AppData>/FreeIran/cores/
+  xray/
+    bin/xray.exe              ← active executable
+    bin/xray.exe.previous     ← rollback target (last healthy)
+    manifest.json             ← version, source URL, SHA-256, dates, state
+    staging/                  ← download + unpack area (transient)
+  v2ray/...
+  sing-box/...
+```
+
+**Install pipeline:**
+
+```
+1. resolve latest release for the configured channel
+2. download asset into staging
+3. compute SHA-256; verify against published .dgst (Xray/V2Ray)
+4. unpack archive (zip / tar.gz)
+5. locate the executable inside the unpacked tree
+6. query version (xray version / v2ray version / sing-box version)
+7. validate executable accepts minimal SOCKS inbound config
+8. retain current binary as rollback target
+9. atomic rename staged → active
+10. smoke test: launch + listener readiness + clean shutdown
+11. mark StateReady (or StateBroken on any step failing)
+```
+
+**States:** `not_installed → installing → installed → checking →
+ready / broken / update_available / disabled`
+
+**Channels:** `stable` (default) and `prerelease` (opt-in). Stable
+queries `/releases/latest`; prerelease queries `/releases` and
+includes prereleases.
+
+### Test Queue (`engine/testqueue`)
+
+A bounded-worker, priority-ordered, cancellable scheduler for
+testing configurations.
+
+**Task states:** `queued → preparing → testing → measuring →
+passed / failed / timed_out / cancelled`
+
+**Modes:** `Quick | Balanced | Deep | Re-test failed | Test all |
+Test selected | Continuous`. Each presets Concurrency, Timeout,
+MaxAttempts, Measurements.
+
+**Features:**
+- Bounded worker pool (default 4 workers)
+- Priority queue (newly discovered configs and user-selected tests
+  jump ahead of bulk re-tests)
+- Duplicate fingerprint suppression
+- Per-config timeout + global test timeout
+- Exponential-backoff retry (cap = MaxAttempts)
+- Cancellation by task ID, by source, or globally
+- Graceful shutdown (Stop drains in-flight tests)
+- Live stats: tests/sec, queue depth, active workers, per-backend
+  counts, average duration
+- Failure categories: `network / auth / protocol / config /
+  backend_down / backend_reject / timeout / cancelled / unknown`
+
+### System Proxy (`engine/tunnel`)
+
+A proper Windows system-proxy integration through **WinINet's
+per-connection options** (INTERNET_OPTION_PER_CONNECTION_OPTION),
+NOT direct registry edits.
+
+**Pipeline:**
+1. Save current per-connection proxy settings
+   (PROXY_TYPE_FLAGS, PROXY_SERVER, PROXY_BYPASS)
+2. Set new proxy: `socks=host:port` (or `http=host:port`)
+3. Set bypass list (semicolon-separated)
+4. Broadcast `INTERNET_OPTION_SETTINGS_CHANGED` +
+   `INTERNET_OPTION_REFRESH` so running apps refresh
+
+**Disable:** restore the previously saved settings + broadcast
+refresh.
+
+### TUN mode (`engine/tunnel`)
+
+A real Windows TUN interface backed by **Wintun** (the official
+maintained driver from wintun.net).
+
+**Install pipeline:**
+1. Download `wintun-0.14.1.zip` from `wintun.net/builds/`
+2. Extract `wintun/bin/<arch>/wintun.dll` to
+   `<AppData>/FreeIran/cores/wintun/wintun.dll`
+3. LoadLibrary + resolve `WintunCreateAdapter`, `WintunCloseAdapter`
+
+**Enable pipeline:**
+1. `WintunCreateAdapter("FreeIran", "FreeIran")`
+2. `netsh interface ipv4 set address name=Freeiran static
+   10.211.211.1 255.255.255.0`
+3. `route add 0.0.0.0/1 10.211.211.1` + `route add 128.0.0.0/1
+   10.211.211.1`
+4. `netsh interface ipv4 set dnsservers name=Freeiran static
+   1.1.1.1 primary`
+
+**Disable pipeline:**
+1. `route delete 0.0.0.0/1` + `route delete 128.0.0.0/1`
+2. `WintunCloseAdapter(handle)`
+3. `netsh interface ipv4 set dnsservers name=Freeiran source dhcp`
+
+All operations require elevation.
+
+### Windows process launch (`system/process_windows.go`)
+
+`launchProcess` now sets `SysProcAttr` with:
+- `HideWindow = true`
+- `CreationFlags = CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP |
+  DETACHED_PROCESS`
+
+Each spawned protocol core is bound to a kill-on-close Windows job
+object (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`). An abnormal FreeIran
+exit (crash, Task Manager kill, OS shutdown) reaps every spawned
+core at the kernel level — no orphan process survives.
+
+### Source registry expansion
+
+Every default source carries full metadata (provider, project,
+protocol hints, region, format, priority, refresh interval). Three
+new high-quality sources added:
+- `shadowsocks-aggregator-eternity` (mahdibland)
+- `mahsa-free-config-mtn` (mahsanet)
+- `scrape-and-categorize-netherlands` (10ium)
+
+The fetcher now supports conditional requests (ETag, Last-Modified)
+and content-hash short-circuit. An unchanged source skips parse +
+persistence entirely.
+
+### Capability-driven backend selection
+
+Configuration → backend selection now follows:
+
+```
+configuration capability → preferred core → installed healthy cores →
+priority → health → recent success
+```
+
+If the selected core fails, the manager records the failure, classifies
+it (network / auth / protocol / config / backend_down / timeout /
+cancelled / unknown) and tries the next compatible installed core.
+Incompatible cores are never retried for the same configuration.

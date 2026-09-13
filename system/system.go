@@ -201,6 +201,12 @@ type ManagedProcess struct {
 	exited  chan struct{}
 	err     error
 	pid     int
+
+	// job is the OS-level kill handle. On Windows it is a job object
+	// with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE so an abnormal FreeIran
+	// exit reaps every spawned protocol core. On other platforms it
+	// is a no-op placeholder.
+	job *jobHandle
 }
 
 // Start launches a process and begins supervising it.
@@ -271,6 +277,24 @@ func (m *ManagedProcess) Running() bool {
 
 	default:
 		return true
+	}
+}
+
+// closeJob releases the OS-level kill handle (Windows job object).
+// Safe to call any number of times. On non-Windows platforms it is
+// a no-op.
+func (m *ManagedProcess) closeJob() {
+	if m == nil {
+		return
+	}
+
+	m.mu.Lock()
+	job := m.job
+	m.job = nil
+	m.mu.Unlock()
+
+	if job != nil {
+		job.close()
 	}
 }
 

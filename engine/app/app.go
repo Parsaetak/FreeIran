@@ -29,6 +29,7 @@ import (
 	"github.com/Parsaetak/FreeIran/engine/core/singbox"
 	"github.com/Parsaetak/FreeIran/engine/core/v2ray"
 	"github.com/Parsaetak/FreeIran/engine/core/xray"
+	"github.com/Parsaetak/FreeIran/engine/coremgr"
 	"github.com/Parsaetak/FreeIran/engine/metrics"
 	"github.com/Parsaetak/FreeIran/engine/native"
 	"github.com/Parsaetak/FreeIran/engine/pipeline"
@@ -36,6 +37,8 @@ import (
 	"github.com/Parsaetak/FreeIran/engine/source"
 	"github.com/Parsaetak/FreeIran/engine/store"
 	"github.com/Parsaetak/FreeIran/engine/tester"
+	"github.com/Parsaetak/FreeIran/engine/testqueue"
+	"github.com/Parsaetak/FreeIran/engine/tunnel"
 	"github.com/Parsaetak/FreeIran/internal/logging"
 	"github.com/Parsaetak/FreeIran/internal/version"
 	"github.com/Parsaetak/FreeIran/system"
@@ -109,6 +112,12 @@ type App struct {
 	connMgr      *connection.Manager
 	tester       *tester.Tester
 	scheduler    *scheduler.Scheduler
+
+	// v0.6 managed subsystems (lazy-initialized by the service layer).
+	coreMgr      *coremgr.Manager
+	testQueue    *testqueue.Queue
+	testQueueCfg testqueue.Config
+	tunnelCtrl   *tunnel.Controller
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -371,12 +380,17 @@ func (a *App) Context() context.Context {
 //	stop scheduler (no new ingestion) → cancel background work →
 //	disconnect the active session (stops the protocol core and
 //	removes temporary runtime configs BEFORE the store closes) →
+//	stop the test queue (no new tests start; in-flight tests finish
+//	or are cancelled) → disable the tunnel mode (restores the
+//	previous system proxy; tears down TUN) →
 //	flush and close the store → close the runtime logger LAST.
 //
 // Idempotent: safe to call any number of times. No core process may
 // outlive this call (the Windows guarantee: process first, temp-config
 // file second, store third, logger last). No goroutine, file handle
-// or WAL segment leaks.
+// or WAL segment leaks. The tunnel restoration is best-effort: if the
+// system was already direct, no work is done; if WinINet fails to
+// restore (rare), the user is notified via the log.
 func (a *App) Shutdown() {
 	a.shutdownOnce.Do(func() {
 		if a.logger != nil {
@@ -397,6 +411,21 @@ func (a *App) Shutdown() {
 
 		if a.connMgr != nil {
 			a.connMgr.Shutdown()
+		}
+
+		if a.testQueue != nil {
+			a.testQueue.Stop()
+		}
+
+		if a.tunnelCtrl != nil {
+			// Restore previous system-proxy state. Best-effort:
+			// a failure here does not block the rest of shutdown.
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			if err := a.tunnelCtrl.Disable(ctx); err != nil && a.logger != nil {
+				a.logger.Warn("tunnel", "shutdown_restore",
+					"could not restore tunnel state on shutdown: %v", err)
+			}
+			cancel()
 		}
 
 		if a.store != nil {

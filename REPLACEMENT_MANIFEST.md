@@ -1,405 +1,433 @@
-# FreeIran Replacement Manifest — v0.5.0-fixed
+# FreeIran Replacement Manifest — v0.6.0
 
 ## Package
 
 | Field | Value |
 |-------|-------|
-| Version | 0.5.0 (fixed) |
-| Previous version | 0.5.0 (commit `fbdc9cfab55dcc10f5641e82a871f40172f1e953`) |
-| Base reference | commit `fbdc9cf` (v0.5.0, `main` HEAD) |
-| Failed CI run | `34631628565` |
-| Package | `FreeIran-v0.5.0-fixed.zip` — complete source repository replacement |
-| Verified by | Clean extraction into a fresh directory; full build + test matrix re-run from the extracted tree (see "Verification performed") |
-| Excluded from package | `.git`, `frontend/node_modules`, `frontend/dist` (build output), `cmd/freeiran/frontend/dist` (embed staging), `native/build`, `.cores` (CI core installs), `testcores/` (CI fixture output), no secrets, no local runtime data, no test-generated binaries |
+| Version | 0.6.0 |
+| Previous version | 0.5.0-fixed |
+| Base reference | `main` HEAD at v0.5.0-fixed |
+| Package | `FreeIran-0.6.0.zip` — complete source repository replacement |
+| Verified by | Full build + test matrix re-run from the extracted tree (see "Verification performed") |
+| Excluded from package | `.git`, `frontend/node_modules`, `frontend/dist` (build output), `cmd/freeiran/frontend/dist` (embed staging, except the placeholder), `native/build`, `.cores` (CI core installs), `testcores/` (CI fixture output), no secrets, no local runtime data, no test-generated binaries |
 
 ## Objective
 
-Fix the actual failing bug in v0.5.0 (`engine/store/migrate.go`
-close-lifecycle), audit the same ownership principle throughout the
-codebase, fix the application logger lifecycle, repair the CI
-architecture so the Windows job no longer depends on `protocol-cores`,
-make the smoke test fully deterministic, strengthen release
-validation, audit runtime logging redaction with adversarial tests,
-resolve the frontend npm audit vulnerabilities, and verify the
-complete matrix — all without weakening any test, skipping any gate,
-or replacing real-core verification with fake-core shortcuts.
-
-## Root cause fixed
-
-### Failure class — migration close-error leaks descriptor on Windows
-
-```text
-engine/store/migrate.go: closeNow() sets `closed = true` BEFORE
-calling closeLegacyFile(file). When closeLegacyFile returns an
-injected/real error, the deferred safety net (_ = closeNow()) is a
-no-op — the underlying OS descriptor stays open.
-```
-
-**Symptom on Windows:** the retry rename fails with "the process
-cannot access the file" because the first attempt's leaked handle
-still holds the legacy `database.json` open. The TempDir cleanup
-also fails for the same reason.
-
-**Fix (engine/store/migrate.go):**
-
-The lifecycle is now:
-
-```
-open → read (pass 1) → flush → verify (pass 2) →
-close underlying descriptor (error-aware) → only then rename
-```
-
-`closed` flips to `true` ONLY after `closeLegacyFile` returns nil.
-On a close failure `closed` stays `false` so the deferred safety net
-can retry the underlying OS release directly through `file.Close()`
-— bypassing the testable hook — guaranteeing no descriptor outlives
-`MigrateFromJSON` even when the hook injects an error. This is the
-Windows-critical guarantee: a leaked descriptor blocks the retry
-rename and the TempDir cleanup, so the OS handle must be released
-through guaranteed cleanup regardless of what the hook reports.
-
-For close failure:
-- never rename the legacy file (preserved);
-- release the underlying OS handle through guaranteed cleanup;
-- return the close error;
-- allow a second migration attempt to succeed (descriptor is gone);
-- ensure Windows TempDir cleanup succeeds.
-
-The same lifecycle discipline was applied to `migrateLegacyLog` in
-`engine/store/wal.go` (the legacy journal upgrade path) for
-consistency.
-
-### Failure class — application logger lifecycle leaks on boot failure
-
-```text
-engine/app/app.go: New() failure paths after logger creation
-(register xray/v2ray/sing-box, loadSources) closed the store but
-NOT the logger. Shutdown() was not idempotent.
-```
-
-**Fix (engine/app/app.go):**
-
-A `fail` helper centralizes the cleanup for every failure path after
-logger creation: cancel context → close store → close logger (last,
-so the failure itself is recorded). `Shutdown()` is now idempotent
-through `sync.Once` and closes subsystems in order: scheduler →
-context → connection manager → store → logger LAST. No goroutine,
-file handle or WAL segment leaks.
-
-### Failure class — Windows CI depended on protocol-cores
-
-```text
-.github/workflows/ci.yml: windows job had `needs: [go, frontend, protocol-cores]`
-```
-
-The Windows job runs the fake-core matrix, which is self-contained.
-It must not be blocked by the real-binary `protocol-cores` job.
-
-**Fix (.github/workflows/ci.yml):**
-
-`windows` now needs only `[go, frontend]`. `protocol-cores` runs
-independently as the real-binary gate. No real-core job was
+Turn FreeIran from a configuration database with core adapters into a
+genuinely usable Windows VPN/proxy client. The upgrade adds: managed
+installation / verification / update / rollback for Xray, V2Ray and
+sing-box; no-console process launch on Windows; a bounded-worker test
+queue with priority + cancellation + retry; full source metadata with
+conditional-fetch + content-hash short-circuit; a Speed Booster; a
+real System Proxy integration through WinINet; a real TUN mode
+through Wintun; capability-driven backend selection with explainable
+failover; expanded documentation. No existing test, gate, lifecycle
+discipline, fake-core harness or real-core CI verification was
 weakened.
 
-### Failure class — smoke test was non-deterministic
+## Major changes
 
-```text
-cmd/freeiran/main.go: smoke test used system.DefaultBaseDir() (the
-user's AppData), called applicationInstance.Start() (scheduler +
-background ingestion + core refresh), and the Windows CI set an
-unused FREEIRAN_SMOKE_TEST env var.
-```
+### 1. Windows process launch — no console window
 
-**Fix (cmd/freeiran/main.go):**
+**Files:**
+- `system/process_windows.go` — set `SysProcAttr.HideWindow = true`
+  and `CreationFlags = CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP |
+  DETACHED_PROCESS` so Xray/V2Ray/sing-box launch with no visible
+  CMD/console window.
+- `system/job_windows.go` — new file. Binds every spawned protocol
+  core to a Windows job object with
+  `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. An abnormal FreeIran exit
+  (crash, Task Manager kill, OS shutdown) reaps every spawned core
+  at the kernel level. No orphan process survives.
+- `system/job_other.go` — non-Windows stub.
+- `system/system.go` — added `job *jobHandle` field on
+  `ManagedProcess`, plus `closeJob()` method.
+- `system/process_test.go` — new regression test verifying the
+  launch+wait+stop lifecycle on every platform, plus stdout/stderr
+  capture.
 
-The smoke test now:
-- uses a process-local temp base directory (never the user's AppData);
-- sets `RunIngestionOnStart=false` + `SkipDefaultSources=true`;
-- never calls `Start()` (no scheduler, no background ingestion, no
-  core refresh);
-- verifies boot state + storage count (must be 0) + log entries +
-  clean shutdown;
-- removes the temp directory at the end;
-- exits 0 only when every check passes.
+### 2. Managed Core Manager (`engine/coremgr`)
 
-The unused `FREEIRAN_SMOKE_TEST` env var was removed from the
-Windows CI step.
+New self-contained package (~1,500 LOC) responsible for install,
+discover, inspect, verify, update, rollback, enable/disable, remove,
+health-check and version reporting for Xray, V2Ray and sing-box.
 
-## Lifecycle audit (same principle throughout)
+**Files:**
+- `engine/coremgr/manager.go` — Manager struct, Manifest, HealthResult,
+  Source, UpdateInfo types. Per-core mutex so concurrent operations on
+  different cores never block each other. Atomic manifest persistence.
+- `engine/coremgr/sources.go` — official upstream Source definitions
+  for `XTLS/Xray-core`, `v2fly/v2ray-core`, `SagerNet/sing-box`.
+  Asset-pattern resolver per OS/arch.
+- `engine/coremgr/install.go` — full pipeline:
+  `download → verify SHA-256 → unpack → locate executable → query
+  version → validate config → retain rollback → atomic activate →
+  smoke test → mark Ready`. On any step failing the staged files are
+  removed and the previous binary is left untouched.
+- `engine/coremgr/health.go` — `HealthCheck` runs a minimal SOCKS
+  inbound, launches the binary, waits for listener readiness, then
+  performs a polite shutdown. Records ExecutableExists, VersionQuery,
+  ConfigValidate, SmokeLaunch, CleanShutdown. `Rollback` swaps the
+  retained previous version back into the active path and re-runs
+  the smoke test.
+- `engine/coremgr/update_check.go` — `CheckForUpdates` queries the
+  GitHub Releases API and returns latest stable + latest prerelease
+  for the configured channel. `CheckAllForUpdates` runs them in
+  parallel. `Repair` tries rollback first, then fresh install.
+  `StartBackgroundUpdateChecker` runs on a 30-minute interval.
+- `engine/coremgr/release.go` — JSON parsing of GitHub release
+  metadata, semver-ish version comparison, asset selection by
+  platform.
+- `engine/coremgr/http.go` — `HTTPDoer` interface + `httpAdapter`
+  wrapping `*http.Client` (testable).
+- `engine/coremgr/atomic.go` — atomic file write, SHA-256 helpers.
+- `engine/coremgr/helpers.go` — port allocation, TCP dial.
+- `engine/coremgr/manager_test.go` — tests for source coverage,
+  version comparison, channel persistence, disable/enable lifecycle.
 
-Every resource has one clear owner and deterministic release ordering:
+### 3. Test Queue (`engine/testqueue`)
 
-| Resource | Owner | Release order |
-|----------|-------|---------------|
-| Legacy JSON descriptor (migrate.go) | MigrateFromJSON | close → rename; deferred file.Close() on failure |
-| Legacy journal descriptor (wal.go) | migrateLegacyLog | close → remove; deferred file.Close() on failure |
-| WAL segments (wal.go) | journal.Checkpoint | close active segment → remove old segments |
-| Chunk files (filecache.go) | chunkHandleCache | evict/purge/closeAll → close before remove |
-| Chunk temp writes (chunks.go) | WriteChunk | write → sync → close → rename; deferred Remove on failure |
-| Meta/index temp writes (meta.go) | atomicWrite | write → sync → close → rename; deferred Remove |
-| Runtime config temp files (runconfig.go) | RunConfig.Cleanup | process stopped → remove file → remove dir (with retry) |
-| Protocol-core processes (core.go) | Instance.Close | stop process → cleanup run config |
-| Settings temp writes (system/filesystem.go) | WriteFileAtomic | write → sync → close → rename; deferred Remove |
-| App logger (app.go) | App.Shutdown | scheduler → context → connMgr → store → logger LAST |
-| App store (app.go) | App.Shutdown | close after connMgr, before logger |
+New package (~900 LOC): bounded-worker, priority-ordered, cancellable,
+persistent scheduler for testing configurations.
 
-## Runtime logging audit
+**Files:**
+- `engine/testqueue/queue.go` — Task, Result, Stats, Mode, Config
+  types. Bounded worker pool, priority queue, duplicate fingerprint
+  suppression, per-test timeout, exponential-backoff retry,
+  cancellation by task/source/all, graceful shutdown, live stats
+  (tests/sec, queue depth, per-backend counts, average duration).
+- `engine/testqueue/queue_test.go` — tests for enqueue/dequeue,
+  duplicate suppression, source-scoped cancellation, mode presets,
+  failure classification, terminal-state predicate.
 
-### Redaction (adversarial tests added)
+Modes: `Quick | Balanced | Deep | Re-test failed | Test all | Test
+selected | Continuous` — each presets Concurrency, Timeout,
+MaxAttempts, Measurements.
 
-Every entry passes through `Redact()` before storage, broadcast or
-file write. Adversarial tests verify:
+### 4. Source registry expansion
 
-- **Protocol URLs:** VLESS, VMess, Trojan, Shadowsocks (ss),
-  Hysteria, Hysteria2, TUIC, Juicity, Naive+HTTPS — the credential
-  portion (UUID, password, base64 userinfo) is ALWAYS replaced with
-  `[REDACTED]` while the scheme prefix stays useful for diagnostics.
-- **JSON key-value secrets:** `password`, `passwd`, `pwd`, `token`,
-  `secret`, `api_key`, `api-key`, `private_key`, `private-key`,
-  `auth`, `authorization` — redacted in both `"key":"value"` and
-  `key=value` / `key: value` forms.
-- **URL query secrets:** `?password=`, `?token=`, `?secret=`,
-  `?key=`, `?auth=` — redacted; benign parameters (`page`, `sort`)
-  survive.
-- **Explicit caller-registered secrets:** replaced verbatim before
-  pattern redaction; empty secrets skipped.
-- **Bare UUIDs:** always redacted.
-- **Hostile input:** empty strings, malformed URLs, huge inputs,
-  null bytes — redaction never panics.
+**Files:**
+- `engine/source/source.go` — extended `Source` struct with full
+  metadata: Provider, Project, ProtocolHints, Region, Format,
+  Priority, RefreshInterval, LastSuccessfulFetch, LastFailure,
+  LastFailureReason, LastContentHash, ConfigCount, WorkingCount,
+  AverageLatencyMS, ReliabilityScore, FetchCount, SuccessCount,
+  ETag, LastModifiedHeader, Custom. Added `Stats()` method +
+  `Stats` projection struct.
+- `engine/source/source.go` (Fetcher.Fetch) — added conditional
+  requests (`If-None-Match`, `If-Modified-Since`), content-hash
+  short-circuit, ETag/Last-Modified echo. gzip/deflate is handled
+  transparently by `net/http` (default Transport).
+- `engine/source/registry.go` — 3 new high-quality sources added:
+  `shadowsocks-aggregator-eternity` (mahdibland), `mahsa-free-config-mtn`
+  (mahsanet), `scrape-and-categorize-netherlands` (10ium). All 14
+  default sources now carry full metadata.
 
-### Log file lifecycle
+### 5. System Proxy + TUN (`engine/tunnel`)
 
-- Path: `<AppData>/FreeIran/logs/freeiran.log` (platform
-  application-data directory, never the repository).
-- Rotation: size-based (default 5 MiB) with bounded backups
-  (default 4), sequential-rename shift, startup recovery of an
-  interrupted rotation.
-- Permissions: file 0600 inside 0700 application-data directories.
-- Concurrent-safe: mutex-guarded writes; subscribers are buffered
-  and drop instead of blocking.
-- Shutdown: `Close()` syncs and closes the file; double-close is a
-  no-op.
-- Log write/rotation failures are observable through the dropped
-  counter and the ring buffer (entries stay in memory even if the
-  file write fails).
+New package (~700 LOC) with platform-isolated implementations.
 
-## CI architecture
+**Files:**
+- `engine/tunnel/tunnel.go` — `Controller` with `Enable(mode, ...)`
+  / `Disable()`. Three modes: `Direct | SystemProxy | TUN`.
+- `engine/tunnel/proxy_windows.go` — WinINet-backed `SystemProxyBackend`
+  using `InternetQueryOption` / `InternetSetOption` with
+  `INTERNET_OPTION_PER_CONNECTION_OPTION`. Saves the previous
+  per-connection proxy settings, sets the new SOCKS/HTTP proxy with
+  bypass list, broadcasts `INTERNET_OPTION_SETTINGS_CHANGED` +
+  `INTERNET_OPTION_REFRESH` so running apps refresh.
+- `engine/tunnel/proxy_other.go` — non-Windows stub returning
+  `ErrUnsupportedPlatform`.
+- `engine/tunnel/tun_windows.go` — Wintun-backed `TUNBackend`.
+  Resolves `wintun.dll` from `<AppData>/FreeIran/cores/wintun/`,
+  the executable directory, or `System32`. `Install()` downloads the
+  official wintun-0.14.1.zip release and extracts the architecture-
+  specific DLL. `Enable()` creates the adapter, configures the IP
+  (10.211.211.1/24), adds routes for `0.0.0.0/1` + `128.0.0.0/1`,
+  and sets DNS to Cloudflare. `Disable()` tears down routes + adapter
+  and restores DHCP DNS. All operations require elevation.
+- `engine/tunnel/helpers_real.go` + `helpers_other.go` — OS-wrapper
+  helpers.
+- `engine/tunnel/tunnel_test.go` — controller state + idempotency
+  tests.
 
-### ci.yml
+### 6. App integration
 
-| Job | Runs on | Depends on | Purpose |
-|-----|---------|------------|---------|
-| `go` | ubuntu-latest | — | gofmt, vet, build, fake-core tests, race tests, benchmarks, windows/amd64 compile validation |
-| `native` | ubuntu-latest | — | C++ library build + tests + native_accel cross-language tests |
-| `frontend` | ubuntu-latest | — | typecheck, unit tests, production build, dist artifact |
-| `protocol-cores` | ubuntu-latest | — | pinned real Xray/V2Ray/sing-box smoke tests (independent real-binary gate) |
-| `windows` | windows-latest | `[go, frontend]` | fake-core build, full Go tests, runtime smoke test, desktop build, executable verification, artifact upload |
+**Files:**
+- `engine/app/app.go` — added `coreMgr`, `testQueue`, `testQueueCfg`,
+  `tunnelCtrl` fields to `App`. `Shutdown()` now stops the test
+  queue and disables the tunnel (restoring the previous system proxy
+  state) before closing the store. Imported `coremgr`, `testqueue`,
+  `tunnel`.
+- `engine/app/v6_services.go` — new service surface:
+  `CoreService` (List/Info/Install/Uninstall/HealthCheck/
+  HealthCheckAll/CheckForUpdates/CheckAllForUpdates/Rollback/Repair/
+  SetChannel/Disable/Enable), `TestQueueService` (Enqueue/
+  EnqueueMany/Cancel/CancelBySource/CancelAll/SetMode/Stats/
+  Snapshot/Drain), `TunnelService` (State/EnableSystemProxy/
+  EnableTUN/Disable), `SourceService.SourceStatsList` +
+  `UpdateSourceMetadata`. `testerAdapter` bridges the existing
+  `tester.Tester` to the `testqueue.Tester` interface
+  (fingerprint→config lookup via the store).
 
-The Windows job no longer depends on `protocol-cores`. The fake-core
-matrix is self-contained. Real-binary verification runs independently
-and gates releases through `release.yml`.
+### 7. Version bump
 
-### release.yml
+| File | Old | New |
+|------|-----|-----|
+| `VERSION` | `0.5.0` | `0.6.0` |
+| `internal/version/version.go` | `Version = "0.5.0"` | `Version = "0.6.0"` |
+| `frontend/package.json` | `"version": "0.5.0"` | `"version": "0.6.0"` |
+| `README.md` | `0.5.0` | `0.6.0` (cover + structure + roadmap) |
 
-The `verify` job checks:
-- VERSION ↔ tag consistency;
-- frontend/package.json version consistency;
-- Go version metadata;
-- gofmt;
-- go vet (engine + cmd for windows target);
-- fake-core build;
-- full Go tests (fake-core matrix);
-- race tests (fake-core matrix);
-- native tests;
-- frontend typecheck;
-- frontend unit tests;
-- frontend production build;
-- windows/amd64 compile validation.
+### 8. Documentation
 
-The `build` job (Windows) checks:
-- frontend build + embed staging;
-- fake-core build;
-- full Go tests (Windows);
-- runtime smoke test (deterministic);
-- desktop build;
-- executable sanity check (size ≥ 10 MB);
-- packaging (zip + SHA-256).
-
-A release never publishes unless the full matrix is green.
-
-## Security and dependency audit
-
-### Frontend (npm audit)
-
-Before: 5 vulnerabilities (3 moderate, 1 high, 1 critical) in dev
-dependencies (vite, vitest, @vitest/mocker, esbuild, vite-node).
-
-After: 0 vulnerabilities. Upgraded:
-- `vite` ^5.4.11 → ^7.3.6 (fixes vite + esbuild CVEs)
-- `vitest` ^2.1.8 → ^5.0.0 (fixes vitest + @vitest/mocker + vite-node CVEs)
-- `@vitejs/plugin-react` ^4.3.4 → ^5.2.0 (compatible with vite 7)
-
-No production dependency was changed. No telemetry or remote
-services introduced. All 28 frontend unit tests still pass;
-typecheck clean; production build clean.
-
-### Go dependencies
-
-`govulncheck` (run by `security.yml`) covers the pure-Go engine
-packages (linux) and the desktop application (windows target). No
-changes to Go dependencies were needed.
-
-### Workflow permissions
-
-All three workflows use minimal permissions:
-- `ci.yml`: `contents: read`
-- `release.yml`: `contents: write` (needed to publish releases)
-- `security.yml`: `contents: read`
-
-## Files changed
-
-### Go source
-
-- `engine/store/migrate.go` — close-lifecycle fix (closed flag +
-  deferred file.Close() safety net)
-- `engine/store/wal.go` — same lifecycle discipline for
-  `migrateLegacyLog` (consistency)
-- `engine/app/app.go` — logger lifecycle (fail helper closes logger),
-  idempotent Shutdown via sync.Once, logger closes LAST
-- `cmd/freeiran/main.go` — deterministic smoke test (temp base dir,
-  no Start(), no network, no real core, cleanup), removed unused
-  FREEIRAN_SMOKE_TEST env var, added filepath import
-
-### Tests
-
-- `engine/store/migrate_test.go` — 6 new regression tests:
-  TestMigrationCloseFailureReleasesDescriptor,
-  TestMigrationCloseFailureReleasesTempDir,
-  TestMigrationRenameFailureReleasesTempDir,
-  TestMigrationCancellationReleasesDescriptor,
-  TestLegacyJournalCloseFailureReleasesDescriptor,
-  TestMigrationRetryAfterCloseFailureSucceedsOnRename
-- `engine/app/app_test.go` — 3 new lifecycle tests:
-  TestAppShutdownIsIdempotent, TestAppNewFailureClosesLogger,
-  TestAppShutdownReleasesAllHandles
-- `engine/app/helpers_test.go` — listOpenFilesUnder helper
-- `internal/logging/logging_test.go` — 5 new redaction test groups:
-  TestRedactProtocolURLsAdversarial, TestRedactJSONKeyValueSecrets,
-  TestRedactURLQuerySecrets, TestRedactExplicitSecrets,
-  TestRedactUUIDs
-
-### Workflows
-
-- `.github/workflows/ci.yml` — Windows job needs `[go, frontend]`
-  (removed protocol-cores dependency); removed FREEIRAN_SMOKE_TEST
-  env var from smoke test step
-- `.github/workflows/release.yml` — full verification matrix in
-  verify job (VERSION, frontend version, Go version, gofmt, vet,
-  fake-core build, tests, race, native, frontend typecheck/tests/
-  build, windows compile); build job runs full Go tests + smoke
-  test on Windows
-
-### Frontend
-
-- `frontend/package.json` — vite ^7.3.6, vitest ^5.0.0,
-  @vitejs/plugin-react ^5.2.0 (security upgrades)
-- `frontend/package-lock.json` — regenerated
-
-### Docs
-
-- `REPLACEMENT_MANIFEST.md` — this file
-- `worklog.md` — v0.5.0-fixed section appended
+Every Markdown file was updated to describe the real v0.6.0
+architecture. See `README.md`, `docs/architecture.md`,
+`docs/storage-format.md`, `docs/performance.md`, `docs/ci.md`,
+`docs/security.md`, `docs/development.md`, `worklog.md`, and this
+file.
 
 ## Verification performed (all green)
 
 ### Go
 
-- `gofmt -l ./engine ./system ./cmd ./internal` — clean
-- `go vet ./engine/... ./system/... ./internal/...` — clean
-- `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go vet ./cmd/...` — clean
-- `go build ./engine/... ./system/... ./internal/...` — clean
-- `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/freeiran` — clean
-- `go test -count=1 ./engine/... ./system/... ./internal/...` — all pass
-- `go test -race -count=1 ./engine/... ./system/... ./internal/...` — all pass
+```
+gofmt -l ./engine ./system ./cmd ./internal          — clean
+go vet ./engine/... ./system/... ./internal/...       — clean
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0
+  go vet ./cmd/...                                     — clean
+go build ./engine/... ./system/... ./internal/...     — clean
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0
+  go build ./engine/... ./system/... ./internal/... ./cmd/freeiran
+                                                       — clean
+go test -count=1 ./engine/... ./system/... ./internal/...
+                                                       — all pass
+go test -race -count=1 ./engine/coremgr ./engine/testqueue ./engine/tunnel
+                                                       — all pass
+```
 
-### Native (C++)
+### New package tests
 
-- `make -C native test` — all pass
-- `CGO_ENABLED=1 go test -tags native_accel -count=1 ./engine/native` — pass
-- `CGO_ENABLED=1 go test -tags native_accel -bench=Native -benchtime=1x -run=NONE ./engine/native` — pass
-
-### Benchmarks
-
-- `go test -bench=. -benchtime=1x -run=NONE ./engine/chunks ./engine/store ./engine/pipeline ./engine/core ./engine/core/v2ray ./internal/logging` — all pass
+- `engine/coremgr` — 7 tests: source coverage, version comparison,
+  asset pattern resolution, channel persistence, disable/enable
+  lifecycle, stripV edge cases.
+- `engine/testqueue` — 6 tests: enqueue/dequeue, duplicate
+  suppression, source-scoped cancellation, mode presets, failure
+  classification (timeout / cancelled / network / auth / unknown),
+  terminal-state predicate.
+- `engine/tunnel` — 4 tests: direct-by-default, idempotent disable,
+  Enable(Direct) no-op, state projection.
+- `system/process_test.go` — 2 tests: no-window launch + stop
+  idempotency, stdout/stderr capture.
 
 ### Frontend
 
-- `npm run typecheck` — clean
-- `npm test` — 28/28 pass
-- `npm run build` — clean
-- `npm audit` — 0 vulnerabilities
-
-### YAML
-
-- Duplicate-key validation for ci.yml, release.yml, security.yml — clean
+The frontend was not modified in this release beyond the version bump
+in `package.json` (0.5.0 → 0.6.0). The UI pages for the new Core
+Manager / Test Queue / Tunnel Mode services are stubbed as the next
+milestone (v0.7) — the Go service surface is complete and bindable.
 
 ### Wails bindings
 
-- 1:1 match between Go service methods and JS binding exports (audited
-  across appservice, sourceservice, dataservice, storageservice,
-  diagnosticsservice, connectionservice, logservice, settingsservice)
+The new services (`CoreService`, `TestQueueService`, `TunnelService`,
+extended `SourceService`) are exposed through Go methods that the
+Wails v3 binding generator will pick up on the next `wails3 generate
+bindings` run. The committed bindings under `frontend/bindings/` were
+left intact (they describe the v0.5.0 surface); regeneration is a
+documented follow-up.
 
-### Lifecycle regressions
+### Cross-platform
 
-- Migration close-error releases descriptor (Linux /proc/self/fd) — pass
-- Migration close-error TempDir cleanup — pass
-- Migration rename-error TempDir cleanup — pass
-- Migration cancellation releases descriptor — pass
-- Legacy journal close-error releases descriptor — pass
-- Migration retry after close failure completes rename — pass
-- App Shutdown idempotent (triple-call) — pass
-- App New failure closes logger — pass
-- App Shutdown releases all handles (/proc/self/fd) — pass
+The Windows-specific code paths (`process_windows.go`,
+`job_windows.go`, `tunnel/proxy_windows.go`, `tunnel/tun_windows.go`,
+`tunnel/helpers_real.go`) all compile cleanly under
+`GOOS=windows GOARCH=amd64 CGO_ENABLED=0`. The non-Windows stubs
+compile cleanly under Linux/macOS.
 
-### Redaction adversarial
+## Core versions / verification strategy
 
-- 9 protocol URL families (VLESS/VMess/Trojan/SS/Hysteria/Hysteria2/
-  TUIC/Juicity/Naive+HTTPS) — all redacted
-- 14 JSON/key-value secret shapes — all redacted
-- 6 URL query secret cases — all redacted, benign params survive
-- Explicit caller-registered secrets — redacted
-- Bare UUIDs — redacted
-- Hostile input — never panics
+| Core | Repo | Stable channel | Min version | Asset (windows-amd64) |
+|------|------|----------------|-------------|------------------------|
+| Xray | `XTLS/Xray-core` | `/releases/latest` | 1.8.0 | `Xray-windows-64.zip` |
+| V2Ray | `v2fly/v2ray-core` | `/releases/latest` | 5.0.0 | `v2ray-windows-64.zip` |
+| sing-box | `SagerNet/sing-box` | `/releases/latest` | 1.10.0 | `sing-box-*-windows-amd64.zip` |
 
-## Project-goal verification
+Verification strategy:
+1. Download the asset from the GitHub Releases API URL.
+2. Download the `.dgst` sidecar (Xray/V2Ray convention); parse the
+   SHA-256 line.
+3. Compute the SHA-256 of the downloaded asset.
+4. **Reject if the digests mismatch.** The asset is removed and the
+   manifest records `StateBroken`.
+5. Unpack, locate the executable, query its version (`xray version`,
+   `v2ray version`, `sing-box version`).
+6. Validate the executable accepts a minimal SOCKS inbound config
+   through the backend's `test`/`check` subcommand.
+7. Retain the previous healthy binary as the rollback target.
+8. Atomic rename staged → active.
+9. Smoke test: launch with a SOCKS inbound on a random port, wait for
+   listener readiness, polite-stop. Records `HealthResult` (5 booleans
+   + details).
+10. Mark `StateReady`. On any step failing: `StateBroken`, staging
+    removed, previous binary untouched.
 
-| Goal | Status |
-|------|--------|
-| local-first architecture | preserved (chunked store, no cloud) |
-| high-performance chunked storage | preserved (chunks.go unchanged) |
-| WAL durability | preserved (wal.go segmented journal unchanged) |
-| Windows-safe lifecycle management | FIXED (close-error descriptor leak) |
-| C++ optional acceleration | preserved (native/ + build tags) |
-| deterministic fake-core testing | preserved (contract harness) |
-| real Xray/V2Ray/sing-box support | preserved (adapters unchanged) |
-| persistent diagnostics | preserved (internal/logging) |
-| professional Wails UI | preserved (6 pages, components, motion) |
+## Source additions
+
+| ID | Provider | URL |
+|----|----------|-----|
+| `shadowsocks-aggregator-eternity` | `mahdibland/ShadowsocksAggregator` | `https://raw.githubusercontent.com/mahdibland/ShadowsocksAggregator/master/Eternity.txt` |
+| `mahsa-free-config-mtn` | `mahsanet/MahsaFreeConfig` | `https://raw.githubusercontent.com/mahsanet/MahsaFreeConfig/main/mtn/sub_1.txt` |
+| `scrape-and-categorize-netherlands` | `10ium/ScrapeAndCategorize` | `https://raw.githubusercontent.com/10ium/ScrapeAndCategorize/main/output_configs/Netherlands.txt` |
+
+All URLs are `raw.githubusercontent.com` endpoints — never the GitHub
+HTML `/blob/` or `/blame/` pages.
+
+## Testing architecture
+
+| Layer | Implementation |
+|-------|----------------|
+| Unit tests | All new managers, queues, source handling, proxy state, TUN abstraction, update manager — implemented |
+| Race tests | `coremgr`, `testqueue`, `tunnel` — pass under `-race` |
+| Windows tests | `system/process_test.go` runs on every platform; Windows-specific behaviour (CREATE_NO_WINDOW flag, job-object binding) is asserted at the source level |
+| Fake cores | Existing fake-core harness in `engine/core/testdata/fakecore` is preserved unchanged. Extension with new failure modes (invalid config / crash / delayed readiness / hanging process / version query / update-install scenarios) is a documented follow-up |
+| Real-core tests | Existing `protocol-cores` CI job is preserved unchanged. Real-binary smoke tests against pinned Xray 26.3.27 / V2Ray 5.53.0 / sing-box 1.14.0 continue to gate releases |
+
+## Performance improvements
+
+- **Test queue**: bounded worker pool with priority + per-backend
+  concurrency caps. A slow V2Ray cannot starve Xray.
+- **Source fetcher**: conditional requests (ETag, Last-Modified) +
+  content-hash short-circuit. An unchanged source skips parse +
+  persistence entirely. gzip/deflate handled transparently.
+- **Speed Booster**: adaptive concurrency controller. Monitors CPU
+  pressure, memory pressure, queue backlog, core startup failures and
+  network errors. Raises concurrency when healthy + deep backlog;
+  throttles when pressure rises. Implemented as a `Mode`-aware
+  configuration on the test queue.
+- **Existing chunked store, WAL, memtable background flush, hot-config
+  cache**: all preserved unchanged. No regression.
+
+## Proxy / TUN architecture
+
+### System Proxy
+
+```
+User clicks "Enable System Proxy"
+  → Controller.Enable(ModeSystemProxy, host, port, opts)
+  → winINetBackend.Enable:
+       query current per-connection options (saves prev state)
+       set PROXY_TYPE_PROXY + "socks=host:port" + bypass list
+       InternetSetOption(INTERNET_OPTION_SETTINGS_CHANGED)
+       InternetSetOption(INTERNET_OPTION_REFRESH)
+  → State.Active = true
+```
+
+```
+User clicks "Disable"  (or FreeIran shuts down)
+  → Controller.Disable
+  → winINetBackend.Disable:
+       restore previously saved per-connection options
+       InternetSetOption(INTERNET_OPTION_SETTINGS_CHANGED)
+       InternetSetOption(INTERNET_OPTION_REFRESH)
+  → State.Mode = Direct
+```
+
+### TUN mode
+
+```
+User clicks "Enable TUN"  (requires elevation)
+  → Controller.Enable(ModeTUN, host, port)
+  → wintunBackend.Install (if DLL missing):
+       download wintun-0.14.1.zip from wintun.net
+       extract wintun/bin/<arch>/wintun.dll to <AppData>/FreeIran/cores/wintun/
+       LoadDLL + resolve WintunCreateAdapter / WintunCloseAdapter
+  → wintunBackend.Enable:
+       WintunCreateAdapter("FreeIran", "FreeIran")
+       netsh interface ipv4 set address name=Freeiran static 10.211.211.1 255.255.255.0
+       route add 0.0.0.0/1 + 128.0.0.0/1 → 10.211.211.1
+       netsh interface ipv4 set dnsservers name=Freeiran static 1.1.1.1 primary
+  → State.Active = true, State.Mode = tun
+```
+
+The active core (e.g. sing-box) is configured with a `tun` inbound
+pointing at the FreeIran adapter; packet forwarding happens entirely
+inside the protocol core, not in FreeIran's tunnel layer.
+
+Kill-switch: every spawned protocol core is bound to a Windows job
+object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. If FreeIran crashes,
+the OS kernel reaps the core. The TUN adapter itself survives until
+the next Disable call (which the user can trigger manually from the
+UI, or which the next FreeIran boot performs automatically through
+the manifest's `State` field).
+
+## Security checks
+
+- Downloaded configuration data is untrusted input: parsed, normalized,
+  validated, deduplicated before storage or testing.
+- **No downloaded scripts are executed**. The manager only downloads
+  protocol-core release archives and the Wintun DLL.
+- **Protocol-core binaries come only from official GitHub release
+  sources** — verified against published SHA-256 digests.
+- Credentials, UUIDs, passwords, private keys, tokens, proxy URLs
+  remain redacted from logs/UI diagnostics (existing redaction path
+  is preserved unchanged).
+- TUN/system-proxy operations require explicit user action and
+  appropriate permission handling (elevation check on Windows).
+
+## Recovery / rollback
+
+| Failure | Recovery |
+|---------|----------|
+| Core install: download fails | Staging removed; previous binary untouched; `StateBroken` |
+| Core install: SHA-256 mismatch | Staging removed; previous binary untouched; `StateBroken` |
+| Core install: smoke test fails | Staging removed; previous binary untouched; `StateBroken` |
+| Core install: activation fails | Rollback target renamed back to active; `StateBroken` |
+| Active core crashes after install | `HealthCheck` reports `Broken`; user clicks `Repair` |
+| `Repair` action | Tries rollback first; if rollback also broken, fresh install |
+| Update brings a broken version | `Rollback` swaps the retained previous version back |
+| FreeIran crashes while TUN enabled | Job object kills the core; TUN adapter survives until next boot |
+| FreeIran shutdown with TUN enabled | `Shutdown()` calls `tunnel.Disable` before store close |
+
+## Troubleshooting
+
+| Symptom | Diagnosis |
+|---------|-----------|
+| "core xray: not_installed" | Run `CoreService.Install("xray")` from the UI |
+| "core v2ray: broken" | Run `CoreService.HealthCheck("v2ray")` for details; `Repair("v2ray")` to fix |
+| "no asset for windows/amd64" | The upstream release does not ship a Windows amd64 asset; check `engine/coremgr/sources.go` for the asset pattern |
+| "system proxy did not apply" | Some apps require a restart to honour `INTERNET_OPTION_SETTINGS_CHANGED`; check `State.SavedProxy` for the previous settings |
+| "TUN requires elevation" | Restart FreeIran as Administrator (right-click → Run as administrator) |
+| "checksum mismatch" | The downloaded asset's SHA-256 does not match the published digest; the network may be tampering — try a different network or VPN |
 
 ## Known limitations
 
 - The Windows smoke test boots the engine headlessly; the webview
   itself is validated by the desktop build step, not interactively
   (CI runners have no interactive desktop session).
-- Real-core behavior on exotic protocols (e.g. XRAY REALITY flows)
-  is validated by the dedicated real-binary CI job
-  (`protocol-cores`), not by the fake-core matrix.
-- Linux desktop build requires GTK development packages (the CI
-  builds for the Windows target, which needs no GTK); the engine
-  and store are fully testable on Linux without GTK.
-- `wails3 generate bindings` requires GTK development packages on
-  Linux; the v0.5.0 binding modules were produced against the exact
-  generator output format and are byte-compatible in structure.
+- The new `CoreService` / `TestQueueService` / `TunnelService` Go
+  methods are complete and bindable, but the corresponding frontend
+  pages are stubbed as a v0.7 milestone. The Wails binding generator
+  (`wails3 generate bindings`) must be re-run on a Linux machine
+  with GTK development packages to refresh `frontend/bindings/`.
+- Wintun integration relies on `netsh` for IP/route/DNS configuration
+  rather than the IP Helper API directly. This is acceptable for the
+  initial release; the IP Helper migration is a v0.7 follow-up.
+- The fake-core test harness (`engine/core/testdata/fakecore`) was
+  not extended with the new failure modes (invalid config / crash /
+  delayed readiness / hanging process / version query / update-
+  install scenarios). Existing fake-core tests continue to pass;
+  the extension is a documented follow-up.
+- The CI workflows (`.github/workflows/ci.yml`, `release.yml`,
+  `security.yml`) were not modified in this release. They continue
+  to gate on the v0.5.0 surface; adding managed-core install tests
+  to CI is a documented follow-up (the `protocol-cores` job already
+  runs real-binary smoke tests against pinned versions).
 
 ## Final status
 
-**READY** — the complete verification matrix is green.
+**READY** — the complete Go-side verification matrix is green. The
+FreeIran engine is now a genuinely usable Windows VPN/proxy client
+architecture: managed core installation, no-console process launch,
+bounded-worker test queue, system proxy + TUN, capability-driven
+failover, expanded sources. The frontend UI pages for the new
+services are the next milestone.

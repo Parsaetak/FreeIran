@@ -2122,3 +2122,70 @@ introduced.
   fake-core matrix.
 - Linux desktop build requires GTK development packages (the CI
   builds for the Windows target, which needs no GTK).
+
+---
+
+## v0.6.0 — Managed Core Manager + Test Queue + System Proxy + TUN
+
+**Date:** 2026-09-13
+**Version:** 0.6.0
+**Previous:** 0.5.0-fixed
+
+### Summary
+
+Turned FreeIran from a configuration database with core adapters into
+a genuinely usable Windows VPN/proxy client. The upgrade adds: managed
+installation / verification / update / rollback for Xray, V2Ray and
+sing-box; no-console process launch on Windows; a bounded-worker test
+queue with priority + cancellation + retry; full source metadata with
+conditional-fetch + content-hash short-circuit; a real System Proxy
+integration through WinINet; a real TUN mode through Wintun;
+capability-driven backend selection with explainable failover;
+expanded documentation. No existing test, gate, lifecycle discipline,
+fake-core harness or real-core CI verification was weakened.
+
+### New packages
+
+- `engine/coremgr` (~1,500 LOC) — Managed Core Manager
+- `engine/testqueue` (~900 LOC) — Bounded-worker test queue
+- `engine/tunnel` (~700 LOC) — System Proxy (WinINet) + TUN (Wintun)
+
+### Modified packages
+
+- `system/` — Windows process launch with CREATE_NO_WINDOW +
+  CREATE_NEW_PROCESS_GROUP + DETACHED_PROCESS, kill-on-close job
+  object binding, no orphan process after exit
+- `engine/source/` — extended Source struct with full metadata
+  (provider, project, protocol hints, region, format, priority,
+  refresh interval, fetch stats, reliability score, ETag,
+  Last-Modified), conditional requests, content-hash short-circuit,
+  3 new high-quality sources added
+- `engine/app/` — App gains coreMgr/testQueue/tunnelCtrl fields;
+  Shutdown stops the test queue + disables the tunnel before store
+  close; new CoreService/TestQueueService/TunnelService +
+  SourceService.SourceStatsList + UpdateSourceMetadata; testerAdapter
+  bridges existing tester to testqueue.Tester
+
+### Tests added
+
+- engine/coremgr/manager_test.go (7 tests)
+- engine/testqueue/queue_test.go (6 tests)
+- engine/tunnel/tunnel_test.go (4 tests)
+- system/process_test.go (2 tests)
+
+### Verification
+
+- gofmt clean
+- go vet clean (linux + windows)
+- go build clean (linux + windows cross-compile)
+- go test -count=1 — all pass
+- go test -race on new packages — all pass
+
+### Known follow-ups
+
+- Frontend UI pages for Core Manager / Test Queue / Tunnel Mode
+  (the Go service surface is complete and bindable)
+- Wails binding regeneration (requires Linux + GTK dev packages)
+- CI workflow updates to add managed-core install tests
+- Fake-core harness extension with new failure modes
+- IP Helper API migration for TUN (replaces netsh)
