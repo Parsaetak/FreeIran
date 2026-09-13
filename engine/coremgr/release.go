@@ -113,34 +113,111 @@ func parseAllReleases(raw []byte) ([]githubRelease, error) {
 }
 
 // selectAsset picks the asset that matches the current platform.
-// The asset name must contain BOTH:
 //
-//   - one of the source's AssetPatterns (e.g. "windows-64.zip")
-//   - the platform hint (e.g. "windows" for GOOS=windows)
+// v0.9.0 fix: the previous implementation required the asset name to
+// contain BOTH the source's AssetPattern AND the platform hint. That
+// conjunction never matched Xray/V2Ray assets ("Xray-windows-64.zip"
+// contains the pattern "windows-64.zip" but not the hint
+// "windows-amd64"), so Install failed with "no asset for
+// windows/amd64" on the most common platform.
 //
-// The first matching asset wins.
+// The matcher now runs three passes and stops at the first hit:
+//
+//  1. pattern AND hint (most specific — e.g. sing-box
+//     "sing-box-1.x.x-windows-amd64.zip" with hint windows-amd64);
+//  2. pattern alone, but only when the pattern itself names the
+//     target OS (e.g. "windows-64.zip" already contains "windows");
+//  3. hint alone (last-resort, unchanged from v0.8).
+//
+// Ambiguous OS-less patterns (e.g. "64.zip") never take pass 2, so a
+// wrong-OS asset cannot be selected by accident.
 func selectAsset(assets []githubAsset, p Platform, src Source) (string, int64) {
-	platformHint := AssetPatternForPlatform(p)
+	hint := AssetHintForPlatform(p)
 
+	// Pass 1: pattern AND hint.
 	for _, pattern := range src.AssetPatterns {
 		for _, asset := range assets {
 			name := strings.ToLower(asset.Name)
 			if strings.Contains(name, strings.ToLower(pattern)) &&
-				strings.Contains(name, strings.ToLower(platformHint)) {
+				strings.Contains(name, strings.ToLower(hint)) {
 				return asset.BrowserDownloadURL, asset.Size
 			}
 		}
 	}
 
-	// Fallback: any asset whose name contains the platform hint.
+	// Pass 2: pattern alone when it names the target OS AND its arch
+	// convention is compatible with the target arch ("64" in the
+	// Xray/V2Ray naming scheme means x86_64/amd64, never arm64).
+	for _, pattern := range src.AssetPatterns {
+		lower := strings.ToLower(pattern)
+		if !patternNamesOS(lower, p.OS) || !patternArchCompatible(lower, p.Arch) {
+			continue
+		}
+
+		for _, asset := range assets {
+			if strings.Contains(strings.ToLower(asset.Name), lower) {
+				return asset.BrowserDownloadURL, asset.Size
+			}
+		}
+	}
+
+	// Pass 3: hint alone.
 	for _, asset := range assets {
-		name := strings.ToLower(asset.Name)
-		if strings.Contains(name, strings.ToLower(platformHint)) {
+		if strings.Contains(strings.ToLower(asset.Name), strings.ToLower(hint)) {
 			return asset.BrowserDownloadURL, asset.Size
 		}
 	}
 
 	return "", 0
+}
+
+// patternArchCompatible reports whether an asset pattern's arch
+// convention matches the target architecture. Legacy patterns use
+// "64" for x86_64/amd64; "arm64"/"aarch64" name arm64 explicitly.
+func patternArchCompatible(pattern, archName string) bool {
+	hasArm64 := strings.Contains(pattern, "arm64") || strings.Contains(pattern, "aarch64")
+
+	switch archName {
+	case "arm64", "aarch64":
+		return hasArm64 || (!strings.Contains(pattern, "64") && !strings.Contains(pattern, "amd64"))
+	case "amd64", "x86_64", "x86-64":
+		// "arm64" contains "64" — check it first.
+		return !hasArm64
+	default:
+		return true
+	}
+}
+
+// patternNamesOS reports whether an asset pattern unambiguously
+// targets the given OS. Patterns that mention an arch variant of the
+// wrong OS (e.g. "macos-arm64.zip" on windows) never match.
+func patternNamesOS(pattern, osName string) bool {
+	osTokens := map[string][]string{
+		"windows": {"windows", "win32", "win64"},
+		"linux":   {"linux"},
+		"darwin":  {"darwin", "macos", "macosx", "osx", "mac"},
+		"freebsd": {"freebsd"},
+	}
+
+	tokens, ok := osTokens[osName]
+	if !ok {
+		return strings.Contains(pattern, osName)
+	}
+
+	for _, token := range tokens {
+		if strings.Contains(pattern, token) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// AssetHintForPlatform returns the canonical platform hint used by
+// selectAsset (the historical AssetPatternForPlatform name kept as an
+// alias for compatibility with existing callers/tests).
+func AssetHintForPlatform(p Platform) string {
+	return AssetPatternForPlatform(p)
 }
 
 // stripV removes a leading "v" or "V" from a version tag, but only

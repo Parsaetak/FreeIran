@@ -1,0 +1,442 @@
+import { useCallback, useEffect, useState } from "react";
+import { Events as $events } from "@wailsio/runtime";
+import { call, coreService } from "../services";
+import type { CoreInstallProgress, CoreLifecycleView, CoreManifest } from "../services";
+import { describeError, toast } from "../state/toastStore";
+import { EmptyState, SkeletonPage } from "../components/common";
+import { IconDownload, IconRefresh, IconShield } from "../components/Icons";
+
+/**
+ * CoresPage — the dedicated core-management tab (v0.9.0 §7): install,
+ * update, verify, repair, rollback, disable. The lifecycle badge
+ * mirrors the backend's eleven-state model and every broken state
+ * carries a human-readable failure reason with a technical-details
+ * expander plus recovery actions.
+ */
+export function CoresPage() {
+  const [cores, setCores] = useState<CoreLifecycleView[] | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [progress, setProgress] = useState<Record<string, CoreInstallProgress>>({});
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const load = useCallback(async () => {
+    try {
+      const list = await call(() => coreService.LifecycleInfo());
+      setCores(list ?? []);
+    } catch (error) {
+      setCores([]);
+      toast("error", "Could not load cores", describeError(error));
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+
+    // Live install progress: download bytes, smoke-test stage, done.
+    const off = $events.On("freeiran:coreprogress", (event: any) => {
+      const p = (Array.isArray(event?.data) ? event.data[0] : event?.data) as CoreInstallProgress;
+      if (!p?.core) return;
+
+      setProgress((prev) => ({ ...prev, [p.core]: p }));
+
+      if (p.stage === "complete" || p.stage === "failed") {
+        void load();
+      }
+    });
+
+    return () => off?.();
+  }, [load]);
+
+  const run = async (name: string, action: string, fn: () => Promise<unknown>) => {
+    setBusy(`${name}:${action}`);
+
+    try {
+      await fn();
+      await load();
+    } catch (error) {
+      toast("error", "Action failed", describeError(error));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  if (cores === null) {
+    return <SkeletonPage tiles={4} rows={4} />;
+  }
+
+  const installable = cores.filter((c) => c.manifest.state === "not_installed").length > 0;
+
+  return (
+    <div className="page-body">
+      <header className="page-header">
+        <div>
+          <h1>Cores</h1>
+          <p className="muted">
+            Protocol cores are downloaded from their official upstream releases, verified by SHA-256,
+            smoke-tested and only then activated. Never a bundled binary, never an unverified download.
+          </p>
+        </div>
+        <div className="toolbar">
+          <button
+            type="button"
+            className="btn ghost"
+            disabled={busy !== null}
+            onClick={() => void run("all", "check", () => call(() => coreService.CheckAllForUpdates()))}
+          >
+            <IconRefresh size={14} /> Check all
+          </button>
+          <button
+            type="button"
+            className="btn ghost"
+            disabled={busy !== null}
+            onClick={() => void run("all", "update", () => call(() => coreService.UpdateAll()))}
+          >
+            <IconDownload size={14} /> Update all
+          </button>
+        </div>
+      </header>
+
+      {installable && (
+        <div className="callout info">
+          <strong>Get started:</strong> install one core (Xray covers the widest protocol range), then
+          import configurations on the Configurations page. FreeIran walks through
+          <em> Install → Verify → Start using</em> with one click per step.
+        </div>
+      )}
+
+      {cores.length === 0 ? (
+        <EmptyState title="No managed cores" hint="Install a core to start testing and connecting." />
+      ) : (
+        <div className="card-grid">
+          {cores.map((view) => (
+            <CoreCard
+              key={view.manifest.name}
+              view={view}
+              progress={progress[view.manifest.name]}
+              busy={busy}
+              expanded={expanded === view.manifest.name}
+              onToggleDetails={() =>
+                setExpanded((cur) => (cur === view.manifest.name ? null : view.manifest.name))
+              }
+              onAction={(action, fn) => void run(view.manifest.name, action, fn)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CoreCard({
+  view,
+  progress,
+  busy,
+  expanded,
+  onToggleDetails,
+  onAction,
+}: {
+  view: CoreLifecycleView;
+  progress?: CoreInstallProgress;
+  busy: string | null;
+  expanded: boolean;
+  onToggleDetails: () => void;
+  onAction: (action: string, fn: () => Promise<unknown>) => void;
+}) {
+  const m = view.manifest;
+  const isBusy = busy?.startsWith(`${m.name}:`) ?? false;
+  const displayName = displayNameOf(m.name);
+
+  return (
+    <section className={`card core-card ${m.state === "broken" ? "card-broken" : ""}`}>
+      <header className="card-head">
+        <div>
+          <h2>{displayName}</h2>
+          <div className="core-meta muted">
+            {m.version ? `v${stripV(m.version)}` : "not installed"}
+            {m.latest_known && isOlder(m.version, m.latest_known) ? ` → ${m.latest_known} available` : ""}
+          </div>
+        </div>
+        <StateBadge state={m.state} progress={progress} />
+      </header>
+
+      {isBusy && progress && (
+        <div className="install-progress">
+          <div className="install-stage">{stageLabel(progress.stage)}</div>
+          {progress.stage === "download" && progress.bytes_total! > 0 && (
+            <div className="meter" role="progressbar">
+              <div
+                className="meter-fill"
+                style={{ width: `${Math.min(100, Math.round((progress.bytes_done! / progress.bytes_total!) * 100))}%` }}
+              />
+            </div>
+          )}
+        </div>
+      )}
+
+      {m.state === "broken" && (view.failure_message || m.failure_reason) && (
+        <div className="callout error">
+          {view.failure_message || m.failure_reason}
+          <button type="button" className="linklike" onClick={onToggleDetails}>
+            {expanded ? "Hide technical details" : "Technical details"}
+          </button>
+          {expanded && (
+            <pre className="tech-details">{technicalText(m)}</pre>
+          )}
+          <div className="toolbar wrap recovery">
+            <RecoveryActions
+              name={m.name}
+              hasPrevious={!!m.previous_version}
+              busy={busy}
+              onAction={onAction}
+            />
+          </div>
+        </div>
+      )}
+
+      <dl className="kv">
+        <dt>Channel</dt>
+        <dd>{m.channel}</dd>
+        <dt>Executable</dt>
+        <dd className="mono ellipsis" title={view.path || m.binary_path}>
+          {view.discovered ? view.path || m.binary_path : "—"}
+        </dd>
+        <dt>Last health check</dt>
+        <dd>{m.last_health_check ? new Date(m.last_health_check).toLocaleString() : "never"}</dd>
+      </dl>
+
+      <footer className="card-actions">
+        {(m.state === "not_installed" || m.state === "broken") && (
+          <button
+            type="button"
+            className="btn primary"
+            disabled={isBusy}
+            onClick={() => onAction("install", () => call(() => coreService.Install(m.name)))}
+          >
+            <IconDownload size={14} /> {m.state === "broken" ? "Reinstall" : "Install"}
+          </button>
+        )}
+
+        {(m.state === "ready" || m.state === "installed" || m.state === "update_available") && (
+          <>
+            <button
+              type="button"
+              className="btn ghost"
+              disabled={isBusy}
+              onClick={() => onAction("health", () => call(() => coreService.HealthCheck(m.name)))}
+            >
+              <IconShield size={14} /> Verify
+            </button>
+            <button
+              type="button"
+              className="btn ghost"
+              disabled={isBusy}
+              onClick={() => onAction("check", () => call(() => coreService.CheckForUpdates(m.name)))}
+            >
+              <IconRefresh size={14} /> Check update
+            </button>
+          </>
+        )}
+
+        {m.state === "update_available" && (
+          <button
+            type="button"
+            className="btn primary"
+            disabled={isBusy}
+            onClick={() => onAction("install", () => call(() => coreService.Install(m.name)))}
+          >
+            Update to {m.latest_known ? stripV(m.latest_known) : "latest"}
+          </button>
+        )}
+
+        {m.previous_version && (
+          <button
+            type="button"
+            className="btn ghost"
+            disabled={isBusy}
+            onClick={() => onAction("rollback", () => call(() => coreService.Rollback(m.name)))}
+          >
+            Roll back
+          </button>
+        )}
+
+        {(m.state === "disabled" || m.state === "broken") && m.binary_path && m.state !== "broken" && (
+          <button
+            type="button"
+            className="btn ghost"
+            disabled={isBusy}
+            onClick={() => onAction("enable", () => call(() => coreService.Enable(m.name)))}
+          >
+            Enable
+          </button>
+        )}
+
+        {(m.state === "ready" || m.state === "installed") && (
+          <button
+            type="button"
+            className="btn ghost danger"
+            disabled={isBusy}
+            onClick={() => onAction("disable", () => call(() => coreService.Disable(m.name)))}
+          >
+            Disable
+          </button>
+        )}
+
+        {m.binary_path && (
+          <button
+            type="button"
+            className="btn ghost danger"
+            disabled={isBusy}
+            onClick={() => onAction("uninstall", () => call(() => coreService.Uninstall(m.name)))}
+          >
+            Uninstall
+          </button>
+        )}
+      </footer>
+    </section>
+  );
+}
+
+function RecoveryActions({
+  name,
+  hasPrevious,
+  busy,
+  onAction,
+}: {
+  name: string;
+  hasPrevious: boolean;
+  busy: string | null;
+  onAction: (action: string, fn: () => Promise<unknown>) => void;
+}) {
+  const isBusy = busy !== null;
+
+  return (
+    <>
+      <button
+        type="button"
+        className="btn ghost"
+        disabled={isBusy}
+        onClick={() => onAction("repair", () => call(() => coreService.Repair(name)))}
+      >
+        Retry / Repair
+      </button>
+      {hasPrevious && (
+        <button
+          type="button"
+          className="btn ghost"
+          disabled={isBusy}
+          onClick={() => onAction("rollback", () => call(() => coreService.Rollback(name)))}
+        >
+          Roll back
+        </button>
+      )}
+      <button
+        type="button"
+        className="btn ghost"
+        disabled={isBusy}
+        onClick={() => onAction("reinstall", () => call(() => coreService.Reinstall(name)))}
+      >
+        Reinstall
+      </button>
+    </>
+  );
+}
+
+const STATE_LABELS: Record<string, string> = {
+  not_installed: "Not installed",
+  installing: "Installing",
+  installed: "Installed",
+  checking: "Checking",
+  ready: "Ready",
+  broken: "Broken",
+  disabled: "Disabled",
+  update_available: "Update available",
+  starting: "Starting",
+  running: "Running",
+  stopping: "Stopping",
+  failed: "Failed",
+};
+
+function StateBadge({ state, progress }: { state: string; progress?: CoreInstallProgress }) {
+  const variant =
+    state === "ready" || state === "running"
+      ? "success"
+      : state === "broken" || state === "failed"
+        ? "error"
+        : state === "update_available"
+          ? "warn"
+          : "neutral";
+
+  const label = state === "installing" && progress ? stageLabel(progress.stage) : STATE_LABELS[state] ?? state;
+
+  return <span className={`badge ${variant}`}>{label}</span>;
+}
+
+function stageLabel(stage?: string): string {
+  switch (stage) {
+    case "resolve_release":
+      return "Resolving release…";
+    case "download":
+      return "Downloading…";
+    case "verify_checksum":
+      return "Verifying checksum…";
+    case "unpack":
+      return "Unpacking…";
+    case "locate_executable":
+      return "Locating executable…";
+    case "validate_executable":
+      return "Validating…";
+    case "activate":
+      return "Activating…";
+    case "smoke_test":
+      return "Smoke test…";
+    case "complete":
+      return "Installed";
+    case "failed":
+      return "Failed";
+    default:
+      return "Working…";
+  }
+}
+
+function displayNameOf(name: string): string {
+  switch (name) {
+    case "xray":
+      return "Xray-core";
+    case "v2ray":
+      return "V2Ray (V2Fly)";
+    case "sing-box":
+      return "sing-box";
+    default:
+      return name;
+  }
+}
+
+function stripV(v: string): string {
+  return v.startsWith("v") ? v.slice(1) : v;
+}
+
+function isOlder(current: string, latest: string): boolean {
+  if (!current || !latest) return false;
+  return stripV(current) !== stripV(latest);
+}
+
+function technicalText(m: CoreManifest): string {
+  const lines = [
+    `state: ${m.state}`,
+    `failure stage: ${m.failure_stage || "n/a"}`,
+    `binary: ${m.binary_path || "n/a"}`,
+    `checksum: ${m.checksum_sha256 || "n/a"}`,
+    `release: ${m.release_tag || "n/a"}`,
+  ];
+
+  const h = m.last_health_result;
+
+  if (h) {
+    lines.push(
+      `health: exe=${h.executable_exists} version=${h.version_query} config=${h.config_validate} launch=${h.smoke_launch} shutdown=${h.clean_shutdown}`,
+    );
+
+    if (h.details) lines.push(`details: ${h.details}`);
+  }
+
+  return lines.join("\n");
+}

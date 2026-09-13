@@ -26,6 +26,7 @@ func (m *Manager) queryVersion(ctx context.Context, path string, args []string) 
 
 	var stdout, stderr bytes.Buffer
 	cmd := exec.CommandContext(probeCtx, path, args...)
+	applyHiddenConsole(cmd) // never flash a console window (§v0.9.0)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
@@ -66,6 +67,7 @@ func (m *Manager) validateExecutable(ctx context.Context, name CoreName, path st
 	args := append(append([]string{}, src.ConfigCheckArgs...), cfgPath)
 	var stderr bytes.Buffer
 	cmd := exec.CommandContext(checkCtx, path, args...)
+	applyHiddenConsole(cmd) // never flash a console window (§v0.9.0)
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
@@ -137,6 +139,7 @@ func (m *Manager) smokeTest(ctx context.Context, name CoreName, path string, src
 	args := append(append([]string{}, src.RunArgs...), cfgPath)
 	var stderr bytes.Buffer
 	cmd := exec.CommandContext(runCtx, path, args...)
+	applyHiddenConsole(cmd) // never flash a console window (§v0.9.0)
 	cmd.Stderr = &stderr
 
 	if err := cmd.Start(); err != nil {
@@ -154,17 +157,20 @@ func (m *Manager) smokeTest(ctx context.Context, name CoreName, path string, src
 	}
 	result.SmokeLaunch = true
 
-	// Polite shutdown.
-	_ = cmd.Process.Signal(os.Interrupt)
+	// Polite shutdown with Windows-safe semantics: a detached,
+	// console-less child cannot receive console control events, so
+	// gracefulStop falls back to TerminateProcess there. The guarantee
+	// under test is deterministic termination — no orphan core.
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
-	select {
-	case <-done:
-		result.CleanShutdown = true
-	case <-time.After(3 * time.Second):
-		_ = cmd.Process.Kill()
-		<-done
+
+	clean, detail := gracefulStop(cmd, done, 3*time.Second)
+	result.CleanShutdown = clean
+
+	if !clean {
 		result.Details = "smoke shutdown timed out (killed)"
+	} else if stderr.Len() > 0 {
+		result.Details = detail
 	}
 
 	result.OK = result.ExecutableExists && result.VersionQuery && result.ConfigValidate && result.SmokeLaunch && result.CleanShutdown

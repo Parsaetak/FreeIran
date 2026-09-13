@@ -221,8 +221,17 @@ func inboundFromConfig(path string) (int, string, error) {
 
 	port := 0
 
+	// Real cores (Xray V4) accept the inbound port both as a JSON
+	// number and as a string ("1080"); the fake core mirrors that so
+	// minimal validation documents in either spelling parse.
 	if value, ok := inbound["port"].(float64); ok {
 		port = int(value)
+	}
+
+	if value, ok := inbound["port"].(string); ok {
+		if parsed, err := strconv.Atoi(strings.TrimSpace(value)); err == nil {
+			port = parsed
+		}
 	}
 
 	if value, ok := inbound["listen_port"].(float64); ok {

@@ -55,3 +55,5 @@ temp/
 coverage*.out
 *.prof
 *.test-output/
+FreeIran-v*-windows-amd64/
+FreeIran-windows-amd64

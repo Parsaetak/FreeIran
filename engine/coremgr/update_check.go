@@ -137,10 +137,14 @@ func (m *Manager) CheckAllForUpdates(ctx context.Context) []UpdateInfo {
 // roll back to the retained previous version; if that also fails, it
 // performs a fresh install. Repair is the user's "fix this broken
 // core" button.
+//
+// v0.9.0 deadlock fix: the v0.8 implementation held the per-core
+// mutex for the whole function AND called Rollback/HealthCheck/
+// Install, which each acquire the same non-reentrant mutex — every
+// Repair call deadlocked. The fix drops the outer lock: each
+// sub-operation serializes itself, and a concurrent install simply
+// wins (Install refuses double installs via the Installing state).
 func (m *Manager) Repair(ctx context.Context, name CoreName) error {
-	unlock := m.lock(name)
-	defer unlock()
-
 	mf, ok := m.Info(name)
 	if !ok {
 		return m.Install(ctx, name)
@@ -157,6 +161,34 @@ func (m *Manager) Repair(ctx context.Context, name CoreName) error {
 	}
 
 	return m.Install(ctx, name)
+}
+
+// UpdateAll checks every core for updates and installs anything that
+// is newer. Cores that fail to update keep their previous healthy
+// binary (the install pipeline never replaces a verified binary with
+// a broken download). The returned map reports the outcome per core;
+// a nil error with update_available=false means already current.
+func (m *Manager) UpdateAll(ctx context.Context) map[CoreName]error {
+	out := make(map[CoreName]error, len(AllCores))
+
+	for _, name := range AllCores {
+		info, err := m.CheckForUpdates(ctx, name)
+		if err != nil {
+			out[name] = err
+
+			continue
+		}
+
+		if !info.UpdateAvailable {
+			out[name] = nil
+
+			continue
+		}
+
+		out[name] = m.Install(ctx, name)
+	}
+
+	return out
 }
 
 // StartBackgroundUpdateChecker runs CheckAllForUpdates on an interval

@@ -86,5 +86,14 @@ const $$createType4 = store$0.Diagnostics.createFrom;
  * @returns {$CancellablePromise<any>}
  */
 export function Memory() {
-    return $Call.ByName("github.com/Parsaetak/FreeIran/engine.app.DiagnosticsService.Memory");
+    return $Call.ByName("github.com/Parsaetak/FreeIran/engine/app.DiagnosticsService.Memory");
+}
+
+/**
+ * BuildDiagnosticReport assembles the sanitized, copy/export-friendly
+ * diagnostic summary (v0.9.0 §8).
+ * @returns {$CancellablePromise<any>}
+ */
+export function BuildDiagnosticReport() {
+    return $Call.ByName("github.com/Parsaetak/FreeIran/engine/app.DiagnosticsService.BuildDiagnosticReport");
 }

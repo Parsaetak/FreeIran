@@ -351,3 +351,27 @@ The allocation audit found no measurable benefit from additional
 v0.7 remain the only pooling, both benchmark-justified. The v0.8
 work concentrated on eliminating the unsampled-controller waste
 (decisions made from stale data) rather than micro-allocations.
+
+## 13. v0.9.0 additions
+
+The v0.9 features were kept compatible with the v0.8 performance
+discipline:
+
+- **Configurations list** remains virtualized and server-paged. The
+  new status filter and sorting run engine-side
+  (`ListConfigsFiltered`) with a bounded match window (20 000
+  records); only the requested page crosses the service boundary.
+- **Bulk testing** streams the store through the existing bounded
+  test queue — no unbounded goroutines, duplicate suppression by
+  fingerprint, per-backend concurrency caps, memory-booster-adaptive
+  worker counts unchanged.
+- **Network diagnostics** probes run concurrently with per-probe
+  timeouts, `DisableKeepAlives` transports and idle-connection
+  cleanup; the check is user-triggered (or read from the cached last
+  report) and never a background poll.
+- **Install progress** events are emitted per stage / per 256 KiB
+  chunk into a single listener; the Wails event payload is one small
+  struct, not a stream of database deltas.
+- The e2e ping adds one SOCKS5 CONNECT plus one small request per
+  tested configuration — bounded by the per-config timeout and
+  counted in the queue's throughput statistics like any other work.

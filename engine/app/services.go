@@ -332,6 +332,166 @@ func (s *DataService) SearchConfigs(query string, limit int) ([]config.Config, e
 	return matches, nil
 }
 
+// ConfigFilter describes server-side filtering + sorting for the
+// configuration workspace (v0.9.0 §4). Empty fields match everything.
+type ConfigFilter struct {
+	// Protocol filters by protocol ("vless", "vmess", ...).
+	Protocol string `json:"protocol,omitempty"`
+
+	// Status filters by test outcome: "working", "failed" or
+	// "untested" ("" = all).
+	Status string `json:"status,omitempty"`
+
+	// Source filters by source ID.
+	Source string `json:"source,omitempty"`
+
+	// Backend filters by the backend that ran the last test
+	// ("xray", "v2ray", "sing-box", "tcp").
+	Backend string `json:"backend,omitempty"`
+
+	// Query is a case-insensitive substring over address/name.
+	Query string `json:"query,omitempty"`
+
+	// SortBy is one of: "fingerprint", "latency", "tested_at",
+	// "protocol", "source", "address" (default "fingerprint").
+	SortBy string `json:"sort_by,omitempty"`
+
+	// SortDesc flips the ordering.
+	SortDesc bool `json:"sort_desc,omitempty"`
+}
+
+// maxFilteredMatches bounds the materialised match set so a filter
+// over a huge store cannot balloon memory (the queue and detail views
+// work on fingerprints; the list only needs this window).
+const maxFilteredMatches = 20000
+
+// ListConfigsFiltered returns a sorted, filtered page of
+// configurations. Filtering happens engine-side; only the requested
+// window crosses the service boundary.
+func (s *DataService) ListConfigsFiltered(filter ConfigFilter, offset, limit int) (*ConfigPage, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+
+	if offset < 0 {
+		offset = 0
+	}
+
+	ctx, cancel := context.WithTimeout(s.app.ctx, 30*time.Second)
+	defer cancel()
+
+	query := strings.ToLower(filter.Query)
+
+	matches := make([]config.Config, 0, 256)
+
+	err := s.app.store.Iterate(ctx, func(key string, value []byte) error {
+		if len(matches) >= maxFilteredMatches {
+			return context.Canceled
+		}
+
+		var cfg config.Config
+		if err := json.Unmarshal(value, &cfg); err != nil {
+			return nil // skip undecodable record; never crash the UI
+		}
+
+		if !filterMatches(filter, cfg, query) {
+			return nil
+		}
+
+		matches = append(matches, cfg)
+
+		return nil
+	})
+
+	if err != nil && err != context.Canceled {
+		return nil, err
+	}
+
+	sortConfigs(matches, filter)
+
+	total := len(matches)
+	page := &ConfigPage{Offset: offset, Total: total}
+
+	if offset < total {
+		end := offset + limit
+		if end > total {
+			end = total
+		}
+
+		page.Items = matches[offset:end]
+	} else {
+		page.Items = []config.Config{}
+	}
+
+	page.HasMore = offset+len(page.Items) < total
+
+	return page, nil
+}
+
+// filterMatches applies the filter predicate.
+func filterMatches(filter ConfigFilter, cfg config.Config, query string) bool {
+	if filter.Protocol != "" && string(cfg.Type) != filter.Protocol {
+		return false
+	}
+
+	switch filter.Status {
+	case "working":
+		if !(cfg.TestedAt > 0 && cfg.Working) {
+			return false
+		}
+	case "failed":
+		if !(cfg.TestedAt > 0 && !cfg.Working) {
+			return false
+		}
+	case "untested":
+		if cfg.TestedAt != 0 {
+			return false
+		}
+	}
+
+	if filter.Source != "" && cfg.Source != filter.Source {
+		return false
+	}
+
+	if filter.Backend != "" && cfg.TestBackend != filter.Backend {
+		return false
+	}
+
+	if query != "" &&
+		!strings.Contains(strings.ToLower(cfg.Address), query) &&
+		!strings.Contains(strings.ToLower(cfg.Name), query) {
+		return false
+	}
+
+	return true
+}
+
+// sortConfigs orders the match set in place.
+func sortConfigs(list []config.Config, filter ConfigFilter) {
+	less := func(i, j int) bool { return list[i].ID < list[j].ID } //nolint:gocritic // default
+
+	switch filter.SortBy {
+	case "latency":
+		less = func(i, j int) bool { return list[i].LatencyMS < list[j].LatencyMS }
+	case "tested_at":
+		less = func(i, j int) bool { return list[i].TestedAt < list[j].TestedAt }
+	case "protocol":
+		less = func(i, j int) bool { return list[i].Type < list[j].Type }
+	case "source":
+		less = func(i, j int) bool { return list[i].Source < list[j].Source }
+	case "address":
+		less = func(i, j int) bool { return list[i].Address < list[j].Address }
+	default:
+		less = func(i, j int) bool { return list[i].ID < list[j].ID }
+	}
+
+	if filter.SortDesc {
+		sort.Slice(list, func(i, j int) bool { return less(j, i) })
+	} else {
+		sort.Slice(list, less)
+	}
+}
+
 // GetConfig returns one configuration by fingerprint.
 func (s *DataService) GetConfig(id string) (*config.Config, error) {
 	if cached, ok := s.app.hotCache.Get(id, 0); ok {
@@ -376,6 +536,24 @@ func (s *DataService) TestConfig(id string) (*config.Config, error) {
 	if err := s.app.store.Upsert(id, raw); err != nil {
 		return nil, err
 	}
+
+	return cfg, nil
+}
+
+// storeGetConfig fetches one stored configuration by fingerprint
+// (shared helper for the service layer).
+func (a *App) storeGetConfig(fingerprint string) (*config.Config, error) {
+	value, err := a.store.Get(fingerprint)
+	if err != nil {
+		return nil, err
+	}
+
+	cfg := &config.Config{}
+	if err := json.Unmarshal(value, cfg); err != nil {
+		return nil, fmt.Errorf("app: decode config: %w", err)
+	}
+
+	cfg.ID = fingerprint
 
 	return cfg, nil
 }

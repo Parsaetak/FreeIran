@@ -542,3 +542,67 @@ memory/test-queue panels to the UI.
 `heap_alloc_bytes`, `heap_live_bytes`, `gc_cpu_pct`) mirrored from
 the controller's samples, so the engine metrics snapshot and the
 memory diagnostics page always agree on one classification.
+
+## v0.9.0 additions — core reliability, network diagnostics, deployment
+
+### Core manager ↔ registry integration
+
+The Managed Core Manager now boots eagerly with the application
+(`app.New`) because its install locations are discovery inputs: every
+managed core lives in `<cores>/<core>/bin/<core>.exe`, and those bin
+directories are passed to the registry's `system.CoreLocator` as
+extra search roots. Lifecycle actions (install, update, repair,
+reinstall, rollback, remove) re-run `app.RefreshCores`, so Connect,
+Backends and the tester observe changes immediately — a successful
+install is usable without restarting the application.
+
+The install pipeline hardened: staged downloads keep the asset's
+filename (with content-sniffing fallback) so archive formats always
+resolve; the executable bit is set before any probe; the probed
+version is sanity-checked against the release tag; failure states
+record a human-readable `FailureReason` + `FailureStage`; byte-level
+download progress and per-stage events (`InstallProgress`) stream to
+the UI via the `freeiran:coreprogress` event. All manager-spawned
+children (version probe, config validation, smoke test) launch with
+`CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP` on Windows, and the
+smoke-test shutdown uses Windows-safe termination semantics.
+
+`Repair` no longer re-enters the per-core mutex (the v0.8
+implementation deadlocked on every call), and the manager gained
+`UpdateAll` and `Reinstall`.
+
+### engine/netcheck + engine/socks5
+
+`engine/netcheck` implements the manual connectivity diagnostics:
+concurrent, individually timeout-bounded probes across four classes
+(local links, DNS via dedicated resolvers, raw TCP, HTTPS) with a
+classified seven-state report (`no_internet`, `dns_failure`,
+`https_failure`, `high_latency`, `ok`, `proxy_only`,
+`core_no_internet`). When a session is connected, an additional probe
+runs through the core's local SOCKS listener, distinguishing
+proxy-only connectivity from a core whose outbound path is dead.
+
+`engine/socks5` is a minimal RFC 1928 no-auth CONNECT dialer shared
+by netcheck and the tester.
+
+### Testing model
+
+`engine/tester` composes probes through `ChainedProbe`: the core
+probe (real backend execution with `EndToEnd` verification — a real
+SOCKS5 CONNECT round-trip plus a 204 fetch through the generated
+tunnel) is primary; the TCP reachability probe is the no-core
+fallback. Results carry backend, protocol, endpoint, ping,
+duration and a quality band, and the app layer persists them into
+the configuration records, so the UI displays the latest verdict
+without retesting. `engine/testqueue` aggregates average, fastest
+and slowest measured latency for the live progress panel.
+
+### Portable deployment
+
+`system.DefaultBaseDir` prefers a deployment layout next to the
+executable (`portable.marker` or a `config/` directory), so the
+official release ZIP — a full directory tree with `config/ data/
+logs/ cache/ cores/ runtime/ docs/ deployment/` and metadata — keeps
+all state inside the extracted folder. The release workflow
+validates the package (required files, directories, VERSION and
+metadata consistency, single archive root) before publishing.

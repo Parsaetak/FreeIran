@@ -102,6 +102,14 @@ export function DashboardPage({ onNavigate }: { onNavigate: (page: Page) => void
         </div>
       </div>
 
+      <OnboardingChecklist
+        onNavigate={onNavigate}
+        coresAvailable={availableCores}
+        configCount={backend.config_count}
+        connected={connected}
+        connecting={uiState === "connecting"}
+      />
+
       {/* Live connection panel */}
       <section className="conn-panel" aria-label="Connection status">
         <div className={`orb-wrap ${uiState}`}>
@@ -384,4 +392,85 @@ function formatEventAge(ts: string): string {
   if (Number.isNaN(time)) return "";
 
   return relativeTime(time);
+}
+
+/**
+ * OnboardingChecklist — the v0.9.0 first-launch experience (§12):
+ * detect cores → install a core → import configurations → test →
+ * connect. Every step links straight to its page; the checklist
+ * disappears once the user is connected.
+ */
+function OnboardingChecklist({
+  onNavigate,
+  coresAvailable,
+  configCount,
+  connected,
+  connecting,
+}: {
+  onNavigate: (page: Page) => void;
+  coresAvailable: number;
+  configCount: number;
+  connected: boolean;
+  connecting: boolean;
+}) {
+  const steps = [
+    {
+      key: "core",
+      done: coresAvailable > 0,
+      title: "Install a protocol core",
+      hint: "One click installs Xray, V2Ray or sing-box from the official upstream release.",
+      page: "cores" as Page,
+    },
+    {
+      key: "configs",
+      done: configCount > 0,
+      title: "Import configurations",
+      hint: "Add a public source or refresh the built-in ones to populate the database.",
+      page: "sources" as Page,
+    },
+    {
+      key: "test",
+      done: false,
+      title: "Test configurations",
+      hint: "Bulk-test from the Configurations page — results include a real ping.",
+      page: "configs" as Page,
+    },
+    {
+      key: "connect",
+      done: connected,
+      title: "Connect",
+      hint: "Pick the fastest working configuration and start the tunnel.",
+      page: "connection" as Page,
+    },
+  ];
+
+  const remaining = steps.filter((s) => !s.done);
+
+  if (remaining.length === 0 || connecting) {
+    return null;
+  }
+
+  return (
+    <section className="card onboarding" aria-label="Get started">
+      <h2 className="card-title">Get started</h2>
+      <ol className="onboarding-steps">
+        {steps.map((step, index) => (
+          <li key={step.key} className={step.done ? "done" : ""}>
+            <span className="step-num" aria-hidden>
+              {step.done ? "✓" : index + 1}
+            </span>
+            <span className="step-body">
+              <b>{step.title}</b>
+              <span className="muted">{step.hint}</span>
+            </span>
+            {!step.done && (
+              <button type="button" className="btn sm ghost" onClick={() => onNavigate(step.page)}>
+                {step.key === "core" && coresAvailable === 0 ? "Go to Cores" : "Open"}
+              </button>
+            )}
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
 }

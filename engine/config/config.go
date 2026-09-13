@@ -82,6 +82,13 @@ type Config struct {
 	Working   bool  `json:"working"`
 	LatencyMS int64 `json:"latency_ms,omitempty"`
 	TestedAt  int64 `json:"tested_at,omitempty"`
+
+	// v0.9.0 test metadata (§4): the backend that executed the last
+	// test, the endpoint it targeted and the total test duration.
+	// Runtime-only, never part of the fingerprint.
+	TestBackend    string `json:"test_backend,omitempty"`
+	TestEndpoint   string `json:"test_endpoint,omitempty"`
+	TestDurationMS int64  `json:"test_duration_ms,omitempty"`
 }
 
 // Normalize prepares a configuration for comparison and fingerprinting.

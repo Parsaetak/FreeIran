@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useSettingsStore } from "../state/settingsStore";
 import { useConnectionStore } from "../state/connectionStore";
-import { type Settings } from "../services";
+import { call, diagnosticsService, type DiagnosticReportView, type Settings } from "../services";
 import { toast } from "../state/toastStore";
 import { EmptyState } from "../components/common";
 
@@ -50,6 +50,57 @@ export function SettingsPage() {
   const backends = useConnectionStore((state) => state.backends);
 
   const [draft, setDraft] = useState<Settings | null>(null);
+  const [reportLoading, setReportLoading] = useState(false);
+  const [reportCopied, setReportCopied] = useState(false);
+
+  const buildReport = async (): Promise<{ text: string } | null> => {
+    setReportLoading(true);
+
+    try {
+      const report = (await call(() => diagnosticsService.BuildDiagnosticReport())) as DiagnosticReportView;
+      const formatted = (report as unknown as { FormatDiagnosticReport?: () => string })
+        .FormatDiagnosticReport?.() ?? formatReport(report);
+
+      return { text: formatted };
+    } catch (error) {
+      toast("error", "Report unavailable", String(error));
+
+      return null;
+    } finally {
+      setReportLoading(false);
+    }
+  };
+
+  const copyReport = async () => {
+    const report = await buildReport();
+
+    if (!report) return;
+
+    try {
+      await navigator.clipboard.writeText(report.text);
+      setReportCopied(true);
+      window.setTimeout(() => setReportCopied(false), 2000);
+    } catch {
+      toast("error", "Clipboard unavailable", "Use Export report instead.");
+    }
+  };
+
+  const exportReport = async () => {
+    const report = await buildReport();
+
+    if (!report) return;
+
+    const blob = new Blob([report.text], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+
+    const anchor = document.createElement("a");
+
+    anchor.href = url;
+    anchor.download = "freeiran-diagnostics.txt";
+    anchor.click();
+
+    URL.revokeObjectURL(url);
+  };
 
   // Reconcile the draft whenever the saved settings change and the
   // user is not mid-edit.
@@ -342,6 +393,33 @@ export function SettingsPage() {
           </div>
         </div>
       </div>
+
+      <div className="card">
+        <div className="card-header">
+          <h3 className="card-title eyebrow">Diagnostics &amp; support</h3>
+        </div>
+
+        <div className="card-body settings-form">
+          <div className="settings-row align-start">
+            <div>
+              <div className="field-label">Diagnostic report</div>
+              <div className="field-hint">
+                A sanitized summary (version, platform, core states, storage and
+                network status) for bug reports. Never contains credentials.
+              </div>
+            </div>
+
+            <div className="toolbar">
+              <button type="button" className="btn ghost" disabled={reportLoading} onClick={() => void copyReport()}>
+                {reportCopied ? "Copied" : "Copy report"}
+              </button>
+              <button type="button" className="btn ghost" disabled={reportLoading} onClick={() => void exportReport()}>
+                Export report
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -411,4 +489,29 @@ function fieldError(
   key: string,
 ): string | null {
   return errors.find((error) => error.key === key)?.message ?? null;
+}
+
+/** Local renderer used when the backend method result arrives as a plain object. */
+function formatReport(report: DiagnosticReportView): string {
+  const lines = [
+    "FreeIran Diagnostic Report",
+    `Version: ${report.version}`,
+    `Platform: ${report.platform}`,
+    `Generated: ${report.generated_at}`,
+    "",
+    `Application status: ${report.app_status}`,
+    `Configurations: ${report.config_count}`,
+    `Storage: ${report.storage}`,
+    `Connection: ${report.connection}`,
+    `Network: ${report.network_state}${report.network_note ? ` — ${report.network_note}` : ""}`,
+    "",
+    "Cores:",
+    ...(report.cores && report.cores.length > 0 ? report.cores.map((c) => `  ${c}`) : ["  (none discovered)"]),
+  ];
+
+  if (report.warnings && report.warnings.length > 0) {
+    lines.push("", "Warnings:", ...report.warnings.map((w) => `  ${w}`));
+  }
+
+  return lines.join("\n");
 }

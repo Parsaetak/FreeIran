@@ -9,10 +9,96 @@ configurations.
 **Project:** FreeIran
 **Architect:** Parsa Tak / SHEYTAN
 **Repository:** https://github.com/Parsaetak/FreeIran
-**Current version:** 0.8.0 (see `VERSION`)
+**Current version:** 0.9.0 (see `VERSION`)
 **Status:** production architecture — multi-core protocol runtime with
 managed installation, test queue, system proxy and TUN mode, unified
 adaptive memory control and kernel-level process supervision
+
+---
+
+## What's new in v0.9.0
+
+### Core loading, fixed end to end
+
+v0.9.0 closes the last gaps in the protocol-core lifecycle. A managed
+core is never considered "installed" merely because a file exists:
+the full pipeline `discover → verify → version → config validation →
+launch → readiness → health → usable` runs before the UI reports
+**Ready**, and every failed state carries a human-readable reason plus
+a technical-details expander. Managed installs now integrate with
+runtime discovery — the three `bin/` directories are core-locator
+inputs, so an installed core is immediately usable by Connect and the
+tester without any restart.
+
+Three real production bugs fell out of that audit and are fixed with
+regression tests:
+
+- **`Repair` deadlocked on every call** — it held the per-core mutex
+  and then re-acquired the same non-reentrant mutex inside
+  Rollback/HealthCheck/Install.
+- **Xray and V2Ray downloads never matched the platform** — asset
+  selection required the platform hint inside the asset name, which
+  legacy naming (`Xray-windows-64.zip`) does not contain.
+- **Install always failed at unpack** — downloads were staged as
+  `asset.bin`, so the archive-format switch never matched; and zip
+  extraction left the executable non-executable before the version
+  probe ran on Unix.
+
+### The CMD window bug is dead
+
+Every remaining child-process launch site (Managed Core Manager
+version probes, config validation, smoke tests) now sets
+`CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | HideWindow`. Windows CI
+runs a regression test asserting the attributes. The smoke test's
+polite shutdown uses Windows-safe semantics instead of the unsupported
+`os.Interrupt` signal that previously marked every healthy install
+**Broken**.
+
+### Internet / Network Diagnostics
+
+A dedicated `engine/netcheck` package runs multiple independent
+probes (local links, three DNS resolvers, three TCP endpoints, three
+HTTPS targets, latency measurement) and classifies the result into the
+seven states the specification requires — from "internet unavailable"
+through "DNS failing" to "internet reachable only through the
+configured proxy". The new **Network** tab exposes a manual,
+cancellable **Check connection** action; when a session is connected
+the proxy path is probed too, so "core connected but external
+connectivity failing" is distinguishable from a dead internet line.
+
+### Real ping, honest results
+
+Configuration tests now measure the actual round-trip through the
+generated tunnel (SOCKS5 CONNECT + a 204 fetch via the new
+`engine/socks5` package) instead of reporting the core's local startup
+time. Every result records working/failed, ping in milliseconds,
+quality band (excellent / good / acceptable / slow), test duration,
+protocol, backend, endpoint and timestamp — and **persists to the
+store**, so test-queue results survive and display without retesting.
+The Configurations workspace gains server-side status filters, sorting
+by ping/protocol/recency, multi-select and bulk test actions (all /
+untested / failed / working / selected) with a live queue progress
+panel including average, fastest and slowest measured latency.
+
+### Modern tabs
+
+The UI is now eight focused tabs — Dashboard (with a first-launch
+onboarding checklist), Configurations, Sources, **Cores** (one-click
+Install → Verify → Start using), Connection, **Network**, Diagnostics
+and Settings (with a sanitized copy/export diagnostic report). Install
+progress (download bytes, verification, smoke test) streams to the UI
+as `freeiran:coreprogress` events.
+
+### Complete deployment package
+
+The release ZIP is no longer a bare exe. `FreeIran-windows-amd64.zip`
+contains a full portable deployment directory — `FreeIran.exe`,
+README, LICENSE, VERSION, `config/`, `data/`, `logs/`, `cache/`,
+`cores/`, `runtime/`, `docs/`, `deployment/deployment.json` metadata
+and a `portable.marker` the application detects on startup to keep all
+state inside the deployment tree. The release pipeline validates the
+package contents (executable present, directories present, metadata
+consistent) before publishing and fails the release otherwise.
 
 ---
 

@@ -102,6 +102,35 @@ func (s *ConnectionService) ConnectionState() connectionSnapshot {
 // service returns it directly.
 type connectionSnapshot = connection.Snapshot
 
+// humanizeWithDetails renders a user-readable first line plus the raw
+// error under a separator the UI displays as an expandable
+// "technical details" block (§8).
+func humanizeWithDetails(err error, subject string) error {
+	if err == nil {
+		return nil
+	}
+
+	readable := firerrors.Humanize(err, subject)
+
+	return fmt.Errorf("%s\n---\nTechnical details: %w", readable, err)
+}
+
+// humanSubject maps a backend name to its display name.
+func humanSubject(core string) string {
+	switch core {
+	case "xray":
+		return "Xray"
+	case "v2ray":
+		return "V2Ray"
+	case "sing-box":
+		return "sing-box"
+	case "":
+		return "The connection"
+	default:
+		return core
+	}
+}
+
 // Connect establishes the tunnel for a stored configuration. The
 // configuration is loaded by fingerprint; credentials never cross
 // the service boundary in the response.
@@ -131,7 +160,7 @@ func (s *ConnectionService) Connect(configID string) (connection.Snapshot, error
 		s.app.logger.Error("connection", "connection_failure", "connect", "backend",
 			"connection failed (state %s): %v", snapshot.State, err)
 
-		return snapshot, err
+		return snapshot, humanizeWithDetails(err, humanSubject(snapshot.Core))
 	}
 
 	s.app.metricsR.AddCoreSelection()
@@ -164,7 +193,7 @@ func (s *ConnectionService) ConnectConfig(cfg config.Config) (connection.Snapsho
 		s.app.logger.Error("connection", "connection_failure", "connect", "backend",
 			"ad-hoc connection failed (state %s): %v", snapshot.State, err)
 
-		return snapshot, err
+		return snapshot, humanizeWithDetails(err, humanSubject(snapshot.Core))
 	}
 
 	s.app.logger.Info("connection", "connection_success",

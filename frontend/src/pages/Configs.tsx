@@ -1,12 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useConfigsStore, makeSearchRunner } from "../state/stores";
 import {
   dataService,
   connectionService,
+  testQueueService,
   call,
   type Config,
   type ConfigDetail,
+  type QueueStatsView,
 } from "../services";
 import {
   formatLatency,
@@ -18,8 +20,8 @@ import {
 import { configToRow } from "../utilities/export";
 import { useConnectionStore } from "../state/connectionStore";
 import { describeError, toast } from "../state/toastStore";
-import { EmptyState, ResultBadge } from "../components/common";
-import { IconDownload, IconPlay, IconSearch, IconX } from "../components/Icons";
+import { EmptyState, ResultBadge, SegmentedControl } from "../components/common";
+import { IconDownload, IconPlay, IconRefresh, IconSearch, IconX } from "../components/Icons";
 
 const searchRunner = makeSearchRunner(250);
 
@@ -54,6 +56,15 @@ export function ConfigsPage() {
   const [detail, setDetail] = useState<ConfigDetail | null>(null);
   const [testingId, setTestingId] = useState<string | null>(null);
 
+  // v0.9.0: server-side status filter + sorting and bulk-test state.
+  const [statusFilter, setStatusFilter] = useState<"" | "working" | "failed" | "untested">("");
+  const [sortBy, setSortBy] = useState<"" | "latency" | "tested_at" | "protocol">("");
+  const [filtered, setFiltered] = useState<Config[] | null>(null);
+  const [filteredTotal, setFilteredTotal] = useState(0);
+  const [filteredLoading, setFilteredLoading] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [queueStats, setQueueStats] = useState<QueueStatsView | null>(null);
+
   const parentRef = useRef<HTMLDivElement>(null);
 
   const virtualizer = useVirtualizer({
@@ -75,15 +86,79 @@ export function ConfigsPage() {
     return [...preferred, ...extra].slice(0, 6);
   }, [items]);
 
-  const visibleItems = useMemo(
-    () => (protocol === "" ? items : items.filter((item) => String(item["type"]) === protocol)),
-    [items, protocol],
-  );
+  const visibleItems = useMemo(() => {
+    if (filtered !== null) return filtered;
+    if (protocol === "") return items;
+
+    return items.filter((item) => String(item["type"]) === protocol);
+  }, [items, protocol, filtered]);
 
   // Keep the virtualizer window in sync with the filtered count.
   useEffect(() => {
     virtualizer.measure();
   }, [visibleItems.length, virtualizer]);
+
+  // Server-side filtered view: any status filter or sort activates it.
+  const loadFiltered = useCallback(async (limit: number) => {
+    if (statusFilter === "" && sortBy === "") {
+      setFiltered(null);
+
+      return;
+    }
+
+    setFilteredLoading(true);
+
+    try {
+      const page = await call(() =>
+        dataService.ListConfigsFiltered(
+          {
+            protocol: protocol || undefined,
+            status: statusFilter || undefined,
+            query: searchQuery || undefined,
+            sort_by: sortBy || undefined,
+            sort_desc: sortBy === "latency",
+          },
+          0,
+          limit,
+        ),
+      );
+
+      setFiltered(page?.items ?? []);
+      setFilteredTotal(page?.total ?? 0);
+    } catch (error) {
+      toast("error", "Filter failed", describeError(error));
+    } finally {
+      setFilteredLoading(false);
+    }
+  }, [protocol, statusFilter, sortBy, searchQuery]);
+
+  useEffect(() => {
+    void loadFiltered(1000);
+  }, [loadFiltered]);
+
+  // Live queue stats while a batch is running.
+  useEffect(() => {
+    let stop = false;
+
+    const tick = async () => {
+      try {
+        const stats = await call(() => testQueueService.Stats());
+        if (!stop && stats) {
+          setQueueStats(stats as QueueStatsView);
+        }
+      } catch {
+        /* polling is best-effort */
+      }
+    };
+
+    void tick();
+    const interval = window.setInterval(tick, 1500);
+
+    return () => {
+      stop = true;
+      window.clearInterval(interval);
+    };
+  }, []);
 
   const onListScroll = () => {
     const element = parentRef.current;
@@ -139,6 +214,49 @@ export function ConfigsPage() {
     }
   };
 
+  const bulkTest = async (scope: string) => {
+    try {
+      const result = await call(() =>
+        testQueueService.EnqueueByFilter({
+          scope,
+          fingerprints: scope === "selected" ? [...selected] : undefined,
+          protocol: protocol || undefined,
+        }),
+      );
+
+      if (result && result.enqueued === 0) {
+        toast("info", "Nothing to test", "No configuration matched this scope.");
+      } else {
+        toast("success", "Test batch queued", `${result?.enqueued ?? 0} configuration(s) queued.`);
+      }
+    } catch (error) {
+      toast("error", "Batch test failed", describeError(error));
+    }
+  };
+
+  const cancelAll = async () => {
+    try {
+      await call(() => testQueueService.CancelAll());
+      toast("info", "Queue cleared", "Queued tests were cancelled; running tests finish or abort.");
+    } catch (error) {
+      toast("error", "Cancel failed", describeError(error));
+    }
+  };
+
+  const toggleSelect = (id: string, checked: boolean) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+
+      if (checked) {
+        next.add(id);
+      } else {
+        next.delete(id);
+      }
+
+      return next;
+    });
+  };
+
   // Details view: credential material is redacted server-side; this
   // surface only receives presence flags.
   const showDetails = async (config: Config) => {
@@ -164,8 +282,10 @@ export function ConfigsPage() {
         <div>
           <h1 className="page-title">Configurations</h1>
           <div className="page-subtitle">
-            {formatNumber(items.length)} shown · {formatNumber(total)} total
-            {hasMore && searchQuery.trim() === "" ? " · scroll to load more" : ""}
+            {filtered !== null
+              ? `${formatNumber(filtered.length)} shown · ${formatNumber(filteredTotal)} matched`
+              : `${formatNumber(items.length)} shown · ${formatNumber(total)} total`}
+            {hasMore && searchQuery.trim() === "" && filtered === null ? " · scroll to load more" : ""}
           </div>
         </div>
 
@@ -190,6 +310,30 @@ export function ConfigsPage() {
             searchRunner();
           }}
         />
+
+        <SegmentedControl
+          ariaLabel="Status filter"
+          value={statusFilter}
+          onChange={(value) => setStatusFilter(value)}
+          options={[
+            { value: "", label: "All" },
+            { value: "working", label: "Working" },
+            { value: "failed", label: "Failed" },
+            { value: "untested", label: "Untested" },
+          ]}
+        />
+
+        <select
+          className="input slim"
+          aria-label="Sort by"
+          value={sortBy}
+          onChange={(event) => setSortBy(event.target.value as typeof sortBy)}
+        >
+          <option value="">Default order</option>
+          <option value="latency">Fastest ping</option>
+          <option value="tested_at">Recently tested</option>
+          <option value="protocol">Protocol</option>
+        </select>
 
         <div className="segmented" role="radiogroup" aria-label="Protocol filter">
           <button
@@ -216,6 +360,45 @@ export function ConfigsPage() {
           ))}
         </div>
       </div>
+
+      <div className="toolbar">
+        <button type="button" className="btn ghost" disabled={filteredLoading} onClick={() => void bulkTest("untested")}>
+          <IconRefresh size={13} /> Test untested
+        </button>
+        <button type="button" className="btn ghost" disabled={filteredLoading} onClick={() => void bulkTest("failed")}>
+          <IconRefresh size={13} /> Retest failed
+        </button>
+        <button type="button" className="btn ghost" disabled={filteredLoading} onClick={() => void bulkTest("working")}>
+          <IconRefresh size={13} /> Retest working
+        </button>
+        <button type="button" className="btn ghost" disabled={filteredLoading || selected.size === 0} onClick={() => void bulkTest("selected")}>
+          Test selected ({selected.size})
+        </button>
+        <button type="button" className="btn ghost" disabled={filteredLoading} onClick={() => void bulkTest("all")}>
+          <IconRefresh size={13} /> Test all
+        </button>
+      </div>
+
+      {queueStats && queueStats.total_enqueued > 0 && (
+        <div className="queue-panel card flush mb-0" aria-label="Test queue progress">
+          <div className="queue-panel-row">
+            <strong>Testing</strong>
+            <span className="muted">
+              {queueStats.total_completed}/{queueStats.total_enqueued} done · {queueStats.queue_depth} queued ·{" "}
+              {queueStats.active_workers} active
+            </span>
+            <span className="muted">
+              pass {queueStats.total_passed} · fail {queueStats.total_failed} · cancelled {queueStats.total_cancelled}
+            </span>
+            {queueStats.avg_latency_ms ? <span className="chip">avg ping {queueStats.avg_latency_ms} ms</span> : null}
+            {queueStats.fastest_latency_ms ? <span className="chip">best {queueStats.fastest_latency_ms} ms</span> : null}
+            {queueStats.slowest_latency_ms ? <span className="chip">worst {queueStats.slowest_latency_ms} ms</span> : null}
+            <button type="button" className="btn sm ghost danger" onClick={() => void cancelAll()}>
+              Cancel all
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className={`configs-layout ${detail ? "with-panel" : ""}`}>
         <div className="card flush mb-0">
@@ -275,6 +458,15 @@ export function ConfigsPage() {
                         transform: `translateY(${virtualRow.start}px)`,
                       }}
                     >
+                      <input
+                        type="checkbox"
+                        className="row-check"
+                        aria-label="Select for bulk testing"
+                        checked={selected.has(String(config["id"]))}
+                        onClick={(event) => event.stopPropagation()}
+                        onChange={(event) => toggleSelect(String(config["id"]), event.target.checked)}
+                      />
+
                       <span className={`proto-badge proto-${protocolClass(String(config["type"]))}`}>
                         {protocolLabel(String(config["type"]))}
                       </span>
@@ -292,8 +484,15 @@ export function ConfigsPage() {
                         {!config["network"] && !config["security"] && <span className="chip mono">tcp</span>}
                       </span>
 
-                      <span className={`latency ${latencyClass(Number(config["latency_ms"] ?? 0))}`}>
-                        {formatLatency(Number(config["latency_ms"] ?? 0))}
+                      <span className="cell-latency">
+                        <span className={`latency ${latencyClass(Number(config["latency_ms"] ?? 0))}`}>
+                          {config["tested_at"] ? formatLatency(Number(config["latency_ms"] ?? 0)) : "—"}
+                        </span>
+                        {config["test_backend"] && (
+                          <span className="chip mono hide-sm" title="Backend that ran the last test">
+                            {String(config["test_backend"])}
+                          </span>
+                        )}
                       </span>
 
                       <span className="hide-md">

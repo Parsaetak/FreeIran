@@ -133,3 +133,30 @@ export function Disable(name) {
 export function Enable(name) {
     return $Call.ByName($prefix + "Enable", name);
 }
+
+/**
+ * LifecycleInfo returns the complete lifecycle view of every managed
+ * core: persisted manifest + registry discovery + failure text.
+ * @returns {$CancellablePromise<any[]>}
+ */
+export function LifecycleInfo() {
+    return $Call.ByName($prefix + "LifecycleInfo");
+}
+
+/**
+ * Reinstall removes every local artifact of a core and performs a
+ * fresh install from upstream.
+ * @param {string} name
+ * @returns {$CancellablePromise<void>}
+ */
+export function Reinstall(name) {
+    return $Call.ByName($prefix + "Reinstall", name);
+}
+
+/**
+ * UpdateAll checks every core for updates and installs what is newer.
+ * @returns {$CancellablePromise<any>}
+ */
+export function UpdateAll() {
+    return $Call.ByName($prefix + "UpdateAll");
+}

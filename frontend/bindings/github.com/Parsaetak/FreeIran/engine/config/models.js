@@ -209,6 +209,28 @@ export class Config {
         }
         if (/** @type {any} */(false)) {
             /**
+             * v0.9.0 test metadata.
+             * @member
+             * @type {string | undefined}
+             */
+            this["test_backend"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["test_endpoint"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {number | undefined}
+             */
+            this["test_duration_ms"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
              * @member
              * @type {number | undefined}
              */

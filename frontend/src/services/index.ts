@@ -17,6 +17,7 @@ import * as settingsService from "../../bindings/github.com/Parsaetak/FreeIran/e
 import * as coreService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/coreservice.js";
 import * as testQueueService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/testqueueservice.js";
 import * as tunnelService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/tunnelservice.js";
+import * as networkService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/networkservice.js";
 import * as loggingModels from "../../bindings/github.com/Parsaetak/FreeIran/internal/logging/models.js";
 
 export {
@@ -31,6 +32,7 @@ export {
   coreService,
   testQueueService,
   tunnelService,
+  networkService,
   loggingModels,
 };
 
@@ -137,4 +139,118 @@ export interface QueueStatsView {
   avg_duration_ms: number;
   per_backend: Record<string, number>;
   started_at: string;
+  avg_latency_ms?: number;
+  fastest_latency_ms?: number;
+  slowest_latency_ms?: number;
+}
+
+// ---------------------------------------------------------------------------
+// v0.9.0 view types
+// ---------------------------------------------------------------------------
+
+/** One netcheck probe outcome (engine/netcheck CheckResult). */
+export interface NetCheckResult {
+  name: string;
+  target: string;
+  ok: boolean;
+  latency_ms?: number;
+  error?: string;
+}
+
+/** The classified connectivity report (engine/netcheck Report). */
+export interface NetCheckReport {
+  state: string;
+  summary: string;
+  checked_at: string;
+  duration_ms: number;
+  latency_ms?: number;
+  target_used?: string;
+  local_links: NetCheckResult[];
+  dns: NetCheckResult[];
+  tcp: NetCheckResult[];
+  https: NetCheckResult[];
+  proxy?: NetCheckResult | null;
+  cancelled: boolean;
+  target_count: number;
+}
+
+/** Managed core manifest (engine/coremgr Manifest). */
+export interface CoreManifest {
+  name: string;
+  state: string;
+  version: string;
+  channel: string;
+  binary_path: string;
+  checksum_sha256: string;
+  release_tag: string;
+  release_url: string;
+  installed_at: string;
+  last_checked: string;
+  last_health_check: string;
+  last_health_result: {
+    ok: boolean;
+    executable_exists: boolean;
+    version_query: boolean;
+    config_validate: boolean;
+    smoke_launch: boolean;
+    clean_shutdown: boolean;
+    details?: string;
+  };
+  previous_version?: string;
+  failure_reason?: string;
+  failure_stage?: string;
+  latest_known?: string;
+}
+
+/** The complete core lifecycle view (app.CoreLifecycleView). */
+export interface CoreLifecycleView {
+  manifest: CoreManifest;
+  discovered: boolean;
+  runtime_state: string;
+  runtime_version?: string;
+  path?: string;
+  failure_message?: string;
+}
+
+/** Install progress event (coremgr.InstallProgress). */
+export interface CoreInstallProgress {
+  core: string;
+  stage: string;
+  message?: string;
+  bytes_done?: number;
+  bytes_total?: number;
+  at: string;
+}
+
+/** Sanitized diagnostic report (app.DiagnosticReport). */
+export interface DiagnosticReportView {
+  generated_at: string;
+  version: string;
+  platform: string;
+  app_status: string;
+  config_count: number;
+  cores?: string[];
+  storage: string;
+  network_state: string;
+  network_note?: string;
+  connection: string;
+  warnings?: string[];
+}
+
+/**
+ * Splits the backend's humanized error format ("readable sentence\n---\nTechnical details: raw")
+ * into its user-facing parts.
+ */
+export function parseHumanizedError(message: string): { readable: string; technical: string } {
+  const marker = "\n---\nTechnical details: ";
+  const idx = message.indexOf(marker);
+
+  if (idx >= 0) {
+    return {
+      readable: message.slice(0, idx),
+      technical: message.slice(idx + marker.length),
+    };
+  }
+
+  return { readable: message, technical: "" };
 }

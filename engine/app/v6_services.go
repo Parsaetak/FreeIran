@@ -8,11 +8,24 @@ import (
 	"time"
 
 	"github.com/Parsaetak/FreeIran/engine/config"
+	"github.com/Parsaetak/FreeIran/engine/core"
 	"github.com/Parsaetak/FreeIran/engine/coremgr"
 	"github.com/Parsaetak/FreeIran/engine/source"
+	"github.com/Parsaetak/FreeIran/engine/tester"
 	"github.com/Parsaetak/FreeIran/engine/testqueue"
 	"github.com/Parsaetak/FreeIran/engine/tunnel"
 )
+
+// CoreLifecycleView is the complete UI-facing lifecycle projection of
+// one managed core (manifest + registry discovery + failure text).
+type CoreLifecycleView struct {
+	Manifest       coremgr.Manifest `json:"manifest"`
+	Discovered     bool             `json:"discovered"`
+	RuntimeState   string           `json:"runtime_state"`
+	RuntimeVersion string           `json:"runtime_version,omitempty"`
+	Path           string           `json:"path,omitempty"`
+	FailureMessage string           `json:"failure_message,omitempty"`
+}
 
 // CoreService exposes the Managed Core Manager to the UI. Every method
 // is a thin wrapper around the corresponding coremgr.Manager method
@@ -26,28 +39,23 @@ func NewCoreService(a *App) *CoreService {
 	return &CoreService{app: a}
 }
 
-// ensureCoreMgr returns the app's core manager, initializing it on
-// first use. The manager is created lazily so a headless test setup
-// without a writable AppData directory still boots. initMu serializes
-// the init so concurrent UI calls don't create duplicate managers.
+// ensureCoreMgr returns the app's core manager. v0.9.0: the manager
+// is created eagerly in app.New because its bin directories are core
+// discovery inputs, so this only surfaces the shared instance (the
+// old lazy path could create a second manager whose install locations
+// the running registry never learned about).
 func (s *CoreService) ensureCoreMgr() (*coremgr.Manager, error) {
-	s.app.initMu.Lock()
-	defer s.app.initMu.Unlock()
-
-	if s.app.coreMgr != nil {
-		return s.app.coreMgr, nil
+	if s.app.coreMgr == nil {
+		return nil, fmt.Errorf("app: core manager is not initialized")
 	}
 
-	mgr, err := coremgr.New(coremgr.Options{
-		RootDir: s.app.layout.Cores,
-		Logger:  s.app.logger,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("app: init core manager: %w", err)
-	}
+	return s.app.coreMgr, nil
+}
 
-	s.app.coreMgr = mgr
-	return mgr, nil
+// refreshAfterLifecycle re-runs core discovery so Connect/Backends/
+// tester observe install/remove/update changes immediately.
+func (s *CoreService) refreshAfterLifecycle() {
+	s.app.RefreshCores()
 }
 
 // List returns every managed core's manifest.
@@ -70,13 +78,18 @@ func (s *CoreService) Info(name coremgr.CoreName) (coremgr.Manifest, error) {
 }
 
 // Install downloads and activates the latest stable release for one
-// core. This is a long-running operation.
+// core. This is a long-running operation; progress is delivered via
+// the freeiran:coreprogress event.
 func (s *CoreService) Install(name coremgr.CoreName) error {
 	mgr, err := s.ensureCoreMgr()
 	if err != nil {
 		return err
 	}
-	return mgr.Install(s.app.ctx, name)
+
+	err = mgr.Install(s.app.ctx, name)
+	s.refreshAfterLifecycle()
+
+	return err
 }
 
 // Uninstall removes one core and its manifest.
@@ -85,7 +98,11 @@ func (s *CoreService) Uninstall(name coremgr.CoreName) error {
 	if err != nil {
 		return err
 	}
-	return mgr.Remove(s.app.ctx, name)
+
+	err = mgr.Remove(s.app.ctx, name)
+	s.refreshAfterLifecycle()
+
+	return err
 }
 
 // HealthCheck re-runs the smoke test for one core.
@@ -130,16 +147,54 @@ func (s *CoreService) Rollback(name coremgr.CoreName) error {
 	if err != nil {
 		return err
 	}
-	return mgr.Rollback(s.app.ctx, name)
+
+	err = mgr.Rollback(s.app.ctx, name)
+	s.refreshAfterLifecycle()
+
+	return err
 }
 
-// Repair tries to fix a broken core.
+// Repair tries to fix a broken core: rollback first, fresh install
+// second. Discovery is refreshed afterwards so a repaired binary is
+// immediately usable.
 func (s *CoreService) Repair(name coremgr.CoreName) error {
 	mgr, err := s.ensureCoreMgr()
 	if err != nil {
 		return err
 	}
-	return mgr.Repair(s.app.ctx, name)
+
+	err = mgr.Repair(s.app.ctx, name)
+	s.refreshAfterLifecycle()
+
+	return err
+}
+
+// Reinstall removes every local artifact of a core and performs a
+// fresh install from upstream.
+func (s *CoreService) Reinstall(name coremgr.CoreName) error {
+	mgr, err := s.ensureCoreMgr()
+	if err != nil {
+		return err
+	}
+
+	err = mgr.Reinstall(s.app.ctx, name)
+	s.refreshAfterLifecycle()
+
+	return err
+}
+
+// UpdateAll checks every core for updates and installs what is
+// newer. Returns a per-core outcome map.
+func (s *CoreService) UpdateAll() map[coremgr.CoreName]error {
+	mgr, err := s.ensureCoreMgr()
+	if err != nil {
+		return nil
+	}
+
+	out := mgr.UpdateAll(s.app.ctx)
+	s.refreshAfterLifecycle()
+
+	return out
 }
 
 // SetChannel changes the release channel.
@@ -166,7 +221,48 @@ func (s *CoreService) Enable(name coremgr.CoreName) error {
 	if err != nil {
 		return err
 	}
-	return mgr.Enable(s.app.ctx, name)
+
+	err = mgr.Enable(s.app.ctx, name)
+	s.refreshAfterLifecycle()
+
+	return err
+}
+
+// LifecycleInfo is the UI projection of one core: the persisted
+// manifest plus the live runtime view (registry availability) and a
+// human-readable failure explanation. The runtime state covers the
+// Starting/Running/Stopping/Failed half of the lifecycle that does
+// not persist across restarts.
+func (s *CoreService) LifecycleInfo() []CoreLifecycleView {
+	mgr, err := s.ensureCoreMgr()
+	if err != nil {
+		return nil
+	}
+
+	registry := map[string]core.BackendInfo{}
+	for _, info := range s.app.coreRegistry.Backends() {
+		registry[info.Name] = info
+	}
+
+	views := make([]CoreLifecycleView, 0, len(coremgr.AllCores))
+
+	for _, mf := range mgr.All() {
+		view := CoreLifecycleView{
+			Manifest:       mf,
+			RuntimeState:   "not_running",
+			FailureMessage: mgr.ExplainFailure(mf.Name),
+		}
+
+		if info, ok := registry[string(mf.Name)]; ok && info.Status == core.StatusAvailable {
+			view.Discovered = true
+			view.RuntimeVersion = info.Version
+			view.Path = info.Path
+		}
+
+		views = append(views, view)
+	}
+
+	return views
 }
 
 // --- Test Queue Service ---
@@ -226,11 +322,15 @@ type testerAdapter struct {
 
 // Test implements testqueue.Tester. It:
 //  1. looks up the configuration by fingerprint in the store;
-//  2. resolves the candidate backends (the first available +
-//     healthy backend);
-//  3. runs the existing tester.Test against the config + backend;
-//  4. maps the tester.Result to a testqueue.Result.
+//  2. runs the tester (the app's chained probe: real core + e2e ping,
+//     TCP reachability fallback);
+//  3. maps the tester.Result to a testqueue.Result;
+//  4. PERSISTS the outcome to the store so the latest test data is
+//     displayed without retesting (v0.9.0 §4 — v0.8 dropped queue
+//     results on the floor).
 func (a *testerAdapter) Test(ctx context.Context, fingerprint string, backends []string) (testqueue.Result, error) {
+	_ = backends // backend selection is capability-driven inside the probe chain
+
 	// 1. Look up the config.
 	raw, err := a.app.store.Get(fingerprint)
 	if err != nil {
@@ -248,14 +348,41 @@ func (a *testerAdapter) Test(ctx context.Context, fingerprint string, backends [
 		}, err
 	}
 
-	// 2. Run the existing tester.
+	// 2. Run the tester.
 	result := a.app.tester.Test(ctx, cfg)
-	return testqueue.Result{
+
+	// 3. Map to the queue result shape.
+	qr := testqueue.Result{
 		Working:   result.Working,
 		Latency:   result.Latency,
+		Backend:   result.Backend,
 		TestedAt:  result.TestedAt,
 		LastError: result.LastError,
-	}, nil
+
+		Protocol:   result.Protocol,
+		Endpoint:   result.Endpoint,
+		PingMS:     result.PingMS,
+		DurationMS: result.DurationMS,
+		Quality:    result.Quality,
+	}
+
+	if !result.Working {
+		qr.FailureCategory = testqueue.ClassifyByError(result.LastError)
+	}
+
+	// 4. Persist the updated runtime fields.
+	tester.ApplyResult(&cfg, result)
+
+	if updated, mErr := json.Marshal(cfg); mErr == nil {
+		if uErr := a.app.store.Upsert(fingerprint, updated); uErr != nil {
+			a.app.logger.Warn("testqueue", "persist_result_failed",
+				"could not persist test result for %s: %v", fingerprint, uErr)
+		}
+	}
+
+	a.app.metricsR.AddTestExecuted(result.Working)
+
+	return qr, nil
 }
 
 // Enqueue adds one configuration to the test queue.
@@ -382,6 +509,142 @@ func (s *TestQueueService) Drain() error {
 	drainCtx, cancel := context.WithTimeout(s.app.ctx, 30*time.Minute)
 	defer cancel()
 	return q.Drain(drainCtx)
+}
+
+// TestFilter selects which stored configurations a bulk test covers.
+type TestFilter struct {
+	// Scope is one of: "selected", "all", "untested", "failed",
+	// "working" (retest working).
+	Scope string `json:"scope"`
+
+	// Fingerprints is required when Scope == "selected".
+	Fingerprints []string `json:"fingerprints,omitempty"`
+
+	// Protocol restricts the batch to one protocol ("" = all).
+	Protocol string `json:"protocol,omitempty"`
+
+	// Source restricts the batch to one source id ("" = all).
+	Source string `json:"source,omitempty"`
+
+	// Limit bounds the batch (0 = 10000; the queue's duplicate
+	// suppression keeps huge batches safe).
+	Limit int `json:"limit,omitempty"`
+
+	// Priority enqueued for the batch (user batches get a boost).
+	Priority int `json:"priority,omitempty"`
+}
+
+// TestBatchResult reports what a bulk test enqueued.
+type TestBatchResult struct {
+	Enqueued int    `json:"enqueued"`
+	Skipped  int    `json:"skipped"`
+	Scope    string `json:"scope"`
+}
+
+// EnqueueByFilter scans the store and enqueues every matching
+// configuration. Bounded, streaming, and safe for tens of thousands
+// of records (the queue's duplicate suppression collapses repeats).
+func (s *TestQueueService) EnqueueByFilter(filter TestFilter) (TestBatchResult, error) {
+	q, err := s.ensureQueue()
+	if err != nil {
+		return TestBatchResult{}, err
+	}
+
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 10000
+	}
+
+	priority := filter.Priority
+	if priority <= 0 {
+		priority = 400 // user-driven bulk test: above discovery, below single test
+	}
+
+	result := TestBatchResult{Scope: filter.Scope}
+
+	want := func(cfg config.Config) bool {
+		if filter.Protocol != "" && string(cfg.Type) != filter.Protocol {
+			return false
+		}
+
+		if filter.Source != "" && cfg.Source != filter.Source {
+			return false
+		}
+
+		switch filter.Scope {
+		case "untested":
+			return cfg.TestedAt == 0
+		case "failed":
+			return cfg.TestedAt > 0 && !cfg.Working
+		case "working":
+			return cfg.TestedAt > 0 && cfg.Working
+		default: // "all", "selected"
+			return true
+		}
+	}
+
+	switch filter.Scope {
+	case "selected":
+		for _, fp := range filter.Fingerprints {
+			if result.Enqueued >= limit {
+				break
+			}
+
+			cfg, err := s.app.storeGetConfig(fp)
+			if err != nil {
+				result.Skipped++
+
+				continue
+			}
+
+			if !want(*cfg) {
+				result.Skipped++
+
+				continue
+			}
+
+			if _, err := q.Enqueue(fp, string(cfg.Type), nil, priority, cfg.Source, testqueue.EnqueueDefault); err == nil {
+				result.Enqueued++
+			} else {
+				result.Skipped++
+			}
+		}
+	default:
+		ctx, cancel := context.WithTimeout(s.app.ctx, 2*time.Minute)
+		defer cancel()
+
+		err := s.app.store.Iterate(ctx, func(fp string, raw []byte) error {
+			if result.Enqueued >= limit {
+				return context.Canceled
+			}
+
+			var cfg config.Config
+			if err := json.Unmarshal(raw, &cfg); err != nil {
+				return nil
+			}
+
+			if !want(cfg) {
+				return nil
+			}
+
+			if _, err := q.Enqueue(fp, string(cfg.Type), nil, priority, cfg.Source, testqueue.EnqueueDefault); err == nil {
+				result.Enqueued++
+			} else {
+				result.Skipped++
+			}
+
+			return nil
+		})
+
+		if err != nil && err != context.Canceled {
+			return result, err
+		}
+	}
+
+	s.app.logger.Info("testqueue", "batch_enqueued",
+		"bulk test scope=%s enqueued=%d skipped=%d", result.Scope, result.Enqueued, result.Skipped)
+
+	return result, nil
 }
 
 // --- Tunnel Service ---

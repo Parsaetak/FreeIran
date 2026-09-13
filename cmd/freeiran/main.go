@@ -24,6 +24,7 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 
 	"github.com/Parsaetak/FreeIran/engine/app"
+	"github.com/Parsaetak/FreeIran/engine/coremgr"
 	"github.com/Parsaetak/FreeIran/internal/logging"
 	"github.com/Parsaetak/FreeIran/internal/version"
 	"github.com/Parsaetak/FreeIran/system"
@@ -102,6 +103,8 @@ func main() {
 			application.NewService(app.NewCoreService(applicationInstance)),
 			application.NewService(app.NewTestQueueService(applicationInstance)),
 			application.NewService(app.NewTunnelService(applicationInstance)),
+			// v0.9.0: manual Internet / Network Diagnostics (§3).
+			application.NewService(app.NewNetworkService(applicationInstance)),
 		},
 		Assets: application.AssetOptions{
 			Handler: application.BundledAssetFileServer(assets),
@@ -114,6 +117,13 @@ func main() {
 	// Push connection state machine transitions (core identity,
 	// lifecycle state, latency) on the same event-driven model.
 	startConnectionBroadcaster(wailsApp, applicationInstance)
+
+	// v0.9.0: forward Managed Core Manager install progress to the
+	// UI as events — the one-click Install path reports download,
+	// verification and smoke-test stages live (§9).
+	applicationInstance.SetCoreProgressListener(func(progress coremgr.InstallProgress) {
+		wailsApp.Event.Emit("freeiran:coreprogress", progress)
+	})
 
 	// WindowCentered is the default start position; no override needed.
 	wailsApp.Window.NewWithOptions(application.WebviewWindowOptions{

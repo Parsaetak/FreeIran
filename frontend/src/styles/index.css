@@ -1,5 +1,5 @@
 /* ============================================================================
-   FreeIran design system — v0.5.0
+   FreeIran design system — v0.9.0
    Dark, professional, high-density desktop UI.
    Structure:
      1. Design tokens          5. Data display (stats, tables, badges)
@@ -2452,4 +2452,347 @@ html.reduced-motion *::after {
 html.reduced-motion .skeleton::after {
   animation: none !important;
   transform: none !important;
+}
+
+/* ==================================================================
+   10. v0.9.0 — Cores, Network, onboarding, queue progress
+   ================================================================== */
+
+/* Page header affordances used by the new pages */
+.page-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.page-header .muted {
+  max-width: 62ch;
+}
+
+.toolbar.wrap {
+  flex-wrap: wrap;
+}
+
+.linklike {
+  background: none;
+  border: 0;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+  margin-left: var(--space-2);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* Callouts (onboarding hint, network verdict, core failure) */
+.callout {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-1);
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
+.callout strong {
+  margin-right: 0.35em;
+}
+
+.callout.info {
+  border-left-color: var(--accent);
+}
+
+.callout.success {
+  border-left-color: var(--success);
+}
+
+.callout.error {
+  border-left-color: var(--danger);
+}
+
+.tech-details {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-3);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.recovery {
+  margin-top: var(--space-2);
+}
+
+/* Card grids for the Cores and Network pages */
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: var(--space-4);
+}
+
+.card-grid.two {
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+}
+
+.card-title {
+  margin: 0 0 var(--space-2);
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.core-card.card-broken {
+  border-color: var(--danger);
+}
+
+.card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.card-head h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.core-meta {
+  font-size: 0.8rem;
+  margin-top: 2px;
+}
+
+.card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+/* Key/value rows inside core cards */
+.kv {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px var(--space-3);
+  margin: var(--space-3) 0 0;
+  font-size: 0.82rem;
+}
+
+.kv dt {
+  color: var(--text-dim);
+}
+
+.kv dd {
+  margin: 0;
+  min-width: 0;
+}
+
+/* Install progress (stages + download meter) */
+.install-progress {
+  margin-top: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.install-stage {
+  font-size: 0.82rem;
+  color: var(--text-dim);
+}
+
+.meter {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.meter-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width 0.2s ease;
+}
+
+/* Badge variants used by the new pages */
+.badge.warn {
+  color: var(--warning);
+  border-color: var(--warning);
+}
+
+.badge.neutral {
+  color: var(--text-dim);
+  border-color: var(--border);
+}
+
+/* Probe lists (Network page) */
+.probe-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.probe-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 0.84rem;
+}
+
+.probe-row .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.probe-row .dot.ok {
+  background: var(--success);
+}
+
+.probe-row .dot.bad {
+  background: var(--danger);
+}
+
+.probe-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--font-mono);
+}
+
+.probe-latency {
+  flex: none;
+}
+
+.probe-error {
+  flex: 0 1 45%;
+  color: var(--danger);
+  font-size: 0.78rem;
+}
+
+/* Onboarding checklist */
+.onboarding-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.onboarding-steps li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+  border-bottom: 1px dashed var(--border);
+}
+
+.onboarding-steps li:last-child {
+  border-bottom: 0;
+}
+
+.onboarding-steps li.done {
+  opacity: 0.55;
+}
+
+.onboarding-steps .step-num {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  flex: none;
+}
+
+.onboarding-steps li.done .step-num {
+  background: var(--success);
+  border-color: var(--success);
+  color: #04140a;
+}
+
+.onboarding-steps .step-body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+/* Test-queue progress panel */
+.queue-panel {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+}
+
+.queue-panel-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  font-size: 0.84rem;
+}
+
+/* Config list: selection + latency cell */
+.row-check {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.cell-latency {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.input.slim {
+  width: auto;
+  padding-inline: var(--space-2);
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+.ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Gentle spin for in-flight buttons */
+.spin {
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+html.reduced-motion .spin {
+  animation: none;
 }

@@ -100,3 +100,13 @@ export function Snapshot(limit) {
 export function Drain() {
     return $Call.ByName($prefix + "Drain");
 }
+
+/**
+ * EnqueueByFilter scans the store and enqueues every configuration
+ * matching the filter (v0.9.0 §5 bulk testing).
+ * @param {{scope: string, fingerprints?: string[], protocol?: string, source?: string, limit?: number, priority?: number}} filter
+ * @returns {$CancellablePromise<{enqueued: number, skipped: number, scope: string}>}
+ */
+export function EnqueueByFilter(filter) {
+    return $Call.ByName($prefix + "EnqueueByFilter", filter);
+}

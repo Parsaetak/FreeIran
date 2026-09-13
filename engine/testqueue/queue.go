@@ -59,6 +59,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -198,6 +199,13 @@ type Result struct {
 	TestedAt        time.Time       `json:"tested_at"`
 	LastError       string          `json:"last_error,omitempty"`
 	FailureCategory FailureCategory `json:"failure_category,omitempty"`
+
+	// --- v0.9.0: honest test reporting (§4) ---
+	Protocol   string `json:"protocol,omitempty"`
+	Endpoint   string `json:"endpoint,omitempty"`
+	PingMS     int64  `json:"ping_ms,omitempty"`
+	DurationMS int64  `json:"duration_ms,omitempty"`
+	Quality    string `json:"quality,omitempty"`
 }
 
 // Tester is the interface the queue calls to execute one test. The
@@ -220,6 +228,12 @@ type Stats struct {
 	AvgDurationMS  int64          `json:"avg_duration_ms"`
 	PerBackend     map[string]int `json:"per_backend"`
 	StartedAt      time.Time      `json:"started_at"`
+
+	// v0.9.0 (§5): measured-latency aggregates for the live
+	// progress panel. 0 = no successful measurement yet.
+	AvgLatencyMS     int64 `json:"avg_latency_ms,omitempty"`
+	FastestLatencyMS int64 `json:"fastest_latency_ms,omitempty"`
+	SlowestLatencyMS int64 `json:"slowest_latency_ms,omitempty"`
 }
 
 // Mode selects the testing mode. Each mode presets Concurrency,
@@ -394,6 +408,13 @@ type Queue struct {
 	// Duration stats
 	durationSum   atomic.Int64 // total duration in nanoseconds
 	durationCount atomic.Int64
+
+	// v0.9.0 latency stats (§5): average / fastest / slowest of the
+	// measured pings across this queue's lifetime.
+	latencySum     atomic.Int64
+	latencyCount   atomic.Int64
+	fastestLatency atomic.Int64
+	slowestLatency atomic.Int64
 
 	startedAt time.Time
 	stopped   atomic.Bool
@@ -906,6 +927,13 @@ func (q *Queue) finishTaskLocked(task *Task, state TaskState, result Result) boo
 		q.backendMu.Unlock()
 	}
 
+	// Latency bookkeeping for the §5 live progress block.
+	if result.Working && result.PingMS > 0 {
+		q.recordLatency(result.PingMS)
+	} else if result.Working && result.Latency > 0 {
+		q.recordLatency(result.Latency.Milliseconds())
+	}
+
 	return true
 }
 
@@ -1095,9 +1123,75 @@ func (q *Queue) recordDuration(d time.Duration) {
 	q.durationCount.Add(1)
 }
 
+// recordLatency updates the running ping statistics (§5). Only
+// successful, positively-measured results count.
+func (q *Queue) recordLatency(ms int64) {
+	if ms <= 0 {
+		return
+	}
+
+	q.latencySum.Add(ms)
+	q.latencyCount.Add(1)
+
+	for {
+		fastest := q.fastestLatency.Load()
+		if fastest != 0 && fastest <= ms {
+			break
+		}
+
+		if q.fastestLatency.CompareAndSwap(fastest, ms) {
+			break
+		}
+	}
+
+	for {
+		slowest := q.slowestLatency.Load()
+		if slowest >= ms {
+			break
+		}
+
+		if q.slowestLatency.CompareAndSwap(slowest, ms) {
+			break
+		}
+	}
+}
+
 // classifyFailure maps an error + context to a FailureCategory. This
 // is the legacy entry point used by tests; production code uses
 // classifyCtxFailure with a pre-captured context error.
+// ClassifyByError is the exported classification entry point for
+// callers outside the package (the app adapter maps tester errors to
+// FailureCategory for the UI chips).
+func ClassifyByError(err string) FailureCategory {
+	if err == "" {
+		return FailureNone
+	}
+
+	return classifyFailureString(err)
+}
+
+// classifyFailureString classifies from a pre-rendered error string.
+func classifyFailureString(err string) FailureCategory {
+	lower := strings.ToLower(err)
+
+	switch {
+	case strings.Contains(lower, "cancelled"), strings.Contains(lower, "canceled"):
+		return FailureCancelled
+	case strings.Contains(lower, "deadline"), strings.Contains(lower, "timeout"), strings.Contains(lower, "timed out"):
+		return FailureTimeout
+	case strings.Contains(lower, "auth"), strings.Contains(lower, "password"), strings.Contains(lower, "uuid"), strings.Contains(lower, "unauthorized"):
+		return FailureAuth
+	case strings.Contains(lower, "handshake"), strings.Contains(lower, "protocol"):
+		return FailureProtocol
+	case strings.Contains(lower, "invalid"), strings.Contains(lower, "config"):
+		return FailureConfig
+	case strings.Contains(lower, "unreachable"), strings.Contains(lower, "refused"), strings.Contains(lower, "network"), strings.Contains(lower, "no route"):
+		return FailureNetwork
+	default:
+		return FailureUnknown
+	}
+}
+
 func classifyFailure(err error, ctx context.Context) FailureCategory {
 	if err == nil {
 		return FailureNone
@@ -1207,7 +1301,21 @@ func (q *Queue) Stats() Stats {
 		AvgDurationMS:  avgDurMS,
 		PerBackend:     perBackendCopy,
 		StartedAt:      q.startedAt,
+
+		AvgLatencyMS:     q.avgLatencyMS(),
+		FastestLatencyMS: q.fastestLatency.Load(),
+		SlowestLatencyMS: q.slowestLatency.Load(),
 	}
+}
+
+// avgLatencyMS computes the average measured ping under the atomics.
+func (q *Queue) avgLatencyMS() int64 {
+	count := q.latencyCount.Load()
+	if count == 0 {
+		return 0
+	}
+
+	return q.latencySum.Load() / count
 }
 
 // TaskSnapshot is a copy of a Task suitable for returning to the UI

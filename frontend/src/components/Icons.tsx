@@ -281,3 +281,25 @@ export function IconDownload(props: IconProps) {
     </svg>
   );
 }
+
+/** v0.9.0: Cores page icon (layered package). */
+export function IconCores(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="m21 8-9-5-9 5 9 5 9-5Z" />
+      <path d="m3 8v8l9 5 9-5V8" />
+      <path d="M12 13v8" />
+    </svg>
+  );
+}
+
+/** v0.9.0: Network page icon (globe). */
+export function IconGlobe(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M3 12h18" />
+      <path d="M12 3a14.5 14.5 0 0 1 0 18 14.5 14.5 0 0 1 0-18Z" />
+    </svg>
+  );
+}

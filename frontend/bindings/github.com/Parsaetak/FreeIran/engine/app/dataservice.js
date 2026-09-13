@@ -74,3 +74,15 @@ const $$createType1 = $Create.Nullable($$createType0);
 const $$createType2 = $models.ConfigPage.createFrom;
 const $$createType3 = $Create.Nullable($$createType2);
 const $$createType4 = $Create.Array($$createType0);
+
+/**
+ * ListConfigsFiltered returns a sorted, filtered page of
+ * configurations (v0.9.0 §4). Hand-appended ByName binding.
+ * @param {{protocol?: string, status?: string, source?: string, backend?: string, query?: string, sort_by?: string, sort_desc?: boolean}} filter
+ * @param {number} offset
+ * @param {number} limit
+ * @returns {$CancellablePromise<any>}
+ */
+export function ListConfigsFiltered(filter, offset, limit) {
+    return $Call.ByName("github.com/Parsaetak/FreeIran/engine/app.DataService.ListConfigsFiltered", filter, offset, limit);
+}

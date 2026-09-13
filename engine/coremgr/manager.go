@@ -102,7 +102,16 @@ type Manifest struct {
 	PreviousVersion  string       `json:"previous_version,omitempty"`
 	PreviousChecksum string       `json:"previous_checksum,omitempty"`
 	PreviousPath     string       `json:"previous_path,omitempty"`
-	UpdatedAt        time.Time    `json:"updated_at"`
+	// FailureReason is the human-readable explanation for why the
+	// core is in the Broken state (v0.9.0: every failed state must
+	// carry a useful reason, not just a code).
+	FailureReason string `json:"failure_reason,omitempty"`
+	// FailureStage is the pipeline step that failed (e.g. "download").
+	FailureStage string `json:"failure_stage,omitempty"`
+	// LatestKnown is the newest upstream version seen by the last
+	// update check ("update available" without a re-query).
+	LatestKnown string    `json:"latest_known,omitempty"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 // HealthResult records the outcome of a smoke-test against one core.
@@ -476,6 +485,42 @@ func (m *Manager) Disable(name CoreName) error {
 	return m.setState(name, StateDisabled)
 }
 
+// Reinstall removes every local artifact of a core and performs a
+// fresh install from the official upstream release. It is the
+// strongest recovery action after a plain repair is not enough.
+func (m *Manager) Reinstall(ctx context.Context, name CoreName) error {
+	if err := m.Remove(ctx, name); err != nil {
+		return err
+	}
+	return m.Install(ctx, name)
+}
+
+// ExplainFailure returns a human-readable reason for a core's current
+// failure state. Empty when the core is healthy.
+func (m *Manager) ExplainFailure(name CoreName) string {
+	snap, ok := m.snapshotManifest(name)
+	if !ok {
+		return ""
+	}
+
+	switch snap.State {
+	case StateBroken:
+		if snap.FailureReason != "" {
+			return snap.FailureReason
+		}
+
+		if snap.LastHealthResult.Details != "" {
+			return snap.LastHealthResult.Details
+		}
+
+		return "the core failed its last verification"
+	case StateDisabled:
+		return "the core was disabled by the user"
+	default:
+		return ""
+	}
+}
+
 // Enable re-activates a disabled core.
 func (m *Manager) Enable(ctx context.Context, name CoreName) error {
 	unlock := m.lock(name)
@@ -495,7 +540,12 @@ func (m *Manager) Enable(ctx context.Context, name CoreName) error {
 		if mf.BinaryPath == "" {
 			mf.BinaryPath = m.BinaryPath(name)
 		}
+		// The binary survived, but its health is unknown until the
+		// next check: restore the Installed state (not Ready) and
+		// clear stale failure diagnostics.
 		mf.State = StateInstalled
+		mf.FailureReason = ""
+		mf.FailureStage = ""
 		mf.UpdatedAt = time.Now().UTC()
 	})
 }

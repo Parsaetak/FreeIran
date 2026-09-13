@@ -176,19 +176,116 @@ jobs:
           if ($size -lt 10MB) { throw "executable suspiciously small: $size" }
           Write-Host "Executable size: $([math]::Round($size/1MB,1)) MB"
 
-      - name: Package
+      # v0.9.0: the release ZIP is a COMPLETE, self-contained deployment
+      # directory — not a bare exe. A user can extract it anywhere and
+      # keep using the deployment (portable layout next to the exe).
+      - name: Create deployment directory
         shell: pwsh
         run: |
           $version = (Get-Content VERSION -Raw).Trim()
+          $pkg = "FreeIran-v$version-windows-amd64"
 
-          Compress-Archive -Path FreeIran-windows-amd64.exe `
-            -DestinationPath "FreeIran-windows-amd64.zip"
+          New-Item -ItemType Directory -Force -Path "$pkg/config"   | Out-Null
+          New-Item -ItemType Directory -Force -Path "$pkg/data"     | Out-Null
+          New-Item -ItemType Directory -Force -Path "$pkg/logs"     | Out-Null
+          New-Item -ItemType Directory -Force -Path "$pkg/cache"    | Out-Null
+          New-Item -ItemType Directory -Force -Path "$pkg/cores"    | Out-Null
+          New-Item -ItemType Directory -Force -Path "$pkg/runtime"  | Out-Null
+          New-Item -ItemType Directory -Force -Path "$pkg/docs"     | Out-Null
+          New-Item -ItemType Directory -Force -Path "$pkg/deployment" | Out-Null
+
+          Copy-Item FreeIran-windows-amd64.exe "$pkg/FreeIran.exe"
+          Copy-Item README.md   "$pkg/README.md"
+          Copy-Item LICENSE     "$pkg/LICENSE"
+          Copy-Item VERSION     "$pkg/VERSION"
+          Copy-Item docs/*.md   "$pkg/docs/"
+
+          # Portable marker: the app keeps all state inside the
+          # deployment tree when this file sits next to the exe.
+          Set-Content -Path "$pkg/portable.marker" -Value "FreeIran portable deployment v$version"
+
+          # Deployment metadata consumed by the validation step and by
+          # future update tooling.
+          $commit = $env:GITHUB_SHA.Substring(0, 8)
+          $metadata = [ordered]@{
+            name         = "FreeIran"
+            version      = $version
+            commit       = $commit
+            platform     = "windows/amd64"
+            layout       = @("FreeIran.exe", "README.md", "LICENSE", "VERSION", "portable.marker",
+                             "config", "data", "logs", "cache", "cores", "runtime", "docs", "deployment")
+            created_at   = (Get-Date).ToUniversalTime().ToString("o")
+          }
+          $metadata | ConvertTo-Json | Set-Content -Path "$pkg/deployment/deployment.json"
+
+          # Placeholders for directories that legitimately start empty.
+          foreach ($d in @("config", "data", "logs", "cache", "runtime")) {
+            Set-Content -Path "$pkg/$d/.gitkeep" -Value ""
+          }
+
+          Write-Host "Deployment directory $pkg created"
+
+      - name: Validate package contents
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          $pkg = "FreeIran-v$version-windows-amd64"
+
+          $required = @(
+            "$pkg/FreeIran.exe",
+            "$pkg/README.md",
+            "$pkg/LICENSE",
+            "$pkg/VERSION",
+            "$pkg/portable.marker",
+            "$pkg/deployment/deployment.json"
+          )
+          foreach ($dir in @("config", "data", "logs", "cache", "cores", "runtime", "docs", "deployment")) {
+            $required += "$pkg/$dir"
+          }
+
+          foreach ($item in $required) {
+            if (-not (Test-Path $item)) { throw "package validation failed: missing $item" }
+          }
+
+          if ((Get-Content "$pkg/VERSION" -Raw).Trim() -ne $version) {
+            throw "package validation failed: VERSION mismatch"
+          }
+
+          if ((Get-Item "$pkg/FreeIran.exe").Length -lt 10MB) {
+            throw "package validation failed: FreeIran.exe suspiciously small"
+          }
+
+          $json = Get-Content "$pkg/deployment/deployment.json" -Raw | ConvertFrom-Json
+          if ($json.version -ne $version) { throw "package validation failed: deployment.json version mismatch" }
+
+          Write-Host "Package contents validated ($($required.Count) required entries)"
+
+      - name: Create ZIP and SHA-256
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          $pkg = "FreeIran-v$version-windows-amd64"
+
+          if (Test-Path "FreeIran-windows-amd64.zip") { Remove-Item "FreeIran-windows-amd64.zip" }
+          Compress-Archive -Path $pkg -DestinationPath "FreeIran-windows-amd64.zip" -CompressionLevel Optimal
+
+          # Deterministic-enough ordering check: the archive root must
+          # be exactly one deployment directory.
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [System.IO.Compression.ZipFile]::OpenRead("$PWD/FreeIran-windows-amd64.zip")
+          try {
+            $roots = $zip.Entries | ForEach-Object { ($_.FullName -split '/')[0] } | Sort-Object -Unique
+            if ($roots.Count -ne 1) { throw "zip malformed: expected exactly one root directory, found $($roots -join ', ')" }
+            if ($zip.Entries.Count -lt 12) { throw "zip malformed: only $($zip.Entries.Count) entries" }
+          } finally {
+            $zip.Dispose()
+          }
 
           $hash = (Get-FileHash "FreeIran-windows-amd64.zip" -Algorithm SHA256).Hash
           "$hash  FreeIran-windows-amd64.zip" | Out-File -Encoding ascii `
             "FreeIran-windows-amd64.zip.sha256"
 
-          Write-Host "Packaged FreeIran-windows-amd64 (v$version)"
+          Write-Host "Packaged FreeIran-windows-amd64 (v$version): $([math]::Round((Get-Item 'FreeIran-windows-amd64.zip').Length/1MB,1)) MB"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7

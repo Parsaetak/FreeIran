@@ -53,17 +53,30 @@ func (p *TCPProbe) Test(ctx context.Context, cfg config.Config) (Result, error) 
 		net.JoinHostPort(cfg.Address, strconv.Itoa(cfg.Port)))
 	if err != nil {
 		return Result{
-			Working:   false,
-			TestedAt:  time.Now().UTC(),
-			LastError: "endpoint unreachable: " + err.Error(),
+			Working:    false,
+			TestedAt:   time.Now().UTC(),
+			LastError:  "endpoint unreachable: " + err.Error(),
+			Backend:    "tcp",
+			Protocol:   string(cfg.Type),
+			Endpoint:   net.JoinHostPort(cfg.Address, strconv.Itoa(cfg.Port)),
+			DurationMS: time.Since(started).Milliseconds(),
+			Quality:    QualityFailed,
 		}, nil
 	}
 
 	_ = conn.Close()
 
+	latency := time.Since(started)
+
 	return Result{
-		Working:  true,
-		Latency:  time.Since(started),
-		TestedAt: time.Now().UTC(),
+		Working:    true,
+		Latency:    latency,
+		TestedAt:   time.Now().UTC(),
+		Backend:    "tcp",
+		Protocol:   string(cfg.Type),
+		Endpoint:   net.JoinHostPort(cfg.Address, strconv.Itoa(cfg.Port)),
+		PingMS:     latency.Milliseconds(),
+		DurationMS: latency.Milliseconds(),
+		Quality:    QualityFor(latency.Milliseconds()),
 	}, nil
 }

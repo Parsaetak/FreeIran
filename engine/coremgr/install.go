@@ -3,12 +3,13 @@ package coremgr
 import (
 	"archive/tar"
 	"archive/zip"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -67,17 +68,29 @@ func (m *Manager) Install(ctx context.Context, name CoreName) error {
 	m.logger.Info(Subsystem, "install_start",
 		"installing core %s from %s", name, src.Repo)
 
-	// Failure handler: clear staging, set Broken, log.
+	// Failure handler: clear staging, set Broken with a human-readable
+	// reason (surfaced verbatim in the UI), log, emit progress.
 	fail := func(stage string, ferr error) error {
 		_ = os.RemoveAll(m.StagingDir(name))
-		_ = m.setState(name, StateBroken)
+
+		reason := HumanizeInstallFailure(stage, ferr)
+		_ = m.updateManifest(name, func(mf *Manifest) {
+			mf.State = StateBroken
+			mf.FailureReason = reason
+			mf.FailureStage = stage
+			mf.UpdatedAt = time.Now().UTC()
+		})
+
+		emitProgress(name, StageFailed, reason, 0, 0)
 		m.logger.Error(Subsystem, "install_failed", "install", string(firerrors.KindDependencyUnavailable),
 			"core %s install failed at %s: %v", name, stage, ferr)
+
 		return firerrors.Wrap(ferr, firerrors.KindDependencyUnavailable,
 			Subsystem, "install", "%s: %s", name, stage)
 	}
 
 	// 1. Resolve the latest release.
+	emitProgress(name, StageResolveRelease, "resolving latest release for channel "+string(channel), 0, 0)
 	update, err := m.checkRelease(ctx, name, channel)
 	if err != nil {
 		return fail("resolve_release", err)
@@ -98,13 +111,26 @@ func (m *Manager) Install(ctx context.Context, name CoreName) error {
 		return fail("mkdir_staging", err)
 	}
 
-	// 3. Download.
-	assetPath := filepath.Join(m.StagingDir(name), "asset.bin")
-	if err := m.downloadFile(ctx, update.AssetURL, assetPath); err != nil {
+	// 3. Download (streamed, with byte progress through the injected
+	// HTTP downloader). The staged file keeps the asset's real
+	// extension so unpackArchive can pick the format — v0.8 staged
+	// everything as "asset.bin" and unpack always failed with
+	// "unknown archive format".
+	assetName := path.Base(update.AssetURL)
+	if assetName == "" || assetName == "." || strings.Contains(assetName, "?") {
+		assetName = "asset.zip"
+	}
+
+	assetPath := filepath.Join(m.StagingDir(name), assetName)
+	emitProgress(name, StageDownload, "downloading "+update.AssetURL, 0, update.AssetSize)
+	if err := m.downloadFile(ctx, update.AssetURL, assetPath, func(done, total int64) {
+		emitProgress(name, StageDownload, "downloading", done, total)
+	}); err != nil {
 		return fail("download", err)
 	}
 
 	// 4. Verify SHA-256.
+	emitProgress(name, StageVerifyChecksum, "verifying SHA-256", 0, 0)
 	actual, err := fileSHA256(assetPath)
 	if err != nil {
 		return fail("hash", err)
@@ -116,6 +142,7 @@ func (m *Manager) Install(ctx context.Context, name CoreName) error {
 	}
 
 	// 5. Unpack.
+	emitProgress(name, StageUnpack, "unpacking archive", 0, 0)
 	unpackedDir := filepath.Join(m.StagingDir(name), "unpacked")
 	if err := os.MkdirAll(unpackedDir, 0o700); err != nil {
 		return fail("mkdir_unpacked", err)
@@ -125,29 +152,55 @@ func (m *Manager) Install(ctx context.Context, name CoreName) error {
 	}
 
 	// 6. Locate the executable.
+	emitProgress(name, StageLocate, "locating executable", 0, 0)
 	execPath, err := findExecutable(unpackedDir, string(name))
 	if err != nil {
 		return fail("locate_executable", err)
 	}
 
+	// 6b. Ensure the executable bit BEFORE any probe runs: zip
+	// extraction writes 0600, so a version probe would fail with
+	// permission-denied on Unix (v0.8 chmodded only after the
+	// probes — a Linux install could never succeed).
+	if err := ensureExecutable(execPath); err != nil {
+		return fail("chmod", err)
+	}
+
 	// 7. Query version.
+	emitProgress(name, StageValidate, "probing version", 0, 0)
 	versionStr, err := m.queryVersion(ctx, execPath, src.VersionProbeArgs)
 	if err != nil || versionStr == "" {
 		return fail("probe_version",
 			fmt.Errorf("version query returned %q (err=%v)", versionStr, err))
 	}
 
+	// 7b. Sanity-check the probed version against the release tag.
+	// Both sides pass through the same loose-semver extraction, so
+	// a corrupted or wrong asset fails here instead of activating.
+	if probeVer := ExtractVersionToken(versionStr); probeVer != "" {
+		if tagVer := ExtractVersionToken(update.LatestVersion); tagVer != "" {
+			if compareVersions(probeVer, tagVer) != 0 {
+				return fail("probe_version", fmt.Errorf(
+					"downloaded binary reports version %s but release %s expects %s",
+					probeVer, update.ReleaseTag, tagVer))
+			}
+		}
+	}
+
 	// 8. Validate executable accepts a minimal config.
+	emitProgress(name, StageValidate, "validating executable", 0, 0)
 	if err := m.validateExecutable(ctx, name, execPath, src); err != nil {
 		return fail("validate_executable", err)
 	}
 
-	// 9. Ensure executable bit (Unix).
+	// 9. Ensure executable bit (Unix) — also covers the tar path
+	// where the archive lost its mode bits.
 	if err := ensureExecutable(execPath); err != nil {
 		return fail("chmod", err)
 	}
 
 	// 10. Retain rollback target.
+	emitProgress(name, StageActivate, "activating", 0, 0)
 	prevPath := m.RollbackPath(name)
 	prevExists := false
 	currentBinaryPath := snap.BinaryPath
@@ -198,7 +251,12 @@ func (m *Manager) Install(ctx context.Context, name CoreName) error {
 	prevChecksumFinal := prevChecksumStr
 
 	// 13. Run a smoke test to confirm readiness.
+	emitProgress(name, StageSmokeTest, "running smoke test", 0, 0)
 	result := m.smokeTest(ctx, name, finalPath, src)
+
+	// Capture the OLD version for the rollback trail before the
+	// manifest overwrite (v0.8 never recorded it).
+	previousVersion := snap.Version
 
 	if err := m.updateManifest(name, func(mf *Manifest) {
 		mf.State = StateReady
@@ -212,18 +270,19 @@ func (m *Manager) Install(ctx context.Context, name CoreName) error {
 		mf.InstalledAt = time.Now().UTC()
 		mf.LastChecked = time.Now().UTC()
 		mf.UpdatedAt = time.Now().UTC()
+		mf.FailureReason = ""
+		mf.FailureStage = ""
 		if prevExists {
 			mf.PreviousChecksum = prevChecksumFinal
 			mf.PreviousPath = prevPath
+			mf.PreviousVersion = previousVersion
 		}
-		// PreviousVersion is the OLD version. We did not capture it
-		// before overwriting; store empty when we cannot reliably
-		// recover it. The rollback target still exists on disk.
-		mf.PreviousVersion = ""
 		mf.LastHealthCheck = time.Now().UTC()
 		mf.LastHealthResult = result
 		if !result.OK {
 			mf.State = StateBroken
+			mf.FailureReason = HumanizeHealthFailure(result)
+			mf.FailureStage = "smoke_test"
 		}
 	}); err != nil {
 		m.logger.Warn(Subsystem, "persist_failed",
@@ -236,6 +295,7 @@ func (m *Manager) Install(ctx context.Context, name CoreName) error {
 	// Re-snapshot to log the final state.
 	finalSnap, _ := m.snapshotManifest(name)
 	if finalSnap.State == StateReady {
+		emitProgress(name, StageComplete, "installed "+versionStr, 0, 0)
 		m.logger.Info(Subsystem, "install_complete",
 			"core %s %s installed (sha256=%s)",
 			name, versionStr, actual[:12])
@@ -357,21 +417,19 @@ func isHex(s string) bool {
 	return true
 }
 
-// downloadFile streams a URL to a local path with bounded memory.
-func (m *Manager) downloadFile(ctx context.Context, url, dst string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+// downloadFile streams a URL to a local path with bounded memory and
+// byte-level progress reporting. It routes through the manager's
+// resolved HTTPDownloader so injected clients (and test fakes) apply
+// to asset downloads — the v0.8 implementation bypassed them.
+func (m *Manager) downloadFile(ctx context.Context, url, dst string, onBytes func(done, total int64)) error {
+	stream, err := m.resolveDownloader().Download(ctx, url)
 	if err != nil {
 		return err
 	}
+	defer stream.Body.Close()
 
-	resp, err := defaultHTTPClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("download %s: HTTP %d", url, resp.StatusCode)
+	if stream.StatusCode < 200 || stream.StatusCode >= 300 {
+		return fmt.Errorf("download %s: HTTP %d", url, stream.StatusCode)
 	}
 
 	out, err := os.Create(dst)
@@ -380,8 +438,31 @@ func (m *Manager) downloadFile(ctx context.Context, url, dst string) error {
 	}
 	defer out.Close()
 
-	_, err = io.Copy(out, resp.Body)
-	return err
+	buf := make([]byte, 256<<10)
+	var done int64
+
+	for {
+		n, readErr := stream.Body.Read(buf)
+		if n > 0 {
+			if _, werr := out.Write(buf[:n]); werr != nil {
+				return werr
+			}
+
+			done += int64(n)
+
+			if onBytes != nil {
+				onBytes(done, stream.Total)
+			}
+		}
+
+		if readErr == io.EOF {
+			return nil
+		}
+
+		if readErr != nil {
+			return readErr
+		}
+	}
 }
 
 // httpGet fetches a URL and returns body + status code.
@@ -394,7 +475,9 @@ func (m *Manager) httpGet(ctx context.Context, client HTTPDoer, url string) ([]b
 }
 
 // unpackArchive unpacks a .zip, .tar.gz or .tgz archive into dst.
-// The format is selected by filename extension.
+// The format is selected by filename extension, with a content
+// sniffing fallback (PK zip magic / gzip magic) so a misnamed staged
+// file still unpacks instead of failing the whole install.
 func unpackArchive(archivePath, dst string) error {
 	name := strings.ToLower(filepath.Base(archivePath))
 	switch {
@@ -405,7 +488,22 @@ func unpackArchive(archivePath, dst string) error {
 	case strings.HasSuffix(name, ".tar"):
 		return unpackTar(archivePath, dst)
 	default:
-		return fmt.Errorf("unknown archive format: %s", name)
+		// Content sniffing fallback.
+		magic := make([]byte, 2)
+
+		if f, err := os.Open(archivePath); err == nil {
+			_, _ = io.ReadFull(f, magic)
+			_ = f.Close()
+		}
+
+		switch {
+		case bytes.Equal(magic, []byte("PK")):
+			return unpackZip(archivePath, dst)
+		case bytes.Equal(magic, []byte{0x1f, 0x8b}):
+			return unpackTarGz(archivePath, dst)
+		default:
+			return fmt.Errorf("unknown archive format: %s", name)
+		}
 	}
 }
 

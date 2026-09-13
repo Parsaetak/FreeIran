@@ -6,7 +6,9 @@ import { useSettingsStore, effectiveReducedMotion } from "./state/settingsStore"
 import { DashboardPage } from "./pages/Dashboard";
 import { SourcesPage } from "./pages/Sources";
 import { ConfigsPage } from "./pages/Configs";
+import { CoresPage } from "./pages/Cores";
 import { ConnectionPage } from "./pages/Connection";
+import { NetworkPage } from "./pages/Network";
 import { DiagnosticsPage } from "./pages/Diagnostics";
 import { SettingsPage } from "./pages/Settings";
 import { StatusBar } from "./components/StatusBar";
@@ -17,8 +19,10 @@ import {
   IconChevronRight,
   IconConfigs,
   IconConnection,
+  IconCores,
   IconDashboard,
   IconDiagnostics,
+  IconGlobe,
   IconSettings,
   IconSources,
 } from "./components/Icons";
@@ -27,9 +31,11 @@ import type { Page } from "./types/ui";
 
 const NAV: Array<{ id: Page; label: string; icon: typeof IconDashboard }> = [
   { id: "dashboard", label: "Dashboard", icon: IconDashboard },
-  { id: "sources", label: "Sources", icon: IconSources },
   { id: "configs", label: "Configurations", icon: IconConfigs },
+  { id: "sources", label: "Sources", icon: IconSources },
+  { id: "cores", label: "Cores", icon: IconCores },
   { id: "connection", label: "Connection", icon: IconConnection },
+  { id: "network", label: "Network", icon: IconGlobe },
   { id: "diagnostics", label: "Diagnostics", icon: IconDiagnostics },
   { id: "settings", label: "Settings", icon: IconSettings },
 ];
@@ -154,7 +160,9 @@ export function App() {
                 {page === "dashboard" && <DashboardPage onNavigate={setPage} />}
                 {page === "sources" && <SourcesPage />}
                 {page === "configs" && <ConfigsPage />}
+                {page === "cores" && <CoresPage />}
                 {page === "connection" && <ConnectionPage />}
+                {page === "network" && <NetworkPage />}
                 {page === "diagnostics" && <DiagnosticsPage />}
                 {page === "settings" && <SettingsPage />}
               </div>

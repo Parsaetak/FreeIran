@@ -1,12 +1,12 @@
-```# FreeIran — Engineering Worklog
+# FreeIran — Engineering Worklog
 
 **Project:** FreeIran  
 **Repository:** https://github.com/Parsaetak/FreeIran  
 **Architect / Project Originator:** Parsa Tak / SHEYTAN  
 **Primary platforms:** Windows + Android  
 **Primary implementation language:** Go  
-**Current phase:** v0.1 engine foundation  
-**Last known project date:** 2026-08-27  
+**Current phase:** v0.9.0 — core reliability, network diagnostics, deployment package  
+**Last known project date:** 2026-09-13  
 **Purpose of this file:** Portable handoff document for any AI coding agent continuing FreeIran without relying on previous chat history.
 
 ---
@@ -2240,3 +2240,124 @@ fake-core harness or real-core CI verification was weakened.
   gofmt, native, native_accel, real-core smoke ×3, bench smoke,
   frontend typecheck/test/build/embed, windows cross-build + test
   compile). See REPLACEMENT_MANIFEST.md for the exact commands.
+
+## 3.x Engineering Worklog — v0.9.0 (2026-09-13)
+
+Date: 2026-09-13
+Version: 0.9.0
+Previous: 0.8.0
+
+### Summary
+
+v0.9.0 makes core loading reliable end to end, kills the remaining
+console-window launch sites, adds the Internet/Network Diagnostics
+subsystem, upgrades configuration testing to real end-to-end pings
+with persisted results, and replaces the bare-exe release artifact
+with a complete, validated, portable deployment ZIP.
+
+### Root causes found and fixed
+
+1. Managed installs were invisible to Connect/Backends/Tester:
+   coremgr installed cores into <cores>/<core>/bin/, but the
+   registry's CoreLocator only searched <cores>/. Fix: the manager
+   boots eagerly in app.New and every BinDir is passed to
+   NewCoreLocator as an extra discovery directory; lifecycle actions
+   re-run registry.Refresh.
+2. Repair deadlock: Repair held the per-core mutex and re-acquired it
+   inside Rollback/HealthCheck/Install. Fix: outer lock removed; each
+   sub-operation serializes itself (regression test with timeout).
+3. Asset selection missed Xray/V2Ray on windows/linux/darwin amd64:
+   selectAsset required the platform hint inside the asset name, which
+   legacy naming ("Xray-windows-64.zip") lacks. Fix: three-pass
+   matcher (pattern+hint → pattern-alone-with-OS-and-arch-validation →
+   hint alone) with unit tests including the windows/arm64 no-match
+   case.
+4. Install always failed at unpack: downloads were staged as
+   "asset.bin" so the format switch never matched. Fix: staged file
+   keeps the asset basename; content sniffing (PK/gzip magic) as a
+   fallback.
+5. Unix installs could never succeed: zip extraction wrote 0600 and
+   the executable bit was only set AFTER the version probe. Fix:
+   ensureExecutable runs immediately after locate_executable.
+6. Windows smoke test marked every healthy install Broken:
+   smokeTest used Signal(os.Interrupt) (unsupported on Windows for
+   detached children) and exec.CommandContext without CREATE_NO_WINDOW
+   flashed console windows. Fix: coremgr-wide applyHiddenConsole
+   helper + Windows-safe gracefulStop with honest CleanShutdown
+   semantics; regression tests (windows-tagged) assert the creation
+   flags.
+7. downloadFile bypassed the injected HTTPDoer (hardcoded default
+   client, no UA, no testability). Fix: new HTTPDownloader interface
+   implemented by the production adapter; installs stream with
+   byte-level progress through the resolved downloader.
+8. diagnosticsService.Memory() binding called ByName with dots instead
+   of the package separator — the call could never resolve. Fixed;
+   plus the missing LifecycleInfo/Reinstall/UpdateAll/
+   EnqueueByFilter/ListConfigsFiltered/CheckConnection/LastReport/
+   BuildDiagnosticReport bindings.
+9. Test-queue results were never persisted (v0.8 dropped them).
+   Fix: testerAdapter.Test applies and upserts the runtime fields
+   (working/latency/backend/endpoint/duration) to the store.
+10. Latency was fabricated from core startup time. Fix: CoreProbe
+    EndToEnd mode measures the real SOCKS5 CONNECT round-trip and
+    fetches a 204 through the tunnel (engine/socks5 minimal RFC 1928
+    client); the TCP reachability probe remains the no-core fallback.
+
+### New packages
+
+- engine/netcheck — multi-probe connectivity diagnostics with
+  7-state classification, configurable targets, cancellation.
+- engine/socks5 — minimal no-auth SOCKS5 CONNECT dialer (RFC 1928
+  subset) shared by netcheck and the tester.
+
+### Modified packages
+
+- engine/coremgr: Repair deadlock, asset selection, unpack/ext-bit
+  fixes, hidden-console helpers, gracefulStop, progress events
+  (InstallProgress + OnProgress), human-readable failure reasons,
+  PreviousVersion capture, version sanity check, UpdateAll, Reinstall.
+- engine/app: eager core manager + locator wiring, RefreshCores,
+  NetworkService (CheckConnection/LastReport), DiagnosticReport
+  build/format, humanized connect errors (readable + technical
+  details separator), testerAdapter persistence, EnqueueByFilter bulk
+  testing, tester chain (CoreProbe e2e → TCPProbe fallback).
+- engine/tester: Result gains Backend/Protocol/Endpoint/PingMS/
+  DurationMS/Quality; ChainedProbe; quality bands.
+- engine/testqueue: Result/Stats gain protocol/endpoint/ping/
+  duration/quality + avg/fastest/slowest latency aggregates.
+- engine/errors: Humanize() translates port-in-use, permission,
+  missing-executable, timeout, TLS and auth failures into readable
+  sentences.
+- system: portable deployment base-dir (portable.marker / config/
+  next to the exe wins over %APPDATA%).
+- cmd/freeiran: NetworkService registration + freeiran:coreprogress
+  event forwarding.
+- frontend: 8-tab navigation, Cores page (install/verify/repair/
+  rollback/update with progress + recovery actions), Network page
+  (probe lists + classified verdict), Configurations workspace
+  (status filter, sorting, multi-select, bulk test, live queue
+  panel), onboarding checklist on the Dashboard, Settings diagnostics
+  report copy/export.
+
+### Verification (performed)
+
+- go test -count=1 ./engine/... ./system/... ./internal/... — green.
+- go vet + gofmt clean (linux and windows targets).
+- New regression tests: coremgr install E2E against a fake release
+  server (happy path + corrupted-version rejection), Repair deadlock
+  timeout guard, legacy asset naming, ExtractVersionToken, hidden-
+  console attributes (windows), netcheck classification/offline/
+  local/cancellation, socks5 handshake against a local fake proxy,
+  app-level managed-install discovery.
+- Frontend: npm ci, typecheck, vitest (28 + new parseHumanizedError
+  tests), vite production build.
+
+### Known follow-ups
+
+- Regenerate wails3 bindings on a GUI toolchain host (hand-written
+  ByName bindings remain correct).
+- The configuration editor with capability-driven per-protocol forms
+  is planned for v0.10.
+- Real-binary core smoke tests in release.yml (protocol-cores job)
+  remain a CI-only gate.
+

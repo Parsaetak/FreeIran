@@ -163,3 +163,23 @@ lifecycle battery in `system/process_test.go` (15 tests):
 The fake-core contract tests and the process battery share the same
 supervision path, so the `bind kill-on-close job` regression class
 the v0.7.0 Windows run exhibited is covered on every platform.
+
+## v0.9.0 — release packaging
+
+The release pipeline's Windows job no longer packages a bare exe.
+After the desktop build it:
+
+1. creates `FreeIran-v<version>-windows-amd64/` with `FreeIran.exe`,
+   README, LICENSE, VERSION, `portable.marker`, the eight standard
+   directories (`config`, `data`, `logs`, `cache`, `cores`,
+   `runtime`, `docs`, `deployment`), every `docs/*.md`, and
+   `deployment/deployment.json` metadata (version, commit, platform,
+   layout);
+2. validates the package — the job fails when the executable, any
+   required directory, README, VERSION or metadata is missing or
+   inconsistent, or when the executable is suspiciously small;
+3. creates `FreeIran-windows-amd64.zip` (single root, ≥ 12 entries),
+   computes the SHA-256 checksum file, and publishes both.
+
+The runtime smoke test (`go run ./cmd/freeiran --smoke-test`)
+continues to gate the Windows build before packaging.

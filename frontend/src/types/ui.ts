@@ -11,7 +11,9 @@ export type Page =
   | "dashboard"
   | "sources"
   | "configs"
+  | "cores"
   | "connection"
+  | "network"
   | "diagnostics"
   | "settings";
 

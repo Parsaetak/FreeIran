@@ -219,9 +219,38 @@ func New(opts Options) (*App, error) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
+	// v0.9.0: the Managed Core Manager boots with the app (not
+	// lazily) because its install locations ARE discovery inputs:
+	// a managed core lives in <cores>/<core>/bin/<core>.exe, and
+	// the registry's locator must search those bin directories or
+	// every successful install stays invisible to Connect/Backends
+	// (the v0.8 integration gap). The manager is cheap to create:
+	// it reads three small manifest files.
+	manager, err := coremgr.New(coremgr.Options{
+		RootDir: layout.Cores,
+		Logger:  logger,
+	})
+	if err != nil {
+		logger.Error("coremgr", "coremgr_error", "init", "environment",
+			"core manager init failed: %v", err)
+
+		_ = st.Close()
+		_ = logger.Close()
+		cancel()
+
+		return nil, fmt.Errorf("app: init core manager: %w", err)
+	}
+
+	extraDirs := make([]string, 0, len(coremgr.AllCores))
+	for _, name := range coremgr.AllCores {
+		extraDirs = append(extraDirs, manager.BinDir(name))
+	}
+
+	locator := system.NewCoreLocator(layout.Cores, extraDirs...)
+
 	// The core registry binds backend adapters to executable
 	// discovery: xray (priority 0), v2ray (1), sing-box (2).
-	coreRegistry := core.NewRegistry(system.NewCoreLocator(layout.Cores))
+	coreRegistry := core.NewRegistry(locator)
 
 	// fail closes every resource already created by New so the
 	// caller never has to clean up after a partial boot. The logger
@@ -269,8 +298,9 @@ func New(opts Options) (*App, error) {
 			MaxEntries: 4096,
 			TTL:        30 * time.Minute,
 		}),
-		coreLocator:  system.NewCoreLocator(layout.Cores),
+		coreLocator:  locator,
 		coreRegistry: coreRegistry,
+		coreMgr:      manager,
 		seenHashes:   make(map[string]string),
 		state: AppState{
 			Status:        "ready",
@@ -281,7 +311,16 @@ func New(opts Options) (*App, error) {
 		},
 	}
 
-	app.tester = tester.New(tester.NewTCPProbe())
+	// v0.9.0 testing model (§4/§5): the primary probe executes the
+	// configuration through a real core and — when EndToEnd is on —
+	// measures the actual round-trip through the generated tunnel
+	// instead of fabricating one. The TCP reachability probe is the
+	// fallback for protocol classes with no available core.
+	coreProbe := tester.NewCoreProbe(coreRegistry)
+	coreProbe.Fallback = true
+	coreProbe.EndToEnd = true
+
+	app.tester = tester.New(tester.NewChainedProbe(coreProbe, tester.NewTCPProbe()))
 
 	// Memory Booster 2.0: the adaptive controller observes the store,
 	// caches and (once created) the test queue; Start() launches its
@@ -396,6 +435,40 @@ func (a *App) warmCaches() {
 // Context().Done() so no goroutine outlives the application.
 func (a *App) Context() context.Context {
 	return a.ctx
+}
+
+// CoreManager returns the Managed Core Manager. It is created during
+// New and never nil for a successfully booted app.
+func (a *App) CoreManager() *coremgr.Manager {
+	return a.coreMgr
+}
+
+// RefreshCores re-runs protocol-core discovery against the locator
+// (which includes the managed bin directories). Call it after any
+// install/update/remove so Connect, Backends and the tester observe
+// the change immediately.
+func (a *App) RefreshCores() {
+	if a.coreRegistry == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(a.ctx, 30*time.Second)
+	defer cancel()
+
+	a.coreRegistry.Refresh(ctx)
+
+	for _, backend := range a.coreRegistry.Backends() {
+		a.logger.Info("core", "core_discovered",
+			"%s %s available at %s",
+			backend.Name, backend.Version, backend.Path)
+	}
+}
+
+// SetCoreProgressListener registers the install-progress sink the
+// desktop entrypoint forwards to the UI as Wails events. The engine
+// itself never imports the Wails runtime. Passing nil removes it.
+func (a *App) SetCoreProgressListener(fn func(coremgr.InstallProgress)) {
+	coremgr.OnProgress(fn)
 }
 
 // Shutdown coordinates a safe stop, in order:

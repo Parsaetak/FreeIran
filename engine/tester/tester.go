@@ -23,6 +23,61 @@ type Result struct {
 	Latency   time.Duration
 	TestedAt  time.Time
 	LastError string
+
+	// --- v0.9.0: richer, honest test reporting (§4) ---
+
+	// Backend is the core that executed the test ("xray", "v2ray",
+	// "sing-box") or "tcp" for the reachability fallback.
+	Backend string
+
+	// Protocol is the configuration's protocol ("vless", ...).
+	Protocol string
+
+	// Endpoint is the server address the test targeted
+	// (host:port of the remote proxy server, redaction-free).
+	Endpoint string
+
+	// PingMS is the measured round-trip time through the tunnel
+	// (end-to-end probes only; TCP probe reports its dial RTT).
+	PingMS int64
+
+	// DurationMS is the total wall time of the test (spawn + ready +
+	// probe for core tests; dial time for TCP probes).
+	DurationMS int64
+
+	// Quality classifies the measured latency: excellent / good /
+	// acceptable / slow / failed. Derived from the measurement, never
+	// fabricated.
+	Quality string
+}
+
+// Latency quality bands (milliseconds). Calibrated for the proxy
+// use case: interactive browsing feels instant under 150 ms.
+const (
+	QualityExcellent  = "excellent"  // <= 150 ms
+	QualityGood       = "good"       // <= 400 ms
+	QualityAcceptable = "acceptable" // <= 800 ms
+	QualitySlow       = "slow"       // <= 2000 ms
+	QualityVerySlow   = "very_slow"  // > 2000 ms
+	QualityFailed     = "failed"
+)
+
+// QualityFor classifies a measured latency in milliseconds.
+func QualityFor(ms int64) string {
+	switch {
+	case ms <= 0:
+		return QualityFailed
+	case ms <= 150:
+		return QualityExcellent
+	case ms <= 400:
+		return QualityGood
+	case ms <= 800:
+		return QualityAcceptable
+	case ms <= 2000:
+		return QualitySlow
+	default:
+		return QualityVerySlow
+	}
 }
 
 // Tester executes configuration tests through a Probe.
@@ -108,6 +163,11 @@ func ApplyResult(cfg *config.Config, result Result) {
 	cfg.Working = result.Working
 	cfg.LatencyMS = result.Latency.Milliseconds()
 	cfg.TestedAt = result.TestedAt.UnixMilli()
+
+	// v0.9.0 test metadata (§4).
+	cfg.TestBackend = result.Backend
+	cfg.TestEndpoint = result.Endpoint
+	cfg.TestDurationMS = result.DurationMS
 }
 
 // TestAndApply tests a configuration and immediately updates its runtime state.
