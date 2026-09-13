@@ -23,7 +23,9 @@ import (
 	"hash/fnv"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
+	"unsafe"
 )
 
 // Mode reports which implementation the bridge currently dispatches to.
@@ -41,9 +43,23 @@ var (
 	// forcedFallback is set when FREEIRAN_NATIVE=off so operators can
 	// disable acceleration at runtime without a rebuild.
 	forcedFallback atomic.Bool
+
+	// fallbackHookPtr holds the optional metrics callback invoked when
+	// an operation takes the Go path in a binary that requested native
+	// acceleration. Stored as an atomic.Pointer so SetFallbackHook can
+	// be called concurrently with useNative() without a data race.
+	// A nil pointer means "no hook" (the default).
+	fallbackHookPtr atomic.Pointer[func()]
 )
 
+// noFallbackHook is the sentinel returned by fallbackHookPtr.Load when
+// no hook has been set. We store this at init so Load never returns nil
+// and callers can always safely dereference.
+var noFallbackHook = func() {}
+
 func init() {
+	fallbackHookPtr.Store(&noFallbackHook)
+
 	value := strings.ToLower(strings.TrimSpace(os.Getenv("FREEIRAN_NATIVE")))
 
 	if value == "off" || value == "0" || value == "false" {
@@ -125,6 +141,37 @@ func CRC32(seed uint32, data []byte) uint32 {
 	}
 
 	return crc32Update(seed, data)
+}
+
+// CRC32Batch hashes count packed strings laid out contiguously in
+// data. offsets holds count+1 entries delimiting each string. Each
+// string is hashed independently from seed 0 (NOT incremental across
+// strings). Returns the checksums in input order.
+func CRC32Batch(data []byte, offsets []uint32) []uint32 {
+	count := len(offsets) - 1
+	if count <= 0 {
+		return nil
+	}
+	out := make([]uint32, count)
+	if useNative() {
+		crc32BatchNative(data, offsets, out)
+		return out
+	}
+	crc32BatchGo(data, offsets, out)
+	return out
+}
+
+// crc32BatchGo is the pure-Go fallback for batch CRC-32.
+func crc32BatchGo(data []byte, offsets []uint32, out []uint32) {
+	table := crc32.MakeTable(crc32.IEEE)
+	for i := 0; i < len(out) && i+1 < len(offsets); i++ {
+		start, end := int(offsets[i]), int(offsets[i+1])
+		if end < start || end > len(data) {
+			end = start
+		}
+		out[i] = crc32.ChecksumIEEE(data[start:end])
+		_ = table // keep the table reference for parity with crc32Update
+	}
 }
 
 // crc32Update is the pure-Go path.
@@ -220,32 +267,146 @@ func scanURLsGo(text []byte, out []uint32) (int, []uint32) {
 
 // useNative reports whether the native path should be taken, and
 // records a fallback decision for the metrics layer when it is not.
+// Safe for concurrent use: fallbackHookPtr is an atomic.Pointer.
 func useNative() bool {
 	if !nativeCompiled || forcedFallback.Load() {
-		fallbackHook()
-
+		hook := fallbackHookPtr.Load()
+		if hook != nil {
+			(*hook)()
+		}
 		return false
 	}
 
 	return true
 }
 
-// fallbackHook is invoked whenever an operation takes the Go path in a
-// binary that was requested to use native acceleration. It is a hook
-// for the metrics registry; default is a no-op.
-var fallbackHook = func() {}
-
 // SetFallbackHook installs a callback invoked on each Go-path
-// dispatch when acceleration was requested but unavailable.
+// dispatch when acceleration was requested but unavailable. Pass nil
+// to restore the no-op default. Safe to call concurrently with useNative.
 func SetFallbackHook(fn func()) {
 	if fn == nil {
-		fallbackHook = func() {}
+		fallbackHookPtr.Store(&noFallbackHook)
 		return
 	}
-
-	fallbackHook = fn
+	fallbackHookPtr.Store(&fn)
 }
 
 // Ensure the standard library is referenced even when the native path
 // is compiled in (keeps imports stable across build tags).
 var _ = fnv.New64a
+
+// --- Arena: native-accelerated or Go-fallback bump allocator ---
+//
+// Arena is a bounded-growth bump allocator for high-frequency
+// short-lived buffers. When the native layer is compiled in
+// (-tags native_accel), allocations come from a pre-allocated 64 KiB
+// block pool and are reclaimed via Reset (bulk) or Destroy (whole).
+// When the native layer is NOT compiled in, the Arena falls back to
+// individual make([]byte, size) allocations tracked in a Go slice;
+// Reset is a no-op in this mode (the Go GC reclaims individual
+// buffers) but the API contract is preserved.
+//
+// Ownership: the caller creates an Arena via NewArena and must call
+// Destroy when done. Pointers returned by Alloc are valid until the
+// next Reset or Destroy. The caller must NOT retain a pointer across
+// Reset/Destroy.
+
+// Arena is a bounded-growth bump allocator.
+type Arena struct {
+	handle uintptr // native arena handle (0 in Go-fallback mode)
+
+	// Go-fallback state (used when handle == 0). Guarded by mu.
+	mu     sync.Mutex
+	goBufs [][]byte
+	stats  ArenaStats
+}
+
+// NewArena creates an arena with the given block cap. maxBlocks=0 uses
+// the native default (256 blocks = 16 MiB). The arena is safe for
+// concurrent Alloc calls.
+func NewArena(maxBlocks uint32) *Arena {
+	a := &Arena{}
+	if useNative() {
+		a.handle = nativeArenaCreate(maxBlocks)
+	}
+	if a.handle == 0 {
+		// Go fallback: no fixed block cap, but track a soft cap for
+		// stats parity.
+		if maxBlocks == 0 {
+			maxBlocks = 256
+		}
+		a.stats.BlocksCapacity = uint64(maxBlocks)
+	}
+	return a
+}
+
+// Alloc returns a pointer to size bytes of arena memory. The pointer
+// is 16-byte aligned (native) or naturally aligned (Go fallback). The
+// pointer is valid until the next Reset or Destroy. Returns nil if the
+// arena is at capacity (native mode only).
+func (a *Arena) Alloc(size int) []byte {
+	if size < 0 {
+		return nil
+	}
+	if a.handle != 0 {
+		ptr := nativeArenaAlloc(a.handle, uint32(size))
+		if ptr == nil {
+			return nil
+		}
+		// Convert the unsafe.Pointer to a []byte without copying.
+		return unsafe.Slice((*byte)(ptr), size)
+	}
+	// Go fallback.
+	buf := make([]byte, size)
+	a.mu.Lock()
+	a.goBufs = append(a.goBufs, buf)
+	a.stats.TotalAllocs++
+	a.stats.TotalBytes += uint64(size)
+	a.stats.BytesInUse += uint64(size)
+	a.stats.BlocksInUse = uint64(len(a.goBufs))
+	a.mu.Unlock()
+	return buf
+}
+
+// Reset marks all blocks reusable. In native mode this is a bulk
+// reclaim (no deallocation). In Go-fallback mode this drops the
+// reference to all allocated buffers (the GC reclaims them); subsequent
+// Allocs start fresh.
+func (a *Arena) Reset() {
+	if a.handle != 0 {
+		nativeArenaReset(a.handle)
+		return
+	}
+	a.mu.Lock()
+	a.goBufs = nil
+	a.stats.BytesInUse = 0
+	a.stats.BlocksInUse = 0
+	a.mu.Unlock()
+}
+
+// Destroy releases all arena memory. The Arena must not be used after
+// Destroy.
+func (a *Arena) Destroy() {
+	if a.handle != 0 {
+		nativeArenaDestroy(a.handle)
+		a.handle = 0
+		return
+	}
+	a.mu.Lock()
+	a.goBufs = nil
+	a.stats = ArenaStats{}
+	a.mu.Unlock()
+}
+
+// Stats returns the current allocation statistics.
+func (a *Arena) Stats() ArenaStats {
+	if a.handle != 0 {
+		s, ok := nativeArenaStats(a.handle)
+		if ok {
+			return s
+		}
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.stats
+}

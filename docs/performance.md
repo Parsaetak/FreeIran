@@ -227,3 +227,82 @@ rather than for first connect.
   and paginated; the log viewer reads incrementally by sequence
   number (never a full-file transfer); no new UI API serializes the
   whole store.
+
+## 11. v0.7.0 additions — memory pressure, booster, native arena
+
+### Memory pressure controller (`engine/mempressure`)
+
+A central controller tracks Go heap, RSS (Linux), GC CPU fraction,
+native arena bytes, cache bytes, queue bytes, pending write bytes, and
+source/parser buffer bytes. It computes a four-level pressure state
+(Normal → Elevated → High → Critical) with hysteresis bands (0.60/0.45,
+0.75/0.60, 0.88/0.72) so the system does not oscillate near a
+threshold. Subsystems register `Listener` callbacks to react:
+
+| State | Reaction |
+|-------|----------|
+| Normal | Booster may grow concurrency/batch/cache |
+| Elevated | Hold concurrency; shrink caches if hit rate < 50% |
+| High | Cut concurrency 25%; halve caches + buffers + chunk flush |
+| Critical | All parameters to floor; GC may be invoked |
+
+### Memory Booster (`engine/booster`)
+
+An adaptive runtime controller that watches memory pressure + workload
+signals (queue backlog, cache hit rate, throughput, CPU pressure) and
+adjusts tunable parameters one step per tick. It NEVER exceeds hard
+ceilings (`Limits`) and NEVER trades correctness for throughput. On
+Critical pressure it cuts everything to the floor; on Normal recovery
+it gradually restores queue depth.
+
+### Native arena (`engine/native` + `native/`)
+
+A bounded-growth, size-classed bump allocator exposed via a stable C
+ABI (`fir_arena_create/alloc/reset/destroy/stats`). Allocations come
+from pre-allocated 64 KiB blocks (cap 256 = 16 MiB default). The arena
+is thread-safe (mutex-protected bump pointer). Reset reclaims all
+blocks for reuse without deallocation; Destroy releases everything.
+
+The Go bridge (`native.Arena`) transparently falls back to a
+`make([]byte)`-backed implementation when the C++ layer is not compiled
+in, preserving the API contract. Parity tests verify both paths produce
+usable, non-overlapping buffers under concurrent access.
+
+### Chunk encode buffer pooling
+
+`chunks.WriteChunk` now draws its payload buffer from a `sync.Pool`,
+eliminating the per-flush `make([]byte, payloadSize)` allocation on the
+hot path. Buffers > 64 MiB are not pooled (to avoid retaining huge
+slices). The pool is thread-safe and shared across all flush workers.
+
+### Store Count() cache
+
+`store.Count()` caches the live-record count in an `atomic.Int64` and
+invalidates it on every write (UpsertBatch, Delete, applyReplay,
+Compact). The UI hot path (`app.State()` calls `Count()` on every
+poll) now hits the cache instead of allocating a `map[[32]byte]struct{}`
+per call.
+
+### Queue heap-based priority queue
+
+The test queue's pending list is now a `container/heap`-backed
+min-heap (by Priority desc, CreatedAt asc) with O(log n) Push/Pop/Remove
+instead of the v0.6 O(n) linear scan. Each `Task` carries its own
+`heapIdx` so `Cancel` can remove a specific task in O(log n).
+
+### Benchmark results (smoke, 1 iteration)
+
+| Benchmark | ns/op | Notes |
+|-----------|-------|-------|
+| `BenchmarkQueueEnqueue/n=1000` | ~504,000 | 504 ns/task |
+| `BenchmarkQueueEnqueue/n=10000` | ~5,674,000 | 567 ns/task |
+| `BenchmarkQueueEnqueue/n=100000` | ~80,509,000 | 805 ns/task |
+| `BenchmarkQueueCancelBySource/n=1000` | ~483,000 | 483 ns/cancel |
+| `BenchmarkQueueCancelBySource/n=10000` | ~8,646,000 | 864 ns/cancel |
+| `BenchmarkQueueCancelBySource/n=100000` | ~105,810,000 | 1058 ns/cancel |
+| `BenchmarkHashBatch` (Go fallback) | ~336,000 | 4096 hashes, 82 ns/hash |
+
+The queue scales near-linearly: enqueue is O(log n) per task, cancel
+is O(n) for the scan (to find matching source) + O(log n) per removal.
+For the default `MaxQueueSize=10000`, both operations complete in under
+10 ms.

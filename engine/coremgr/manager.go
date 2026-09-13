@@ -342,13 +342,18 @@ func (m *Manager) SetChannel(name CoreName, ch Channel) error {
 	unlock := m.lock(name)
 	defer unlock()
 
-	mf := m.manifestOrCreate(name)
+	m.mu.Lock()
+	mf := m.manifestOrCreateLocked(name)
 	mf.Channel = ch
+	mf.UpdatedAt = time.Now().UTC()
+	m.mu.Unlock()
+
 	return m.persist(name)
 }
 
-// manifestOrCreate returns the in-memory manifest, creating an empty one if missing.
-func (m *Manager) manifestOrCreate(name CoreName) *Manifest {
+// manifestOrCreateLocked returns the in-memory manifest, creating an
+// empty one if missing. Caller MUST hold m.mu (write).
+func (m *Manager) manifestOrCreateLocked(name CoreName) *Manifest {
 	if mf, ok := m.manifests[name]; ok {
 		return mf
 	}
@@ -361,29 +366,59 @@ func (m *Manager) manifestOrCreate(name CoreName) *Manifest {
 	return mf
 }
 
-// setState updates the in-memory state and persists the manifest.
-func (m *Manager) setState(name CoreName, state InstallState) error {
-	mf := m.manifestOrCreate(name)
-	mf.State = state
-	mf.UpdatedAt = time.Now().UTC()
+// snapshotManifest returns a value copy of the manifest. Safe to call
+// concurrently with mutations (the copy is taken under m.mu.RLock).
+func (m *Manager) snapshotManifest(name CoreName) (Manifest, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	mf, ok := m.manifests[name]
+	if !ok {
+		return Manifest{Name: name, State: StateNotInstalled, Channel: ChannelStable}, false
+	}
+	return *mf, true
+}
+
+// updateManifest applies fn to the manifest under m.mu.Lock, then
+// persists. fn must not acquire any lock that could deadlock with
+// m.mu (in particular, fn must not call m.lock or m.persist). Use
+// this for short read-modify-write sequences. For long operations
+// (download, smoke test), snapshot first, do the work outside the
+// lock, then call updateManifest to write back.
+func (m *Manager) updateManifest(name CoreName, fn func(mf *Manifest)) error {
+	m.mu.Lock()
+	mf := m.manifestOrCreateLocked(name)
+	fn(mf)
+	m.mu.Unlock()
 	return m.persist(name)
 }
 
-// persist writes the manifest to disk atomically.
+// setState updates the in-memory state and persists the manifest.
+func (m *Manager) setState(name CoreName, state InstallState) error {
+	return m.updateManifest(name, func(mf *Manifest) {
+		mf.State = state
+		mf.UpdatedAt = time.Now().UTC()
+	})
+}
+
+// persist writes the manifest to disk atomically. Takes a consistent
+// snapshot under m.mu.RLock before marshalling so concurrent
+// mutations don't produce a torn write.
 func (m *Manager) persist(name CoreName) error {
 	m.mu.RLock()
 	mf, ok := m.manifests[name]
-	m.mu.RUnlock()
 	if !ok {
+		m.mu.RUnlock()
 		return nil
 	}
+	snapshot := *mf
+	m.mu.RUnlock()
 
 	if err := os.MkdirAll(m.CoreDir(name), 0o700); err != nil {
 		return firerrors.Wrap(err, firerrors.KindEnvironment,
 			Subsystem, "persist", "mkdir %s", m.CoreDir(name))
 	}
 
-	raw, err := jsonMarshalIndent(mf)
+	raw, err := jsonMarshalIndent(&snapshot)
 	if err != nil {
 		return firerrors.Wrap(err, firerrors.KindConfiguration,
 			Subsystem, "persist", "encode manifest")
@@ -446,14 +481,23 @@ func (m *Manager) Enable(ctx context.Context, name CoreName) error {
 	unlock := m.lock(name)
 	defer unlock()
 
-	mf := m.manifestOrCreate(name)
-	if mf.BinaryPath == "" {
-		mf.BinaryPath = m.BinaryPath(name)
+	// Snapshot under RLock to check BinaryPath without holding the
+	// lock during os.Stat.
+	snap, _ := m.snapshotManifest(name)
+	binaryPath := snap.BinaryPath
+	if binaryPath == "" {
+		binaryPath = m.BinaryPath(name)
 	}
-	if _, err := os.Stat(mf.BinaryPath); err != nil {
+	if _, err := os.Stat(binaryPath); err != nil {
 		return m.setState(name, StateBroken)
 	}
-	return m.setState(name, StateInstalled)
+	return m.updateManifest(name, func(mf *Manifest) {
+		if mf.BinaryPath == "" {
+			mf.BinaryPath = m.BinaryPath(name)
+		}
+		mf.State = StateInstalled
+		mf.UpdatedAt = time.Now().UTC()
+	})
 }
 
 // SortByName orders a slice of manifests by core name.

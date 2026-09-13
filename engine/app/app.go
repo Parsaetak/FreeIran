@@ -114,6 +114,13 @@ type App struct {
 	scheduler    *scheduler.Scheduler
 
 	// v0.6 managed subsystems (lazy-initialized by the service layer).
+	// initMu serializes the lazy init of coreMgr/testQueue/tunnelCtrl
+	// so concurrent UI calls don't create duplicate managers (which
+	// would leak the prior manager's worker goroutines). Regular
+	// field reads (e.g. a.testQueue != nil checks) are safe without
+	// initMu because the pointer is only ever written once (init or
+	// SetMode), and SetMode acquires initMu too.
+	initMu       sync.Mutex
 	coreMgr      *coremgr.Manager
 	testQueue    *testqueue.Queue
 	testQueueCfg testqueue.Config
@@ -413,15 +420,25 @@ func (a *App) Shutdown() {
 			a.connMgr.Shutdown()
 		}
 
-		if a.testQueue != nil {
-			a.testQueue.Stop()
+		// Snapshot the lazy-init subsystems under initMu so
+		// we stop the exact queue/tunnel that was initialized,
+		// not nil. A concurrent ensureQueue/ensureController
+		// that hasn't taken initMu yet will see the cancelled
+		// ctx and refuse to init.
+		a.initMu.Lock()
+		tq := a.testQueue
+		tc := a.tunnelCtrl
+		a.initMu.Unlock()
+
+		if tq != nil {
+			tq.Stop()
 		}
 
-		if a.tunnelCtrl != nil {
+		if tc != nil {
 			// Restore previous system-proxy state. Best-effort:
 			// a failure here does not block the rest of shutdown.
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			if err := a.tunnelCtrl.Disable(ctx); err != nil && a.logger != nil {
+			if err := tc.Disable(ctx); err != nil && a.logger != nil {
 				a.logger.Warn("tunnel", "shutdown_restore",
 					"could not restore tunnel state on shutdown: %v", err)
 			}

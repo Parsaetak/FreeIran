@@ -18,6 +18,7 @@ package native
 #cgo CFLAGS: -I${SRCDIR}/../../native/include
 #cgo LDFLAGS: ${SRCDIR}/../../native/build/libfreeiran_native.a -lstdc++
 #include <stdint.h>
+#include <stdlib.h>
 #include "freeiran.h"
 */
 import "C"
@@ -90,6 +91,38 @@ func crc32Native(seed uint32, data []byte) uint32 {
 	))
 }
 
+// crc32BatchNative dispatches to the C++ batch CRC-32. Falls back to
+// the pure-Go path if the ABI is not verified.
+func crc32BatchNative(data []byte, offsets []uint32, out []uint32) {
+	if !abiVerified.Load() || len(offsets) == 0 {
+		crc32BatchGo(data, offsets, out)
+		return
+	}
+
+	var dataPtr *C.uint8_t
+	if len(data) > 0 {
+		dataPtr = (*C.uint8_t)(unsafe.Pointer(&data[0]))
+	}
+
+	var offsetsPtr *C.uint32_t
+	if len(offsets) > 0 {
+		offsetsPtr = (*C.uint32_t)(unsafe.Pointer(&offsets[0]))
+	}
+
+	var outPtr *C.uint32_t
+	if len(out) > 0 {
+		outPtr = (*C.uint32_t)(unsafe.Pointer(&out[0]))
+	}
+
+	// Ignore the return value; on error we already fell back above.
+	_ = C.fir_crc32_batch(
+		dataPtr,
+		offsetsPtr,
+		C.uint32_t(len(offsets)-1),
+		outPtr,
+	)
+}
+
 func scanURLsNative(text []byte, out []uint32) (int, []uint32) {
 	if !abiVerified.Load() {
 		return scanURLsGo(text, out)
@@ -121,6 +154,80 @@ func scanURLsNative(text []byte, out []uint32) (int, []uint32) {
 	}
 
 	return int(found), out[:min(len(out), int(found))]
+}
+
+// --- Native arena bridge ---
+//
+// The arena handle is an opaque C pointer. We wrap it in a Go struct
+// so the finalizer can call fir_arena_destroy if the caller forgets.
+// The caller should still call Destroy() explicitly for prompt
+// cleanup.
+
+// nativeArenaCreate creates a native arena. Returns 0 (nil handle) on
+// failure or when the native layer is not available.
+func nativeArenaCreate(maxBlocks uint32) uintptr {
+	if !abiVerified.Load() {
+		return 0
+	}
+	return uintptr(unsafe.Pointer(C.fir_arena_create(C.uint32_t(maxBlocks))))
+}
+
+// nativeArenaAlloc allocates size bytes from the arena. Returns nil on
+// failure (NULL handle, ABI not verified, or arena at capacity).
+func nativeArenaAlloc(handle uintptr, size uint32) unsafe.Pointer {
+	if handle == 0 || !abiVerified.Load() {
+		return nil
+	}
+	h := (*C.struct_fir_arena)(unsafe.Pointer(handle))
+	return unsafe.Pointer(C.fir_arena_alloc(h, C.uint32_t(size)))
+}
+
+// nativeArenaReset marks all blocks reusable.
+func nativeArenaReset(handle uintptr) {
+	if handle == 0 || !abiVerified.Load() {
+		return
+	}
+	h := (*C.struct_fir_arena)(unsafe.Pointer(handle))
+	C.fir_arena_reset(h)
+}
+
+// nativeArenaDestroy releases all arena memory.
+func nativeArenaDestroy(handle uintptr) {
+	if handle == 0 || !abiVerified.Load() {
+		return
+	}
+	h := (*C.struct_fir_arena)(unsafe.Pointer(handle))
+	C.fir_arena_destroy(h)
+}
+
+// ArenaStats is the Go projection of fir_arena_stats.
+type ArenaStats struct {
+	TotalAllocs    uint64
+	TotalBytes     uint64
+	BlocksInUse    uint64
+	BlocksCapacity uint64
+	BytesInUse     uint64
+	BytesCapacity  uint64
+}
+
+// nativeArenaStats reads the arena stats. Returns ok=false on failure.
+func nativeArenaStats(handle uintptr) (ArenaStats, bool) {
+	if handle == 0 || !abiVerified.Load() {
+		return ArenaStats{}, false
+	}
+	h := (*C.struct_fir_arena)(unsafe.Pointer(handle))
+	var s C.struct_fir_arena_stats
+	if int32(C.fir_arena_stats(h, &s)) != 0 {
+		return ArenaStats{}, false
+	}
+	return ArenaStats{
+		TotalAllocs:    uint64(s.total_allocs),
+		TotalBytes:     uint64(s.total_bytes),
+		BlocksInUse:    uint64(s.blocks_in_use),
+		BlocksCapacity: uint64(s.blocks_capacity),
+		BytesInUse:     uint64(s.bytes_in_use),
+		BytesCapacity:  uint64(s.bytes_capacity),
+	}, true
 }
 
 func copyFallbackHash(data []byte, offsets []uint32, out []uint64) {

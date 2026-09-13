@@ -102,13 +102,13 @@ func (m *Manager) CheckForUpdates(ctx context.Context, name CoreName) (UpdateInf
 	unlock := m.lock(name)
 	defer unlock()
 
-	manifest := m.manifestOrCreate(name)
-	manifest.LastChecked = info.CheckedAt
-	if info.UpdateAvailable && manifest.State == StateReady {
-		manifest.State = StateUpdateAvailable
-	}
-	manifest.UpdatedAt = time.Now().UTC()
-	_ = m.persist(name)
+	_ = m.updateManifest(name, func(mf *Manifest) {
+		mf.LastChecked = info.CheckedAt
+		if info.UpdateAvailable && mf.State == StateReady {
+			mf.State = StateUpdateAvailable
+		}
+		mf.UpdatedAt = time.Now().UTC()
+	})
 
 	return info, nil
 }

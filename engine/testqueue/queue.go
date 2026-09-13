@@ -15,7 +15,8 @@
 //     sing-box tests each have their own per-backend concurrency cap
 //     so a slow backend cannot starve others.
 //  5. Cancellation — by task ID, by fingerprint, by source, or
-//     global (Pause/Resume/Stop).
+//     global (Pause/Resume/Stop). In-flight tests have their per-task
+//     context cancelled so the tester returns promptly.
 //  6. Retry policy — failed tasks are retried up to MaxAttempts with
 //     exponential backoff.
 //  7. Per-config timeout + global test timeout.
@@ -25,12 +26,35 @@
 //  10. Progress statistics — tests/sec, average duration, queue depth,
 //     active workers, pass/fail counts, per-backend counts.
 //
+// State machine (single authoritative transition path):
+//
+//	(none) → Queued (Enqueue)
+//	Queued → Preparing (worker dequeue)
+//	Queued → Cancelled (Cancel*/Stop)  [finishTask]
+//	Preparing → Testing (worker starts test)
+//	Preparing → Cancelled (Cancel*)    [finishTask cancels testCtx]
+//	Testing → Measuring (test passed, taking measurements)
+//	Testing → Failed/TimedOut/Cancelled (test outcome / Cancel*)
+//	Measuring → Passed (measurements done)
+//	Measuring → Failed (measurement failed)
+//
+// Terminal states: Passed, Failed, TimedOut, Cancelled.
+//
+// finishTask is the ONLY function that moves a task to a terminal state
+// and updates the global counters. It is idempotent (returns false if
+// the task is already terminal), so workers and cancellation paths can
+// both call it safely without double-counting. The per-task cancelFunc
+// (set by the worker when it creates the test context, cleared when the
+// test returns) is invoked by finishTask so an in-flight test unblocks
+// promptly.
+//
 // The queue is intentionally backend-agnostic: it accepts a Tester
 // interface (the engine/tester.Tester satisfies this) so the queue
 // can be tested in isolation with a fake tester.
 package testqueue
 
 import (
+	"container/heap"
 	"context"
 	"errors"
 	"fmt"
@@ -146,8 +170,24 @@ type Task struct {
 	// Result is set when the task reaches a terminal state.
 	Result Result `json:"result"`
 
-	// mu guards State + Result transitions from concurrent workers.
+	// --- unexported, runtime-only fields ---
+
+	// mu guards State, Result, Attempt, cancelFunc, and heapIdx.
+	// Lock order: q.mu → task.mu. A goroutine must NEVER acquire
+	// q.mu while holding task.mu (would invert the order); task.mu
+	// is for short critical sections only.
 	mu sync.Mutex
+
+	// cancelFunc, when non-nil, cancels the in-flight test context.
+	// Set by the worker under task.mu before calling tester.Test;
+	// cleared under task.mu after the test returns. Read by
+	// finishTask under task.mu so cancellation unblocks the test.
+	cancelFunc context.CancelFunc
+
+	// heapIdx is the index of this task in the pending heap, or -1
+	// if not in the heap. Guarded by q.mu (not task.mu) because the
+	// heap is owned by the queue.
+	heapIdx int
 }
 
 // Result is the outcome of one test.
@@ -241,6 +281,9 @@ func ModeConfig(m Mode) Config {
 // Config tunes the queue.
 type Config struct {
 	// Concurrency is the global worker count. Default 4.
+	// A value of 0 means NO workers — tasks remain queued until
+	// cancelled or until the queue is restarted with workers. This
+	// is used by tests that need to inspect the pending state.
 	Concurrency int
 
 	// PerBackendConcurrency caps how many tests of the same backend
@@ -313,9 +356,9 @@ type Queue struct {
 	config Config
 
 	mu            sync.Mutex
-	pending       []*Task            // priority queue (max-heap by Priority)
+	pending       pendingHeap        // min-heap by (Priority desc, CreatedAt asc)
 	inflight      map[int64]*Task    // tasks currently being tested
-	byFingerprint map[string]*Task   // index for duplicate suppression
+	byFingerprint map[string]*Task   // index for duplicate suppression (pending + inflight)
 	results       map[string]*Result // last result per fingerprint (size-bounded LRU)
 	nextID        int64
 
@@ -348,12 +391,17 @@ type Queue struct {
 }
 
 // New constructs a Queue. The queue is not started; call Start.
+//
+// Config field defaults: Concurrency < 0 → 4 (Balanced); Concurrency
+// == 0 → no workers (testing mode); PerBackendConcurrency ≤ 0 → 2;
+// Timeout ≤ 0 → 10s; MaxAttempts ≤ 0 → 2; Measurements ≤ 0 → 1;
+// MaxQueueSize == 0 → 10000.
 func New(tester Tester, config Config) *Queue {
 	if tester == nil {
 		tester = NoopTester{}
 	}
-	if config.Concurrency <= 0 {
-		config = DefaultConfig()
+	if config.Concurrency < 0 {
+		config.Concurrency = 4
 	}
 	if config.PerBackendConcurrency <= 0 {
 		config.PerBackendConcurrency = 2
@@ -371,7 +419,7 @@ func New(tester Tester, config Config) *Queue {
 		config.MaxQueueSize = 10000
 	}
 
-	return &Queue{
+	q := &Queue{
 		tester:        tester,
 		config:        config,
 		inflight:      make(map[int64]*Task),
@@ -381,6 +429,8 @@ func New(tester Tester, config Config) *Queue {
 		startedAt:     time.Now().UTC(),
 		notifyCh:      make(chan struct{}),
 	}
+	q.pending.heap = make([]*Task, 0, 64)
+	return q
 }
 
 // NoopTester is a Tester that does nothing; used when no real tester
@@ -393,15 +443,20 @@ func (NoopTester) Test(ctx context.Context, fp string, backends []string) (Resul
 }
 
 // Start launches the worker pool. Safe to call once; subsequent calls
-// are no-ops.
+// are no-ops. If config.Concurrency == 0, no workers are spawned —
+// tasks remain queued until cancelled or until the queue is restarted
+// with a positive concurrency.
 func (q *Queue) Start(parentCtx context.Context) {
+	q.mu.Lock()
 	if q.ctx != nil {
+		q.mu.Unlock()
 		return
 	}
-
 	q.ctx, q.cancel = context.WithCancel(parentCtx)
+	concurrency := q.config.Concurrency
+	q.mu.Unlock()
 
-	for i := 0; i < q.config.Concurrency; i++ {
+	for i := 0; i < concurrency; i++ {
 		q.workersWG.Add(1)
 		go q.worker(i)
 	}
@@ -409,13 +464,21 @@ func (q *Queue) Start(parentCtx context.Context) {
 
 // Stop drains in-flight tasks and stops the worker pool. Tasks still
 // in the queue are NOT executed (use Drain first if you need that).
+// In-flight tasks have their per-test context cancelled so they
+// return promptly. Stop is idempotent.
 func (q *Queue) Stop() {
 	if q.stopped.Swap(true) {
 		return
 	}
+
+	q.mu.Lock()
 	if q.cancel != nil {
 		q.cancel()
 	}
+	// Wake any blocked Dequeue callers so workers can observe ctx.Done.
+	q.notifyLocked()
+	q.mu.Unlock()
+
 	q.workersWG.Wait()
 }
 
@@ -424,7 +487,7 @@ func (q *Queue) Stop() {
 func (q *Queue) Drain(ctx context.Context) error {
 	for {
 		q.mu.Lock()
-		pending := len(q.pending)
+		pending := q.pending.Len()
 		inflight := len(q.inflight)
 		q.mu.Unlock()
 
@@ -456,12 +519,7 @@ func (q *Queue) Enqueue(
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	if q.config.MaxQueueSize > 0 && len(q.pending) >= q.config.MaxQueueSize {
-		if opt == EnqueueTry {
-			return 0, ErrQueueFull
-		}
-		// Block-style enqueue is not implemented; fall back to
-		// rejection. Callers can retry.
+	if q.config.MaxQueueSize > 0 && q.pending.Len() >= q.config.MaxQueueSize {
 		return 0, ErrQueueFull
 	}
 
@@ -473,6 +531,7 @@ func (q *Queue) Enqueue(
 		case EnqueueReplaceIfHigher:
 			if priority > existing.Priority {
 				existing.Priority = priority
+				heap.Fix(&q.pending, existing.heapIdx)
 			}
 			return existing.ID, ErrDuplicate
 		case EnqueueAllowDuplicate, EnqueueTry:
@@ -493,20 +552,21 @@ func (q *Queue) Enqueue(
 		CreatedAt:   time.Now().UTC(),
 		Deadline:    time.Now().Add(q.config.Timeout * time.Duration(q.config.MaxAttempts+1)),
 		State:       StateQueued,
+		heapIdx:     -1,
 	}
-	q.pending = append(q.pending, task)
+	heap.Push(&q.pending, task)
 	q.byFingerprint[fingerprint] = task
 	q.totalEnqueued.Add(1)
 
 	// Wake up one blocked worker.
-	q.notify()
+	q.notifyLocked()
 
 	return task.ID, nil
 }
 
 // notify wakes blocked Dequeue callers by closing the notifyCh and
 // creating a new one. Caller MUST hold q.mu.
-func (q *Queue) notify() {
+func (q *Queue) notifyLocked() {
 	close(q.notifyCh)
 	q.notifyCh = make(chan struct{})
 }
@@ -518,9 +578,15 @@ func (q *Queue) Dequeue(ctx context.Context) (*Task, error) {
 		q.mu.Lock()
 
 		// Pop the highest-priority task.
-		if len(q.pending) > 0 {
-			task := q.popHighest()
+		if q.pending.Len() > 0 {
+			task := heap.Pop(&q.pending).(*Task)
+			task.heapIdx = -1
 			q.inflight[task.ID] = task
+
+			task.mu.Lock()
+			task.State = StatePreparing
+			task.mu.Unlock()
+
 			q.mu.Unlock()
 			return task, nil
 		}
@@ -537,242 +603,158 @@ func (q *Queue) Dequeue(ctx context.Context) (*Task, error) {
 	}
 }
 
-// popHighest removes and returns the highest-priority task. Caller
-// MUST hold q.mu.
-func (q *Queue) popHighest() *Task {
-	if len(q.pending) == 0 {
-		return nil
-	}
-
-	// Linear scan for the highest priority; the queue size is
-	// bounded by MaxQueueSize and the cost is acceptable for our
-	// scale (thousands). A real heap is left as a future
-	// optimization.
-	bestIdx := 0
-	for i := 1; i < len(q.pending); i++ {
-		if q.pending[i].Priority > q.pending[bestIdx].Priority {
-			bestIdx = i
-		}
-	}
-
-	task := q.pending[bestIdx]
-	q.pending[bestIdx] = q.pending[len(q.pending)-1]
-	q.pending = q.pending[:len(q.pending)-1]
-
-	return task
-}
-
 // Cancel marks a task as cancelled. If the task is in-flight, the
-// tester's context is cancelled (best-effort).
-func (q *Queue) Cancel(taskID int64) {
+// tester's context is cancelled so the test returns promptly. Returns
+// true if the task was cancelled by this call, false if it was already
+// terminal or not found.
+func (q *Queue) Cancel(taskID int64) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	for _, t := range q.pending {
+	// Search pending.
+	for _, t := range q.pending.heap {
 		if t.ID == taskID {
-			t.mu.Lock()
-			t.State = StateCancelled
-			t.Result = Result{TestedAt: time.Now().UTC(), FailureCategory: FailureCancelled, LastError: "cancelled"}
-			t.mu.Unlock()
-			q.removePending(t)
-			q.totalCancelled.Add(1)
-			return
+			return q.finishTaskLocked(t, StateCancelled, cancelledResult())
 		}
 	}
-
+	// Search inflight.
 	if t, ok := q.inflight[taskID]; ok {
-		t.mu.Lock()
-		t.State = StateCancelled
-		t.mu.Unlock()
-		// In-flight cancellation: the worker will see ctx.Done() and
-		// mark the result.
+		return q.finishTaskLocked(t, StateCancelled, cancelledResult())
 	}
+	return false
 }
 
-// CancelBySource cancels every queued task from one source.
+// CancelBySource cancels every queued AND in-flight task from one
+// source. In-flight tasks have their test context cancelled. Returns
+// the number of tasks cancelled by this call.
 func (q *Queue) CancelBySource(sourceID string) int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
 	cancelled := 0
-	kept := q.pending[:0]
-	for _, t := range q.pending {
+	// Snapshot pending IDs, then finish each. We iterate the heap
+	// directly but call finishTaskLocked which removes from the heap
+	// via heap.Remove — so we collect the list first.
+	var toCancel []*Task
+	for _, t := range q.pending.heap {
 		if t.Source == sourceID {
-			t.mu.Lock()
-			t.State = StateCancelled
-			t.mu.Unlock()
-			q.totalCancelled.Add(1)
-			cancelled++
-			continue
+			toCancel = append(toCancel, t)
 		}
-		kept = append(kept, t)
 	}
-	q.pending = kept
+	for _, t := range toCancel {
+		if q.finishTaskLocked(t, StateCancelled, cancelledResult()) {
+			cancelled++
+		}
+	}
+	// In-flight tasks.
+	for _, t := range q.inflight {
+		if t.Source == sourceID {
+			if q.finishTaskLocked(t, StateCancelled, cancelledResult()) {
+				cancelled++
+			}
+		}
+	}
 	return cancelled
 }
 
-// CancelAll cancels every queued task. In-flight tasks are left to
-// complete (their results stand).
+// CancelByFingerprint cancels the task (pending or in-flight) matching
+// the given fingerprint. Returns 1 if cancelled, 0 if not found or
+// already terminal.
+func (q *Queue) CancelByFingerprint(fp string) int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	t, ok := q.byFingerprint[fp]
+	if !ok {
+		return 0
+	}
+	if q.finishTaskLocked(t, StateCancelled, cancelledResult()) {
+		return 1
+	}
+	return 0
+}
+
+// CancelAll cancels every queued AND in-flight task. In-flight tasks
+// have their test context cancelled. Returns the number of tasks
+// cancelled by this call.
 func (q *Queue) CancelAll() int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	n := len(q.pending)
-	for _, t := range q.pending {
-		t.mu.Lock()
-		t.State = StateCancelled
-		t.mu.Unlock()
-		q.totalCancelled.Add(1)
-	}
-	q.pending = nil
-	return n
-}
-
-// removePending removes a task from the pending list. Caller MUST hold
-// q.mu.
-func (q *Queue) removePending(t *Task) {
-	for i, p := range q.pending {
-		if p.ID == t.ID {
-			q.pending[i] = q.pending[len(q.pending)-1]
-			q.pending = q.pending[:len(q.pending)-1]
-			return
+	cancelled := 0
+	// Drain the heap.
+	for q.pending.Len() > 0 {
+		t := heap.Pop(&q.pending).(*Task)
+		t.heapIdx = -1
+		if q.finishTaskLocked(t, StateCancelled, cancelledResult()) {
+			cancelled++
 		}
 	}
+	// In-flight tasks.
+	for _, t := range q.inflight {
+		if q.finishTaskLocked(t, StateCancelled, cancelledResult()) {
+			cancelled++
+		}
+	}
+	return cancelled
 }
 
-// worker is the main test loop.
-func (q *Queue) worker(id int) {
-	defer q.workersWG.Done()
-
-	for {
-		task, err := q.Dequeue(q.ctx)
-		if err != nil {
-			return // ctx cancelled
-		}
-
-		q.runTask(q.ctx, task)
+// cancelledResult is the canonical Result for a cancelled task.
+func cancelledResult() Result {
+	return Result{
+		TestedAt:        time.Now().UTC(),
+		FailureCategory: FailureCancelled,
+		LastError:       "cancelled",
 	}
 }
 
-// runTask executes one task through its attempts.
-func (q *Queue) runTask(ctx context.Context, task *Task) {
+// finishTask is the public entry point for moving a task to a terminal
+// state. It acquires q.mu. Returns true if the transition happened,
+// false if the task was already terminal.
+func (q *Queue) finishTask(task *Task, state TaskState, result Result) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.finishTaskLocked(task, state, result)
+}
+
+// finishTaskLocked moves a task to a terminal state and updates ALL
+// bookkeeping: pending heap, inflight map, byFingerprint index,
+// results cache, and global counters. It is the SINGLE authoritative
+// state-transition path. Idempotent: returns false if the task is
+// already terminal.
+//
+// Caller MUST hold q.mu.
+func (q *Queue) finishTaskLocked(task *Task, state TaskState, result Result) bool {
 	task.mu.Lock()
-	if task.State == StateCancelled {
+	if task.State.IsTerminal() {
 		task.mu.Unlock()
-		q.complete(task, Result{FailureCategory: FailureCancelled})
-		return
+		return false
 	}
-	task.State = StatePreparing
+	task.State = state
+	task.Result = result
+	cf := task.cancelFunc
+	task.cancelFunc = nil
 	task.mu.Unlock()
 
-	for attempt := task.Attempt; attempt <= task.MaxAttempts; attempt++ {
-		// Per-test timeout.
-		testCtx, cancel := context.WithTimeout(ctx, q.config.Timeout)
-
-		task.mu.Lock()
-		task.State = StateTesting
-		task.Attempt = attempt
-		task.mu.Unlock()
-
-		start := time.Now()
-		result, err := q.tester.Test(testCtx, task.Fingerprint, task.Backends)
-		duration := time.Since(start)
-		cancel()
-
-		if err == nil && result.Working {
-			// Take additional measurements if configured.
-			if q.config.Measurements > 1 {
-				totalLatency := result.Latency
-				for i := 1; i < q.config.Measurements; i++ {
-					mCtx, mCancel := context.WithTimeout(ctx, q.config.Timeout)
-					m, _ := q.tester.Test(mCtx, task.Fingerprint, task.Backends)
-					mCancel()
-					if m.Working {
-						totalLatency += m.Latency
-					} else {
-						// A measurement failed; treat the test as failed.
-						result = m
-						break
-					}
-				}
-				if result.Working {
-					result.Latency = totalLatency / time.Duration(q.config.Measurements)
-				}
-			}
-
-			task.mu.Lock()
-			task.State = StateMeasuring
-			task.mu.Unlock()
-
-			result.TestedAt = time.Now().UTC()
-			task.mu.Lock()
-			task.State = StatePassed
-			task.Result = result
-			task.mu.Unlock()
-
-			q.complete(task, result)
-			q.durationSum.Add(int64(duration))
-			q.durationCount.Add(1)
-			return
-		}
-
-		// Failure path.
-		category := classifyFailure(err, ctx)
-		result.FailureCategory = category
-		result.LastError = errToString(err)
-		result.TestedAt = time.Now().UTC()
-
-		if category == FailureCancelled {
-			task.mu.Lock()
-			task.State = StateCancelled
-			task.Result = result
-			task.mu.Unlock()
-			q.complete(task, result)
-			return
-		}
-
-		if attempt < task.MaxAttempts {
-			// Exponential backoff.
-			backoff := time.Duration(1<<uint(attempt-1)) * time.Second
-			select {
-			case <-ctx.Done():
-				q.complete(task, Result{FailureCategory: FailureCancelled})
-				return
-			case <-time.After(backoff):
-				// retry
-			}
-			continue
-		}
-
-		// Final failure.
-		task.mu.Lock()
-		task.State = StateFailed
-		if ctx.Err() == context.DeadlineExceeded {
-			task.State = StateTimedOut
-			result.FailureCategory = FailureTimeout
-		}
-		task.Result = result
-		task.mu.Unlock()
-		q.complete(task, result)
-		q.durationSum.Add(int64(duration))
-		q.durationCount.Add(1)
-		return
+	// Cancel the in-flight test context so the tester returns promptly.
+	// Safe to call nil-checked; context.CancelFunc is safe to call
+	// multiple times and after the test has returned.
+	if cf != nil {
+		cf()
 	}
-}
 
-// complete moves a task from inflight to results and updates stats.
-func (q *Queue) complete(task *Task, result Result) {
-	q.mu.Lock()
+	// Remove from the pending heap if present.
+	if task.heapIdx >= 0 {
+		heap.Remove(&q.pending, task.heapIdx)
+		task.heapIdx = -1
+	}
+	// Remove from inflight if present.
 	delete(q.inflight, task.ID)
-	// Keep the latest fingerprint→task mapping for dedup; but if the
-	// task is terminal we can remove it from byFingerprint so future
-	// Enqueue calls succeed.
+	// Remove from the fingerprint index so future Enqueue succeeds.
 	delete(q.byFingerprint, task.Fingerprint)
 
-	// Cache the last result (bounded LRU; we cap at 4096 entries).
-	if len(q.results) >= 4096 {
-		// Evict one arbitrary entry. (A real LRU would track access
-		// order; this is good enough for stats.)
+	// Cache the result (bounded; evict one entry if at capacity).
+	if len(q.results) >= resultsCacheLimit {
 		for k := range q.results {
 			delete(q.results, k)
 			break
@@ -780,10 +762,16 @@ func (q *Queue) complete(task *Task, result Result) {
 	}
 	r := result
 	q.results[task.Fingerprint] = &r
-	q.mu.Unlock()
 
+	// Wake any blocked Dequeue/Enqueue callers.
+	q.notifyLocked()
+
+	// Update counters outside the lock (they're atomic). We do this
+	// while still inside finishTaskLocked for ordering guarantees
+	// with respect to the state change, but the atomics themselves
+	// don't need the lock.
 	q.totalCompleted.Add(1)
-	switch task.State {
+	switch state {
 	case StatePassed:
 		q.totalPassed.Add(1)
 	case StateFailed:
@@ -800,21 +788,204 @@ func (q *Queue) complete(task *Task, result Result) {
 		q.backendMu.Unlock()
 	}
 
-	// Wake any Dequeue blocked waiting for capacity.
-	q.mu.Lock()
-	q.notify()
-	q.mu.Unlock()
+	return true
 }
 
-// classifyFailure maps an error to a FailureCategory.
+// resultsCacheLimit bounds the per-fingerprint result cache.
+const resultsCacheLimit = 4096
+
+// worker is the main test loop.
+func (q *Queue) worker(id int) {
+	defer q.workersWG.Done()
+
+	for {
+		task, err := q.Dequeue(q.ctx)
+		if err != nil {
+			return // ctx cancelled
+		}
+
+		q.runTask(task)
+	}
+}
+
+// runTask executes one task through its attempts. On any terminal
+// outcome it calls finishTask (the single authoritative path). If the
+// task was cancelled by a concurrent Cancel call, finishTask returns
+// false and runTask simply returns without double-counting.
+func (q *Queue) runTask(task *Task) {
+	// Dequeue already set state to Preparing. Check for a racing
+	// cancellation.
+	task.mu.Lock()
+	if task.State == StateCancelled {
+		task.mu.Unlock()
+		return // finishTask already handled bookkeeping
+	}
+	task.mu.Unlock()
+
+	for attempt := 1; attempt <= task.MaxAttempts; attempt++ {
+		// Check for cancellation before each attempt.
+		task.mu.Lock()
+		if task.State == StateCancelled {
+			task.mu.Unlock()
+			return
+		}
+		task.State = StateTesting
+		task.Attempt = attempt
+		task.mu.Unlock()
+
+		testCtx, testCancel := context.WithTimeout(q.ctx, q.config.Timeout)
+
+		// Publish the cancel func so Cancel can interrupt the test.
+		task.mu.Lock()
+		if task.State == StateCancelled {
+			task.mu.Unlock()
+			testCancel()
+			return
+		}
+		task.cancelFunc = testCancel
+		task.mu.Unlock()
+
+		start := time.Now()
+		result, err := q.tester.Test(testCtx, task.Fingerprint, task.Backends)
+		duration := time.Since(start)
+
+		// Capture the test context's error BEFORE calling testCancel,
+		// because testCancel itself sets testCtx.Err() = Canceled,
+		// which would misclassify every failure as a cancellation.
+		testCtxErr := testCtx.Err()
+		testCancel()
+
+		// Clear the cancel func and check for a racing cancellation.
+		task.mu.Lock()
+		task.cancelFunc = nil
+		cancelledDuringTest := task.State == StateCancelled
+		task.mu.Unlock()
+
+		if cancelledDuringTest {
+			// Cancel called finishTask during the test; discard result.
+			q.recordDuration(duration)
+			return
+		}
+
+		if err == nil && result.Working {
+			// Take additional measurements if configured.
+			if q.config.Measurements > 1 {
+				totalLatency := result.Latency
+				measurementsOK := true
+				for i := 1; i < q.config.Measurements; i++ {
+					mCtx, mCancel := context.WithTimeout(q.ctx, q.config.Timeout)
+					task.mu.Lock()
+					task.cancelFunc = mCancel
+					task.mu.Unlock()
+
+					m, mErr := q.tester.Test(mCtx, task.Fingerprint, task.Backends)
+					mCancel()
+
+					task.mu.Lock()
+					task.cancelFunc = nil
+					if task.State == StateCancelled {
+						task.mu.Unlock()
+						return
+					}
+					task.mu.Unlock()
+
+					if mErr != nil || !m.Working {
+						result = m
+						if mErr != nil {
+							result.LastError = mErr.Error()
+						}
+						measurementsOK = false
+						break
+					}
+					totalLatency += m.Latency
+				}
+				if measurementsOK {
+					result.Latency = totalLatency / time.Duration(q.config.Measurements)
+				}
+			}
+
+			task.mu.Lock()
+			if task.State == StateCancelled {
+				task.mu.Unlock()
+				return
+			}
+			task.State = StateMeasuring
+			task.mu.Unlock()
+
+			result.TestedAt = time.Now().UTC()
+			if q.finishTask(task, StatePassed, result) {
+				q.recordDuration(duration)
+			}
+			return
+		}
+
+		// Failure path. Use the captured testCtxErr (taken before
+		// testCancel) so we classify the real test outcome, not the
+		// post-cancel state.
+		category := classifyCtxFailure(err, testCtxErr)
+		result.FailureCategory = category
+		result.LastError = errToString(err)
+		result.TestedAt = time.Now().UTC()
+
+		if category == FailureCancelled {
+			q.finishTask(task, StateCancelled, result)
+			return
+		}
+
+		if attempt < task.MaxAttempts {
+			// Exponential backoff. Respect q.ctx for shutdown.
+			backoff := time.Duration(1<<uint(attempt-1)) * time.Second
+			select {
+			case <-q.ctx.Done():
+				q.finishTask(task, StateCancelled, cancelledResult())
+				return
+			case <-time.After(backoff):
+				// retry
+			}
+			continue
+		}
+
+		// Final failure.
+		finalState := StateFailed
+		if testCtxErr == context.DeadlineExceeded {
+			finalState = StateTimedOut
+			result.FailureCategory = FailureTimeout
+		}
+		if q.finishTask(task, finalState, result) {
+			q.recordDuration(duration)
+		}
+		return
+	}
+}
+
+// recordDuration updates the running duration stats. Only called for
+// tasks that actually ran a test (not for pre-test cancellations).
+func (q *Queue) recordDuration(d time.Duration) {
+	q.durationSum.Add(int64(d))
+	q.durationCount.Add(1)
+}
+
+// classifyFailure maps an error + context to a FailureCategory. This
+// is the legacy entry point used by tests; production code uses
+// classifyCtxFailure with a pre-captured context error.
 func classifyFailure(err error, ctx context.Context) FailureCategory {
 	if err == nil {
 		return FailureNone
 	}
-	if ctx.Err() == context.DeadlineExceeded {
+	return classifyCtxFailure(err, ctx.Err())
+}
+
+// classifyCtxFailure classifies a failure given the error and the
+// test context's error (captured BEFORE the testCancel call so it
+// reflects the real test outcome, not the post-cancel state).
+func classifyCtxFailure(err error, ctxErr error) FailureCategory {
+	if err == nil {
+		return FailureNone
+	}
+	if ctxErr == context.DeadlineExceeded {
 		return FailureTimeout
 	}
-	if ctx.Err() == context.Canceled {
+	if ctxErr == context.Canceled {
 		return FailureCancelled
 	}
 	msg := err.Error()
@@ -857,7 +1028,7 @@ func errToString(err error) string {
 // Stats returns the current queue statistics.
 func (q *Queue) Stats() Stats {
 	q.mu.Lock()
-	depth := len(q.pending)
+	pending := q.pending.Len()
 	inflight := len(q.inflight)
 	q.mu.Unlock()
 
@@ -886,9 +1057,16 @@ func (q *Queue) Stats() Stats {
 	}
 	q.backendMu.Unlock()
 
+	// ActiveWorkers = workers currently running a test = inflight count,
+	// capped at config.Concurrency.
+	activeWorkers := inflight
+	if activeWorkers > q.config.Concurrency {
+		activeWorkers = q.config.Concurrency
+	}
+
 	return Stats{
-		QueueDepth:     depth + inflight,
-		ActiveWorkers:  q.config.Concurrency - depth + inflight - inflight, // approx
+		QueueDepth:     pending + inflight,
+		ActiveWorkers:  activeWorkers,
 		TotalEnqueued:  q.totalEnqueued.Load(),
 		TotalCompleted: completed,
 		TotalPassed:    passed,
@@ -927,8 +1105,12 @@ func (q *Queue) Snapshot(limit int) []TaskSnapshot {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	out := make([]TaskSnapshot, 0, limit)
-	for _, t := range q.pending {
+	if limit <= 0 {
+		limit = 100
+	}
+
+	out := make([]TaskSnapshot, 0, min(limit, q.pending.Len()+len(q.inflight)))
+	for _, t := range q.pending.heap {
 		t.mu.Lock()
 		out = append(out, snapshotTask(t))
 		t.mu.Unlock()
@@ -936,12 +1118,14 @@ func (q *Queue) Snapshot(limit int) []TaskSnapshot {
 			break
 		}
 	}
-	for _, t := range q.inflight {
-		t.mu.Lock()
-		out = append(out, snapshotTask(t))
-		t.mu.Unlock()
-		if len(out) >= limit {
-			break
+	if len(out) < limit {
+		for _, t := range q.inflight {
+			t.mu.Lock()
+			out = append(out, snapshotTask(t))
+			t.mu.Unlock()
+			if len(out) >= limit {
+				break
+			}
 		}
 	}
 
@@ -980,7 +1164,6 @@ func (q *Queue) Result(fingerprint string) *Result {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if r, ok := q.results[fingerprint]; ok {
-		// return a copy
 		copy := *r
 		return &copy
 	}
@@ -992,4 +1175,48 @@ func (q *Queue) String() string {
 	s := q.Stats()
 	return fmt.Sprintf("testqueue[pending=%d inflight=%d done=%d passed=%d failed=%d tps=%.1f]",
 		s.QueueDepth, s.ActiveWorkers, s.TotalCompleted, s.TotalPassed, s.TotalFailed, s.TestsPerSec)
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// --- pendingHeap: a max-heap by (Priority desc, CreatedAt asc) ---
+//
+// Implemented via container/heap so Push/Pop/Remove/Fix are O(log n).
+// Each Task carries its own heapIdx (guarded by q.mu) so Cancel can
+// remove a specific task in O(log n) without a linear scan.
+
+type pendingHeap struct {
+	heap []*Task
+}
+
+func (h pendingHeap) Len() int { return len(h.heap) }
+func (h pendingHeap) Less(i, j int) bool {
+	if h.heap[i].Priority != h.heap[j].Priority {
+		return h.heap[i].Priority > h.heap[j].Priority
+	}
+	return h.heap[i].CreatedAt.Before(h.heap[j].CreatedAt)
+}
+func (h pendingHeap) Swap(i, j int) {
+	h.heap[i], h.heap[j] = h.heap[j], h.heap[i]
+	h.heap[i].heapIdx = i
+	h.heap[j].heapIdx = j
+}
+func (h *pendingHeap) Push(x any) {
+	t := x.(*Task)
+	t.heapIdx = len(h.heap)
+	h.heap = append(h.heap, t)
+}
+func (h *pendingHeap) Pop() any {
+	old := h.heap
+	n := len(old)
+	x := old[n-1]
+	old[n-1] = nil
+	x.heapIdx = -1
+	h.heap = old[:n-1]
+	return x
 }

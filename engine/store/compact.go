@@ -219,6 +219,7 @@ func (s *Store) compactGroup(group []uint32) error {
 
 	s.mu.Unlock()
 
+	s.invalidateCount()
 	return s.retireVictims(group, len(records)-swapped)
 }
 

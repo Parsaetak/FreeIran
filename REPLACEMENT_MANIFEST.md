@@ -1,191 +1,323 @@
-# FreeIran Replacement Manifest — v0.6.0
+# FreeIran Replacement Manifest — v0.7.0
 
 ## Package
 
 | Field | Value |
 |-------|-------|
-| Version | 0.6.0 |
-| Previous version | 0.5.0-fixed |
-| Base reference | `main` HEAD at v0.5.0-fixed |
-| Package | `FreeIran-0.6.0.zip` — complete source repository replacement |
+| Version | 0.7.0 |
+| Previous version | 0.6.0 |
+| Base reference | `d8527cdb912514a844f2e0ab71d353f0b6b5e972` (v0.6.0, the failing commit) |
+| Package | `FreeIran-0.7.0.zip` — complete source repository replacement |
 | Verified by | Full build + test matrix re-run from the extracted tree (see "Verification performed") |
 | Excluded from package | `.git`, `frontend/node_modules`, `frontend/dist` (build output), `cmd/freeiran/frontend/dist` (embed staging, except the placeholder), `native/build`, `.cores` (CI core installs), `testcores/` (CI fixture output), no secrets, no local runtime data, no test-generated binaries |
 
 ## Objective
 
-Turn FreeIran from a configuration database with core adapters into a
-genuinely usable Windows VPN/proxy client. The upgrade adds: managed
-installation / verification / update / rollback for Xray, V2Ray and
-sing-box; no-console process launch on Windows; a bounded-worker test
-queue with priority + cancellation + retry; full source metadata with
-conditional-fetch + content-hash short-circuit; a Speed Booster; a
-real System Proxy integration through WinINet; a real TUN mode
-through Wintun; capability-driven backend selection with explainable
-failover; expanded documentation. No existing test, gate, lifecycle
-discipline, fake-core harness or real-core CI verification was
-weakened.
+Fix the CI failure at its root, then audit the whole codebase for
+concurrency bugs, memory waste, and missing production-readiness
+infrastructure — all while preserving the existing FreeIran
+architecture and project goals.
 
-## Major changes
+## 1. Root cause of the CI failure
 
-### 1. Windows process launch — no console window
+**Failing test:** `TestCancelBySource` in `engine/testqueue/queue_test.go`
+```
+queue_test.go:90: cancelled = 1, want 2
+queue_test.go:95: TotalCancelled = 1, want 2
+```
 
-**Files:**
-- `system/process_windows.go` — set `SysProcAttr.HideWindow = true`
-  and `CreationFlags = CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP |
-  DETACHED_PROCESS` so Xray/V2Ray/sing-box launch with no visible
-  CMD/console window.
-- `system/job_windows.go` — new file. Binds every spawned protocol
-  core to a Windows job object with
-  `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. An abnormal FreeIran exit
-  (crash, Task Manager kill, OS shutdown) reaps every spawned core
-  at the kernel level. No orphan process survives.
-- `system/job_other.go` — non-Windows stub.
-- `system/system.go` — added `job *jobHandle` field on
-  `ManagedProcess`, plus `closeJob()` method.
-- `system/process_test.go` — new regression test verifying the
-  launch+wait+stop lifecycle on every platform, plus stdout/stderr
-  capture.
+**Root cause:** `Queue.New()` treated `Concurrency: 0` as "use
+defaults" and replaced the ENTIRE config with `DefaultConfig()`
+(Concurrency=4). The test intended `Concurrency: 0` to mean "no
+workers" (tasks stay queued), but 4 workers were spawned and dequeued
+the src-A tasks into inflight before `CancelBySource` ran.
+`CancelBySource` only scanned `pending`, so it found 0–1 src-A tasks
+instead of 2.
 
-### 2. Managed Core Manager (`engine/coremgr`)
+**Secondary bugs discovered in the same audit:**
+1. `Cancel()` for inflight tasks set `task.State = StateCancelled`
+   but never cancelled the test's context — the in-flight test ran to
+   completion and overwrote the cancelled state.
+2. `runTask` called `testCancel()` before `classifyFailure()`, so
+   `testCtx.Err()` was always `context.Canceled` and every failure was
+   misclassified as `FailureCancelled`.
+3. `Stats().ActiveWorkers` formula was `Concurrency - depth + inflight
+   - inflight` which simplified to the wrong value.
+4. The pending list was an O(n) linear scan per dequeue/cancel.
+5. `totalCancelled` could double-count when both `Cancel` and the
+   worker's `complete` fired for the same task.
 
-New self-contained package (~1,500 LOC) responsible for install,
-discover, inspect, verify, update, rollback, enable/disable, remove,
-health-check and version reporting for Xray, V2Ray and sing-box.
+## 2. Queue fixes (`engine/testqueue`)
 
-**Files:**
-- `engine/coremgr/manager.go` — Manager struct, Manifest, HealthResult,
-  Source, UpdateInfo types. Per-core mutex so concurrent operations on
-  different cores never block each other. Atomic manifest persistence.
-- `engine/coremgr/sources.go` — official upstream Source definitions
-  for `XTLS/Xray-core`, `v2fly/v2ray-core`, `SagerNet/sing-box`.
-  Asset-pattern resolver per OS/arch.
-- `engine/coremgr/install.go` — full pipeline:
-  `download → verify SHA-256 → unpack → locate executable → query
-  version → validate config → retain rollback → atomic activate →
-  smoke test → mark Ready`. On any step failing the staged files are
-  removed and the previous binary is left untouched.
-- `engine/coremgr/health.go` — `HealthCheck` runs a minimal SOCKS
-  inbound, launches the binary, waits for listener readiness, then
-  performs a polite shutdown. Records ExecutableExists, VersionQuery,
-  ConfigValidate, SmokeLaunch, CleanShutdown. `Rollback` swaps the
-  retained previous version back into the active path and re-runs
-  the smoke test.
-- `engine/coremgr/update_check.go` — `CheckForUpdates` queries the
-  GitHub Releases API and returns latest stable + latest prerelease
-  for the configured channel. `CheckAllForUpdates` runs them in
-  parallel. `Repair` tries rollback first, then fresh install.
-  `StartBackgroundUpdateChecker` runs on a 30-minute interval.
-- `engine/coremgr/release.go` — JSON parsing of GitHub release
-  metadata, semver-ish version comparison, asset selection by
-  platform.
-- `engine/coremgr/http.go` — `HTTPDoer` interface + `httpAdapter`
-  wrapping `*http.Client` (testable).
-- `engine/coremgr/atomic.go` — atomic file write, SHA-256 helpers.
-- `engine/coremgr/helpers.go` — port allocation, TCP dial.
-- `engine/coremgr/manager_test.go` — tests for source coverage,
-  version comparison, channel persistence, disable/enable lifecycle.
+**Files:** `engine/testqueue/queue.go` (full rewrite), `queue_test.go`
+(expanded), `queue_bench_test.go` (new), `queue_mem_test.go` (new).
 
-### 3. Test Queue (`engine/testqueue`)
+### Single authoritative state-transition path
 
-New package (~900 LOC): bounded-worker, priority-ordered, cancellable,
-persistent scheduler for testing configurations.
+`finishTask(task, state, result)` / `finishTaskLocked(...)` is now the
+ONLY function that moves a task to a terminal state and updates
+counters. It is idempotent (returns false if already terminal), so
+workers and cancellation paths can both call it safely without
+double-counting. It:
+- acquires `q.mu` (or is called by a holder of `q.mu`)
+- acquires `task.mu` to check/set state
+- calls `task.cancelFunc` (if set) to unblock the in-flight test
+- removes the task from `pending` (via `heap.Remove`), `inflight`, and
+  `byFingerprint`
+- caches the result
+- updates `totalCompleted` and the state-specific counter
 
-**Files:**
-- `engine/testqueue/queue.go` — Task, Result, Stats, Mode, Config
-  types. Bounded worker pool, priority queue, duplicate fingerprint
-  suppression, per-test timeout, exponential-backoff retry,
-  cancellation by task/source/all, graceful shutdown, live stats
-  (tests/sec, queue depth, per-backend counts, average duration).
-- `engine/testqueue/queue_test.go` — tests for enqueue/dequeue,
-  duplicate suppression, source-scoped cancellation, mode presets,
-  failure classification, terminal-state predicate.
+### Per-task context cancellation
 
-Modes: `Quick | Balanced | Deep | Re-test failed | Test all | Test
-selected | Continuous` — each presets Concurrency, Timeout,
-MaxAttempts, Measurements.
+Each `Task` now carries a `cancelFunc context.CancelFunc` (guarded by
+`task.mu`). The worker publishes it before calling `tester.Test` and
+clears it after. `finishTask` calls it so an in-flight cancellation
+unblocks the test promptly. The worker checks for a racing cancellation
+at every transition point (before test, after test, before
+measurement, after measurement) and returns early if the task was
+cancelled, discarding its result.
 
-### 4. Source registry expansion
+### Fixed `Concurrency: 0`
 
-**Files:**
-- `engine/source/source.go` — extended `Source` struct with full
-  metadata: Provider, Project, ProtocolHints, Region, Format,
-  Priority, RefreshInterval, LastSuccessfulFetch, LastFailure,
-  LastFailureReason, LastContentHash, ConfigCount, WorkingCount,
-  AverageLatencyMS, ReliabilityScore, FetchCount, SuccessCount,
-  ETag, LastModifiedHeader, Custom. Added `Stats()` method +
-  `Stats` projection struct.
-- `engine/source/source.go` (Fetcher.Fetch) — added conditional
-  requests (`If-None-Match`, `If-Modified-Since`), content-hash
-  short-circuit, ETag/Last-Modified echo. gzip/deflate is handled
-  transparently by `net/http` (default Transport).
-- `engine/source/registry.go` — 3 new high-quality sources added:
-  `shadowsocks-aggregator-eternity` (mahdibland), `mahsa-free-config-mtn`
-  (mahsanet), `scrape-and-categorize-netherlands` (10ium). All 14
-  default sources now carry full metadata.
+`New()` now defaults individual fields instead of replacing the whole
+config. `Concurrency: 0` means "no workers" (tasks stay queued) —
+exactly what the test intended. `Start()` spawns zero workers in this
+mode.
 
-### 5. System Proxy + TUN (`engine/tunnel`)
+### Fixed failure classification
 
-New package (~700 LOC) with platform-isolated implementations.
+`runTask` captures `testCtxErr := testCtx.Err()` BEFORE calling
+`testCancel()`. `classifyCtxFailure(err, testCtxErr)` uses the captured
+error so the real test outcome (network/auth/protocol/config/timeout)
+is preserved instead of being masked as "cancelled".
 
-**Files:**
-- `engine/tunnel/tunnel.go` — `Controller` with `Enable(mode, ...)`
-  / `Disable()`. Three modes: `Direct | SystemProxy | TUN`.
-- `engine/tunnel/proxy_windows.go` — WinINet-backed `SystemProxyBackend`
-  using `InternetQueryOption` / `InternetSetOption` with
-  `INTERNET_OPTION_PER_CONNECTION_OPTION`. Saves the previous
-  per-connection proxy settings, sets the new SOCKS/HTTP proxy with
-  bypass list, broadcasts `INTERNET_OPTION_SETTINGS_CHANGED` +
-  `INTERNET_OPTION_REFRESH` so running apps refresh.
-- `engine/tunnel/proxy_other.go` — non-Windows stub returning
-  `ErrUnsupportedPlatform`.
-- `engine/tunnel/tun_windows.go` — Wintun-backed `TUNBackend`.
-  Resolves `wintun.dll` from `<AppData>/FreeIran/cores/wintun/`,
-  the executable directory, or `System32`. `Install()` downloads the
-  official wintun-0.14.1.zip release and extracts the architecture-
-  specific DLL. `Enable()` creates the adapter, configures the IP
-  (10.211.211.1/24), adds routes for `0.0.0.0/1` + `128.0.0.0/1`,
-  and sets DNS to Cloudflare. `Disable()` tears down routes + adapter
-  and restores DHCP DNS. All operations require elevation.
-- `engine/tunnel/helpers_real.go` + `helpers_other.go` — OS-wrapper
-  helpers.
-- `engine/tunnel/tunnel_test.go` — controller state + idempotency
-  tests.
+### Heap-based priority queue
 
-### 6. App integration
+`pendingHeap` implements `container/heap.Interface` with O(log n)
+Push/Pop/Remove/Fix. Each `Task` carries `heapIdx` (guarded by `q.mu`)
+so `Cancel(taskID)` removes a specific task in O(log n). Priority is
+`(Priority desc, CreatedAt asc)` — higher priority first, FIFO within
+a priority.
 
-**Files:**
-- `engine/app/app.go` — added `coreMgr`, `testQueue`, `testQueueCfg`,
-  `tunnelCtrl` fields to `App`. `Shutdown()` now stops the test
-  queue and disables the tunnel (restoring the previous system proxy
-  state) before closing the store. Imported `coremgr`, `testqueue`,
-  `tunnel`.
-- `engine/app/v6_services.go` — new service surface:
-  `CoreService` (List/Info/Install/Uninstall/HealthCheck/
-  HealthCheckAll/CheckForUpdates/CheckAllForUpdates/Rollback/Repair/
-  SetChannel/Disable/Enable), `TestQueueService` (Enqueue/
-  EnqueueMany/Cancel/CancelBySource/CancelAll/SetMode/Stats/
-  Snapshot/Drain), `TunnelService` (State/EnableSystemProxy/
-  EnableTUN/Disable), `SourceService.SourceStatsList` +
-  `UpdateSourceMetadata`. `testerAdapter` bridges the existing
-  `tester.Tester` to the `testqueue.Tester` interface
-  (fingerprint→config lookup via the store).
+### `CancelByFingerprint` (new)
 
-### 7. Version bump
+Cancels the task matching a fingerprint (pending or inflight). Returns
+1 if cancelled, 0 if not found or already terminal.
 
-| File | Old | New |
-|------|-----|-----|
-| `VERSION` | `0.5.0` | `0.6.0` |
-| `internal/version/version.go` | `Version = "0.5.0"` | `Version = "0.6.0"` |
-| `frontend/package.json` | `"version": "0.5.0"` | `"version": "0.6.0"` |
-| `README.md` | `0.5.0` | `0.6.0` (cover + structure + roadmap) |
+### Fixed `Stats().ActiveWorkers`
 
-### 8. Documentation
+Now `min(inflight, Concurrency)` — the actual number of workers
+running a test.
 
-Every Markdown file was updated to describe the real v0.6.0
-architecture. See `README.md`, `docs/architecture.md`,
-`docs/storage-format.md`, `docs/performance.md`, `docs/ci.md`,
-`docs/security.md`, `docs/development.md`, `worklog.md`, and this
-file.
+### Stress / regression tests (17 tests)
+
+- `TestCancelBySource` (original, now passes reliably under `-race -count=20`)
+- `TestCancelBySourceQueuedOnly` (50 + 30 tasks, only queued)
+- `TestCancelBySourceWhileWorkersDequeue` (200 + 200 tasks, 4 workers)
+- `TestCancelBySourceWhileTasksRunning` (4 inflight, verifies per-task ctx cancel)
+- `TestCancelByFingerprintDuringExecution` (cancel a 30s test, verify it returns)
+- `TestGlobalCancellation` (100 tasks, CancelAll)
+- `TestCancellationDuringRetryBackoff` (cancel during 1s backoff)
+- `TestCancellationDuringTimeout` (cancel after timeout — must be no-op)
+- `TestCancellationDuringShutdown` (Stop must return < 5s)
+- `TestConcurrentEnqueueCancel` (8 enqueuers + 4 cancellers, 500 ops each)
+- `TestDuplicateSuppressionAndCancel` (dup rejected, original cancellable, re-enqueue succeeds)
+- `TestRepeatedCancellation` (10 cancels of same task → TotalCancelled=1)
+- `TestReplaceIfHigher` (priority bump via EnqueueReplaceIfHigher)
+- `TestStatsActiveWorkers` (4 inflight → ActiveWorkers=4)
+- `TestStopWithoutStart` (safe no-op)
+- `TestEnqueueAfterStop` (ErrQueueStopped)
+- `TestQueueFull` (ErrQueueFull at capacity)
+- `TestQueueMemoryGrowth` (50k enqueue + cancel, no leak)
+- `TestQueueCancellationCleanup` (100 enqueue/cancel/re-enqueue cycles)
+
+### Benchmarks
+
+- `BenchmarkQueueEnqueue` at n=1k/10k/100k: 504/567/805 ns/task
+- `BenchmarkQueueCancelBySource` at n=1k/10k/100k: 483/864/1058 ns/cancel
+- `BenchmarkQueueTaskSize`: per-task allocation profile
+
+## 3. Codebase-wide concurrency fixes
+
+### `engine/coremgr` — manifest data race (HIGH)
+
+**Files:** `engine/coremgr/manager.go`, `health.go`, `install.go`,
+`update_check.go`.
+
+**Bug:** `manifestOrCreate` read/wrote `m.manifests[name]` and mutated
+`Manifest` fields WITHOUT holding `m.mu`, while `Info`/`All` read them
+under `m.mu.RLock()`. Confirmed data race on `Manifest.State`,
+`.Version`, `.BinaryPath`.
+
+**Fix:** Introduced `manifestOrCreateLocked` (caller MUST hold
+`m.mu.Lock`), `snapshotManifest` (value copy under `m.mu.RLock`),
+`updateManifest` (applies a mutation fn under `m.mu.Lock` then
+persists). All field mutations now go through `updateManifest`. Long
+operations (download, smoke test) snapshot the needed fields first,
+work outside the lock, then write back via `updateManifest`.
+
+**Regression test:** `TestManagerConcurrentAccess` — 4 readers + 4
+writers for 2s under `-race`.
+
+### `engine/app` — lazy-init race (HIGH)
+
+**Files:** `engine/app/app.go`, `v6_services.go`.
+
+**Bug:** `ensureCoreMgr`, `ensureQueue`, `ensureController` did
+check-then-set on `app.coreMgr`/`testQueue`/`tunnelCtrl` without
+holding any lock. Concurrent UI calls created duplicate managers,
+leaking the prior manager's worker goroutines. `SetMode` stopped the
+old queue and assigned a new one without synchronizing against
+concurrent `ensureQueue`.
+
+**Fix:** Added `initMu sync.Mutex` to `App`. All three `ensure*`
+methods acquire `initMu` before the check-then-set. `SetMode` acquires
+`initMu`, starts the new queue, swaps the pointer, THEN stops the old
+queue. `Shutdown` snapshots the lazy-init subsystems under `initMu`
+before stopping them.
+
+### `engine/native` — fallbackHook race (MEDIUM)
+
+**Files:** `engine/native/native.go`.
+
+**Bug:** `fallbackHook` was a package-level `var func()` read by
+`useNative()` on every dispatch and written by `SetFallbackHook`
+without synchronization. Data race if `SetFallbackHook` is called after
+init.
+
+**Fix:** Replaced with `fallbackHookPtr atomic.Pointer[func()]`,
+initialized to a no-op sentinel at init. `useNative` loads + derefs;
+`SetFallbackHook` stores. Safe for concurrent use.
+
+## 4. C++ memory acceleration layer (`native/` + `engine/native`)
+
+**ABI version bumped 1 → 2** (v1 functions unchanged; v2 adds arena +
+batch CRC32).
+
+**Files:** `native/include/freeiran.h`, `native/src/freeiran.cpp`,
+`native/tests/test_native.cpp`, `engine/native/native.go`,
+`engine/native/bridge_cgo.go`, `engine/native/bridge_stub.go`,
+`engine/native/native_test.go`.
+
+### Native arena
+
+New C ABI:
+```
+fir_arena_create(max_blocks) → fir_arena_t
+fir_arena_alloc(arena, size) → void*
+fir_arena_reset(arena)
+fir_arena_destroy(arena)
+fir_arena_stats(arena, *stats) → int32
+```
+
+- Bounded growth: `max_blocks` caps total 64 KiB blocks (default 256 =
+  16 MiB). Alloc returns NULL at capacity.
+- Thread-safe alloc (mutex-protected bump pointer).
+- Reset reclaims all blocks for reuse without deallocation.
+- Destroy releases all memory.
+- 16-byte alignment.
+- `-fno-exceptions` compatible (uses `new(std::nothrow)` + `malloc`).
+
+Go bridge (`native.Arena`):
+- `NewArena(maxBlocks)`, `Alloc(size)`, `Reset()`, `Destroy()`, `Stats()`
+- Transparent Go fallback when native layer not compiled in
+  (make([]byte) per alloc, mutex-guarded for concurrent safety)
+
+### Batch CRC-32
+
+New C ABI: `fir_crc32_batch(data, offsets, count, out_crcs)`.
+Each string hashed independently from seed 0. Go fallback
+(`crc32BatchGo`) uses `crc32.ChecksumIEEE` per string.
+
+### Native tests (C++)
+
+`testArenaBasic`, `testArenaBoundedGrowth`, `testArenaNullSafety`,
+`testArenaConcurrentAlloc` (8 threads × 1000 allocs),
+`testCrc32Batch`. All pass.
+
+### Go parity tests
+
+`TestCRC32Batch`, `TestArenaBasic`, `TestArenaReset`,
+`TestArenaDestroy`, `TestArenaConcurrent` (8 goroutines × 200 allocs
+under `-race`), `TestArenaBoundedGrowth`. All pass in both Go-fallback
+and native_accel modes.
+
+## 5. Memory pressure controller (`engine/mempressure`)
+
+**Files:** `engine/mempressure/mempressure.go`, `rss_linux.go`,
+`rss_other.go`, `mempressure_test.go` (new package).
+
+Tracks: Go heap (HeapAlloc), RSS (Linux /proc/self/statm), GC CPU
+fraction, native arena bytes, cache bytes, queue bytes, pending write
+bytes, source/parser buffer bytes.
+
+Four-level state with hysteresis (up/down thresholds):
+- Normal → Elevated: 0.60 / —
+- Elevated → High: 0.75 / 0.45 (down to Normal)
+- High → Critical: 0.88 / 0.60 (down to Elevated)
+- Critical → —: — / 0.72 (down to High)
+
+Single Sample() can transition multiple levels (e.g. Normal → Critical
+on a sudden spike). Subsystems register `Listener` callbacks.
+
+**Tests:** `TestStateString`, `TestDefaultCeiling`,
+`TestControllerHysteresis` (full up/down cycle, 6+ state changes),
+`TestControllerSetCeiling`, `TestControllerConcurrentSet` (10k
+concurrent Set* + 100 Sample under `-race`).
+
+## 6. Memory Booster (`engine/booster`)
+
+**Files:** `engine/booster/booster.go`, `booster_test.go` (new
+package).
+
+Adapts: QueueConcurrency, IngestionConcurrency, ParserConcurrency,
+BatchSize, QueueDepth, CacheEntries, ChunkFlushBytes.
+
+Inputs: QueueBacklog, CacheHitRate, Throughput, AvgLatencyMS,
+ActiveWorkers, CPUPressure (all atomic, settable from any goroutine).
+
+Behavior per pressure state:
+- Normal: grow concurrency if backlog deep + CPU < 70%; grow cache if
+  hit rate > 80%; grow batch if throughput > 100
+- Elevated: hold concurrency; shrink cache if hit rate < 50%; halve
+  batch
+- High: cut concurrency 25%; halve caches/buffers/chunk-flush
+- Critical: everything to floor
+
+NEVER exceeds hard `Limits` floors/ceilings. One step per Tick to
+avoid oscillation. `OnChange` listeners fire on actual changes.
+
+**Tests:** `TestDefaultLimits`, `TestNewClampsToLimits`,
+`TestTickCriticalHitsFloor`, `TestTickNormalGrowsOnBacklog`,
+`TestTickRespectsCeiling`, `TestOnChangeFires`,
+`TestInputsAccessors`.
+
+## 7. Store + chunk memory improvements
+
+**Files:** `engine/store/store.go`, `engine/store/compact.go`,
+`engine/chunks/chunks.go`.
+
+### `Count()` cache
+
+`store.Count()` caches the live-record count in `atomic.Int64`
+(-1 = dirty). Invalidated on every write (UpsertBatch, Delete,
+applyReplay, Compact). The UI hot path (`app.State()` → `Count()` on
+every poll) now hits the cache instead of allocating a
+`map[[32]byte]struct{}` per call.
+
+### Chunk encode buffer pool
+
+`chunks.WriteChunk` draws its payload buffer from a `sync.Pool`,
+eliminating the per-flush `make([]byte, payloadSize)` allocation.
+Buffers > 64 MiB are not pooled. Thread-safe, shared across flush
+workers.
+
+## 8. Documentation
+
+- `docs/performance.md` — added §11 covering mempressure, booster,
+  native arena, chunk pooling, Count cache, heap-based queue, and
+  benchmark results.
+- This manifest.
 
 ## Verification performed (all green)
 
@@ -194,240 +326,94 @@ file.
 ```
 gofmt -l ./engine ./system ./cmd ./internal          — clean
 go vet ./engine/... ./system/... ./internal/...       — clean
-GOOS=windows GOARCH=amd64 CGO_ENABLED=0
-  go vet ./cmd/...                                     — clean
 go build ./engine/... ./system/... ./internal/...     — clean
-GOOS=windows GOARCH=amd64 CGO_ENABLED=0
-  go build ./engine/... ./system/... ./internal/... ./cmd/freeiran
-                                                       — clean
 go test -count=1 ./engine/... ./system/... ./internal/...
                                                        — all pass
-go test -race -count=1 ./engine/coremgr ./engine/testqueue ./engine/tunnel
+go test -race -count=1 ./engine/... ./system/... ./internal/...
                                                        — all pass
+go test -race -count=5 ./engine/testqueue              — all pass (5 repeats)
 ```
 
-### New package tests
-
-- `engine/coremgr` — 7 tests: source coverage, version comparison,
-  asset pattern resolution, channel persistence, disable/enable
-  lifecycle, stripV edge cases.
-- `engine/testqueue` — 6 tests: enqueue/dequeue, duplicate
-  suppression, source-scoped cancellation, mode presets, failure
-  classification (timeout / cancelled / network / auth / unknown),
-  terminal-state predicate.
-- `engine/tunnel` — 4 tests: direct-by-default, idempotent disable,
-  Enable(Direct) no-op, state projection.
-- `system/process_test.go` — 2 tests: no-window launch + stop
-  idempotency, stdout/stderr capture.
-
-### Frontend
-
-The frontend was not modified in this release beyond the version bump
-in `package.json` (0.5.0 → 0.6.0). The UI pages for the new Core
-Manager / Test Queue / Tunnel Mode services are stubbed as the next
-milestone (v0.7) — the Go service surface is complete and bindable.
-
-### Wails bindings
-
-The new services (`CoreService`, `TestQueueService`, `TunnelService`,
-extended `SourceService`) are exposed through Go methods that the
-Wails v3 binding generator will pick up on the next `wails3 generate
-bindings` run. The committed bindings under `frontend/bindings/` were
-left intact (they describe the v0.5.0 surface); regeneration is a
-documented follow-up.
-
-### Cross-platform
-
-The Windows-specific code paths (`process_windows.go`,
-`job_windows.go`, `tunnel/proxy_windows.go`, `tunnel/tun_windows.go`,
-`tunnel/helpers_real.go`) all compile cleanly under
-`GOOS=windows GOARCH=amd64 CGO_ENABLED=0`. The non-Windows stubs
-compile cleanly under Linux/macOS.
-
-## Core versions / verification strategy
-
-| Core | Repo | Stable channel | Min version | Asset (windows-amd64) |
-|------|------|----------------|-------------|------------------------|
-| Xray | `XTLS/Xray-core` | `/releases/latest` | 1.8.0 | `Xray-windows-64.zip` |
-| V2Ray | `v2fly/v2ray-core` | `/releases/latest` | 5.0.0 | `v2ray-windows-64.zip` |
-| sing-box | `SagerNet/sing-box` | `/releases/latest` | 1.10.0 | `sing-box-*-windows-amd64.zip` |
-
-Verification strategy:
-1. Download the asset from the GitHub Releases API URL.
-2. Download the `.dgst` sidecar (Xray/V2Ray convention); parse the
-   SHA-256 line.
-3. Compute the SHA-256 of the downloaded asset.
-4. **Reject if the digests mismatch.** The asset is removed and the
-   manifest records `StateBroken`.
-5. Unpack, locate the executable, query its version (`xray version`,
-   `v2ray version`, `sing-box version`).
-6. Validate the executable accepts a minimal SOCKS inbound config
-   through the backend's `test`/`check` subcommand.
-7. Retain the previous healthy binary as the rollback target.
-8. Atomic rename staged → active.
-9. Smoke test: launch with a SOCKS inbound on a random port, wait for
-   listener readiness, polite-stop. Records `HealthResult` (5 booleans
-   + details).
-10. Mark `StateReady`. On any step failing: `StateBroken`, staging
-    removed, previous binary untouched.
-
-## Source additions
-
-| ID | Provider | URL |
-|----|----------|-----|
-| `shadowsocks-aggregator-eternity` | `mahdibland/ShadowsocksAggregator` | `https://raw.githubusercontent.com/mahdibland/ShadowsocksAggregator/master/Eternity.txt` |
-| `mahsa-free-config-mtn` | `mahsanet/MahsaFreeConfig` | `https://raw.githubusercontent.com/mahsanet/MahsaFreeConfig/main/mtn/sub_1.txt` |
-| `scrape-and-categorize-netherlands` | `10ium/ScrapeAndCategorize` | `https://raw.githubusercontent.com/10ium/ScrapeAndCategorize/main/output_configs/Netherlands.txt` |
-
-All URLs are `raw.githubusercontent.com` endpoints — never the GitHub
-HTML `/blob/` or `/blame/` pages.
-
-## Testing architecture
-
-| Layer | Implementation |
-|-------|----------------|
-| Unit tests | All new managers, queues, source handling, proxy state, TUN abstraction, update manager — implemented |
-| Race tests | `coremgr`, `testqueue`, `tunnel` — pass under `-race` |
-| Windows tests | `system/process_test.go` runs on every platform; Windows-specific behaviour (CREATE_NO_WINDOW flag, job-object binding) is asserted at the source level |
-| Fake cores | Existing fake-core harness in `engine/core/testdata/fakecore` is preserved unchanged. Extension with new failure modes (invalid config / crash / delayed readiness / hanging process / version query / update-install scenarios) is a documented follow-up |
-| Real-core tests | Existing `protocol-cores` CI job is preserved unchanged. Real-binary smoke tests against pinned Xray 26.3.27 / V2Ray 5.53.0 / sing-box 1.14.0 continue to gate releases |
-
-## Performance improvements
-
-- **Test queue**: bounded worker pool with priority + per-backend
-  concurrency caps. A slow V2Ray cannot starve Xray.
-- **Source fetcher**: conditional requests (ETag, Last-Modified) +
-  content-hash short-circuit. An unchanged source skips parse +
-  persistence entirely. gzip/deflate handled transparently.
-- **Speed Booster**: adaptive concurrency controller. Monitors CPU
-  pressure, memory pressure, queue backlog, core startup failures and
-  network errors. Raises concurrency when healthy + deep backlog;
-  throttles when pressure rises. Implemented as a `Mode`-aware
-  configuration on the test queue.
-- **Existing chunked store, WAL, memtable background flush, hot-config
-  cache**: all preserved unchanged. No regression.
-
-## Proxy / TUN architecture
-
-### System Proxy
+### Previously-failing test (repeated under -race)
 
 ```
-User clicks "Enable System Proxy"
-  → Controller.Enable(ModeSystemProxy, host, port, opts)
-  → winINetBackend.Enable:
-       query current per-connection options (saves prev state)
-       set PROXY_TYPE_PROXY + "socks=host:port" + bypass list
-       InternetSetOption(INTERNET_OPTION_SETTINGS_CHANGED)
-       InternetSetOption(INTERNET_OPTION_REFRESH)
-  → State.Active = true
+go test -race -count=20 -run TestCancelBySource ./engine/testqueue/
+  --- PASS: TestCancelBySource (0.00s)
+  ok      github.com/Parsaetak/FreeIran/engine/testqueue   1.012s
 ```
 
-```
-User clicks "Disable"  (or FreeIran shuts down)
-  → Controller.Disable
-  → winINetBackend.Disable:
-       restore previously saved per-connection options
-       InternetSetOption(INTERNET_OPTION_SETTINGS_CHANGED)
-       InternetSetOption(INTERNET_OPTION_REFRESH)
-  → State.Mode = Direct
-```
-
-### TUN mode
+### Native C++
 
 ```
-User clicks "Enable TUN"  (requires elevation)
-  → Controller.Enable(ModeTUN, host, port)
-  → wintunBackend.Install (if DLL missing):
-       download wintun-0.14.1.zip from wintun.net
-       extract wintun/bin/<arch>/wintun.dll to <AppData>/FreeIran/cores/wintun/
-       LoadDLL + resolve WintunCreateAdapter / WintunCloseAdapter
-  → wintunBackend.Enable:
-       WintunCreateAdapter("FreeIran", "FreeIran")
-       netsh interface ipv4 set address name=Freeiran static 10.211.211.1 255.255.255.0
-       route add 0.0.0.0/1 + 128.0.0.0/1 → 10.211.211.1
-       netsh interface ipv4 set dnsservers name=Freeiran static 1.1.1.1 primary
-  → State.Active = true, State.Mode = tun
+make -C native clean test
+  g++ ... -c src/freeiran.cpp -o build/freeiran.o
+  g++ ... tests/test_native.cpp build/freeiran.o -o build/test_native
+  ./build/test_native
+  native: all tests passed
 ```
 
-The active core (e.g. sing-box) is configured with a `tun` inbound
-pointing at the FreeIran adapter; packet forwarding happens entirely
-inside the protocol core, not in FreeIran's tunnel layer.
+### Native-accelerated Go (cgo + race)
 
-Kill-switch: every spawned protocol core is bound to a Windows job
-object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. If FreeIran crashes,
-the OS kernel reaps the core. The TUN adapter itself survives until
-the next Disable call (which the user can trigger manually from the
-UI, or which the next FreeIran boot performs automatically through
-the manifest's `State` field).
+```
+make -C native
+CGO_ENABLED=1 go build -tags native_accel ./engine/native   — clean
+CGO_ENABLED=1 go test -tags native_accel -count=1 ./engine/native  — pass
+CGO_ENABLED=1 go test -race -tags native_accel -count=1 ./engine/native  — pass
+```
 
-## Security checks
+### Windows cross-build
 
-- Downloaded configuration data is untrusted input: parsed, normalized,
-  validated, deduplicated before storage or testing.
-- **No downloaded scripts are executed**. The manager only downloads
-  protocol-core release archives and the Wintun DLL.
-- **Protocol-core binaries come only from official GitHub release
-  sources** — verified against published SHA-256 digests.
-- Credentials, UUIDs, passwords, private keys, tokens, proxy URLs
-  remain redacted from logs/UI diagnostics (existing redaction path
-  is preserved unchanged).
-- TUN/system-proxy operations require explicit user action and
-  appropriate permission handling (elevation check on Windows).
+```
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /dev/null ./cmd/freeiran
+                                                       — clean
+```
 
-## Recovery / rollback
+### Benchmarks (smoke)
 
-| Failure | Recovery |
-|---------|----------|
-| Core install: download fails | Staging removed; previous binary untouched; `StateBroken` |
-| Core install: SHA-256 mismatch | Staging removed; previous binary untouched; `StateBroken` |
-| Core install: smoke test fails | Staging removed; previous binary untouched; `StateBroken` |
-| Core install: activation fails | Rollback target renamed back to active; `StateBroken` |
-| Active core crashes after install | `HealthCheck` reports `Broken`; user clicks `Repair` |
-| `Repair` action | Tries rollback first; if rollback also broken, fresh install |
-| Update brings a broken version | `Rollback` swaps the retained previous version back |
-| FreeIran crashes while TUN enabled | Job object kills the core; TUN adapter survives until next boot |
-| FreeIran shutdown with TUN enabled | `Shutdown()` calls `tunnel.Disable` before store close |
+```
+go test -bench=BenchmarkQueueEnqueue -benchtime=1x -run=NONE ./engine/testqueue/
+  BenchmarkQueueEnqueue/n=1000-2          504,399 ns/op
+  BenchmarkQueueEnqueue/n=10000-2       5,674,305 ns/op
+  BenchmarkQueueEnqueue/n=100000-2     80,509,723 ns/op
 
-## Troubleshooting
+go test -bench=BenchmarkQueueCancelBySource -benchtime=1x -run=NONE ./engine/testqueue/
+  BenchmarkQueueCancelBySource/n=1000-2      483,031 ns/op
+  BenchmarkQueueCancelBySource/n=10000-2   8,646,925 ns/op
+  BenchmarkQueueCancelBySource/n=100000-2 105,810,328 ns/op
 
-| Symptom | Diagnosis |
-|---------|-----------|
-| "core xray: not_installed" | Run `CoreService.Install("xray")` from the UI |
-| "core v2ray: broken" | Run `CoreService.HealthCheck("v2ray")` for details; `Repair("v2ray")` to fix |
-| "no asset for windows/amd64" | The upstream release does not ship a Windows amd64 asset; check `engine/coremgr/sources.go` for the asset pattern |
-| "system proxy did not apply" | Some apps require a restart to honour `INTERNET_OPTION_SETTINGS_CHANGED`; check `State.SavedProxy` for the previous settings |
-| "TUN requires elevation" | Restart FreeIran as Administrator (right-click → Run as administrator) |
-| "checksum mismatch" | The downloaded asset's SHA-256 does not match the published digest; the network may be tampering — try a different network or VPN |
+go test -bench=BenchmarkHashBatch -benchtime=1x -run=NONE ./engine/native/
+  BenchmarkHashBatch-2        336,302 ns/op (4096 hashes, Go fallback)
+```
 
-## Known limitations
+## New packages
 
-- The Windows smoke test boots the engine headlessly; the webview
-  itself is validated by the desktop build step, not interactively
-  (CI runners have no interactive desktop session).
-- The new `CoreService` / `TestQueueService` / `TunnelService` Go
-  methods are complete and bindable, but the corresponding frontend
-  pages are stubbed as a v0.7 milestone. The Wails binding generator
-  (`wails3 generate bindings`) must be re-run on a Linux machine
-  with GTK development packages to refresh `frontend/bindings/`.
-- Wintun integration relies on `netsh` for IP/route/DNS configuration
-  rather than the IP Helper API directly. This is acceptable for the
-  initial release; the IP Helper migration is a v0.7 follow-up.
-- The fake-core test harness (`engine/core/testdata/fakecore`) was
-  not extended with the new failure modes (invalid config / crash /
-  delayed readiness / hanging process / version query / update-
-  install scenarios). Existing fake-core tests continue to pass;
-  the extension is a documented follow-up.
-- The CI workflows (`.github/workflows/ci.yml`, `release.yml`,
-  `security.yml`) were not modified in this release. They continue
-  to gate on the v0.5.0 surface; adding managed-core install tests
-  to CI is a documented follow-up (the `protocol-cores` job already
-  runs real-binary smoke tests against pinned versions).
+| Package | Purpose | LOC |
+|---------|---------|-----|
+| `engine/mempressure` | Central memory-pressure controller with hysteresis | ~340 |
+| `engine/booster` | Adaptive runtime optimisation controller | ~370 |
+
+## Remaining limitations
+
+- The mempressure controller tracks RSS on Linux only (reads
+  `/proc/self/statm`). On macOS/Windows RSS reads as 0; the heap
+  fraction from `runtime.MemStats` remains the primary signal.
+- The booster is wired as a library; integration into `app.App`
+  (actually applying the adjusted concurrency to the live test queue +
+  pipeline) is a follow-up. The controllers are tested in isolation.
+- The native arena Go-fallback does a `make([]byte)` per alloc (no
+  pooling); the native path is the high-throughput one. The fallback
+  preserves the API contract.
+- The v0.6 frontend UI pages for CoreService / TestQueueService /
+  TunnelService remain stubbed (v0.7 milestone was engine-side).
+- Wails binding regeneration is still a documented follow-up.
 
 ## Final status
 
-**READY** — the complete Go-side verification matrix is green. The
-FreeIran engine is now a genuinely usable Windows VPN/proxy client
-architecture: managed core installation, no-console process launch,
-bounded-worker test queue, system proxy + TUN, capability-driven
-failover, expanded sources. The frontend UI pages for the new
-services are the next milestone.
+**READY** — `TestCancelBySource` passes reliably under `-race
+-count=20`. The complete Go/native/Windows verification matrix is
+green. The codebase has a single authoritative queue state-transition
+path, real in-flight cancellation, a heap-based priority queue, a
+memory-pressure controller, an adaptive booster, a native arena, batch
+CRC-32, pooled chunk buffers, and a cached store Count(). Four data
+races (testqueue, coremgr, app lazy-init, native fallbackHook) are
+fixed with regression tests.

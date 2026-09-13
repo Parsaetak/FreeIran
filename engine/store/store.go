@@ -194,6 +194,13 @@ type Store struct {
 	compactCount  atomic.Int64
 	lastFlushMS   atomic.Int64
 	lastCompactMS atomic.Int64
+
+	// cachedCount is the last-computed live record count, or -1 when
+	// dirty. Writes set it to -1 (cheap); Count() recomputes only
+	// when dirty. This avoids the per-Count() map allocation in
+	// derivedCount on the UI hot path (app.State calls Count() on
+	// every poll).
+	cachedCount atomic.Int64
 }
 
 // chunkMeta is the per-chunk registry entry persisted in store.meta.
@@ -225,6 +232,7 @@ func Open(opts Options) (*Store, error) {
 		index:     make(map[[32]byte]loc),
 		status:    "ready",
 	}
+	s.cachedCount.Store(-1) // dirty until first Count()
 
 	s.chunker = chunks.NewChunker(orDefault(opts.TargetChunkBytes,
 		defaultTargetChunkBytes))
@@ -484,18 +492,33 @@ func (s *Store) isLive(bin [32]byte) bool {
 // Count returns the number of live records, including unflushed ones.
 // It is derived from the index and memtable levels so it can never
 // drift: deletes remove index entries immediately and resurrections
-// are visible in the memtable.
+// are visible in the memtable. The result is cached and invalidated on
+// every write, so repeated Count() calls on the UI hot path avoid the
+// per-call map allocation in derivedCount.
 func (s *Store) Count() int {
 	if !s.beginOp() {
 		return 0
 	}
-
 	defer s.endOp()
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	// Fast path: cached value is fresh.
+	if c := s.cachedCount.Load(); c >= 0 {
+		return int(c)
+	}
 
-	return s.derivedCount()
+	s.mu.RLock()
+	n := s.derivedCount()
+	s.mu.RUnlock()
+
+	s.cachedCount.Store(int64(n))
+	return n
+}
+
+// invalidateCount marks the cached count as dirty. Called by every
+// write path (UpsertBatch, Delete, compaction, replay). Cheap (one
+// atomic store); the next Count() recomputes.
+func (s *Store) invalidateCount() {
+	s.cachedCount.Store(-1)
 }
 
 // derivedCount computes the live record count; callers hold s.mu.
@@ -616,6 +639,8 @@ func (s *Store) writeRecords(records []journalRecord) error {
 	s.mu.Unlock()
 	s.writeMu.Unlock()
 
+	s.invalidateCount()
+
 	// Explicit backpressure: the store never buffers more than
 	// maxFrozen pending tables in memory. (Standard condition-variable
 	// idiom: Lock once, Wait inside the predicate loop — Wait returns
@@ -682,6 +707,7 @@ func (s *Store) Delete(key string) error {
 
 	s.writeMu.Unlock()
 
+	s.invalidateCount()
 	return nil
 }
 
@@ -761,6 +787,7 @@ func (s *Store) applyReplay(op walOp, bin [32]byte, value []byte, lsn uint64) er
 		s.lsn = lsn
 	}
 
+	s.invalidateCount()
 	return nil
 }
 

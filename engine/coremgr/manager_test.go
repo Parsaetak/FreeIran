@@ -1,7 +1,10 @@
 package coremgr
 
 import (
+	"context"
+	"sync"
 	"testing"
+	"time"
 )
 
 // TestDefaultSourcesCoverAllCores verifies that every core has a
@@ -158,4 +161,64 @@ func TestManagerDisableEnable(t *testing.T) {
 	if mf.State != StateBroken {
 		t.Fatalf("state after enable-without-binary = %s, want %s", mf.State, StateBroken)
 	}
+}
+
+// TestManagerConcurrentAccess verifies that concurrent reads (Info,
+// All) and writes (SetChannel, Disable, Enable, setState) don't race.
+// This is a regression test for the data race where manifestOrCreate
+// mutated m.manifests without holding m.mu while Info read it under
+// m.mu.RLock.
+func TestManagerConcurrentAccess(t *testing.T) {
+	dir := t.TempDir()
+	m, _ := New(Options{RootDir: dir})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	var wg sync.WaitGroup
+
+	// Readers: call Info + All in a tight loop.
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+				for _, name := range AllCores {
+					_, _ = m.Info(name)
+				}
+				_ = m.All()
+			}
+		}()
+	}
+
+	// Writers: call SetChannel / Disable / Enable in a tight loop.
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+				for _, name := range AllCores {
+					ch := ChannelStable
+					if worker%2 == 0 {
+						ch = ChannelPrerelease
+					}
+					_ = m.SetChannel(name, ch)
+					_ = m.Disable(name)
+					_ = m.Enable(nil, name)
+				}
+			}
+		}(i)
+	}
+
+	wg.Wait()
 }

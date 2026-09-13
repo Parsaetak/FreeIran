@@ -28,8 +28,12 @@ func NewCoreService(a *App) *CoreService {
 
 // ensureCoreMgr returns the app's core manager, initializing it on
 // first use. The manager is created lazily so a headless test setup
-// without a writable AppData directory still boots.
+// without a writable AppData directory still boots. initMu serializes
+// the init so concurrent UI calls don't create duplicate managers.
 func (s *CoreService) ensureCoreMgr() (*coremgr.Manager, error) {
+	s.app.initMu.Lock()
+	defer s.app.initMu.Unlock()
+
 	if s.app.coreMgr != nil {
 		return s.app.coreMgr, nil
 	}
@@ -178,7 +182,12 @@ func NewTestQueueService(a *App) *TestQueueService {
 }
 
 // ensureQueue returns the app's test queue, initializing it lazily.
+// initMu serializes the init so concurrent UI calls don't create
+// duplicate queues (which would leak the prior queue's workers).
 func (s *TestQueueService) ensureQueue() (*testqueue.Queue, error) {
+	s.app.initMu.Lock()
+	defer s.app.initMu.Unlock()
+
 	if s.app.testQueue != nil {
 		return s.app.testQueue, nil
 	}
@@ -304,17 +313,29 @@ func (s *TestQueueService) CancelAll() int {
 	return q.CancelAll()
 }
 
-// SetMode changes the queue's testing mode preset.
+// SetMode changes the queue's testing mode preset. initMu serializes
+// the stop+recreate so a concurrent ensureQueue can't observe a
+// half-replaced queue or start a second new queue on top.
 func (s *TestQueueService) SetMode(mode testqueue.Mode) {
+	s.app.initMu.Lock()
+	defer s.app.initMu.Unlock()
+
 	cfg := testqueue.ModeConfig(mode)
 	s.app.testQueueCfg = cfg
-	if s.app.testQueue != nil {
-		s.app.testQueue.Stop()
-	}
+	old := s.app.testQueue
 	adapter := &testerAdapter{app: s.app}
 	q := testqueue.New(adapter, cfg)
 	q.Start(s.app.ctx)
+	// Swap the pointer BEFORE stopping the old queue so a concurrent
+	// ensureQueue sees the new one. The old queue's Stop drains its
+	// in-flight tasks and exits its workers; if any call was in
+	// progress on the old queue, it completes against the old queue
+	// (the pointer was already swapped, but the caller holds a
+	// reference to the old *Queue).
 	s.app.testQueue = q
+	if old != nil {
+		old.Stop()
+	}
 }
 
 // Stats returns the current queue statistics.
@@ -361,8 +382,13 @@ func NewTunnelService(a *App) *TunnelService {
 	return &TunnelService{app: a}
 }
 
-// ensureController returns the app's tunnel controller.
+// ensureController returns the app's tunnel controller. initMu
+// serializes the lazy init so concurrent UI calls don't create
+// duplicate controllers.
 func (s *TunnelService) ensureController() *tunnel.Controller {
+	s.app.initMu.Lock()
+	defer s.app.initMu.Unlock()
+
 	if s.app.tunnelCtrl == nil {
 		s.app.tunnelCtrl = tunnel.New()
 	}

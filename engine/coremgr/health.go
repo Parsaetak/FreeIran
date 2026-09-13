@@ -182,30 +182,37 @@ func (m *Manager) HealthCheck(ctx context.Context, name CoreName) (HealthResult,
 		return HealthResult{}, fmt.Errorf("no source for core %s", name)
 	}
 
-	mf := m.manifestOrCreate(name)
-	if mf.BinaryPath == "" {
-		mf.BinaryPath = m.BinaryPath(name)
+	// Snapshot the manifest under RLock so we can check State and
+	// BinaryPath without holding the lock during the smoke test.
+	snap, _ := m.snapshotManifest(name)
+	binaryPath := snap.BinaryPath
+	if binaryPath == "" {
+		binaryPath = m.BinaryPath(name)
+		// Persist the resolved path so future calls skip the lookup.
+		_ = m.updateManifest(name, func(mf *Manifest) {
+			if mf.BinaryPath == "" {
+				mf.BinaryPath = binaryPath
+			}
+		})
 	}
-	if mf.State == StateInstalling {
+	if snap.State == StateInstalling {
 		// Refuse to health-check while an install is in flight.
 		return HealthResult{}, ErrAlreadyInstalling
 	}
 	_ = m.setState(name, StateChecking)
 
-	result := m.smokeTest(ctx, name, mf.BinaryPath, src)
+	result := m.smokeTest(ctx, name, binaryPath, src)
 
-	m.mu.Lock()
-	mf.LastHealthCheck = time.Now().UTC()
-	mf.LastHealthResult = result
-	if result.OK {
-		mf.State = StateReady
-	} else {
-		mf.State = StateBroken
-	}
-	mf.UpdatedAt = time.Now().UTC()
-	m.mu.Unlock()
-
-	_ = m.persist(name)
+	_ = m.updateManifest(name, func(mf *Manifest) {
+		mf.LastHealthCheck = time.Now().UTC()
+		mf.LastHealthResult = result
+		if result.OK {
+			mf.State = StateReady
+		} else {
+			mf.State = StateBroken
+		}
+		mf.UpdatedAt = time.Now().UTC()
+	})
 
 	m.logger.Info(Subsystem, "health_check",
 		"core %s health: ok=%v (exe=%v ver=%v cfg=%v launch=%v shutdown=%v)",
@@ -282,28 +289,21 @@ func (m *Manager) Rollback(ctx context.Context, name CoreName) error {
 	// Smoke-test the rolled-back binary.
 	result := m.smokeTest(ctx, name, currentPath, src)
 
-	// Update manifest.
-	m.mu.Lock()
-	active := m.manifests[name]
-	if active == nil {
-		active = &Manifest{Name: name}
-		m.manifests[name] = active
-	}
-	active.Version = version
-	active.BinaryPath = currentPath
-	active.State = StateReady
-	active.LastHealthCheck = time.Now().UTC()
-	active.LastHealthResult = result
-	active.PreviousPath = backupPath
-	active.PreviousVersion = ""
-	active.PreviousChecksum = ""
-	active.UpdatedAt = time.Now().UTC()
-	if !result.OK {
-		active.State = StateBroken
-	}
-	m.mu.Unlock()
-
-	_ = m.persist(name)
+	// Update manifest under m.mu via updateManifest (which also persists).
+	_ = m.updateManifest(name, func(mf *Manifest) {
+		mf.Version = version
+		mf.BinaryPath = currentPath
+		mf.State = StateReady
+		mf.LastHealthCheck = time.Now().UTC()
+		mf.LastHealthResult = result
+		mf.PreviousPath = backupPath
+		mf.PreviousVersion = ""
+		mf.PreviousChecksum = ""
+		mf.UpdatedAt = time.Now().UTC()
+		if !result.OK {
+			mf.State = StateBroken
+		}
+	})
 
 	m.logger.Info(Subsystem, "rollback_complete",
 		"core %s rolled back to %s (ok=%v)", name, version, result.OK)

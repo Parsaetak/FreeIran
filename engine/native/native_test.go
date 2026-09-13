@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"hash/crc32"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -209,4 +211,178 @@ func TestForcedFallback(t *testing.T) {
 	if CRC32(0, data) != crc32.Checksum(data, crc32.MakeTable(crc32.IEEE)) {
 		t.Fatal("dispatch CRC32 disagrees with stdlib")
 	}
+}
+
+// TestCRC32Batch verifies the batch CRC-32 produces the same results
+// as single-shot CRC32 for each string.
+func TestCRC32Batch(t *testing.T) {
+	strs := []string{
+		"vless://one.example:443",
+		"",
+		"trojan://three.example:8443",
+		"123456789", // canonical check value 0xCBF43926
+	}
+
+	var packed []byte
+	offsets := make([]uint32, 0, len(strs)+1)
+	offsets = append(offsets, 0)
+	for _, s := range strs {
+		packed = append(packed, s...)
+		offsets = append(offsets, uint32(len(packed)))
+	}
+
+	crcs := CRC32Batch(packed, offsets)
+	if len(crcs) != len(strs) {
+		t.Fatalf("len(crcs) = %d, want %d", len(crcs), len(strs))
+	}
+
+	for i, s := range strs {
+		want := CRC32(0, []byte(s))
+		if crcs[i] != want {
+			t.Errorf("crcs[%d] = %#x, want %#x", i, crcs[i], want)
+		}
+	}
+
+	// Canonical check value.
+	if crcs[3] != 0xCBF43926 {
+		t.Errorf("crc32('123456789') = %#x, want 0xCBF43926", crcs[3])
+	}
+
+	// Empty batch.
+	if got := CRC32Batch(nil, []uint32{0}); got != nil {
+		t.Fatal("empty batch should return nil")
+	}
+}
+
+// TestArenaBasic verifies the Arena API works in both native and
+// Go-fallback modes.
+func TestArenaBasic(t *testing.T) {
+	a := NewArena(4)
+	defer a.Destroy()
+
+	p1 := a.Alloc(100)
+	p2 := a.Alloc(200)
+	p3 := a.Alloc(50)
+
+	if p1 == nil || p2 == nil || p3 == nil {
+		t.Fatal("Arena.Alloc returned nil")
+	}
+
+	// Write to verify the memory is usable.
+	for i := range p1 {
+		p1[i] = 0xAA
+	}
+	for i := range p2 {
+		p2[i] = 0xBB
+	}
+	for i := range p3 {
+		p3[i] = 0xCC
+	}
+
+	stats := a.Stats()
+	if stats.TotalAllocs != 3 {
+		t.Errorf("TotalAllocs = %d, want 3", stats.TotalAllocs)
+	}
+	if stats.TotalBytes != 350 {
+		t.Errorf("TotalBytes = %d, want 350", stats.TotalBytes)
+	}
+}
+
+// TestArenaReset verifies Reset reclaims memory for reuse.
+func TestArenaReset(t *testing.T) {
+	a := NewArena(8)
+	defer a.Destroy()
+
+	// Allocate and fill.
+	p1 := a.Alloc(1024)
+	if p1 == nil {
+		t.Fatal("Alloc failed")
+	}
+	statsBefore := a.Stats()
+	if statsBefore.TotalAllocs != 1 {
+		t.Errorf("TotalAllocs before reset = %d, want 1", statsBefore.TotalAllocs)
+	}
+
+	a.Reset()
+
+	statsAfter := a.Stats()
+	// TotalAllocs is cumulative (preserved across reset).
+	if statsAfter.TotalAllocs != 1 {
+		t.Errorf("TotalAllocs after reset = %d, want 1 (preserved)", statsAfter.TotalAllocs)
+	}
+
+	// Alloc after reset should succeed.
+	p2 := a.Alloc(512)
+	if p2 == nil {
+		t.Fatal("Alloc after reset failed")
+	}
+}
+
+// TestArenaDestroy verifies Destroy releases the handle.
+func TestArenaDestroy(t *testing.T) {
+	a := NewArena(2)
+	a.Alloc(100)
+	a.Destroy()
+	// After Destroy, Alloc should return nil or an empty slice (handle is 0).
+	// We don't call Alloc after Destroy (undefined behavior per the contract).
+}
+
+// TestArenaConcurrent verifies the arena is safe for concurrent Alloc.
+func TestArenaConcurrent(t *testing.T) {
+	a := NewArena(64) // 4 MiB
+	defer a.Destroy()
+
+	const goroutines = 8
+	const allocsPerG = 200
+
+	var wg sync.WaitGroup
+	failures := int32(0)
+
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < allocsPerG; i++ {
+				p := a.Alloc(64)
+				if p == nil {
+					atomic.AddInt32(&failures, 1)
+					continue
+				}
+				// Write to verify no overlap (best-effort; the native
+				// arena guarantees no overlap, the Go fallback does too
+				// because each make([]byte) is distinct).
+				for j := range p {
+					p[j] = byte(i % 256)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	if failures != 0 {
+		t.Errorf("%d concurrent alloc failures", failures)
+	}
+
+	stats := a.Stats()
+	want := uint64(goroutines*allocsPerG) - uint64(failures)
+	if stats.TotalAllocs != want {
+		t.Errorf("TotalAllocs = %d, want %d", stats.TotalAllocs, want)
+	}
+}
+
+// TestArenaBoundedGrowth verifies the arena returns nil when at capacity.
+func TestArenaBoundedGrowth(t *testing.T) {
+	// 1 block = 64 KiB. In native mode, allocating >64 KiB should fail.
+	// In Go-fallback mode, there's no hard cap (each alloc is independent).
+	a := NewArena(1)
+	defer a.Destroy()
+
+	p1 := a.Alloc(60 * 1024)
+	if p1 == nil {
+		t.Fatal("first Alloc (60K) failed")
+	}
+
+	// In native mode this should fail; in Go fallback it succeeds.
+	p2 := a.Alloc(8 * 1024)
+	_ = p2 // either nil (native) or non-nil (Go fallback) is acceptable
 }

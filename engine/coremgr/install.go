@@ -54,10 +54,11 @@ func (m *Manager) Install(ctx context.Context, name CoreName) error {
 
 	// Mark installing. If state was already Installing, refuse the
 	// second call so we never run two installs for the same core.
-	mf := m.manifestOrCreate(name)
-	if mf.State == StateInstalling {
+	snap, _ := m.snapshotManifest(name)
+	if snap.State == StateInstalling {
 		return ErrAlreadyInstalling
 	}
+	channel := snap.Channel
 
 	if err := m.setState(name, StateInstalling); err != nil {
 		return err
@@ -77,7 +78,7 @@ func (m *Manager) Install(ctx context.Context, name CoreName) error {
 	}
 
 	// 1. Resolve the latest release.
-	update, err := m.checkRelease(ctx, name, mf.Channel)
+	update, err := m.checkRelease(ctx, name, channel)
 	if err != nil {
 		return fail("resolve_release", err)
 	}
@@ -149,11 +150,17 @@ func (m *Manager) Install(ctx context.Context, name CoreName) error {
 	// 10. Retain rollback target.
 	prevPath := m.RollbackPath(name)
 	prevExists := false
-	if mf.BinaryPath != "" {
-		if _, statErr := os.Stat(mf.BinaryPath); statErr == nil {
+	currentBinaryPath := snap.BinaryPath
+	if currentBinaryPath == "" {
+		// Re-snapshot in case it was set since the start of Install.
+		snap2, _ := m.snapshotManifest(name)
+		currentBinaryPath = snap2.BinaryPath
+	}
+	if currentBinaryPath != "" {
+		if _, statErr := os.Stat(currentBinaryPath); statErr == nil {
 			// Move the current binary aside.
 			_ = os.Remove(prevPath)
-			if err := os.Rename(mf.BinaryPath, prevPath); err != nil {
+			if err := os.Rename(currentBinaryPath, prevPath); err != nil {
 				// If rename fails (file locked), keep the old
 				// binary in place; rollback will not be available
 				// for this update.
@@ -183,44 +190,42 @@ func (m *Manager) Install(ctx context.Context, name CoreName) error {
 		}
 	}
 
-	// 12. Update the manifest.
-	mf.State = StateReady
-	mf.Version = versionStr
-	mf.BinaryPath = finalPath
-	mf.ChecksumSHA256 = actual
-	mf.SourceURL = update.AssetURL
-	mf.ReleaseTag = update.ReleaseTag
-	mf.ReleaseDate = update.ReleaseDate
-	mf.ReleaseURL = update.ReleaseURL
-	mf.InstalledAt = time.Now().UTC()
-	mf.LastChecked = time.Now().UTC()
-	mf.UpdatedAt = time.Now().UTC()
+	// 12. Update the manifest under m.mu via updateManifest.
+	var prevChecksumStr string
 	if prevExists {
-		prevChecksum, _ := fileSHA256(prevPath)
-		mf.PreviousVersion = mf.Version // updated below
-		mf.PreviousChecksum = prevChecksum
-		mf.PreviousPath = prevPath
+		prevChecksumStr, _ = fileSHA256(prevPath)
 	}
-
-	// Correct PreviousVersion: it is the OLD version, not the new one.
-	if prevExists && mf.PreviousVersion != "" {
-		// We temporarily stored mf.Version above; replace with the
-		// actual previous version (which we did not capture before
-		// overwriting). For correctness, store the empty string when
-		// we cannot reliably recover it; the rollback target still
-		// exists on disk.
-		mf.PreviousVersion = ""
-	}
+	prevChecksumFinal := prevChecksumStr
 
 	// 13. Run a smoke test to confirm readiness.
 	result := m.smokeTest(ctx, name, finalPath, src)
-	mf.LastHealthCheck = time.Now().UTC()
-	mf.LastHealthResult = result
-	if !result.OK {
-		mf.State = StateBroken
-	}
 
-	if err := m.persist(name); err != nil {
+	if err := m.updateManifest(name, func(mf *Manifest) {
+		mf.State = StateReady
+		mf.Version = versionStr
+		mf.BinaryPath = finalPath
+		mf.ChecksumSHA256 = actual
+		mf.SourceURL = update.AssetURL
+		mf.ReleaseTag = update.ReleaseTag
+		mf.ReleaseDate = update.ReleaseDate
+		mf.ReleaseURL = update.ReleaseURL
+		mf.InstalledAt = time.Now().UTC()
+		mf.LastChecked = time.Now().UTC()
+		mf.UpdatedAt = time.Now().UTC()
+		if prevExists {
+			mf.PreviousChecksum = prevChecksumFinal
+			mf.PreviousPath = prevPath
+		}
+		// PreviousVersion is the OLD version. We did not capture it
+		// before overwriting; store empty when we cannot reliably
+		// recover it. The rollback target still exists on disk.
+		mf.PreviousVersion = ""
+		mf.LastHealthCheck = time.Now().UTC()
+		mf.LastHealthResult = result
+		if !result.OK {
+			mf.State = StateBroken
+		}
+	}); err != nil {
 		m.logger.Warn(Subsystem, "persist_failed",
 			"could not persist manifest for %s: %v", name, err)
 	}
@@ -228,7 +233,9 @@ func (m *Manager) Install(ctx context.Context, name CoreName) error {
 	// 14. Cleanup staging.
 	_ = os.RemoveAll(m.StagingDir(name))
 
-	if mf.State == StateReady {
+	// Re-snapshot to log the final state.
+	finalSnap, _ := m.snapshotManifest(name)
+	if finalSnap.State == StateReady {
 		m.logger.Info(Subsystem, "install_complete",
 			"core %s %s installed (sha256=%s)",
 			name, versionStr, actual[:12])

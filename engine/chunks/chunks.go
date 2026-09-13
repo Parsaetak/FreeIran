@@ -31,6 +31,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Parsaetak/FreeIran/engine/errors"
@@ -73,6 +74,37 @@ var (
 	ErrNoRecords    = stderrors.New("chunks: no records written")
 	ErrOpenBoundary = stderrors.New("chunks: record would split chunk")
 )
+
+// payloadPool reuses large byte slices across WriteChunk calls to
+// reduce GC pressure on the flush hot path. Each pooled item is a
+// *[]byte so the slice header can grow without allocating a new one.
+var payloadPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 0, 64<<10) // start at 64 KiB
+		return &b
+	},
+}
+
+// getPayloadBuffer returns a []byte with at least hint capacity,
+// drawn from the pool. The caller MUST call putPayloadBuffer when done.
+func getPayloadBuffer(hint int) []byte {
+	bp := payloadPool.Get().(*[]byte)
+	if cap(*bp) < hint {
+		*bp = make([]byte, 0, hint)
+	}
+	return (*bp)[:0]
+}
+
+// putPayloadBuffer returns a buffer to the pool for reuse.
+func putPayloadBuffer(b []byte) {
+	// Only pool reasonably-sized buffers to avoid holding very large
+	// slices (e.g. a 64 MiB chunk) indefinitely.
+	if cap(b) > 64<<20 {
+		return
+	}
+	bp := &b
+	payloadPool.Put(bp)
+}
 
 // Subsystem is used for structured error classification.
 const Subsystem = "chunks"
@@ -251,7 +283,9 @@ func WriteChunk(
 		payloadSize += 4 + len(rec)
 	}
 
-	payload := make([]byte, 0, payloadSize)
+	// Use a pooled buffer to reduce GC pressure on the flush path.
+	payload := getPayloadBuffer(payloadSize)
+	defer putPayloadBuffer(payload)
 
 	for _, rec := range records {
 		var prefix [4]byte
