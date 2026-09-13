@@ -25,6 +25,7 @@ import (
 
 	"github.com/Parsaetak/FreeIran/engine/app"
 	"github.com/Parsaetak/FreeIran/engine/coremgr"
+	"github.com/Parsaetak/FreeIran/internal/appicon"
 	"github.com/Parsaetak/FreeIran/internal/logging"
 	"github.com/Parsaetak/FreeIran/internal/version"
 	"github.com/Parsaetak/FreeIran/system"
@@ -126,12 +127,21 @@ func main() {
 	})
 
 	// WindowCentered is the default start position; no override needed.
+	//
+	// Icon (v0.9.1): Linux gets the embedded PNG as the GTK window
+	// icon. On Windows the titlebar/taskbar/executable identity
+	// comes from the linked resource (cmd/freeiran/*.syso, built
+	// from assets/freeiran-icon.ico), so no runtime bytes are
+	// needed there.
 	wailsApp.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:     "FreeIran",
 		Width:     1280,
 		Height:    800,
 		MinWidth:  960,
 		MinHeight: 600,
+		Linux: application.LinuxWindow{
+			Icon: appicon.PNG,
+		},
 	})
 
 	// Graceful shutdown: the OnShutdown hook runs before process

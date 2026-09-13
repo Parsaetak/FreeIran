@@ -20,8 +20,8 @@ import {
 import { configToRow } from "../utilities/export";
 import { useConnectionStore } from "../state/connectionStore";
 import { describeError, toast } from "../state/toastStore";
-import { EmptyState, ResultBadge, SegmentedControl } from "../components/common";
-import { IconDownload, IconPlay, IconRefresh, IconSearch, IconX } from "../components/Icons";
+import { EmptyState, Menu, ResultBadge, SegmentedControl } from "../components/common";
+import { IconChevronDown, IconDownload, IconPlay, IconRefresh, IconSearch, IconX } from "../components/Icons";
 
 const searchRunner = makeSearchRunner(250);
 
@@ -277,9 +277,9 @@ export function ConfigsPage() {
   };
 
   return (
-    <div>
+    <div className="page-flex">
       <div className="page-header">
-        <div>
+        <div className="page-heading">
           <h1 className="page-title">Configurations</h1>
           <div className="page-subtitle">
             {filtered !== null
@@ -361,48 +361,126 @@ export function ConfigsPage() {
         </div>
       </div>
 
+      {/*
+       * Testing workspace toolbar (v0.9.1): primary actions are always
+       * visible; secondary/recovery actions live in a compact overflow
+       * menu so the toolbar can never overflow into the list below.
+       */}
       <div className="toolbar">
-        <button type="button" className="btn ghost" disabled={filteredLoading} onClick={() => void bulkTest("untested")}>
-          <IconRefresh size={13} /> Test untested
+        <button
+          type="button"
+          className="btn"
+          disabled={filteredLoading || selected.size === 0}
+          onClick={() => void bulkTest("selected")}
+        >
+          <IconPlay size={13} /> Test selected ({selected.size})
         </button>
-        <button type="button" className="btn ghost" disabled={filteredLoading} onClick={() => void bulkTest("failed")}>
-          <IconRefresh size={13} /> Retest failed
-        </button>
-        <button type="button" className="btn ghost" disabled={filteredLoading} onClick={() => void bulkTest("working")}>
-          <IconRefresh size={13} /> Retest working
-        </button>
-        <button type="button" className="btn ghost" disabled={filteredLoading || selected.size === 0} onClick={() => void bulkTest("selected")}>
-          Test selected ({selected.size})
-        </button>
-        <button type="button" className="btn ghost" disabled={filteredLoading} onClick={() => void bulkTest("all")}>
+        <button type="button" className="btn" disabled={filteredLoading} onClick={() => void bulkTest("all")}>
           <IconRefresh size={13} /> Test all
         </button>
+        <button type="button" className="btn" disabled={filteredLoading} onClick={() => void bulkTest("untested")}>
+          <IconRefresh size={13} /> Test untested
+        </button>
+
+        <div className="toolbar-spacer" />
+
+        <Menu
+          ariaLabel="More testing actions"
+          label={
+            <>
+              More actions
+              <IconChevronDown size={13} />
+            </>
+          }
+          items={[
+            {
+              id: "retest-failed",
+              label: "Retest failed",
+              disabled: filteredLoading,
+              onSelect: () => void bulkTest("failed"),
+            },
+            {
+              id: "retest-working",
+              label: "Retest working",
+              disabled: filteredLoading,
+              onSelect: () => void bulkTest("working"),
+            },
+            {
+              id: "cancel-all",
+              label: "Cancel all tests",
+              disabled: filteredLoading,
+              danger: true,
+              separatorBefore: true,
+              onSelect: () => void cancelAll(),
+            },
+          ]}
+        />
       </div>
 
       {queueStats && queueStats.total_enqueued > 0 && (
-        <div className="queue-panel card flush mb-0" aria-label="Test queue progress">
-          <div className="queue-panel-row">
-            <strong>Testing</strong>
-            <span className="muted">
-              {queueStats.total_completed}/{queueStats.total_enqueued} done · {queueStats.queue_depth} queued ·{" "}
-              {queueStats.active_workers} active
+        <section className="queue-panel" aria-label="Test queue progress">
+          <div className="queue-head">
+            <span className="queue-title">Testing</span>
+            <span className="queue-count">
+              {queueStats.total_completed}/{queueStats.total_enqueued} done
             </span>
-            <span className="muted">
-              pass {queueStats.total_passed} · fail {queueStats.total_failed} · cancelled {queueStats.total_cancelled}
-            </span>
-            {queueStats.avg_latency_ms ? <span className="chip">avg ping {queueStats.avg_latency_ms} ms</span> : null}
-            {queueStats.fastest_latency_ms ? <span className="chip">best {queueStats.fastest_latency_ms} ms</span> : null}
-            {queueStats.slowest_latency_ms ? <span className="chip">worst {queueStats.slowest_latency_ms} ms</span> : null}
+            <div
+              className={`progress ${queueStats.total_completed >= queueStats.total_enqueued ? "" : "indeterminate-none"}`}
+              role="progressbar"
+              aria-label="Test queue progress"
+              aria-valuemin={0}
+              aria-valuemax={queueStats.total_enqueued}
+              aria-valuenow={queueStats.total_completed}
+            >
+              <div
+                className="progress-bar"
+                style={{
+                  width: `${Math.min(100, Math.round((queueStats.total_completed / Math.max(1, queueStats.total_enqueued)) * 100))}%`,
+                }}
+              />
+            </div>
             <button type="button" className="btn sm ghost danger" onClick={() => void cancelAll()}>
               Cancel all
             </button>
           </div>
-        </div>
+
+          <div className="queue-body">
+            <div className="queue-ping-group">
+              <QueuePing label="avg ping" value={queueStats.avg_latency_ms} />
+              <QueuePing label="fastest" value={queueStats.fastest_latency_ms} cls="ok" />
+              <QueuePing label="slowest" value={queueStats.slowest_latency_ms} cls="warn" />
+            </div>
+
+            <div className="queue-stats">
+              <span className="queue-chip queued">
+                queued <b>{queueStats.queue_depth}</b>
+              </span>
+              <span className="queue-chip active">
+                active <b>{queueStats.active_workers}</b>
+              </span>
+              <span className="queue-chip passed">
+                passed <b>{queueStats.total_passed}</b>
+              </span>
+              <span className="queue-chip failed">
+                failed <b>{queueStats.total_failed}</b>
+              </span>
+              <span className="queue-chip">
+                cancelled <b>{queueStats.total_cancelled}</b>
+              </span>
+              {queueStats.total_timed_out > 0 && (
+                <span className="queue-chip failed">
+                  timed out <b>{queueStats.total_timed_out}</b>
+                </span>
+              )}
+            </div>
+          </div>
+        </section>
       )}
 
       <div className={`configs-layout ${detail ? "with-panel" : ""}`}>
         <div className="card flush mb-0">
           <div className="row header config-row-v2">
+            <span aria-hidden />
             <span>Proto</span>
             <span>Endpoint</span>
             <span className="hide-md">Transport</span>
@@ -705,6 +783,25 @@ function HealthBadge({ config }: { config: Config }) {
   ) : (
     <span className="badge error" data-tip={relativeTime(Number(config["tested_at"]))}>
       failed
+    </span>
+  );
+}
+
+/** Prominent ping tile for the queue panel (hidden when no data yet). */
+function QueuePing({ label, value, cls }: { label: string; value?: number; cls?: string }) {
+  if (!value) {
+    return (
+      <span className="queue-ping">
+        <span className="value latency none">—</span>
+        <span className="label">{label}</span>
+      </span>
+    );
+  }
+
+  return (
+    <span className="queue-ping">
+      <span className={`value ${cls ?? latencyClass(value)}`}>{formatLatency(value)}</span>
+      <span className="label">{label}</span>
     </span>
   );
 }

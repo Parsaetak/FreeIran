@@ -2361,3 +2361,156 @@ with a complete, validated, portable deployment ZIP.
 - Real-binary core smoke tests in release.yml (protocol-cores job)
   remain a CI-only gate.
 
+
+---
+
+## Engineering Worklog — v0.9.1 (2026-09-14)
+
+### Scope
+
+Focused production-polish release per the v0.9.1 brief, executed in
+the mandated priority order (UI overlap → icon → release workflow →
+developer settings → validation → docs). No architectural rewrites.
+
+### 1. Testing/Ping UI overlap — root cause and fix
+
+- **Root cause:** `.config-row-v2` declared 7 grid columns but every
+  row rendered 8 children (checkbox, protocol, endpoint, transport,
+  latency, health, source, action). The 8th child (the per-row Test
+  button) wrapped onto an implicit second grid row and overlapped the
+  row below at >1240px — exactly the reported "buttons overlapping
+  text and controls". The sticky header (7 children, no checkbox
+  spacer) misaligned with the rows for the same reason.
+- **Fix:** explicit 8-column grid (`26px 72px minmax(0,1fr)
+  minmax(0,150px) 96px 92px minmax(0,120px) 64px`) with matching
+  header spacers; breakpoints at 1240px (−transport/health) and 1100px
+  (−source) keep header/row children counts in sync one-to-one.
+- **Layout system:** new `.page-flex` workspace — the Configurations
+  page fills the content column exactly (statusbar + padding tokens,
+  not hardcoded pixel offsets); only the config list scrolls. Replaced
+  the fragile `height: calc(100vh - 300px)`.
+- **Queue panel redesign:** head (title, n/m count, real progress bar
+  with aria values, Cancel all) + body (prominent avg/fastest/slowest
+  ping tiles + queued/active/passed/failed/cancelled/timed-out
+  chips).
+- **Toolbar hierarchy:** primary actions (Test selected / Test all /
+  Test untested) always visible; secondary (Retest failed, Retest
+  working, Cancel all) in a new accessible overflow `Menu` component
+  (outside-click + Escape close, real buttons, disabled states).
+
+### 2. Global UI/UX consistency
+
+- Defined the six tokens the v0.9.0 appendix referenced but never
+  declared (`--radius-md`, `--surface-1`, `--surface-2`,
+  `--font-mono`, `--danger`, `--warning`) — callouts, queue panel,
+  probe dots and badges had been silently rendering with invalid
+  values.
+- Removed duplicate `.page-header`, `.card-title`, `.badge.warn`,
+  `.badge.neutral`, `.mono` overrides from the appendix (they broke
+  ellipsis/flex behaviour and split pages into two visual styles).
+- Standardized Cores/Network headers to `page-title`/`page-subtitle`;
+  added `.muted`, `.page-heading`, `.card-heading`,
+  `.card-header-actions`; control heights tokenized
+  (`--control-h*`).
+
+### 3. Application icon
+
+- `scripts/genicon.py` renders the canonical geometry (brand-green
+  bolt on the dark rounded card, mirroring the in-app brand mark)
+  into `assets/freeiran-icon.svg` (canonical), `.ico` (7-size ladder)
+  and `.png` (256px) + the embedded copy in `internal/appicon`.
+- Windows: `build/winres.json` → `go-winres make` → committed
+  `cmd/freeiran/rsrc_windows_{amd64,386}.syso` (icon, version info
+  0.9.1, per-monitor-v2 DPI manifest). Verified linked: `.rsrc`
+  present, UTF-16 `ProductName`/`0.9.1` in a real `-H=windowsgui`
+  release build (12.9 MB).
+- Linux: `application.LinuxWindow{Icon: appicon.PNG}` in main.go.
+- Release workflow validates the whole asset chain and the exe
+  resources (ProductName, ProductVersion, `.rsrc`) so the icon can
+  never silently disappear.
+- Windows release builds now link `-H=windowsgui` — no console window.
+
+### 4. Release workflow (windows + linux, no checksums)
+
+- `verify` (ubuntu): + version check across all three sources, + icon
+  asset validation (files non-empty, embedded PNG byte-identical, ICO
+  size ladder via stdlib struct parse).
+- `build-windows`: unchanged proven pipeline + `-H=windowsgui`,
+  resource verification, icon in deployment metadata; sha256 steps
+  removed.
+- `build-linux` (new, ubuntu): installs `libgtk-3-dev`
+  `libwebkit2gtk-4.1-dev` `zip`; frontend build + embed; fake cores;
+  Go tests; `go run -tags gtk3 ./cmd/freeiran --smoke-test`;
+  production build `CGO_ENABLED=1 GOOS=linux GOARCH=amd64 -tags gtk3`;
+  portable deployment dir (`FreeIran`, `freeiran.sh`, README,
+  LICENSE, VERSION, portable.marker, 8 dirs, deployment.json, icon);
+  validation; `zip -qr`; single-root + entry-count check.
+- `publish`: downloads both artifacts, asserts the set is exactly the
+  two ZIPs, fails on any `*.sha256`, publishes only the two ZIPs.
+- **No checksum steps/entries/references remain** (ci.yml sha256
+  mentions are the unrelated core-download verification pins).
+
+### 5. Developer settings (all wired, nothing decorative)
+
+Backend (`engine/app/loggingservice.go` + `engine/native/native.go` +
+`engine/app/networkservice.go` + `engine/app/memoryservice.go` +
+`engine/app/developerservice.go` + `system/portable.go`):
+
+- `dev_verbose_diagnostics` → `DiagnosticReport.Technical` block
+  (build, platform, portable mode, dirs, native acceleration, queue
+  internals).
+- `dev_queue_workers` (0=adaptive, 1..64) → live
+  `testQueue.SetConcurrency`; `effectiveQueueConcurrency` arbitrates
+  booster ticks so the override is never silently undone.
+- `dev_net_timeout_seconds` (0=default, 1..120) → read live by
+  `networkConfig()`.
+- `dev_force_go_fallback` → `native.SetForcedFallback` (atomic; same
+  state as `FREEIRAN_NATIVE=off`).
+- `DiagnosticsService.DeveloperInfo` binding (read-only snapshot);
+  `StorageService.DataDir/OpenDataDir`; `system.PortableMode()`.
+- `applySettings` no longer early-returns without a logger (developer
+  controls applied regardless); validation extended.
+
+Frontend: Settings page reorganized (General / Connection / Testing /
+Appearance / Diagnostics & support / Developer / About) with
+label + explanation + control + default per option, section-level
+reset for developer options, live developer info panel; bindings
+hand-extended (`models.js` Settings fields; `DeveloperInfo`,
+`DataDir`, `OpenDataDir` via `$Call.ByName` per project pattern).
+
+### 6. Better user information
+
+- `describeError` strips the backend technical section (friendly part
+  only); `describeErrorFull` exposes both halves.
+- Connection failure banners: friendly sentence + targeted
+  "what to do next" (missing core / timeout / auth / DNS / unreachable
+  / TUN elevation / port conflict) + expandable raw details
+  (`TechDetails` component).
+- Settings save errors render the same way.
+
+### 7. Version + docs
+
+- `VERSION`, `internal/version/version.go`, `frontend/package.json`
+  (+lock) → 0.9.1.
+- README: v0.9.1 "What's new"; docs/ci.md: v0.9.1 pipeline section;
+  Release-Manifest.md / Updated-Files.md / REPLACEMENT_MANIFEST.md
+  rewritten for v0.9.1.
+
+### Verification (executed)
+
+- gofmt clean; `go vet ./engine/... ./system/... ./internal/...` clean
+- `go test -count=1` full matrix (fake cores) — pass
+- `go test -race -count=1` full matrix — pass
+- `make -C native test` — pass
+- frontend: typecheck, 31/31 vitest, production build + embed — pass
+- windows/amd64 production build verified (resources + windowsgui)
+- linux/amd64 engine/system/internal verified natively (desktop link
+  + smoke test gate run in CI where GTK headers are installed)
+
+### Honest limitations
+
+- The linux desktop binary cannot be linked in a GTK-less sandbox;
+  the release workflow performs the linux build + smoke test on
+  ubuntu-latest with the headers installed.
+- Hand-extended bindings follow the project's `$Call.ByName`
+  post-generator pattern; rerunning wails3 generate will fold them in.

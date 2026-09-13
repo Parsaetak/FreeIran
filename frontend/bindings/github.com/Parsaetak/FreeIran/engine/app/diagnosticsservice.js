@@ -97,3 +97,14 @@ export function Memory() {
 export function BuildDiagnosticReport() {
     return $Call.ByName("github.com/Parsaetak/FreeIran/engine/app.DiagnosticsService.BuildDiagnosticReport");
 }
+
+/**
+ * DeveloperInfo assembles the developer/build information snapshot:
+ * build identity, data layout, portable mode, native acceleration
+ * status and live queue internals. (v0.9.1 addition — ByName path
+ * until the wails3 generator is rerun on a GUI toolchain host.)
+ * @returns {$CancellablePromise<any>}
+ */
+export function DeveloperInfo() {
+    return $Call.ByName("github.com/Parsaetak/FreeIran/engine/app.DiagnosticsService.DeveloperInfo");
+}

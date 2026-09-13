@@ -235,6 +235,29 @@ export interface DiagnosticReportView {
   network_note?: string;
   connection: string;
   warnings?: string[];
+  technical?: string[];
+}
+
+/** Developer/build information snapshot (app.DeveloperInfoView). */
+export interface DeveloperInfoView {
+  version: string;
+  commit: string;
+  go_version: string;
+  platform: string;
+  user_agent: string;
+  base_dir: string;
+  data_dir: string;
+  logs_dir: string;
+  cores_dir: string;
+  portable_mode: boolean;
+  native_acceleration: string;
+  queue_workers_override: number;
+  net_timeout_override_seconds: number;
+  queue_depth: number;
+  active_workers: number;
+  total_enqueued: number;
+  total_passed: number;
+  total_failed: number;
 }
 
 /**

@@ -68,12 +68,12 @@ export function CoresPage() {
   return (
     <div className="page-body">
       <header className="page-header">
-        <div>
-          <h1>Cores</h1>
-          <p className="muted">
+        <div className="page-heading">
+          <h1 className="page-title">Cores</h1>
+          <div className="page-subtitle">
             Protocol cores are downloaded from their official upstream releases, verified by SHA-256,
             smoke-tested and only then activated. Never a bundled binary, never an unverified download.
-          </p>
+          </div>
         </div>
         <div className="toolbar">
           <button

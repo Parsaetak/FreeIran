@@ -671,6 +671,34 @@ export class Settings {
              */
             this["reduced_motion"] = false;
         }
+        if (!("dev_verbose_diagnostics" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["dev_verbose_diagnostics"] = false;
+        }
+        if (!("dev_queue_workers" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["dev_queue_workers"] = 0;
+        }
+        if (!("dev_net_timeout_seconds" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["dev_net_timeout_seconds"] = 0;
+        }
+        if (!("dev_force_go_fallback" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["dev_force_go_fallback"] = false;
+        }
 
         Object.assign(this, $$source);
     }

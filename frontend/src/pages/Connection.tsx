@@ -10,6 +10,7 @@ import {
   CONNECTION_STATE_LABELS,
   CONNECT_STEPS,
   OrbIcon,
+  TechDetails,
   connectStepIndex,
   connectionUiState,
 } from "../components/common";
@@ -23,6 +24,47 @@ import {
 import { toast } from "../state/toastStore";
 
 const searchRunner = makeSearchRunner(250);
+
+/**
+ * ConnectionFailure renders "what happened + why + what to do next":
+ * the friendly part of the backend message, a targeted suggestion
+ * when the failure kind is recognizable, and the raw technical text
+ * behind an expandable disclosure (v0.9.1).
+ */
+function ConnectionFailure({ message }: { message: string }) {
+  const marker = "\n---\nTechnical details: ";
+  const idx = message.indexOf(marker);
+
+  const readable = idx >= 0 ? message.slice(0, idx) : message;
+  const technical = idx >= 0 ? message.slice(idx + marker.length) : "";
+  const haystack = message.toLowerCase();
+
+  let next = "";
+
+  if (haystack.includes("no core") || haystack.includes("no available backend") || haystack.includes("not installed")) {
+    next = "Install a protocol core on the Cores page, then try again.";
+  } else if (haystack.includes("timeout") || haystack.includes("timed out")) {
+    next = "The server did not answer in time — it may be offline or very slow. Try another configuration.";
+  } else if (haystack.includes("auth") || haystack.includes("credential") || haystack.includes("uuid")) {
+    next = "The server rejected the credentials in this configuration. It is probably outdated — pick a fresher one.";
+  } else if (haystack.includes("dns") || haystack.includes("lookup")) {
+    next = "The server address could not be resolved. Check your Internet connection or switch networks.";
+  } else if (haystack.includes("refused") || haystack.includes("unreachable") || haystack.includes("network")) {
+    next = "The server refused the connection or is unreachable. Run a Network check to confirm your Internet access.";
+  } else if (haystack.includes("tun") && haystack.includes("elevat")) {
+    next = "TUN mode needs administrator rights. Re-run the application as administrator to use it.";
+  } else if (haystack.includes("port")) {
+    next = "The local proxy port may be in use by another application. Disconnect other VPN tools and retry.";
+  }
+
+  return (
+    <div>
+      <div>{readable}</div>
+      {next && <div className="field-hint">{next}</div>}
+      <TechDetails details={technical} />
+    </div>
+  );
+}
 
 /**
  * Connection page: the connection state machine with per-state
@@ -163,7 +205,12 @@ export function ConnectionPage() {
           )}
 
           {snapshot?.last_error && uiState === "failed" && (
-            <div className="error-banner flush-bottom">{snapshot.last_error}</div>
+            <div className="error-banner flush-bottom">
+              <div>
+                <div>The last connection attempt failed. Pick a different configuration or retry — the error below explains what happened.</div>
+                <ConnectionFailure message={snapshot.last_error} />
+              </div>
+            </div>
           )}
 
           {uiState === "disconnected" && (
@@ -194,7 +241,14 @@ export function ConnectionPage() {
         </div>
       </section>
 
-      {error && <div className="error-banner">{error}</div>}
+      {error && (
+        <div className="error-banner">
+          <div>
+            <div>The action could not complete. See the details below for the cause.</div>
+            <ConnectionFailure message={error} />
+          </div>
+        </div>
+      )}
 
       <ConfigPicker disabled={uiState === "connecting" || connected || busy} />
 

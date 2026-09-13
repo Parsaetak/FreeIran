@@ -41,10 +41,45 @@ export function toast(kind: ToastKind, title: string, message?: string): void {
   useToastStore.getState().push(kind, title, message);
 }
 
-/** Extracts a safe, readable message from an unknown failure. */
-export function describeError(error: unknown, fallback = "Something went wrong"): string {
+/** Raw error text for an unknown failure (no fallback applied). */
+function rawErrorText(error: unknown, fallback: string): string {
   if (error instanceof Error && error.message) return error.message;
   if (typeof error === "string" && error) return error;
 
   return fallback;
+}
+
+/**
+ * Extracts a safe, readable message from an unknown failure (v0.9.1):
+ * the backend's humanized format ("friendly sentence\n---\nTechnical
+ * details: raw") is split so users only ever see the friendly part.
+ */
+export function describeError(error: unknown, fallback = "Something went wrong"): string {
+  const raw = rawErrorText(error, fallback);
+
+  const marker = "\n---\nTechnical details: ";
+  const idx = raw.indexOf(marker);
+
+  return idx >= 0 ? raw.slice(0, idx) : raw;
+}
+
+/**
+ * Same as describeError but also returns the raw technical part for
+ * expandable detail surfaces (v0.9.1 "what happened + why + what to
+ * do next" messaging).
+ */
+export function describeErrorFull(
+  error: unknown,
+  fallback = "Something went wrong",
+): { readable: string; technical: string } {
+  const raw = rawErrorText(error, fallback);
+
+  const marker = "\n---\nTechnical details: ";
+  const idx = raw.indexOf(marker);
+
+  if (idx >= 0) {
+    return { readable: raw.slice(0, idx), technical: raw.slice(idx + marker.length) };
+  }
+
+  return { readable: raw, technical: "" };
 }

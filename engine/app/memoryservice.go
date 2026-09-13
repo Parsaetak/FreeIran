@@ -83,13 +83,17 @@ func newMemoryService(a *App) *MemoryService {
 	// subsystems the moment they change. Lazy-initialized subsystems
 	// (the test queue) pick the current settings up on creation —
 	// ensureQueue consults the service via currentSettings.
+	// v0.9.1: a fixed developer override (DevQueueWorkers) wins over
+	// the adaptive proposal so the override is never silently undone.
 	boost.OnChange(func(s booster.Settings) {
 		a.initMu.Lock()
 		tq := a.testQueue
 		a.initMu.Unlock()
 
+		concurrency := a.effectiveQueueConcurrency(s.QueueConcurrency)
+
 		if tq != nil {
-			tq.SetConcurrency(s.QueueConcurrency)
+			tq.SetConcurrency(concurrency)
 			tq.SetMaxQueueSize(s.QueueDepth)
 		}
 
@@ -100,7 +104,7 @@ func newMemoryService(a *App) *MemoryService {
 		if a.logger != nil {
 			a.logger.Info("app", "memory_adjust",
 				"booster adjusted: workers=%d depth=%d cache=%d batch=%d",
-				s.QueueConcurrency, s.QueueDepth, s.CacheEntries, s.BatchSize)
+				concurrency, s.QueueDepth, s.CacheEntries, s.BatchSize)
 		}
 	})
 

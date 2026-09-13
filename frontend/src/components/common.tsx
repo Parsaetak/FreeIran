@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   IconAlert,
   IconCheck,
@@ -181,5 +181,119 @@ export function ResultBadge({ ok, okLabel = "working", failLabel = "failed" }: {
       {ok ? <IconCheck size={11} /> : <IconX size={11} />}
       {ok ? okLabel : failLabel}
     </span>
+  );
+}
+
+export interface MenuItem {
+  id: string;
+  label: string;
+  onSelect: () => void;
+  disabled?: boolean;
+  danger?: boolean;
+  separatorBefore?: boolean;
+}
+
+/**
+ * Compact overflow menu for secondary actions (v0.9.1). Closes on
+ * outside click and Escape; items are real buttons so keyboard focus
+ * and disabled states behave exactly like the rest of the UI.
+ */
+export function Menu({
+  label,
+  items,
+  ariaLabel,
+}: {
+  label: ReactNode;
+  items: MenuItem[];
+  ariaLabel: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+
+    const onPointer = (event: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    };
+
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+
+    document.addEventListener("mousedown", onPointer);
+    document.addEventListener("keydown", onKey);
+
+    return () => {
+      document.removeEventListener("mousedown", onPointer);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div className="menu-wrap" ref={rootRef}>
+      <button
+        type="button"
+        className="btn"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={ariaLabel}
+        onClick={() => setOpen((value) => !value)}
+      >
+        {label}
+      </button>
+
+      {open && (
+        <div className="menu" role="menu">
+          {items.map((item) => (
+            <Fragment key={item.id}>
+              {item.separatorBefore && <div className="menu-sep" role="separator" />}
+
+              <button
+                type="button"
+                role="menuitem"
+                className={`menu-item ${item.danger ? "danger" : ""}`}
+                disabled={item.disabled}
+                onClick={() => {
+                  setOpen(false);
+                  item.onSelect();
+                }}
+              >
+                {item.label}
+              </button>
+            </Fragment>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Collapsible raw-technical-details block (v0.9.1): the friendly
+ * explanation stays visible; the raw error is one click away.
+ */
+export function TechDetails({ details }: { details: string }) {
+  const [open, setOpen] = useState(false);
+
+  if (!details) return null;
+
+  return (
+    <div className="tech-wrap">
+      <button
+        type="button"
+        className="linklike"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
+        {open ? "Hide technical details" : "Show technical details"}
+      </button>
+
+      {open && (
+        <pre className="tech-details">{details}</pre>
+      )}
+    </div>
   );
 }

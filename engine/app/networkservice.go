@@ -4,10 +4,10 @@ package app
 // capability to the UI (specification §3): a manual "Check Connection"
 // action backed by engine/netcheck, distinguishing
 //
-//	1. Internet unavailable                    5. Working normally
-//	2. DNS failing                             6. Proxy-only connectivity
-//	3. HTTPS failing                           7. Core up, external dead
-//	4. High latency
+//      1. Internet unavailable                    5. Working normally
+//      2. DNS failing                             6. Proxy-only connectivity
+//      3. HTTPS failing                           7. Core up, external dead
+//      4. High latency
 //
 // Checks run asynchronously with per-probe timeouts and honour the
 // application lifecycle context for cancellation. The latest report is
@@ -80,9 +80,15 @@ func (s *NetworkService) LastReport() *netcheck.Report {
 }
 
 // networkConfig merges the netcheck defaults with the active session's
-// local listener (enabling the proxy-path probes).
+// local listener (enabling the proxy-path probes). v0.9.1: the
+// developer override dev_net_timeout_seconds (1-120s) replaces the
+// default per-probe timeout when set.
 func (s *NetworkService) networkConfig() netcheck.Config {
 	cfg := netcheck.Defaults()
+
+	if override := s.app.currentSettings().DevNetTimeoutSeconds; override > 0 {
+		cfg.Timeout = time.Duration(override) * time.Second
+	}
 
 	// When a session is connected, probe through its local listener
 	// too — the report then distinguishes "internet blocked but proxy
@@ -110,6 +116,12 @@ type DiagnosticReport struct {
 	NetworkNote  string   `json:"network_note"`
 	Connection   string   `json:"connection"`
 	Warnings     []string `json:"warnings,omitempty"`
+
+	// v0.9.1 developer option (dev_verbose_diagnostics): when set,
+	// Technical gains the runtime detail block below (memory,
+	// native acceleration, portable mode, data paths). It stays
+	// redaction-safe — paths and versions only, never credentials.
+	Technical []string `json:"technical,omitempty"`
 }
 
 // BuildDiagnosticReport assembles the sanitized report.
@@ -173,6 +185,11 @@ func (s *DiagnosticsService) BuildDiagnosticReport() *DiagnosticReport {
 			"Storage verification reported a problem — run Verify from Diagnostics → Storage.")
 	}
 
+	// v0.9.1 developer option: attach the technical runtime block.
+	if a.currentSettings().DevVerboseDiagnostics {
+		report.Technical = append(report.Technical, s.developerInfoLines()...)
+	}
+
 	return report
 }
 
@@ -204,6 +221,14 @@ func (r *DiagnosticReport) FormatDiagnosticReport() string {
 
 		for _, w := range r.Warnings {
 			out += "  " + w + "\n"
+		}
+	}
+
+	if len(r.Technical) > 0 {
+		out += "\nTechnical details:\n"
+
+		for _, t := range r.Technical {
+			out += "  " + t + "\n"
 		}
 	}
 

@@ -59,6 +59,25 @@ export function Verify() {
     }));
 }
 
+/**
+ * DataDir returns the resolved data directory. (v0.9.1 addition:
+ * ByName path until the wails3 generator is rerun on a GUI toolchain
+ * host — mirrors the Memory/BuildDiagnosticReport additions.)
+ * @returns {$CancellablePromise<string>}
+ */
+export function DataDir() {
+    return $Call.ByName("github.com/Parsaetak/FreeIran/engine/app.StorageService.DataDir");
+}
+
+/**
+ * OpenDataDir opens the platform file manager at the data directory.
+ * (v0.9.1 addition — ByName path, see DataDir.)
+ * @returns {$CancellablePromise<void>}
+ */
+export function OpenDataDir() {
+    return $Call.ByName("github.com/Parsaetak/FreeIran/engine/app.StorageService.OpenDataDir");
+}
+
 // Private type creation functions
 const $$createType0 = store$0.MigrationResult.createFrom;
 const $$createType1 = store$0.Stats.createFrom;

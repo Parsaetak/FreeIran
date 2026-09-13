@@ -178,8 +178,35 @@ After the desktop build it:
 2. validates the package — the job fails when the executable, any
    required directory, README, VERSION or metadata is missing or
    inconsistent, or when the executable is suspiciously small;
-3. creates `FreeIran-windows-amd64.zip` (single root, ≥ 12 entries),
-   computes the SHA-256 checksum file, and publishes both.
+3. creates `FreeIran-windows-amd64.zip` (single root, ≥ 12 entries).
 
 The runtime smoke test (`go run ./cmd/freeiran --smoke-test`)
 continues to gate the Windows build before packaging.
+
+## v0.9.1 — two platforms, one artifact contract
+
+The release workflow builds two independent platform pipelines and
+publishes exactly two artifacts:
+
+- `FreeIran-windows-amd64.zip` (windows-latest; the executable is
+  built with `-H=windowsgui` and links the committed `.syso` resource:
+  application icon, version info, DPI manifest. The post-build check
+  asserts `ProductName`, the resource version and the `.rsrc` section
+  so the icon can never silently disappear);
+- `FreeIran-linux-amd64.zip` (ubuntu-latest; built with
+  `-tags gtk3` against GTK3 + WebKit2GTK 4.1 after installing
+  `libgtk-3-dev` / `libwebkit2gtk-4.1-dev`, with a full Go test run
+  and a `--smoke-test` boot gate before packaging).
+
+Both ZIPs contain the complete portable deployment layout (binary,
+README, LICENSE, VERSION, `portable.marker`, `config/`, `data/`,
+`logs/`, `cache/`, `cores/`, `runtime/`, `docs/`, `deployment/` with
+`deployment.json` + icon). Checksum `.sha256` files are no longer
+generated, uploaded or published — the publish job verifies the
+artifact set is exactly the two ZIPs and fails on any `.sha256`.
+
+The verify job also validates the icon asset chain before anything
+builds: `assets/freeiran-icon.svg` / `.ico` / `.png`, the embedded
+window icon copy (`internal/appicon`), and both committed Windows
+resource objects must exist, and the embedded PNG must be byte-identical
+to the canonical raster.

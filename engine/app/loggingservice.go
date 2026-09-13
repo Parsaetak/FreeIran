@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/Parsaetak/FreeIran/engine/native"
 	"github.com/Parsaetak/FreeIran/internal/logging"
 	"github.com/Parsaetak/FreeIran/system"
 )
@@ -50,6 +51,33 @@ type Settings struct {
 
 	// ReducedMotion asks the UI to minimize animation (accessibility).
 	ReducedMotion bool `json:"reduced_motion"`
+
+	// --- v0.9.1 developer / advanced options -----------------------
+	//
+	// Every field here is wired to real engine behaviour in
+	// applySettings (or read live where noted). Nothing is
+	// decorative: if a toggle exists it changes what the app does.
+
+	// DevVerboseDiagnostics enriches the diagnostic report (and the
+	// UI error surfaces) with technical detail: memory snapshot,
+	// native acceleration status, portable-mode state and runtime
+	// versions. Read live by BuildDiagnosticReport.
+	DevVerboseDiagnostics bool `json:"dev_verbose_diagnostics"`
+
+	// DevQueueWorkers overrides the test-queue worker-pool size
+	// (0 = adaptive memory-booster control, 1-64 = fixed). Applied
+	// to the live queue and respected over future booster ticks.
+	DevQueueWorkers int `json:"dev_queue_workers,omitempty"`
+
+	// DevNetTimeoutSeconds overrides the per-probe network-test
+	// timeout (0 = default 4s, 1-120 = fixed). Read live by
+	// NetworkService.networkConfig before every check.
+	DevNetTimeoutSeconds int `json:"dev_net_timeout_seconds,omitempty"`
+
+	// DevForceGoFallback pins the native acceleration bridge to the
+	// pure-Go implementation (same state as FREEIRAN_NATIVE=off).
+	// Applied to the live engine immediately on save.
+	DevForceGoFallback bool `json:"dev_force_go_fallback"`
 }
 
 // settingsPath is the persisted settings file.
@@ -85,17 +113,47 @@ func (a *App) currentSettings() Settings {
 // applySettings routes engine-affecting preferences into the running
 // subsystems. Callers persist before (or after) calling.
 func (a *App) applySettings(settings Settings) {
-	if a.logger == nil {
-		return
-	}
-
-	if settings.LogLevel != "" {
+	if settings.LogLevel != "" && a.logger != nil {
 		a.logger.SetLevel(logging.Level(settings.LogLevel))
 	}
 
-	if settings.LogMaxBytesMB > 0 {
+	if settings.LogMaxBytesMB > 0 && a.logger != nil {
 		a.logger.SetLimits(int64(settings.LogMaxBytesMB)<<20, settings.LogMaxBackups)
 	}
+
+	// Developer: fixed test-queue worker override (v0.9.1). The
+	// adaptive booster keeps adjusting unless the override is set;
+	// effectiveQueueConcurrency arbitrates (see memoryservice.go).
+	a.initMu.Lock()
+	queue := a.testQueue
+	a.initMu.Unlock()
+
+	if queue != nil && settings.DevQueueWorkers > 0 {
+		queue.SetConcurrency(settings.DevQueueWorkers)
+	}
+
+	// Developer: pin the native acceleration bridge to the Go path.
+	native.SetForcedFallback(settings.DevForceGoFallback)
+
+	if settings.DevForceGoFallback && a.logger != nil {
+		a.logger.Info("app", "dev_settings_applied",
+			"developer settings active (queue workers %d, net timeout %ds, force Go fallback %v)",
+			settings.DevQueueWorkers, settings.DevNetTimeoutSeconds, settings.DevForceGoFallback)
+	}
+}
+
+// effectiveQueueConcurrency resolves the boosters adaptive proposal
+// against the developer override (DevQueueWorkers > 0 wins).
+func (a *App) effectiveQueueConcurrency(adaptive int) int {
+	a.mu.RLock()
+	override := a.settings.DevQueueWorkers
+	a.mu.RUnlock()
+
+	if override > 0 {
+		return override
+	}
+
+	return adaptive
 }
 
 // SettingsService exposes user preferences to the UI.
@@ -161,6 +219,15 @@ func validateSettings(settings Settings) error {
 	case "", "debug", "info", "warn", "error":
 	default:
 		return fmt.Errorf("app: unknown log level %q", settings.LogLevel)
+	}
+
+	// Developer option ranges (v0.9.1).
+	if settings.DevQueueWorkers < 0 || settings.DevQueueWorkers > 64 {
+		return fmt.Errorf("app: queue worker override out of range (0-64)")
+	}
+
+	if settings.DevNetTimeoutSeconds < 0 || settings.DevNetTimeoutSeconds > 120 {
+		return fmt.Errorf("app: network-test timeout override out of range (0-120)")
 	}
 
 	if settings.RefreshIntervalMinutes < 0 || settings.RefreshIntervalMinutes > 24*60 {

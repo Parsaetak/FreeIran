@@ -9,10 +9,92 @@ configurations.
 **Project:** FreeIran
 **Architect:** Parsa Tak / SHEYTAN
 **Repository:** https://github.com/Parsaetak/FreeIran
-**Current version:** 0.9.0 (see `VERSION`)
+**Current version:** 0.9.1 (see `VERSION`)
 **Status:** production architecture — multi-core protocol runtime with
 managed installation, test queue, system proxy and TUN mode, unified
 adaptive memory control and kernel-level process supervision
+
+---
+
+## What's new in v0.9.1
+
+### A testing workspace you can read
+
+The Configurations page had a structural layout bug: the configuration
+row grid declared seven columns while every row rendered eight
+elements, so the per-row **Test** button wrapped onto an invisible
+second grid row and overlapped the row below at common window sizes.
+v0.9.1 rebuilds the row as an explicit eight-column grid (select,
+protocol, endpoint, transport, latency, health, source, action) with
+the sticky header aligned one-to-one, and reorganizes the workspace:
+
+- **Primary actions** (Test selected / Test all / Test untested) stay
+  visible; **secondary actions** (Retest failed, Retest working,
+  Cancel all) moved into a compact overflow menu so the toolbar can
+  never overflow into the list.
+- The **test-queue panel** is now a proper progress surface: a real
+  progress bar with counts, large **avg / fastest / slowest ping**
+  tiles, and quiet counters for queued, active, passed, failed and
+  cancelled.
+- The configuration list fills the available height exactly — local
+  scrolling only, no page-wide scrollbars, no clipped controls at
+  960 / 1100 / 1280 / 1440 px or with the sidebar collapsed.
+- The v0.9.0 style appendix referenced a set of design tokens that
+  were never defined (`--radius-md`, `--surface-1`, `--surface-2`,
+  `--font-mono`, `--danger`, `--warning`), silently degrading callouts,
+  queue panel and badges. The tokens are now defined once, and the
+  duplicated `.card-title` / `.page-header` / badge overrides that made
+  pages drift apart were removed — every page shares one header,
+  spacing and control rhythm.
+
+### A real application icon
+
+FreeIran ships a proper brand icon (`assets/freeiran-icon.svg` is the
+canonical source; regenerate derivatives with `scripts/genicon.py`):
+
+- **Windows** — a committed resource object (`cmd/freeiran/*.syso`,
+  built from the ICO with version info and a DPI-aware manifest) is
+  linked into every build, so the executable, titlebar and taskbar all
+  carry the identity. The release build also links with
+  `-H=windowsgui`, killing the console window for good. CI validates
+  the icon assets before every release, so it cannot silently
+  disappear.
+- **Linux** — the window icon is embedded in the binary
+  (`internal/appicon`) and applied through the GTK window options.
+
+### Linux amd64 is a first-class release target
+
+The release workflow now builds and publishes **both**
+`FreeIran-windows-amd64.zip` and `FreeIran-linux-amd64.zip`, each a
+complete portable deployment directory (binary, README, LICENSE,
+VERSION, config/, data/, logs/, cache/, cores/, runtime/, docs/,
+deployment/ metadata). The Linux build uses the `gtk3` (WebKit2GTK
+4.1) frontend for maximum compatibility. **Checksum `.sha256` files
+are gone** — the release contains only the two platform ZIPs.
+
+### Developer options, honestly wired
+
+Settings gained a clearly separated **Developer** section (plus a
+reorganized General / Connection / Testing / Appearance / Diagnostics
+structure). Every control is wired to real engine behaviour — nothing
+decorative:
+
+- verbose diagnostics (enriches the diagnostic report with runtime
+  detail),
+- test-queue worker override (beats the adaptive memory booster),
+- network-test timeout override (applied live to Network Diagnostics),
+- force Go fallback for native acceleration (same state as
+  `FREEIRAN_NATIVE=off`),
+- clear caches, open data/logs directory, live queue internals and
+  build identity (version, commit, Go version, portable mode).
+
+### Errors that explain themselves
+
+Connection failures now follow **what happened + why + what to do
+next**: a friendly explanation first, a targeted suggestion when the
+failure kind is recognizable (missing core, timeout, auth rejection,
+DNS, TUN elevation, port conflict), and the raw technical text behind
+an expandable disclosure.
 
 ---
 

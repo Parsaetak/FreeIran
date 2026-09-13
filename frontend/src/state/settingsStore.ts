@@ -38,7 +38,10 @@ export const useSettingsStore = create<SettingsStore>((set) => ({
 
       set({ settings, loading: false, lastError: null });
     } catch (error) {
-      set({ loading: false, lastError: describeError(error, "Settings unavailable") });
+      set({
+        loading: false,
+        lastError: describeError(error, "The settings service did not answer"),
+      });
     }
   },
 

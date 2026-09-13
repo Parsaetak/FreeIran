@@ -573,6 +573,20 @@ func (s *StorageService) Stats() store.Stats {
 	return s.app.store.Snapshot()
 }
 
+// DataDir returns the resolved data directory (v0.9.1, Developer
+// settings: "open data directory" shows the path next to the action).
+func (s *StorageService) DataDir() string {
+	return s.app.layout.Data
+}
+
+// OpenDataDir opens the platform file manager at the data directory
+// (v0.9.1 Developer settings action).
+func (s *StorageService) OpenDataDir() error {
+	s.app.logger.Info("app", "data_dir_opened", "user opened the data location")
+
+	return system.OpenDirectory(s.app.layout.Data)
+}
+
 // Verify runs a full chunk integrity check. Progress can be observed
 // through the returned result.
 func (s *StorageService) Verify() (VerifyResult, error) {

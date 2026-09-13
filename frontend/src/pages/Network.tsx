@@ -44,12 +44,12 @@ export function NetworkPage() {
   return (
     <div className="page-body">
       <header className="page-header">
-        <div>
-          <h1>Network</h1>
-          <p className="muted">
+        <div className="page-heading">
+          <h1 className="page-title">Network</h1>
+          <div className="page-subtitle">
             Manual connectivity diagnostics. Multiple independent probes classify your connection:
             local network, DNS, raw TCP, HTTPS and — when a session is connected — the tunnel itself.
-          </p>
+          </div>
         </div>
         <button type="button" className="btn primary" disabled={checking} onClick={() => void check()}>
           <IconRefresh size={14} className={checking ? "spin" : undefined} />

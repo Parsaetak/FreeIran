@@ -72,6 +72,15 @@ func Available() bool {
 	return !forcedFallback.Load()
 }
 
+// SetForcedFallback disables or re-enables the native acceleration
+// path at runtime (v0.9.1 developer setting "force Go fallback").
+// When force is true every bridge operation takes the pure-Go path
+// regardless of build tags — the same state the FREEIRAN_NATIVE=off
+// environment switch produces at init. Safe for concurrent use.
+func SetForcedFallback(force bool) {
+	forcedFallback.Store(force)
+}
+
 // Hash64 computes the FNV-1a 64-bit hash of data. Empty and nil input
 // return the FNV-1a offset basis (14695981039346656037).
 func Hash64(data []byte) uint64 {
