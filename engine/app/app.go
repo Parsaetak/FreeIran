@@ -146,6 +146,15 @@ type App struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
+	// bootStart anchors the startup telemetry clock (first line of
+	// New); bootTimings records phase → elapsed-ms transitions.
+	bootStart   time.Time
+	bootTimings map[string]int64
+
+	// rankMu guards the ranked-candidate snapshot (rankingservice.go).
+	rankMu   sync.Mutex
+	rankSnap *rankSnapshot
+
 	mu         sync.RWMutex
 	state      AppState
 	sources    []source.Source
@@ -175,11 +184,27 @@ type AppState struct {
 	NativeAcceler    string          `json:"native_acceleration"`
 	Storage          store.Stats     `json:"storage"`
 	LastIngestion    *pipeline.Stats `json:"last_ingestion,omitempty"`
+
+	// BootPhase is the unified startup phase (bootphase.go):
+	// boot → workspace_ready → store_metadata_ready → services_ready →
+	// ui_runtime_ready → ui_ready → background_warmup → ready.
+	BootPhase string `json:"boot_phase"`
+
+	// BootTimings is the phase → elapsed-ms startup telemetry table.
+	BootTimings map[string]int64 `json:"boot_timings,omitempty"`
 }
 
 // New boots the application to the READY state. Heavy verification
 // and cache warming continue after Start.
 func New(opts Options) (*App, error) {
+	bootStart := time.Now()
+	bootTimings := map[string]int64{}
+	markPhase := func(phase string) {
+		bootTimings[phase] = time.Since(bootStart).Milliseconds()
+	}
+
+	markPhase(BootBoot)
+
 	// v0.9.2 workspace model: an explicitly provided BaseDir (tests,
 	// smoke test) is used as-is; otherwise the single Workspace Root
 	// (default: the executable's directory, override: FREEIRAN_HOME)
@@ -211,6 +236,8 @@ func New(opts Options) (*App, error) {
 			return nil, err
 		}
 	}
+
+	markPhase(BootWorkspaceReady)
 
 	// Persistent runtime log: opened BEFORE the store so storage and
 	// migration failures are captured (§16).
@@ -274,6 +301,8 @@ func New(opts Options) (*App, error) {
 	logger.Info("store", "store_open",
 		"store ready (%d records, %d chunks)",
 		st.Count(), st.Snapshot().ChunkCount)
+
+	markPhase(BootStoreReady)
 
 	mreg := metrics.New()
 
@@ -343,12 +372,14 @@ func New(opts Options) (*App, error) {
 	// instantly with zero cores installed.
 
 	app := &App{
-		opts:     opts,
-		layout:   layout,
-		logger:   logger,
-		store:    st,
-		pipe:     pipeline.New(opts.Pipeline, mreg),
-		metricsR: mreg,
+		opts:        opts,
+		layout:      layout,
+		logger:      logger,
+		bootStart:   bootStart,
+		bootTimings: bootTimings,
+		store:       st,
+		pipe:        pipeline.New(opts.Pipeline, mreg),
+		metricsR:    mreg,
 		sourceCache: cache.New("source", cache.Options{
 			MaxEntries: 128,
 			MaxBytes:   64 << 20,
@@ -419,6 +450,8 @@ func New(opts Options) (*App, error) {
 	logger.Info("app", "application_ready",
 		"application ready (%d configurations)", st.Count())
 
+	app.markBoot(BootServicesReady)
+
 	return app, nil
 }
 
@@ -468,6 +501,7 @@ func (a *App) Start() {
 
 	// Staged startup: verify storage and warm caches in the
 	// background so the UI is interactive immediately.
+	a.markBoot(BootBackgroundWarm)
 	go func() {
 		if err := a.store.VerifyAll(a.ctx, nil); err != nil {
 			a.mu.Lock()
@@ -507,6 +541,11 @@ func (a *App) warmCaches() {
 
 		return nil
 	})
+
+	// Warm-up finished: the last startup phase. The telemetry line
+	// records the real boot → ready duration for developers.
+	a.markBoot(BootReady)
+	a.logBootTelemetry()
 }
 
 // Context returns the application lifecycle context. It is
@@ -652,6 +691,20 @@ func (a *App) State() AppState {
 	return state
 }
 
+// MarkUIRuntimeReady records the ui_runtime_ready phase: the
+// entrypoint calls it once the engine services are bound to the
+// frontend runtime. Safe to call multiple times (idempotent).
+func (a *App) MarkUIRuntimeReady() {
+	a.markBoot(BootUIRuntimeReady)
+}
+
+// MarkUIReady records the ui_ready phase: the frontend reported
+// its first usable frame. Safe to call multiple times; a late
+// call can never regress an already-recorded READY state.
+func (a *App) MarkUIReady() {
+	a.markBoot(BootUIReady)
+}
+
 // runIngestionCycle executes one full source refresh. Safe to call
 // concurrently: a cycle already running wins and the rest are skipped.
 func (a *App) runIngestionCycle(ctx context.Context) error {
@@ -678,6 +731,11 @@ func (a *App) runIngestionCycle(ctx context.Context) error {
 		"refreshing %d sources", len(sources))
 
 	stats, newHashes, err := a.pipe.Run(ctx, sources, sink, hashes)
+
+	// The ingestion cycle changed the candidate pool: drop the
+	// ranking snapshot (also covers the failed-cycle case: any
+	// persisted subset still changed the inputs).
+	a.InvalidateRankingSnapshot()
 
 	// Merge: unchanged sources keep their previous hashes.
 	a.mu.Lock()

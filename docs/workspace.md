@@ -32,6 +32,15 @@ FreeIran/                  ← workspace root (default: directory of FreeIran.ex
    deployments (absolute path; the whole tree relocates there).
 2. **The directory containing the FreeIran executable** — the default
    for portable deployments *and* regular installs. One model.
+3. **Installed deployments (v0.9.4)** — when the executable's
+   directory carries `installed.marker` (written by the Windows
+   installer), the workspace relocates to the per-user
+   application-data directory (`%AppData%\FreeIran` on Windows,
+   `XDG_CONFIG_HOME`/`~/.config` on Unix), because the installed
+   executable lives in a read-only, system-managed location. The
+   decision is folded into `WorkspaceRoot()` itself — one authority,
+   two deployment styles; `InstalledMode()`/`PortableMode()` only
+   label the style for diagnostics.
 
 The root is validated at boot: every directory is created and a
 writable probe is performed. If the workspace is read-only, startup

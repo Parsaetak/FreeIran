@@ -2636,3 +2636,94 @@ Root causes fixed on top of the existing architecture (no rewrites).
 - Windows amd64 + 386 cross-builds green; final `-H=windowsgui` binary
   verified: PE subsystem = 2 (WINDOWS_GUI); `.syso` resources linked.
 - Frontend: `npm run build` (tsc + vite) green; 31/31 vitest tests.
+
+---
+
+## v0.9.4 (2026-09-14) — startup lifecycle, unified loading, installer, checksums, workspace authority repair
+
+### Workspace authority regression repair (P0)
+
+- Removed `system/paths_unix.go` and `system/paths_windows.go`: both still defined
+  `DefaultBaseDir`, `CacheBaseDir` and `portableRoot`, duplicating the v0.9.2
+  workspace authority and breaking the build (`go build ./system/` failed with
+  "redeclared in this block" — reproduced locally before the fix).
+- `system/workspace.go` is the single workspace authority
+  (`WorkspaceRoot`, `WorkspaceLayout`, `EnsureWorkspace`, `WorkspaceWritable`,
+  `DefaultBaseDir`, `CacheBaseDir`); `system/portable.go` keeps the unique
+  diagnostic helpers (`portableRoot`, `PortableMode`).
+- New installed-deployment model: `installed.marker` (written by the installer)
+  relocates the workspace to the per-user application-data directory —
+  `system/workspace.go` owns the decision; regression-tested in
+  `system/workspace_installed_test.go`.
+- `gofmt` repair for `engine/app/rankingservice.go` (formatting only; the
+  restructured `ConnectBest` error return keeps identical behaviour).
+
+### Startup lifecycle + telemetry
+
+- `engine/app/bootphase.go`: `boot → workspace_ready → store_metadata_ready →
+  services_ready → ui_runtime_ready → ui_ready → background_warmup → ready`,
+  monotonic-guarded, each phase timed since process boot. `AppState` exposes
+  `boot_phase` + `boot_timings`; `main.go` records `ui_runtime_ready` and
+  listens for the frontend's one-shot `freeiran:ui-ready` event.
+- The UI-ready invariant holds: `New()` reaches `services_ready` with no
+  scheduler/ingestion/warm-up; `Start()` does all heavy work in the background.
+- Regression tests: `engine/app/bootphase_test.go` (ordering, no-blocking-UI,
+  monotonic guard).
+
+### Ranking snapshot (§13)
+
+- `engine/app/rankingservice.go`: `BestCandidates` serves a cached ranked
+  snapshot (45 s TTL + store-count identity, `maxSnapshotViews` bound); eager
+  invalidation on persisted test results (`v6_services.go`) and completed
+  ingestion cycles (`app.go`). `ConnectBest` unchanged — store-read for
+  correctness. Tests: `engine/app/rankingservice_snapshot_test.go`.
+
+### Frontend loading system
+
+- `frontend/src/state/loading.ts`: single timing authority (<100 ms / 180 ms
+  threshold), boot-phase scale + labels; unit-tested in `loading.test.ts`.
+- `frontend/src/components/LoadState.tsx`: `useDeferredSkeleton`,
+  `LoadBoundary` (skeleton/error/retry), `BootProgress` (determinate, driven
+  by real backend telemetry); App.tsx emits `freeiran:ui-ready` on first mount;
+  appStore carries `bootPhase`/`bootTimings` (structural read — the generated
+  binding class does not carry the new fields yet).
+- CSS additions use opacity/transform only; global `prefers-reduced-motion`
+  and the in-app reduced-motion class both apply.
+
+### Installation / update architecture
+
+- `scripts/freeiran.iss`: minimal reliable Inno Setup installer (shortcuts,
+  uninstall registration, version metadata, CloseApplications,
+  `installed.marker` post-install step; user data preserved by design).
+- release.yml: installer build step (ISCC preinstalled, Chocolatey fallback),
+  SHA-256 sidecars for all artifacts, publish + validation updated (checksums
+  now REQUIRED — the v0.9.1 "no checksums" policy inverted, §20/§30).
+- `internal/appupdate`: application-update CHECK stage on the shared pipeline
+  shape (trusted feed, exact-asset match, honest semver compare, checksum
+  sidecar URL; no download/side effects). `engine/app/updateservice.go`
+  surfaces it as `AppUpdateService.CheckApplicationUpdate`; registered in
+  main.go. Tests: `internal/appupdate/appupdate_test.go`.
+
+### CI / version
+
+- ci.yml: version-consistency gate (VERSION vs package.json vs
+  internal/version) on every push/PR.
+- Version sources synced to **0.9.4** (VERSION, internal/version,
+  frontend/package.json).
+- Docs synced: README (v0.9.4 section), docs/workspace.md (installed
+  deployments), docs/ci.md (gate/installer/checksums), docs/performance.md
+  (lifecycle/telemetry/snapshot), docs/security.md (checksums/appupdate).
+
+### Verification performed locally (Linux, go1.26.8)
+
+- `go build ./engine/... ./system/... ./internal/...` — PASS
+- `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build/vet ./cmd/freeiran` — PASS
+- `gofmt -l engine system cmd internal` — clean
+- `go vet ./engine/... ./system/... ./internal/...` (+windows target for cmd) — PASS
+- `go test ./engine/... ./system/... ./internal/...` with fake-core fixtures — PASS
+- `go test -race` — PASS
+- frontend `npm ci`, `typecheck`, `vitest` (40 tests), `vite build` — PASS
+- Windows release ZIP + installer are exercised in GitHub Actions (release.yml);
+  the live Actions runs were NOT inspectable from this environment
+  (unauthenticated GitHub API rate-limited, HTTP 403) — documented as a
+  limitation.

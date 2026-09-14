@@ -43,6 +43,14 @@ const workspaceOverrideEnv = "FREEIRAN_HOME"
 // touch the old per-user directories.
 const skipMigrationEnv = "FREEIRAN_SKIP_MIGRATION"
 
+// installedMarkerName is written next to the executable by the
+// Windows installer (scripts/freeiran.iss). It marks an INSTALLED
+// deployment: the executable lives in a system-managed, potentially
+// read-only location, so the workspace relocates to the per-user
+// application-data directory. Portable deployments carry
+// portable.marker instead and keep state next to the executable.
+const installedMarkerName = "installed.marker"
+
 // cachedWorkspaceRoot memoizes the resolved root. Resolution is
 // deterministic per process (env + executable path do not change), so
 // the first result is kept and reused — every subsystem observes the
@@ -92,7 +100,35 @@ func resolveWorkspaceRoot() string {
 		return "."
 	}
 
-	return filepath.Dir(exe)
+	dir := filepath.Dir(exe)
+
+	// v0.9.4 installed deployments: installed.marker (written by
+	// the installer) relocates the workspace to the per-user
+	// application-data directory. Everything else — portable ZIP,
+	// dev builds, tests — keeps the executable directory.
+	if installedRoot, ok := installedWorkspaceRoot(dir); ok {
+		return installedRoot
+	}
+
+	return dir
+}
+
+// installedWorkspaceRoot reports the per-user workspace root for
+// installed deployments: when exeDir carries installed.marker the
+// root becomes <UserConfigDir>/FreeIran (%AppData% on Windows,
+// XDG config home on Unix). A missing marker or an unusable
+// UserConfigDir keeps the executable-directory model.
+func installedWorkspaceRoot(exeDir string) (string, bool) {
+	if _, err := os.Stat(filepath.Join(exeDir, installedMarkerName)); err != nil {
+		return "", false
+	}
+
+	base, err := os.UserConfigDir()
+	if err != nil || base == "" {
+		return "", false
+	}
+
+	return filepath.Join(base, "FreeIran"), true
 }
 
 // WorkspaceLayout returns the canonical directory layout under the
@@ -193,6 +229,22 @@ func DefaultBaseDir() string {
 // same root as every other subsystem (no split cache/data roots).
 func CacheBaseDir() string {
 	return WorkspaceRoot()
+}
+
+// InstalledMode reports whether the application runs as an
+// installed deployment (installed.marker next to the executable).
+// Diagnostic counterpart of PortableMode: it never influences path
+// resolution directly — WorkspaceRoot already folded the decision
+// in — and is safe to call at any time.
+func InstalledMode() bool {
+	exe, err := os.Executable()
+	if err != nil {
+		return false
+	}
+
+	_, ok := installedWorkspaceRoot(filepath.Dir(exe))
+
+	return ok
 }
 
 // DescribeWorkspace renders the workspace layout for logs and

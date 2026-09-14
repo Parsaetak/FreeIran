@@ -352,6 +352,36 @@ v0.7 remain the only pooling, both benchmark-justified. The v0.8
 work concentrated on eliminating the unsampled-controller waste
 (decisions made from stale data) rather than micro-allocations.
 
+## 14. v0.9.4 — startup lifecycle, boot telemetry, ranking snapshot
+
+- **Unified boot lifecycle (engine/app/bootphase.go).** The startup
+  critical path is `boot → workspace_ready → store_metadata_ready →
+  services_ready` — everything after that is background work that
+  must never block UI readiness. `New()` reaches `services_ready`
+  without any scheduler, warm-up or ingestion; `Start()` launches
+  verification, warm-up and discovery in the background and records
+  `background_warmup` → `ready` when the warm-up finishes. Late or
+  stray phase signals can never regress recorded state (monotonic
+  guard, regression-tested).
+- **Boot telemetry.** Every phase records elapsed milliseconds since
+  process boot (`AppState.boot_timings`, log line `boot_telemetry`).
+  The frontend renders a REAL determinate boot progress bar from the
+  same data (§10: real progress, not fake loading) and emits
+  `freeiran:ui-ready` on its first mounted frame, which the backend
+  records as the true "interface usable" moment. No remote telemetry
+  exists; the data is for developers/diagnostics.
+- **Ranking snapshot cache.** `BestCandidates` is served from a
+  cached ranked snapshot (TTL 45 s + store-count identity). Normal
+  navigation no longer rescans the store; the snapshot is invalidated
+  eagerly when a test result persists or an ingestion cycle
+  completes, and `ConnectBest` still reads the store directly —
+  connection correctness is never traded for speed.
+- **Frontend loading policy.** One authority (`state/loading.ts`)
+  defines the timing language: <100 ms render immediately, 100–180 ms
+  avoid disturbance, ≥180 ms show the skeleton. Animations stay on
+  opacity/transform and respect `prefers-reduced-motion` and the
+  in-app reduced-motion setting.
+
 ## 13. v0.9.0 additions
 
 The v0.9 features were kept compatible with the v0.8 performance

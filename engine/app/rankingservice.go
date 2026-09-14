@@ -39,6 +39,26 @@ const minSourceSamples = 5
 // reached (a normal condition on large datasets, never an error).
 var errCandidateLimit = errors.New("candidate scan limit reached")
 
+// rankingSnapshotTTL bounds how long a ranked candidate snapshot is
+// served without a store rescan (§13: normal navigation must not
+// repeatedly rescan thousands of entries). Meaningful changes — a
+// persisted test result or a completed ingestion cycle — invalidate
+// the snapshot eagerly; the store count guards add/remove drift.
+const rankingSnapshotTTL = 45 * time.Second
+
+// maxSnapshotViews bounds the cached view list. BestCandidates
+// clamps its limit to [1, 100], so 100 cached views serve every
+// request the API can express.
+const maxSnapshotViews = 100
+
+// rankSnapshot is the cached ranking outcome: the built view list
+// plus its identity (build time + store size).
+type rankSnapshot struct {
+	builtAt    time.Time
+	storeCount int
+	views      []CandidateView
+}
+
 // CandidateView is the credential-free ranking outcome surfaced to
 // the UI: class, score and the explanation that produced it.
 type CandidateView struct {
@@ -151,10 +171,48 @@ func (s *ConnectionService) BestCandidates(limit int) []CandidateView {
 		limit = 100
 	}
 
-	ctx, cancel := context.WithTimeout(s.app.ctx, 10*time.Second)
+	// Serve from the cached snapshot when fresh; rebuild at most
+	// once per TTL window (or after an explicit invalidation).
+	views := s.app.rankedViews()
+
+	if len(views) > limit {
+		views = views[:limit]
+	}
+
+	// Copy: the caller must never alias the cache.
+	out := make([]CandidateView, len(views))
+	copy(out, views)
+
+	return out
+}
+
+// rankedViews returns the cached ranked snapshot when fresh and
+// rebuilds it with one bounded store scan otherwise. Cache identity
+// is (build time, store count); meaningful result changes drop the
+// snapshot eagerly via InvalidateRankingSnapshot. The rebuild runs
+// WITHOUT holding rankMu: concurrent callers may share the previous
+// snapshot for one call instead of queueing on a blocking rescan.
+func (a *App) rankedViews() []CandidateView {
+	count := a.store.Count()
+
+	a.rankMu.Lock()
+
+	snap := a.rankSnap
+	if snap != nil &&
+		time.Since(snap.builtAt) < rankingSnapshotTTL &&
+		snap.storeCount == count {
+		views := snap.views
+		a.rankMu.Unlock()
+
+		return views
+	}
+
+	a.rankMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(a.ctx, 10*time.Second)
 	defer cancel()
 
-	candidates := s.app.collectCandidates(ctx)
+	candidates := a.collectCandidates(ctx)
 	scores := ranking.Rank(candidates, time.Now().UTC())
 
 	byFingerprint := make(map[string]ranking.Candidate, len(candidates))
@@ -162,10 +220,10 @@ func (s *ConnectionService) BestCandidates(limit int) []CandidateView {
 		byFingerprint[c.Fingerprint] = c
 	}
 
-	views := make([]CandidateView, 0, limit)
+	views := make([]CandidateView, 0, min(len(scores), maxSnapshotViews))
 
 	for _, score := range scores {
-		if len(views) >= limit {
+		if len(views) >= maxSnapshotViews {
 			break
 		}
 
@@ -187,7 +245,25 @@ func (s *ConnectionService) BestCandidates(limit int) []CandidateView {
 		})
 	}
 
+	a.rankMu.Lock()
+	a.rankSnap = &rankSnapshot{
+		builtAt:    time.Now().UTC(),
+		storeCount: count,
+		views:      views,
+	}
+	a.rankMu.Unlock()
+
 	return views
+}
+
+// InvalidateRankingSnapshot drops the cached ranking snapshot so
+// the next BestCandidates call rebuilds from current data. Called
+// when a test result persists and when an ingestion cycle finishes
+// — the two meaningful ranking-input changes.
+func (a *App) InvalidateRankingSnapshot() {
+	a.rankMu.Lock()
+	a.rankSnap = nil
+	a.rankMu.Unlock()
 }
 
 // ConnectBest implements the automatic connection path: rank every
@@ -225,10 +301,10 @@ func (s *ConnectionService) ConnectBest(exclude []string) (ConnectBestResult, er
 	chosen, score, ok := ranking.SelectBest(viable, time.Now().UTC())
 	if !ok {
 		return ConnectBestResult{
-			Candidates: len(candidates),
-		}, errors.New(
-			"no viable connection candidate: run \"Test connections\" to " +
-				"measure the available configurations first")
+				Candidates: len(candidates),
+			}, errors.New(
+				"no viable connection candidate: run \"Test connections\" to " +
+					"measure the available configurations first")
 	}
 
 	snapshot, err := s.Connect(chosen.Fingerprint)

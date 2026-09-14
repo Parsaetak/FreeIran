@@ -9,12 +9,68 @@ configurations.
 **Project:** FreeIran
 **Architect:** Parsa Tak / SHEYTAN
 **Repository:** https://github.com/Parsaetak/FreeIran
-**Current version:** 0.9.3 (see `VERSION`)
+**Current version:** 0.9.4 (see `VERSION`)
 **Status:** production architecture — multi-core protocol runtime with
 managed installation, test queue, system proxy and TUN mode, unified
 adaptive memory control and kernel-level process supervision
 
 ---
+
+## What's new in v0.9.4
+
+### Faster startup, visible progress
+
+- **Unified boot lifecycle.** The startup critical path is now
+  explicitly `boot → workspace_ready → store_metadata_ready →
+  services_ready`: the service surface is ready before any expensive
+  work runs, and everything else (storage verification, cache
+  warm-up, core discovery, source refresh) continues in the
+  background without ever blocking the UI.
+- **Real boot progress.** The UI renders a determinate progress bar
+  from the backend's actual boot phases — with per-phase millisecond
+  telemetry — instead of a generic spinner. The frontend reports its
+  first usable frame back, so "time to usable UI" is measured, not
+  guessed.
+- **One loading language.** A single policy governs every loading
+  surface: instant operations render nothing, fast operations avoid
+  visual disturbance, slow operations get a calm skeleton; progress
+  indicators are always REAL (boot phases, core install stages,
+  connection steps). Animations use only opacity/transform and
+  respect `prefers-reduced-motion`.
+
+### Faster everyday use
+
+- **Ranked-candidate snapshot.** The configuration ranking view is
+  served from a cached snapshot (45 s TTL + store-size identity),
+  invalidated the moment a test result or ingestion changes the
+  data. Navigating no longer rescans thousands of entries; automatic
+  connection still reads the store directly for correctness.
+
+### Installation and updates
+
+- **Standard Windows installer.** `FreeIran-Setup-vX.Y.Z-windows-amd64.exe`
+  built on Inno Setup: Start Menu shortcut, optional desktop
+  shortcut, proper uninstall registration, running instance closed
+  before replacement, version metadata and icon included. Installed
+  deployments store their workspace in the per-user application-data
+  directory (`installed.marker` model) — user data survives updates
+  and uninstallation.
+- **Checksum-verified releases.** Every release artifact (both
+  deployment ZIPs and the installer) publishes a SHA-256 sidecar.
+- **Application-update check.** A new update checker resolves the
+  official release feed, selects the exact platform asset, compares
+  versions honestly and surfaces the checksum URL — the same
+  artifact-pipeline shape the managed-core updater already uses
+  (download/stage/activate/rollback build on its verified
+  primitives).
+
+### Engineering
+
+- Fixed the v0.9.3 workspace regression: the obsolete per-user path
+  implementations (`paths_unix.go`, `paths_windows.go`) are removed;
+  `workspace.go` is the single path authority again.
+- CI now fails on version drift between `VERSION`,
+  `package.json` and `internal/version` on every push.
 
 ## What's new in v0.9.3
 

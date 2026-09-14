@@ -107,6 +107,25 @@ publishes broken artifacts.
 Runs on push, PRs and weekly on schedule. Dependency vulnerabilities,
 secret scanning and static analysis with real failure conditions.
 
+## v0.9.4 — version gate, Windows installer, release checksums
+
+- **Version consistency gate (ci.yml).** Every push verifies that
+  `VERSION`, `frontend/package.json` and `internal/version/version.go`
+  agree; release.yml additionally verifies the git tag. Version drift
+  now fails in minutes instead of at release time.
+- **Windows installer (release.yml).** The Windows job builds
+  `FreeIran-Setup-vX.Y.Z-windows-amd64.exe` with Inno Setup
+  (`scripts/freeiran.iss`; preinstalled on hosted runners, Chocolatey
+  fallback). The installer writes `installed.marker`, registers
+  shortcuts and uninstall metadata, stops a running FreeIran before
+  replacing files, and never touches user data (which lives in the
+  per-user workspace, see docs/workspace.md).
+- **SHA-256 checksum sidecars (§20/§30).** Every release artifact
+  (both deployment ZIPs and the installer) ships a `.sha256` sidecar,
+  published alongside it. The v0.9.1 "no checksum files" policy is
+  inverted: checksums are REQUIRED so the application updater can
+  verify downloads without trusting the transport.
+
 ## Deterministic fake-core fixtures (v0.5.0)
 
 Every ordinary unit/integration test runs against controlled fake

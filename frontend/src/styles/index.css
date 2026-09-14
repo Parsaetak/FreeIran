@@ -1445,6 +1445,81 @@ button {
   gap: var(--space-3);
 }
 
+/* ----- unified boot progress (v0.9.4) ----- */
+
+.boot-progress {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+}
+
+.boot-progress-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.boot-progress-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.boot-progress-ms {
+  font-size: 11px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.boot-progress-track {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--surface-raised);
+  overflow: hidden;
+}
+
+.boot-progress-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+  transform-origin: left center;
+  transform: scaleX(0);
+  transition: transform 240ms var(--ease-in-out);
+}
+
+/* ----- unified load-error panel (v0.9.4) ----- */
+
+.load-error {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.load-error-icon {
+  color: var(--danger, #ff6b6b);
+  display: flex;
+}
+
+.load-error-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.load-error-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.load-error-detail {
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
 /* ----- empty states ----- */
 
 .empty-state {

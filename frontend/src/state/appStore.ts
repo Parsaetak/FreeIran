@@ -19,9 +19,37 @@ interface AppStore {
   backend: AppState | null;
   lastError: string | null;
   connected: boolean;
+  /** Unified boot lifecycle phase from the backend (bootphase.go). */
+  bootPhase: string | null;
+  /** Phase → elapsed-ms startup telemetry from the backend. */
+  bootTimings: Record<string, number> | null;
 
   refresh: () => Promise<void>;
   ingestEvent: (state: AppState) => void;
+}
+
+/**
+ * The backend AppState gained boot_phase/boot_timings in v0.9.4; the
+ * checked-in generated binding class does not carry the new fields
+ * yet, so they are read structurally — type-safe, dependency-free.
+ */
+interface BootFields {
+  boot_phase?: string;
+  boot_timings?: Record<string, number>;
+}
+
+function readBootFields(state: AppState | null): {
+  bootPhase: string | null;
+  bootTimings: Record<string, number> | null;
+} {
+  if (!state) return { bootPhase: null, bootTimings: null };
+
+  const fields = state as unknown as BootFields;
+
+  return {
+    bootPhase: fields.boot_phase ?? null,
+    bootTimings: fields.boot_timings ?? null,
+  };
 }
 
 function deriveStatus(state: AppState | null, connected: boolean): AppStatus {
@@ -40,6 +68,8 @@ export const useAppStore = create<AppStore>((set) => ({
   backend: null,
   lastError: null,
   connected: false,
+  bootPhase: null,
+  bootTimings: null,
 
   refresh: async () => {
     try {
@@ -50,6 +80,7 @@ export const useAppStore = create<AppStore>((set) => ({
         connected: true,
         status: deriveStatus(state, true),
         lastError: null,
+        ...readBootFields(state),
       });
     } catch (error) {
       set({
@@ -66,6 +97,7 @@ export const useAppStore = create<AppStore>((set) => ({
       connected: true,
       status: deriveStatus(state, true),
       lastError: null,
+      ...readBootFields(state),
     }),
 }));
 

@@ -132,6 +132,19 @@ func main() {
 		wailsApp.Event.Emit("freeiran:coreprogress", progress)
 	})
 
+	// Startup lifecycle (v0.9.4): the engine services are bound to
+	// the frontend runtime — record ui_runtime_ready. The frontend
+	// emits freeiran:ui-ready once its first frame is interactive;
+	// that event records ui_ready. Nothing here blocks the UI: the
+	// markers are pure telemetry writes.
+	applicationInstance.MarkUIRuntimeReady()
+
+	cancelUIReady := wailsApp.Event.On("freeiran:ui-ready",
+		func(*application.CustomEvent) {
+			applicationInstance.MarkUIReady()
+		})
+	defer cancelUIReady()
+
 	// WindowCentered is the default start position; no override needed.
 	//
 	// Icon (v0.9.1): Linux gets the embedded PNG as the GTK window

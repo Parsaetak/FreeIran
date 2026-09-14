@@ -380,6 +380,10 @@ func (a *testerAdapter) Test(ctx context.Context, fingerprint string, backends [
 		}
 	}
 
+	// A persisted test result changed the ranking inputs: drop the
+	// candidate snapshot so the UI observes fresh data immediately.
+	a.app.InvalidateRankingSnapshot()
+
 	a.app.metricsR.AddTestExecuted(result.Working)
 
 	return qr, nil

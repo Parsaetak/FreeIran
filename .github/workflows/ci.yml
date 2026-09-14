@@ -29,6 +29,18 @@ jobs:
           go-version: "1.26.8"
           cache: true
 
+      # §26: fail loudly on version drift between the three synced
+      # sources (VERSION, frontend/package.json, internal/version).
+      # release.yml re-checks against the git tag at release time.
+      - name: Version consistency
+        run: |
+          version=$(tr -d '[:space:]' < VERSION)
+          echo "VERSION=$version"
+          grep -q "\"version\": \"$version\"" frontend/package.json ||
+            { echo "frontend/package.json version != $version" >&2; exit 1; }
+          grep -q "var Version = \"$version\"" internal/version/version.go ||
+            { echo "internal/version/version.go != $version" >&2; exit 1; }
+
       - name: Format check
         run: |
           unformatted=$(gofmt -l ./engine ./system ./cmd ./internal)

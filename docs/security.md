@@ -159,6 +159,25 @@ surface:
   preferences only (backend name, intervals, log limits, motion
   preference) under the config directory with 0600 permissions.
 
+## v0.9.4 — release checksums and the application-update checker
+
+- **Checksum sidecars on every release artifact.** The release
+  pipeline publishes `<artifact>.sha256` for both deployment ZIPs and
+  the Windows installer. A failed verification stops the operation —
+  nothing ever weakens verification to make installation easier.
+- **Application-update check stage (internal/appupdate).** The check
+  resolves ONLY the official release feed (`Parsaetak/FreeIran`),
+  selects the platform asset by exact name, compares versions
+  honestly (pre-releases never outrank their release) and surfaces
+  the checksum sidecar URL alongside the asset. It performs no
+  download and no side effects; the download/stage/activate/rollback
+  stages reuse the managed-core primitives (atomic writes, SHA-256
+  verification, health checks) and inherit their guarantees.
+- **Installed deployments.** The installer writes `installed.marker`;
+  the workspace relocates to the per-user application-data directory.
+  Uninstalling removes only the installed files — user data in the
+  per-user workspace is never touched by the installer or uninstaller.
+
 ## v0.8.0 — process supervision security properties
 
 The no-orphan guarantee is now enforced on every exit path, not only

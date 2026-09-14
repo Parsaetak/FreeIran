@@ -264,6 +264,30 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "PE subsystem check failed: console-subsystem binary detected" }
           Write-Host "PE subsystem verified: WINDOWS_GUI (no console on startup)"
 
+      # §17/§18: standard Windows installer on the mature Inno Setup
+      # ecosystem (preinstalled on hosted runners; Chocolatey is the
+      # fallback). Writes installed.marker so the installed deployment
+      # relocates its workspace to the per-user application-data dir.
+      - name: Build Windows installer (Inno Setup)
+        shell: pwsh
+        run: |
+          $iscc = Get-ChildItem "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" \
+            -ErrorAction SilentlyContinue
+          if (-not $iscc) {
+            Write-Host "ISCC not found - installing Inno Setup via Chocolatey"
+            choco install innosetup -y --no-progress
+            $iscc = Get-ChildItem "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          }
+
+          $version = (Get-Content VERSION -Raw).Trim()
+          $out = "FreeIran-Setup-v$version-windows-amd64.exe"
+
+          & $iscc.FullName "/DAPP_VERSION=$version" scripts/freeiran.iss
+          if ($LASTEXITCODE -ne 0) { throw "installer build failed: $LASTEXITCODE" }
+          if (-not (Test-Path $out)) { throw "installer output missing: $out" }
+
+          Write-Host "Installer built: $out ($([math]::Round((Get-Item $out).Length/1MB,1)) MB)"
+
       # The release ZIP is a COMPLETE, self-contained deployment
       # directory — not a bare exe. A user can extract it anywhere and
       # keep using the deployment (portable layout next to the exe).
@@ -374,11 +398,28 @@ jobs:
 
           Write-Host "Packaged FreeIran-windows-amd64 (v$version): $([math]::Round((Get-Item 'FreeIran-windows-amd64.zip').Length/1MB,1)) MB"
 
-      - name: Upload artifact
+      - name: Generate SHA-256 checksums (§20/§30 updater verification)
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+
+          foreach ($artifact in @(
+            "FreeIran-windows-amd64.zip",
+            "FreeIran-Setup-v$version-windows-amd64.exe"
+          )) {
+            $hash = (Get-FileHash $artifact -Algorithm SHA256).Hash.ToLower()
+            "$hash  $artifact" | Set-Content -NoNewline "$artifact.sha256" -Encoding ascii
+            Write-Host "$hash  $artifact"
+          }
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
           name: release-assets-windows
-          path: FreeIran-windows-amd64.zip
+          path: |
+            FreeIran-windows-amd64.zip
+            FreeIran-Setup-v*-windows-amd64.exe
+            FreeIran-*.sha256
           retention-days: 3
 
   build-linux:
@@ -586,11 +627,18 @@ jobs:
 
           echo "Packaged FreeIran-linux-amd64 (v$version): $(du -h FreeIran-linux-amd64.zip | cut -f1)"
 
+      - name: Generate SHA-256 checksum (§20/§30 updater verification)
+        run: |
+          sha256sum FreeIran-linux-amd64.zip > FreeIran-linux-amd64.zip.sha256
+          cat FreeIran-linux-amd64.zip.sha256
+
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
           name: release-assets-linux
-          path: FreeIran-linux-amd64.zip
+          path: |
+            FreeIran-linux-amd64.zip
+            FreeIran-linux-amd64.zip.sha256
           retention-days: 3
 
   publish:
@@ -613,17 +661,33 @@ jobs:
       - name: Verify release artifact set
         run: |
           echo "Artifacts:"
-          ls -la *.zip
+          ls -la *.zip *.exe || true
 
-          # Exactly the two platform ZIPs — no checksum files, nothing else.
+          # Exactly the two platform ZIPs plus the Windows installer —
+          # no checksum files, nothing else.
           actual="$(ls *.zip | sort | tr '\n' ' ')"
           if [ "$actual" != "FreeIran-linux-amd64.zip FreeIran-windows-amd64.zip " ]; then
             echo "unexpected release artifact set: $(ls *.zip)" >&2
             exit 1
           fi
 
-          if compgen -G "*.sha256" >/dev/null; then
-            echo "checksum files must not be published" >&2
+          installer="$(ls FreeIran-Setup-v*-windows-amd64.exe 2>/dev/null | wc -l)"
+          if [ "$installer" -ne 1 ]; then
+            echo "expected exactly one Windows installer, found $installer" >&2
+            exit 1
+          fi
+
+          # §20/§30: every released artifact MUST ship a SHA-256 checksum
+          # so the application updater can verify after download.
+          for expected in \
+            FreeIran-windows-amd64.zip.sha256 \
+            FreeIran-linux-amd64.zip.sha256; do
+            [ -s "$expected" ] || { echo "missing checksum: $expected" >&2; exit 1; }
+          done
+
+          installer_sum="$(ls FreeIran-Setup-v*-windows-amd64.exe.sha256 2>/dev/null | wc -l)"
+          if [ "$installer_sum" -ne 1 ]; then
+            echo "missing installer checksum" >&2
             exit 1
           fi
 
@@ -633,6 +697,8 @@ jobs:
           files: |
             FreeIran-windows-amd64.zip
             FreeIran-linux-amd64.zip
+            FreeIran-Setup-v*-windows-amd64.exe
+            *.sha256
           generate_release_notes: true
           draft: false
           prerelease: ${{ contains(github.ref, '-') }}

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Events } from "@wailsio/runtime";
 import { useAppStore, connectAppStore } from "./state/appStore";
 import { useSourcesStore, useConfigsStore } from "./state/stores";
 import { connectConnectionStore, useConnectionStore } from "./state/connectionStore";
@@ -12,6 +13,7 @@ import { NetworkPage } from "./pages/Network";
 import { DiagnosticsPage } from "./pages/Diagnostics";
 import { SettingsPage } from "./pages/Settings";
 import { StatusBar } from "./components/StatusBar";
+import { BootProgress } from "./components/LoadState";
 import { Toasts } from "./components/Toasts";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import {
@@ -45,10 +47,21 @@ export function App() {
   const [collapsed, setCollapsed] = useState(false);
   const [version, setVersion] = useState("");
   const status = useAppStore((state) => state.status);
+  const bootPhase = useAppStore((state) => state.bootPhase);
+  const bootTimings = useAppStore((state) => state.bootTimings);
 
   useEffect(() => {
     const disposeAppState = connectAppStore();
     const disposeConnection = connectConnectionStore();
+
+    // Startup lifecycle (v0.9.4): the first mounted frame reports
+    // ui_ready to the backend — the real "interface usable" moment on
+    // the boot telemetry scale. One-shot; failures are irrelevant.
+    try {
+      Events.Emit("freeiran:ui-ready");
+    } catch {
+      /* telemetry only — never blocks the UI */
+    }
 
     return () => {
       disposeAppState();
@@ -155,6 +168,9 @@ export function App() {
 
         <main className="content">
           <div className="content-inner">
+            {/* Real boot progress (§10): driven by backend telemetry,
+                disappears the moment the app is ready. */}
+            <BootProgress phase={bootPhase} timings={bootTimings} />
             <ErrorBoundary onOpenDiagnostics={() => setPage("diagnostics")}>
               <div className="page" key={page}>
                 {page === "dashboard" && <DashboardPage onNavigate={setPage} />}
