@@ -78,6 +78,14 @@ type Settings struct {
 	// pure-Go implementation (same state as FREEIRAN_NATIVE=off).
 	// Applied to the live engine immediately on save.
 	DevForceGoFallback bool `json:"dev_force_go_fallback"`
+
+	// DisableAutoRecovery turns off the v0.9.3 automatic recovery
+	// supervisor. Recovery is ON by default (the autonomous
+	// connection engine's core promise): when the active
+	// connection fails, FreeIran switches to the next viable
+	// candidate with bounded retries, cooldowns and failure
+	// memory. This flag is the explicit user opt-out.
+	DisableAutoRecovery bool `json:"disable_auto_recovery"`
 }
 
 // settingsPath is the persisted settings file.

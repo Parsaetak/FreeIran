@@ -53,6 +53,9 @@ type DeveloperInfoView struct {
 	TotalEnqueued int64 `json:"total_enqueued"`
 	TotalPassed   int64 `json:"total_passed"`
 	TotalFailed   int64 `json:"total_failed"`
+
+	// v0.9.3 autonomous-connection engine status.
+	AutoRecovery RecoveryStatus `json:"auto_recovery"`
 }
 
 // DeveloperInfo assembles the snapshot. Every accessor is best-effort:
@@ -106,6 +109,10 @@ func (s *DiagnosticsService) DeveloperInfo() DeveloperInfoView {
 		view.TotalFailed = stats.TotalFailed
 	}
 
+	if a.recovery != nil {
+		view.AutoRecovery = a.recovery.Status()
+	}
+
 	return view
 }
 
@@ -128,6 +135,10 @@ func (s *DiagnosticsService) developerInfoLines() []string {
 		fmt.Sprintf("cores directory: %s", info.CoresDir),
 		fmt.Sprintf("runtime directory: %s", info.RuntimeDir),
 		fmt.Sprintf("native acceleration: %s", info.NativeAcceleration),
+		fmt.Sprintf("auto recovery: enabled=%v watching=%v attempts=%d/%d cooled=%d",
+			info.AutoRecovery.Enabled, info.AutoRecovery.Watching,
+			info.AutoRecovery.Attempts, info.AutoRecovery.MaxAttempts,
+			info.AutoRecovery.CooledCandidates),
 		fmt.Sprintf("queue: depth=%d active=%d enqueued=%d passed=%d failed=%d (workers override %d)",
 			info.QueueDepth, info.ActiveWorkers, info.TotalEnqueued, info.TotalPassed, info.TotalFailed, info.QueueWorkersOverride),
 	}

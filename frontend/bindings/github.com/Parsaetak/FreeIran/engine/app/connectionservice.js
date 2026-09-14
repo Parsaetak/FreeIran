@@ -119,6 +119,30 @@ export function ConfigDetails(configID) {
     }));
 }
 
+/**
+ * BestCandidates returns the ranked, credential-free candidate list
+ * (v0.9.3 autonomous connection engine). ByName path until the
+ * wails3 generator is rerun on a GUI toolchain host.
+ * @param {number} limit
+ * @returns {$CancellablePromise<any[]>}
+ */
+export function BestCandidates(limit) {
+    return $Call.ByName("github.com/Parsaetak/FreeIran/engine/app.ConnectionService.BestCandidates", limit);
+}
+
+/**
+ * ConnectBest ranks every stored configuration from its real test
+ * history, selects the best viable candidate (excluding the given
+ * fingerprints) and connects through the standard state machine
+ * (v0.9.3 autonomous connection engine). ByName path until the
+ * wails3 generator is rerun on a GUI toolchain host.
+ * @param {string[]} exclude
+ * @returns {$CancellablePromise<any>}
+ */
+export function ConnectBest(exclude) {
+    return $Call.ByName("github.com/Parsaetak/FreeIran/engine/app.ConnectionService.ConnectBest", exclude);
+}
+
 // Private type creation functions
 const $$createType0 = $Create.Array($models.BackendView.createFrom);
 const $$createType1 = $connection.Snapshot.createFrom;

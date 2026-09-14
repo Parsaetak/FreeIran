@@ -1,4 +1,4 @@
-# The FreeIran Workspace (v0.9.2)
+# The FreeIran Workspace (v0.9.3)
 
 FreeIran has **one** Workspace Root. Everything the application creates
 or needs lives below that root; no runtime state is ever silently split

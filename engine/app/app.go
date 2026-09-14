@@ -138,6 +138,11 @@ type App struct {
 	// maintenance interval.
 	cleanups *cleanup.Manager
 
+	// recovery is the v0.9.3 automatic-recovery supervisor: when
+	// the active connection fails it switches to the next viable
+	// candidate with bounded retries, cooldowns and failure memory.
+	recovery *RecoveryService
+
 	ctx    context.Context
 	cancel context.CancelFunc
 
@@ -396,6 +401,11 @@ func New(opts Options) (*App, error) {
 		Metrics:  mreg,
 	})
 
+	// v0.9.3 autonomous connection engine: the recovery supervisor
+	// watches the connection state machine and re-selects the best
+	// viable candidate on failure (bounded, never a reconnect loop).
+	app.recovery = NewRecoveryService(app)
+
 	app.ctx = ctx
 	app.cancel = cancel
 
@@ -434,6 +444,12 @@ func (a *App) Start() {
 
 	// v0.9.2: opportunistic cleanup cadence (bounded, cancellable).
 	go a.cleanupLoop()
+
+	// v0.9.3: automatic recovery watch (bounded attempts, cooldowns,
+	// failure memory; user opt-out via settings).
+	if a.recovery != nil {
+		a.recovery.Start()
+	}
 
 	// Core availability refresh is background work: the registry
 	// stays usable (selection fails gracefully) while discovery is
@@ -560,6 +576,12 @@ func (a *App) Shutdown() {
 		// subsystems being torn down below.
 		if a.memory != nil {
 			a.memory.Stop()
+		}
+
+		// The recovery supervisor must not race the connection
+		// manager's shutdown: stop watching before teardown.
+		if a.recovery != nil {
+			a.recovery.Stop()
 		}
 
 		if a.scheduler != nil {

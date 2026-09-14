@@ -3,6 +3,7 @@ package tester
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Parsaetak/FreeIran/engine/config"
@@ -155,6 +156,10 @@ func (t *Tester) Test(
 }
 
 // ApplyResult writes the test result into the configuration runtime state.
+//
+// v0.9.3: besides the last-outcome fields, every outcome is appended
+// to the bounded observation history (config.TestHistory) — the real
+// data the ranking engine scores candidates from.
 func ApplyResult(cfg *config.Config, result Result) {
 	if cfg == nil {
 		return
@@ -168,6 +173,30 @@ func ApplyResult(cfg *config.Config, result Result) {
 	cfg.TestBackend = result.Backend
 	cfg.TestEndpoint = result.Endpoint
 	cfg.TestDurationMS = result.DurationMS
+
+	// v0.9.3: record the bounded history entry. Timeout failures are
+	// flagged so ranking can penalise them harder than refusals.
+	cfg.AppendTestObservation(config.TestObservation{
+		At:        result.TestedAt.UnixMilli(),
+		Working:   result.Working,
+		LatencyMS: cfg.LatencyMS,
+		TimedOut:  !result.Working && isTimeoutError(result.LastError),
+		Backend:   result.Backend,
+	})
+}
+
+// isTimeoutError reports whether a failure message describes a
+// timeout (deadline exceeded) rather than a refusal/reset.
+func isTimeoutError(message string) bool {
+	if message == "" {
+		return false
+	}
+
+	lower := strings.ToLower(message)
+
+	return strings.Contains(lower, "timeout") ||
+		strings.Contains(lower, "timed out") ||
+		strings.Contains(lower, "deadline exceeded")
 }
 
 // TestAndApply tests a configuration and immediately updates its runtime state.

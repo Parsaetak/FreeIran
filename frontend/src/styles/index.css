@@ -2110,6 +2110,28 @@ button {
   flex-wrap: wrap;
 }
 
+/* v0.9.3 autonomous connect: "find better" sits under the main actions */
+.find-better {
+  margin-top: var(--space-2);
+  align-self: flex-start;
+}
+
+/* best-candidate card facts (§20) */
+.best-candidate {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.best-candidate-facts {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+  margin-inline-start: auto;
+}
+
 /* step progress for transitional states */
 .conn-steps {
   display: flex;

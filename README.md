@@ -9,12 +9,53 @@ configurations.
 **Project:** FreeIran
 **Architect:** Parsa Tak / SHEYTAN
 **Repository:** https://github.com/Parsaetak/FreeIran
-**Current version:** 0.9.2 (see `VERSION`)
+**Current version:** 0.9.3 (see `VERSION`)
 **Status:** production architecture — multi-core protocol runtime with
 managed installation, test queue, system proxy and TUN mode, unified
 adaptive memory control and kernel-level process supervision
 
 ---
+
+## What's new in v0.9.3
+
+### The autonomous connection engine
+
+FreeIran now behaves like an automatic connectivity engine rather
+than a configuration manager:
+
+- **Connect means connect.** Pressing CONNECT selects the best viable
+  candidate from real test history, validates it, chooses a
+  compatible core, waits for readiness and verifies the tunnel — no
+  manual configuration picking, no manual core selection.
+- **Deterministic ranking.** Every stored configuration is scored
+  from its actual observations (success rate, median latency,
+  stability, timeout frequency, test age, source reliability,
+  core compatibility) into BEST / GOOD / UNSTABLE / DEAD / UNKNOWN
+  classes, each score carrying a human-readable explanation
+  ("31 ms median · 96% recent success · tested 4 min ago").
+- **Automatic recovery.** When the active connection dies, the
+  recovery supervisor classifies the failure, skips recently failed
+  candidates (failure memory + cooldown), switches to the next viable
+  one and verifies the result — bounded to 3 attempts per episode
+  with growing backoff, 2 episodes per 30-minute window. No infinite
+  retries, no reconnect loops, no dead-core launches. An explicit
+  opt-out lives in Settings → Reliability.
+- **Bounded test history.** Each configuration keeps its last 12 test
+  outcomes (workspace-persisted, credential-free) — the data the
+  ranking and recovery decisions run on.
+
+### Production repair
+
+- **Single path authority.** The v0.9.2 workspace migration left the
+  old `paths_unix.go`/`paths_windows.go` resolvers behind, duplicating
+  `DefaultBaseDir`/`CacheBaseDir`/`portableRoot` and breaking every CI
+  job. One workspace resolver (`system/workspace.go`) now owns the
+  persistence model; regression tests guard it.
+- **Worker-pool race fixed.** A shrink of the test queue's dynamic
+  pool could retire every worker at once (stale-count overshoot),
+  leaving queued tests undrained forever. Retirement is now an atomic
+  slot claim; a dedicated regression test reproduces the original
+  failure under `-race`.
 
 ## What's new in v0.9.1
 

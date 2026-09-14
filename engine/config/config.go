@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Type identifies the protocol used by a configuration.
@@ -89,6 +90,54 @@ type Config struct {
 	TestBackend    string `json:"test_backend,omitempty"`
 	TestEndpoint   string `json:"test_endpoint,omitempty"`
 	TestDurationMS int64  `json:"test_duration_ms,omitempty"`
+
+	// v0.9.3 bounded observation history: the last TestHistoryLimit
+	// test outcomes for this configuration (newest last). It is the
+	// actual data the ranking engine scores — success rate, latency
+	// stability and timeout frequency come from here, never invented.
+	// Runtime-only: never part of the fingerprint, never uploaded.
+	TestHistory []TestObservation `json:"test_history,omitempty"`
+}
+
+// TestHistoryLimit caps the per-config observation ring. Twelve
+// entries are enough to see a trend (the ranking layer reports
+// "stable over the last 12 tests") while keeping every stored record
+// small: large ingests must not pay a history tax.
+const TestHistoryLimit = 12
+
+// TestObservation is one recorded test outcome.
+type TestObservation struct {
+	// At is the observation time (Unix milliseconds).
+	At int64 `json:"at"`
+
+	// Working reports whether the configuration served traffic.
+	Working bool `json:"working"`
+
+	// LatencyMS is the measured round-trip time (0 when failed).
+	LatencyMS int64 `json:"latency_ms,omitempty"`
+
+	// TimedOut marks failures that were timeouts — the ranking
+	// layer penalises them harder than refusals.
+	TimedOut bool `json:"timed_out,omitempty"`
+
+	// Backend is the core that executed the test (informational).
+	Backend string `json:"backend,omitempty"`
+}
+
+// AppendTestObservation records one outcome in the bounded history
+// ring, dropping the oldest entry beyond TestHistoryLimit. Safe on a
+// nil receiver's fields; the receiver itself must be non-nil.
+func (c *Config) AppendTestObservation(obs TestObservation) {
+	if obs.At == 0 {
+		obs.At = time.Now().UTC().UnixMilli()
+	}
+
+	c.TestHistory = append(c.TestHistory, obs)
+
+	if excess := len(c.TestHistory) - TestHistoryLimit; excess > 0 {
+		c.TestHistory = append([]TestObservation(nil),
+			c.TestHistory[excess:]...)
+	}
 }
 
 // Normalize prepares a configuration for comparison and fingerprinting.

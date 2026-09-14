@@ -300,6 +300,31 @@ func (r *Registry) supportsProtocol(t config.Type) bool {
 	return false
 }
 
+// CompatibleBackends counts the AVAILABLE backends that declare the
+// given protocol. The ranking layer uses it as the compatibility
+// input: a configuration no installed core can serve is not
+// connectable, no matter how good its test history is.
+func (r *Registry) CompatibleBackends(t config.Type) int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	count := 0
+
+	for _, entry := range r.backends {
+		if entry.status != StatusAvailable {
+			continue
+		}
+
+		if provider, ok := entry.core.(interface {
+			Capabilities() Capabilities
+		}); ok && provider.Capabilities().SupportsProtocol(t) {
+			count++
+		}
+	}
+
+	return count
+}
+
 // String renders the registry state for diagnostics (no secrets are
 // involved in backend metadata).
 func (r *Registry) String() string {

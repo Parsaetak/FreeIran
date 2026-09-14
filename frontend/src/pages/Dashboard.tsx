@@ -36,6 +36,7 @@ export function DashboardPage({ onNavigate }: { onNavigate: (page: Page) => void
   const backends = useConnectionStore((state) => state.backends);
   const busy = useConnectionStore((state) => state.busy);
   const connect = useConnectionStore((state) => state.connect);
+  const connectBest = useConnectionStore((state) => state.connectBest);
   const disconnect = useConnectionStore((state) => state.disconnect);
   const refreshBackends = useConnectionStore((state) => state.refreshBackends);
 
@@ -185,15 +186,22 @@ export function DashboardPage({ onNavigate }: { onNavigate: (page: Page) => void
             className="btn primary lg"
             disabled={uiState === "connecting" || uiState === "disconnecting" || busy}
             onClick={() => {
+              // v0.9.3: CONNECT means "connect me" — with a previous
+              // session it reconnects; otherwise the engine picks the
+              // best viable candidate from real test history.
               if (canConnectHere && snapshot?.config_id) {
                 void connect(snapshot.config_id);
               } else {
-                onNavigate("connection");
+                void connectBest().then(() => {
+                  if (useConnectionStore.getState().error) {
+                    onNavigate("connection");
+                  }
+                });
               }
             }}
           >
             <IconPlay size={14} />
-            {canConnectHere ? "Connect" : "Set up connection"}
+            Connect
           </button>
 
           <button

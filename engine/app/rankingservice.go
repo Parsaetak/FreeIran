@@ -1,0 +1,273 @@
+// rankingservice.go implements the SELECT/CONNECT stages of the
+// autonomous connection engine at the application level:
+//
+//	CollectBestCandidates — bounded store scan → ranked candidates
+//	ConnectBest           — pick the best viable candidate and connect
+//
+// The heavy lifting (scoring, classes, explainability) lives in the
+// pure engine/ranking package; this service only gathers REAL data
+// (stored configs with their bounded test history, installed-core
+// compatibility, observed source reliability) and routes the decision
+// through the existing connection state machine — auto-connection
+// uses exactly the same validated path as a manual connect.
+package app
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"sort"
+	"time"
+
+	"github.com/Parsaetak/FreeIran/engine/config"
+	"github.com/Parsaetak/FreeIran/engine/connection"
+	"github.com/Parsaetak/FreeIran/engine/ranking"
+)
+
+// candidateScanLimit bounds how many stored configurations one
+// ranking pass decodes. With ~400-byte records this caps the pass at
+// a couple of megabytes — enough for very large ingests while the
+// per-candidate scoring stays O(samples) with ≤ 8 samples each.
+const candidateScanLimit = 4000
+
+// minSourceSamples is the number of tested configs a source needs
+// before its observed reliability (instead of the neutral value)
+// feeds the ranking.
+const minSourceSamples = 5
+
+// errCandidateLimit stops the store iteration once the scan bound is
+// reached (a normal condition on large datasets, never an error).
+var errCandidateLimit = errors.New("candidate scan limit reached")
+
+// CandidateView is the credential-free ranking outcome surfaced to
+// the UI: class, score and the explanation that produced it.
+type CandidateView struct {
+	Fingerprint string   `json:"fingerprint"`
+	Name        string   `json:"name"`
+	Protocol    string   `json:"protocol"`
+	Endpoint    string   `json:"endpoint"`
+	Class       string   `json:"class"`
+	Score       float64  `json:"score"`
+	LatencyMS   int64    `json:"latency_ms"`
+	SuccessRate float64  `json:"success_rate"`
+	Samples     int      `json:"samples"`
+	TestedAt    int64    `json:"tested_at,omitempty"`
+	Connectable bool     `json:"connectable"`
+	Explanation []string `json:"explanation,omitempty"`
+}
+
+// ConnectBestResult is the outcome of an automatic connection.
+type ConnectBestResult struct {
+	Snapshot   connection.Snapshot `json:"snapshot"`
+	Chosen     CandidateView       `json:"chosen"`
+	Candidates int                 `json:"candidates"`
+}
+
+// collectCandidates performs the bounded store scan and builds the
+// rankable candidate set. The same pass computes per-source observed
+// reliability, so the ranking input is always derived from real
+// stored outcomes.
+func (a *App) collectCandidates(ctx context.Context) []ranking.Candidate {
+	type sourceStats struct {
+		tested  int
+		working int
+	}
+
+	sources := map[string]*sourceStats{}
+
+	candidates := make([]ranking.Candidate, 0, 64)
+
+	err := a.store.Iterate(ctx, func(key string, raw []byte) error {
+		if len(candidates) >= candidateScanLimit {
+			return errCandidateLimit
+		}
+
+		var cfg config.Config
+		if err := json.Unmarshal(raw, &cfg); err != nil {
+			return nil // undecodable record: skip, never abort the scan
+		}
+
+		if cfg.ID == "" {
+			cfg.ID = key
+		}
+
+		if cfg.TestedAt != 0 {
+			stats := sources[cfg.Source]
+
+			if stats == nil {
+				stats = &sourceStats{}
+				sources[cfg.Source] = stats
+			}
+
+			stats.tested++
+
+			if cfg.Working {
+				stats.working++
+			}
+		}
+
+		candidates = append(candidates, ranking.Candidate{
+			Fingerprint:        cfg.ID,
+			Name:               cfg.Name,
+			Protocol:           string(cfg.Type),
+			Endpoint:           cfg.DisplayURL(),
+			Source:             cfg.Source,
+			History:            cfg.TestHistory,
+			CompatibleBackends: a.coreRegistry.CompatibleBackends(cfg.Type),
+		})
+
+		return nil
+	})
+
+	if err != nil && !errors.Is(err, errCandidateLimit) && ctx.Err() == nil {
+		a.logger.Warn("ranking", "candidate_scan",
+			"candidate scan ended early: %v", err)
+	}
+
+	// Attach observed source reliability (real data only: a source
+	// needs a minimum sample before its fraction is trusted).
+	for i := range candidates {
+		stats := sources[candidates[i].Source]
+
+		if stats == nil || stats.tested < minSourceSamples {
+			continue
+		}
+
+		candidates[i].SourceReliability =
+			float64(stats.working) / float64(stats.tested)
+	}
+
+	return candidates
+}
+
+// BestCandidates returns the ranked candidate list for the UI (best
+// first, credential-free). The limit is clamped to [1, 100].
+func (s *ConnectionService) BestCandidates(limit int) []CandidateView {
+	if limit <= 0 {
+		limit = 5
+	}
+
+	if limit > 100 {
+		limit = 100
+	}
+
+	ctx, cancel := context.WithTimeout(s.app.ctx, 10*time.Second)
+	defer cancel()
+
+	candidates := s.app.collectCandidates(ctx)
+	scores := ranking.Rank(candidates, time.Now().UTC())
+
+	byFingerprint := make(map[string]ranking.Candidate, len(candidates))
+	for _, c := range candidates {
+		byFingerprint[c.Fingerprint] = c
+	}
+
+	views := make([]CandidateView, 0, limit)
+
+	for _, score := range scores {
+		if len(views) >= limit {
+			break
+		}
+
+		cand := byFingerprint[score.Fingerprint]
+
+		views = append(views, CandidateView{
+			Fingerprint: score.Fingerprint,
+			Name:        cand.Name,
+			Protocol:    cand.Protocol,
+			Endpoint:    cand.Endpoint,
+			Class:       string(score.Class),
+			Score:       score.Score,
+			LatencyMS:   score.LatencyMS,
+			SuccessRate: score.SuccessRate,
+			Samples:     score.Samples,
+			TestedAt:    score.TestedAt,
+			Connectable: score.Connectable,
+			Explanation: score.Explanation,
+		})
+	}
+
+	return views
+}
+
+// ConnectBest implements the automatic connection path: rank every
+// stored configuration from its real test history, choose the best
+// viable candidate (excluding anything the caller asks to avoid —
+// used by recovery and by "find a better connection"), and connect
+// through the standard state machine.
+//
+// A candidate that fails validation or connection still fails the
+// call honestly; recovery layers its own bounded retry policy on top.
+func (s *ConnectionService) ConnectBest(exclude []string) (ConnectBestResult, error) {
+	ctx, cancel := context.WithTimeout(s.app.ctx, 30*time.Second)
+	defer cancel()
+
+	candidates := s.app.collectCandidates(ctx)
+
+	// Normalise the exclusion set.
+	excluded := make(map[string]struct{}, len(exclude))
+	for _, fp := range exclude {
+		if fp != "" {
+			excluded[fp] = struct{}{}
+		}
+	}
+
+	viable := make([]ranking.Candidate, 0, len(candidates))
+
+	for _, c := range candidates {
+		if _, skip := excluded[c.Fingerprint]; skip {
+			continue
+		}
+
+		viable = append(viable, c)
+	}
+
+	chosen, score, ok := ranking.SelectBest(viable, time.Now().UTC())
+	if !ok {
+		return ConnectBestResult{
+			Candidates: len(candidates),
+		}, errors.New(
+			"no viable connection candidate: run \"Test connections\" to " +
+				"measure the available configurations first")
+	}
+
+	snapshot, err := s.Connect(chosen.Fingerprint)
+	if err != nil {
+		return ConnectBestResult{
+			Snapshot:   snapshot,
+			Chosen:     candidateView(chosen, score),
+			Candidates: len(candidates),
+		}, err
+	}
+
+	return ConnectBestResult{
+		Snapshot:   snapshot,
+		Chosen:     candidateView(chosen, score),
+		Candidates: len(candidates),
+	}, nil
+}
+
+// candidateView renders one candidate + its score for the result.
+func candidateView(c ranking.Candidate, score ranking.Score) CandidateView {
+	return CandidateView{
+		Fingerprint: c.Fingerprint,
+		Name:        c.Name,
+		Protocol:    c.Protocol,
+		Endpoint:    c.Endpoint,
+		Class:       string(score.Class),
+		Score:       score.Score,
+		LatencyMS:   score.LatencyMS,
+		SuccessRate: score.SuccessRate,
+		Samples:     score.Samples,
+		TestedAt:    score.TestedAt,
+		Connectable: score.Connectable,
+		Explanation: score.Explanation,
+	}
+}
+
+// sortCandidateViews is a small helper kept for stable test output.
+func sortCandidateViews(views []CandidateView) {
+	sort.SliceStable(views, func(i, j int) bool {
+		return views[i].Score > views[j].Score
+	})
+}

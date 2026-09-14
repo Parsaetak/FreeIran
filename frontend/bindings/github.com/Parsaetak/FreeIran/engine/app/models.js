@@ -699,6 +699,13 @@ export class Settings {
              */
             this["dev_force_go_fallback"] = false;
         }
+        if (!("disable_auto_recovery" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["disable_auto_recovery"] = false;
+        }
 
         Object.assign(this, $$source);
     }

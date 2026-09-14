@@ -540,8 +540,14 @@ func (q *Queue) SetConcurrency(n int) {
 	q.mu.Unlock()
 
 	// Grow the pool to the target. The CAS loop prevents double
-	// spawning under concurrent SetConcurrency calls.
+	// spawning under concurrent SetConcurrency calls. The stopped
+	// re-check keeps the loop from registering a worker on workersWG
+	// after Stop began waiting (WaitGroup misuse guard).
 	for {
+		if q.stopped.Load() {
+			return
+		}
+
 		live := int(q.liveWorkers.Load())
 		if live >= n {
 			break
@@ -941,16 +947,33 @@ func (q *Queue) finishTaskLocked(task *Task, state TaskState, result Result) boo
 const resultsCacheLimit = 4096
 
 // worker is the main test loop.
+//
+// Retirement (the shrink side of SetConcurrency) is a CAS decrement,
+// not a read-then-deferred-decrement: each worker atomically claims
+// one retirement slot, so the pool can never undershoot the desired
+// size. The historical form let every worker observe the same stale
+// liveWorkers count and ALL retire at once, leaving liveWorkers == 0
+// with desiredWorkers > 0 — a dead pool no one respawns (spawning
+// lives only in Start and SetConcurrency), so queued tasks never
+// drained (v0.9.2 race-mode CI failure).
 func (q *Queue) worker(id int) {
 	defer q.workersWG.Done()
-	defer q.liveWorkers.Add(-1)
 
 	for {
 		// Retire when the pool is above target (shrink side of
 		// SetConcurrency). Busy workers reach this check between
 		// tasks; idle ones are woken by the resize signal.
-		if q.liveWorkers.Load() > q.desiredWorkers.Load() {
-			return
+		for {
+			live := q.liveWorkers.Load()
+			if live <= q.desiredWorkers.Load() {
+				break // pool at/below target: keep working
+			}
+
+			if q.liveWorkers.CompareAndSwap(live, live-1) {
+				return // retirement slot claimed: pool size decremented
+			}
+
+			// Another worker retired first: re-read and re-decide.
 		}
 
 		task, err := q.Dequeue(q.ctx)
@@ -959,7 +982,11 @@ func (q *Queue) worker(id int) {
 				continue // re-evaluate retirement at the loop top
 			}
 
-			return // ctx cancelled
+			// Terminal exit (Stop cancelled the context). The pool is
+			// dead by definition; keep liveWorkers accounting exact.
+			q.liveWorkers.Add(-1)
+
+			return
 		}
 
 		q.runTask(task)

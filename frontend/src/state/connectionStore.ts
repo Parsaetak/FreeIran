@@ -6,6 +6,7 @@ import {
   type ConnectionSnapshot,
   type BackendView,
   type CoreHealthReport,
+  type ConnectBestResultView,
 } from "../services";
 
 /**
@@ -35,6 +36,7 @@ interface ConnectionStore {
   refreshBackends: () => Promise<void>;
   ingestEvent: (snapshot: ConnectionSnapshot) => void;
   connect: (configID: string) => Promise<void>;
+  connectBest: (exclude?: string[]) => Promise<ConnectBestResultView | null>;
   disconnect: () => Promise<void>;
   reconnect: () => Promise<void>;
 }
@@ -85,6 +87,25 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
         busy: false,
         error: error instanceof Error ? error.message : String(error),
       });
+    }
+  },
+
+  connectBest: async (exclude = []) => {
+    if (get().busy) return null;
+    set({ busy: true, error: null });
+
+    try {
+      const result = await call(() => connectionService.ConnectBest(exclude));
+      set({ snapshot: result.snapshot, busy: false });
+      return result;
+    } catch (error) {
+      await get().refresh();
+      set({
+        busy: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+
+      return null;
     }
   },
 

@@ -329,6 +329,33 @@ export interface CleanupResultView {
   tasks?: CleanupTaskView[];
 }
 
+// ---------------------------------------------------------------------------
+// v0.9.3 view types (autonomous connection engine)
+// ---------------------------------------------------------------------------
+
+/** One ranked candidate (app.CandidateView, credential-free). */
+export interface CandidateView {
+  fingerprint: string;
+  name: string;
+  protocol: string;
+  endpoint: string;
+  class: string;
+  score: number;
+  latency_ms: number;
+  success_rate: number;
+  samples: number;
+  tested_at?: number;
+  connectable: boolean;
+  explanation?: string[];
+}
+
+/** ConnectBest outcome (app.ConnectBestResult). */
+export interface ConnectBestResultView {
+  snapshot: ConnectionSnapshot;
+  chosen: CandidateView;
+  candidates: number;
+}
+
 /**
  * Splits the backend's humanized error format ("readable sentence\n---\nTechnical details: raw")
  * into its user-facing parts.

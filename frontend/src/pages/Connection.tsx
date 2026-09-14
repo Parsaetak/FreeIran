@@ -2,8 +2,8 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import { useConnectionStore } from "../state/connectionStore";
 import { useConfigsStore, makeSearchRunner } from "../state/stores";
 import { useSettingsStore } from "../state/settingsStore";
-import { type BackendView, type Config } from "../services";
-import { call, tunnelService } from "../services";
+import { call, type BackendView, type CandidateView, type Config } from "../services";
+import { connectionService, tunnelService } from "../services";
 import { formatDuration, formatLatency, formatNumber, formatUptime, truncate } from "../utilities/format";
 import {
   BootDots,
@@ -78,6 +78,7 @@ export function ConnectionPage() {
   const error = useConnectionStore((state) => state.error);
   const disconnect = useConnectionStore((state) => state.disconnect);
   const reconnect = useConnectionStore((state) => state.reconnect);
+  const connectBest = useConnectionStore((state) => state.connectBest);
   const refreshBackends = useConnectionStore((state) => state.refreshBackends);
 
   const uiState = snapshot ? connectionUiState(snapshot.state) : "disconnected";
@@ -108,8 +109,15 @@ export function ConnectionPage() {
   };
 
   const primaryConnect = () => {
+    // v0.9.3 autonomous connect: without an explicit previous session,
+    // CONNECT picks the best viable candidate from real test history
+    // (the engine validates, selects the core, verifies readiness).
     if (!snapshot?.config_id) {
-      document.getElementById("config-picker")?.scrollIntoView({ behavior: "smooth" });
+      void connectBest().then(() => {
+        const failure = useConnectionStore.getState().error;
+
+        if (failure) toast("error", "Connection failed", failure);
+      });
 
       return;
     }
@@ -118,6 +126,26 @@ export function ConnectionPage() {
       const failure = useConnectionStore.getState().error;
 
       if (failure) toast("error", "Reconnect failed", failure);
+    });
+  };
+
+  // Find better connection (§18): switch to the best candidate other
+  // than the current one. Available while connected.
+  const findBetter = () => {
+    const exclude = snapshot?.config_id ? [snapshot.config_id] : [];
+
+    void connectBest(exclude).then((result) => {
+      const failure = useConnectionStore.getState().error;
+
+      if (failure) {
+        toast("error", "Could not find a better connection", failure);
+      } else if (result?.chosen) {
+        toast(
+          "success",
+          "Switched connection",
+          `${result.chosen.name || "Best candidate"} — ${result.chosen.explanation?.join(" · ") ?? ""}`.trim(),
+        );
+      }
     });
   };
 
@@ -239,7 +267,16 @@ export function ConnectionPage() {
             Disconnect
           </button>
         </div>
+
+        {connected && (
+          <button type="button" className="btn sm find-better" onClick={findBetter} disabled={busy}>
+            <IconRefresh size={13} />
+            Find better connection
+          </button>
+        )}
       </section>
+
+      <BestCandidateCard disabled={uiState === "connecting" || connected || busy} />
 
       {error && (
         <div className="error-banner">
@@ -400,6 +437,117 @@ function TunnelModeCard({ connected, endpoint }: { connected: boolean; endpoint:
 /** describeErrorTunnel normalizes backend rejection messages. */
 function describeErrorTunnel(error: unknown): string {
   return error instanceof Error ? error.message : String(error ?? "unknown error");
+}
+
+/**
+ * BestCandidateCard surfaces the ranking engine's top choice (§20):
+ * name, latency, quality class and the reasons behind the score.
+ * Normal users see one honest summary — internals stay hidden.
+ */
+function BestCandidateCard({ disabled }: { disabled: boolean }) {
+  const [candidate, setCandidate] = useState<CandidateView | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+
+    try {
+      const views = await call(() => connectionService.BestCandidates(1));
+
+      setCandidate(views.length > 0 ? views[0] : null);
+    } catch {
+      setCandidate(null); // ranking is best-effort for the UI
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  const qualityLabel: Record<string, string> = {
+    best: "Excellent",
+    good: "Good",
+    unstable: "Unstable",
+    dead: "Down",
+    unknown: "Untested",
+  };
+
+  const qualityClass: Record<string, string> = {
+    best: "success",
+    good: "info",
+    unstable: "warn",
+    dead: "error",
+    unknown: "neutral",
+  };
+
+  return (
+    <div className="card">
+      <div className="card-header">
+        <h3 className="card-title eyebrow">Best candidate</h3>
+        <button type="button" className="btn sm" onClick={() => void load()} disabled={loading}>
+          <IconRefresh size={13} />
+          Refresh
+        </button>
+      </div>
+
+      {!candidate ? (
+        <div className="log-empty">
+          {loading
+            ? "Ranking configurations…"
+            : "No tested candidates yet. Run Test connections to measure the available servers."}
+        </div>
+      ) : (
+        <div className="card-body best-candidate">
+          <div className="cell-main">
+            <div className="cell-title">
+              {candidate.name || candidate.endpoint || "Unnamed candidate"}
+            </div>
+            <div className="cell-sub">
+              {candidate.protocol.toUpperCase()} · {candidate.endpoint}
+            </div>
+          </div>
+
+          <div className="best-candidate-facts">
+            <span className="conn-fact">
+              <span>latency</span>
+              <b>{candidate.latency_ms > 0 ? formatLatency(candidate.latency_ms) : "—"}</b>
+            </span>
+            <span className="conn-fact">
+              <span>success</span>
+              <b>{Math.round(candidate.success_rate * 100)}%</b>
+            </span>
+            <span className={`badge ${qualityClass[candidate.class] ?? "neutral"}`}>
+              {qualityLabel[candidate.class] ?? candidate.class}
+            </span>
+          </div>
+
+          {candidate.explanation && candidate.explanation.length > 0 && (
+            <div className="cell-sub">{candidate.explanation.join(" · ")}</div>
+          )}
+
+          <button
+            type="button"
+            className="btn sm primary"
+            disabled={disabled || !candidate.connectable}
+            onClick={() => {
+              const store = useConnectionStore.getState();
+
+              void store.connectBest().then(() => {
+                const failure = useConnectionStore.getState().error;
+
+                if (failure) toast("error", "Connection failed", failure);
+              });
+            }}
+          >
+            <IconPlay size={11} />
+            Connect to best
+          </button>
+        </div>
+      )}
+    </div>
+  );
 }
 
 /** Searchable configuration picker feeding the connect action. */

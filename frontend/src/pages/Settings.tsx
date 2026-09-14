@@ -51,7 +51,8 @@ function sameSettings(a: Settings, b: Settings): boolean {
     a.dev_verbose_diagnostics === b.dev_verbose_diagnostics &&
     a.dev_queue_workers === b.dev_queue_workers &&
     a.dev_net_timeout_seconds === b.dev_net_timeout_seconds &&
-    a.dev_force_go_fallback === b.dev_force_go_fallback
+    a.dev_force_go_fallback === b.dev_force_go_fallback &&
+    a.disable_auto_recovery === b.disable_auto_recovery
   );
 }
 
@@ -428,6 +429,19 @@ export function SettingsPage() {
             update({ reduced_motion: next });
             setMotionOverride(next);
           }}
+        />
+      </SettingsSection>
+
+      <SettingsSection
+        title="Reliability"
+        hint="What FreeIran does when the active connection fails."
+      >
+        <ToggleRow
+          id="auto-recovery"
+          label="Automatic recovery"
+          hint="When the active connection fails, FreeIran switches to the next best healthy candidate automatically (bounded retries, recently failed servers are skipped). This is the engine's core behaviour — disable only if you want full manual control."
+          checked={!draft.disable_auto_recovery}
+          onChange={(next) => update({ disable_auto_recovery: !next })}
         />
       </SettingsSection>
 

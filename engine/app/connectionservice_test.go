@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Parsaetak/FreeIran/engine/config"
+	"github.com/Parsaetak/FreeIran/engine/core"
 	"github.com/Parsaetak/FreeIran/engine/core/contract"
 )
 
@@ -169,10 +170,26 @@ func TestConnectionServiceConnectDisconnect(t *testing.T) {
 		t.Fatalf("ConnectionState() = %s", state.State)
 	}
 
-	// Health axes through the service.
-	health := service.Health()
-	if !health.ProcessAlive || !health.ListenerReady {
-		t.Fatalf("health = %+v", health)
+	// Health axes through the service. The first probe can race the
+	// fake core's listener stabilization under full-matrix load
+	// (observed once as a transient connection reset), so the check
+	// is a bounded wait — a session that stays unhealthy still fails.
+	deadline := time.Now().Add(5 * time.Second)
+
+	var health core.HealthReport
+
+	for {
+		health = service.Health()
+
+		if health.ProcessAlive && health.ListenerReady {
+			break
+		}
+
+		if time.Now().After(deadline) {
+			t.Fatalf("health did not become ready: %+v", health)
+		}
+
+		time.Sleep(50 * time.Millisecond)
 	}
 
 	final := service.Disconnect()
