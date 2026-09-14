@@ -5,7 +5,7 @@
 **Architect / Project Originator:** Parsa Tak / SHEYTAN  
 **Primary platforms:** Windows + Android  
 **Primary implementation language:** Go  
-**Current phase:** v0.9.0 — core reliability, network diagnostics, deployment package  
+**Current phase:** v0.9.5 — repository integrity release (v0.9.4 CI regression actually fixed, stale artifacts removed, full verification re-run)  
 **Last known project date:** 2026-09-13  
 **Purpose of this file:** Portable handoff document for any AI coding agent continuing FreeIran without relying on previous chat history.
 
@@ -2727,3 +2727,56 @@ Root causes fixed on top of the existing architecture (no rewrites).
   the live Actions runs were NOT inspectable from this environment
   (unauthenticated GitHub API rate-limited, HTTP 403) — documented as a
   limitation.
+
+---
+
+## v0.9.5 — repository integrity release (2026-09-15)
+
+### Context
+
+The v0.9.4 session documented the deletion of
+`system/paths_unix.go` / `system/paths_windows.go`, but the files were
+still shipped in the 0.9.4 tree: every `go vet`, `go build` and test
+job on GitHub Actions failed with duplicate declarations of
+`DefaultBaseDir`, `CacheBaseDir` and `portableRoot`. This release
+repairs the repository as a whole rather than only silencing CI.
+
+### Changes
+
+- `system/paths_unix.go`, `system/paths_windows.go` DELETED (the
+  v0.9.0-era per-user path resolvers; `system/workspace.go` is the
+  single workspace/path authority, `system/portable.go` keeps the
+  diagnostics-only `portableRoot()`).
+- Stale per-session packaging manifests removed from the repository
+  root: `REPLACEMENT_MANIFEST.md`, `Release-Manifest.md`,
+  `Updated-Files.md` (release history stays in git history; the
+  worklog remains the single handoff document).
+- Stale generated embed bundles removed: 10 old hashed
+  `cmd/freeiran/frontend/dist/assets/*` files deleted; the embed
+  directory now contains exactly the output of the current frontend
+  build (`copy-dist.mjs` cleans the target before copying).
+- Version sources synced to **0.9.5**: `VERSION`,
+  `internal/version/version.go`, `frontend/package.json`,
+  `frontend/package-lock.json` (root entry had drifted to 0.9.1),
+  `scripts/freeiran.iss`, README. Historical version mentions in code
+  comments, changelog sections and update-checker test fixtures are
+  intentionally unchanged (explicitly historical).
+- `Makefile` clean-target typo fixed (`FreeIron-linux-amd64`).
+- Docs synced: README (v0.9.5 section), docs/ci.md (v0.9.5 section),
+  this worklog header + entry.
+
+### Verification performed (Linux, go1.26.8 toolchain for go1.26.8 module)
+
+- `gofmt -l ./engine ./system ./cmd ./internal` — clean
+- `go vet ./engine/... ./system/... ./internal/...` — PASS
+- `go build ./engine/... ./system/... ./internal/...` — PASS
+- `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o /dev/null ./cmd/freeiran` — PASS
+- `go test -count=1 ./engine/... ./system/... ./internal/...` (fake-core fixtures) — PASS (all packages)
+- `go test -race -count=1 ./engine/... ./system/... ./internal/...` — PASS (all packages)
+- `go test -race -count=10 ./engine/testqueue` — PASS (132.8 s, no races/deadlocks/leaks)
+- `go test -race -count=5 ./engine/store ./engine/chunks ./engine/pipeline ./engine/mempressure ./engine/cache` — PASS
+- Benchmarks: chunks/store/pipeline/logging (`-benchtime=3x`) and native bridge (`-tags native_accel -bench=. -benchtime=3x`) — executed, baseline recorded in the run log
+- Native: `make -C native test` — PASS; `make -C native` + `go build -tags native_accel ./engine/native` + `go test -tags native_accel` — PASS
+- Real cores (official archives, SHA-256 verified): V2Ray 5.53.0, Xray 26.3.27, sing-box 1.14.0 — `TestV2RaySmokeRealBinary` / `TestXraySmokeRealBinary` / `TestSingBoxSmokeRealBinary` ALL PASS (config validation, startup, readiness, shutdown per protocol)
+- Frontend: `npm ci`, `npm run typecheck`, `npm test` (40 tests), `npm run build:embed` — PASS
+- Full source repository ZIP `FreeIran-0.9.5.zip` created and re-verified by fresh extraction + build gates from the extracted tree

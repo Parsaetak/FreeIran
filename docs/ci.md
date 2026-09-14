@@ -126,6 +126,23 @@ secret scanning and static analysis with real failure conditions.
   inverted: checksums are REQUIRED so the application updater can
   verify downloads without trusting the transport.
 
+## v0.9.5 — the v0.9.4 regression actually fixed
+
+- v0.9.4 shipped with the two obsolete path resolvers still present,
+  so `go vet`, `go build` and all test jobs failed with duplicate
+  declarations of `DefaultBaseDir`/`CacheBaseDir`/`portableRoot`.
+  `system/paths_unix.go` and `system/paths_windows.go` are now really
+  deleted; the `TestWorkspacePathAuthoritySingleSource` guard added in
+  v0.9.4 keeps failing any future re-introduction.
+- Repository hygiene: the stale per-session packaging manifests at the
+  repository root were removed, and the Wails embed directory
+  (`cmd/freeiran/frontend/dist`) was reduced to exactly the current
+  frontend build output.
+- Version sources synced to 0.9.5 including the
+  `package-lock.json` root entry, which had silently stayed at 0.9.1
+  since that release (the CI version gate checks package.json, not the
+  lockfile — the lockfile drift is now fixed at the source).
+
 ## Deterministic fake-core fixtures (v0.5.0)
 
 Every ordinary unit/integration test runs against controlled fake

@@ -9,12 +9,62 @@ configurations.
 **Project:** FreeIran
 **Architect:** Parsa Tak / SHEYTAN
 **Repository:** https://github.com/Parsaetak/FreeIran
-**Current version:** 0.9.4 (see `VERSION`)
+**Current version:** 0.9.5 (see `VERSION`)
 **Status:** production architecture — multi-core protocol runtime with
 managed installation, test queue, system proxy and TUN mode, unified
 adaptive memory control and kernel-level process supervision
 
 ---
+
+## What's new in v0.9.5
+
+v0.9.5 is a repository-integrity release: it makes the repository
+match what v0.9.4 documented, removes the stale artifacts that
+accumulated across the 0.9.1-0.9.4 packaging sessions, and re-runs
+the full verification matrix end to end.
+
+### The v0.9.4 regression, actually fixed
+
+- v0.9.4's release notes claimed the obsolete per-user path
+  resolvers were removed; they were still shipped, and re-declaring
+  `DefaultBaseDir`/`CacheBaseDir`/`portableRoot` alongside
+  `workspace.go` and `portable.go` broke `go vet`, `go build` and
+  every test job. The two files (`system/paths_unix.go`,
+  `system/paths_windows.go`) are now really deleted, `system/`
+  compiles for every build-tag combination, and the existing
+  `TestWorkspacePathAuthoritySingleSource` guard stays as the
+  regression tripwire.
+
+### Repository hygiene
+
+- **Stale generated bundles removed.** `cmd/freeiran/frontend/dist`
+  (the Wails embed target) had accumulated 10 hashed bundles from
+  older builds next to the live set; the embed directory now contains
+  exactly the assets produced by the current frontend build
+  (`copy-dist.mjs` cleans before copying, so this cannot re-accumulate).
+- **Session manifests removed.** The repository root carried three
+  per-release working documents (`REPLACEMENT_MANIFEST.md`,
+  `Release-Manifest.md`, `Updated-Files.md`) describing 0.9.1/0.9.2
+  packaging sessions as if current. They are deleted; release
+  history lives in git history and the release notes, and the
+  engineering worklog remains the single handoff document.
+- **Version sources synced.** `VERSION`, `internal/version`,
+  `frontend/package.json`, `frontend/package-lock.json` (whose root
+  entry had drifted to 0.9.1), the Inno Setup installer script and
+  this README all say 0.9.5. The CI version gate keeps enforcing the
+  triple agreement on every push.
+- **Makefile clean-target typo** (`FreeIron-linux-amd64`) fixed.
+
+### Verification re-run
+
+The full matrix was executed on the cleaned tree: gofmt/vet/build,
+the fake-core test and race matrix, the testqueue race stress
+(`-race -count=10`), storage/pressure stress (`-race -count=5` over
+`store`, `chunks`, `pipeline`, `mempressure`, `cache`), the pinned
+real-core smoke suites (V2Ray 5.53.0, Xray 26.3.27, sing-box 1.14.0
+— checksum-verified official binaries), the native C++ tests plus the
+`native_accel` bridge build and benchmarks, and the frontend
+typecheck/test/production build.
 
 ## What's new in v0.9.4
 

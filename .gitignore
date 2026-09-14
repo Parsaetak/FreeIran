@@ -58,3 +58,4 @@ coverage*.out
 FreeIran-v*-windows-amd64/
 FreeIran-windows-amd64
 FreeIran-v*-linux-amd64/
+.test-cores/

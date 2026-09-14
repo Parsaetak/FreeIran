@@ -85,6 +85,6 @@ smoke-test: desktop-linux
 	./FreeIran-linux-amd64 --smoke-test
 
 clean:
-	rm -rf "$(CORES_DIR)" FreeIran-windows-amd64.exe FreeIron-linux-amd64 \
+	rm -rf "$(CORES_DIR)" FreeIran-windows-amd64.exe FreeIran-linux-amd64 \
 		FreeIran-linux-amd64 FreeIran-v*-windows-amd64 FreeIran-v*-linux-amd64
 	make -C native clean
