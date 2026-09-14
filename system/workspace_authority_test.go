@@ -4,18 +4,25 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 )
 
-// TestWorkspacePathAuthoritySingleSource guards the v0.9.4
-// "one workspace authority" architecture at source level: each
-// workspace-path symbol must be declared exactly once across the
-// system package, regardless of build tags. The 0.9.4 regression
-// (obsolete paths_unix.go/paths_windows.go re-declaring
+// TestWorkspacePathAuthoritySingleSource guards the "one workspace
+// authority" architecture at source level: each workspace-path symbol
+// must be declared exactly once, inside workspace.go (the single
+// authoritative implementation), regardless of build tags. The 0.9.4
+// regression (obsolete paths_unix.go/paths_windows.go re-declaring
 // DefaultBaseDir/CacheBaseDir/portableRoot alongside workspace.go and
 // portable.go) broke go vet for every platform; this test fails
 // before any build-tag-specific combination can hide a duplicate.
+//
+// portableRoot is guarded too: its triple declaration (portable.go +
+// paths_unix.go + paths_windows.go) was the FIRST redeclaration in
+// the 0.9.4 vet failure, yet only workspace.go may own it now.
 func TestWorkspacePathAuthoritySingleSource(t *testing.T) {
+	const authorityFile = "workspace.go"
+
 	authorities := []string{
 		"WorkspaceRoot",
 		"WorkspaceLayout",
@@ -23,15 +30,17 @@ func TestWorkspacePathAuthoritySingleSource(t *testing.T) {
 		"WorkspaceWritable",
 		"DefaultBaseDir",
 		"CacheBaseDir",
+		"portableRoot",
 		"PortableMode",
 		"InstalledMode",
 	}
 
-	declRe := regexp.MustCompile(`^func\s+(` + regexp.QuoteMeta(authorities[0]) +
-		`|` + regexp.QuoteMeta(authorities[1]) + `|` + regexp.QuoteMeta(authorities[2]) +
-		`|` + regexp.QuoteMeta(authorities[3]) + `|` + regexp.QuoteMeta(authorities[4]) +
-		`|` + regexp.QuoteMeta(authorities[5]) + `|` + regexp.QuoteMeta(authorities[6]) +
-		`|` + regexp.QuoteMeta(authorities[7]) + `)\(`)
+	alternatives := make([]string, len(authorities))
+	for i, symbol := range authorities {
+		alternatives[i] = regexp.QuoteMeta(symbol)
+	}
+
+	declRe := regexp.MustCompile(`^func\s+(` + strings.Join(alternatives, "|") + `)\(`)
 
 	declared := map[string][]string{}
 
@@ -67,17 +76,33 @@ func TestWorkspacePathAuthoritySingleSource(t *testing.T) {
 		if len(owners) > 1 {
 			t.Errorf("symbol %s declared %d times (%v); exactly one implementation is required",
 				symbol, len(owners), owners)
+			continue
+		}
+
+		if owners[0] != authorityFile {
+			t.Errorf("symbol %s must be declared in %s (the single workspace authority), found in %s",
+				symbol, authorityFile, owners[0])
 		}
 	}
 }
 
-// TestDefaultBaseDirIsWorkspaceRoot pins the v0.9.3 path authority:
-// DefaultBaseDir and CacheBaseDir are thin aliases of WorkspaceRoot.
-// The v0.9.2 regression (old paths_unix.go/paths_windows.go
-// resolvers re-declared the same names with per-user XDG/APPDATA
-// fallbacks) cannot return: duplicate declarations fail the build,
-// and this test fails any resurrection of hidden split roots.
+// TestDefaultBaseDirIsWorkspaceRoot pins the path authority:
+// DefaultBaseDir and CacheBaseDir are thin aliases of WorkspaceRoot —
+// even under the exact environment variables the removed pre-0.9.2
+// duplicate implementations (XDG_DATA_HOME, XDG_CACHE_HOME, APPDATA,
+// LOCALAPPDATA) consulted to build split per-user roots. The 0.9.4
+// regression (old paths_unix.go/paths_windows.go resolvers
+// re-declaring the same names) cannot return: duplicate declarations
+// fail the build, and this test fails any behavioral resurrection of
+// hidden split roots.
 func TestDefaultBaseDirIsWorkspaceRoot(t *testing.T) {
+	split := t.TempDir()
+
+	t.Setenv("XDG_DATA_HOME", filepath.Join(split, "data"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(split, "cache"))
+	t.Setenv("APPDATA", filepath.Join(split, "roaming"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(split, "local"))
+
 	root := WorkspaceRoot()
 
 	if got := DefaultBaseDir(); got != root {
@@ -135,5 +160,43 @@ func TestPortableModeLabelsDeploymentStyle(t *testing.T) {
 				t.Fatalf("PortableMode() = true without a deployment layout at %s", dir)
 			}
 		}
+	}
+}
+
+// TestPortableModeDetectsMarkerLayout proves the portable-layout
+// detector end to end: dropping a portable.marker into the test
+// binary's directory flips PortableMode to true (and removing it
+// restores false) without changing the workspace root — the marker is
+// a label, never a path authority.
+func TestPortableModeDetectsMarkerLayout(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Skipf("os.Executable unavailable: %v", err)
+	}
+
+	dir := filepath.Dir(exe)
+
+	t.Setenv("FREEIRAN_HOME", "")
+
+	marker := filepath.Join(dir, "portable.marker")
+
+	if err := os.WriteFile(marker, []byte("test\n"), 0o600); err != nil {
+		t.Skipf("test binary directory not writable: %v", err)
+	}
+
+	t.Cleanup(func() {
+		_ = os.Remove(marker)
+	})
+
+	if !PortableMode() {
+		t.Fatal("PortableMode() = false with portable.marker present")
+	}
+
+	if err := os.Remove(marker); err != nil {
+		t.Fatalf("remove marker: %v", err)
+	}
+
+	if PortableMode() {
+		t.Fatal("PortableMode() = true after removing portable.marker")
 	}
 }
