@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/Parsaetak/FreeIran/engine/cache"
+	"github.com/Parsaetak/FreeIran/engine/cleanup"
 	"github.com/Parsaetak/FreeIran/engine/config"
 	"github.com/Parsaetak/FreeIran/engine/connection"
 	"github.com/Parsaetak/FreeIran/engine/core"
@@ -128,8 +129,14 @@ type App struct {
 
 	// memory is the unified adaptive memory controller (Memory
 	// Booster 2.0): pressure sampling + adaptive settings for the
-	// queue, caches and ingestion knobs.
+	// queue, caches, store thresholds and ingestion knobs.
 	memory *MemoryService
+
+	// cleanups is the central cleanup coordinator (v0.9.2): one
+	// place decides when reconstructable/replaceable data is
+	// reclaimed, driven by memory pressure and the opportunistic
+	// maintenance interval.
+	cleanups *cleanup.Manager
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -168,17 +175,36 @@ type AppState struct {
 // New boots the application to the READY state. Heavy verification
 // and cache warming continue after Start.
 func New(opts Options) (*App, error) {
-	if opts.BaseDir == "" {
-		opts.BaseDir = system.DefaultBaseDir()
+	// v0.9.2 workspace model: an explicitly provided BaseDir (tests,
+	// smoke test) is used as-is; otherwise the single Workspace Root
+	// (default: the executable's directory, override: FREEIRAN_HOME)
+	// is authoritative and the one-time legacy-location migration
+	// runs before anything opens the store.
+	defaultedWorkspace := opts.BaseDir == ""
+
+	if defaultedWorkspace {
+		opts.BaseDir = system.WorkspaceRoot()
 	}
 
 	if opts.RefreshInterval <= 0 {
 		opts.RefreshInterval = time.Hour
 	}
 
-	layout, err := system.EnsureLayout(opts.BaseDir)
-	if err != nil {
-		return nil, err
+	var (
+		layout system.DirNames
+		err    error
+	)
+
+	if defaultedWorkspace {
+		layout, err = system.EnsureWorkspace()
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		layout, err = system.EnsureLayout(opts.BaseDir)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Persistent runtime log: opened BEFORE the store so storage and
@@ -198,6 +224,35 @@ func New(opts Options) (*App, error) {
 	logging.SetGlobal(logger)
 	logger.Info("app", "application_start",
 		"FreeIran %s starting (base %s)", version.String(), opts.BaseDir)
+
+	// v0.9.2 one-time legacy migration: when the defaulted workspace
+	// is fresh, discover pre-0.9.2 per-user data and copy it in
+	// (verified, source preserved, status recorded). Explicit base
+	// directories (tests, smoke) never migrate.
+	if defaultedWorkspace {
+		report, err := system.EnsureWorkspaceMigrated(func(format string, args ...any) {
+			logger.Info("workspace", "migration", format, args...)
+		})
+		if err != nil {
+			logger.Error("workspace", "migration_error", "migrate", "environment",
+				"legacy workspace migration failed: %v", err)
+
+			_ = logger.Close()
+
+			return nil, fmt.Errorf("app: workspace migration: %w", err)
+		}
+
+		if report.Performed {
+			logger.Info("workspace", "migration_complete",
+				"legacy data migrated from %s (%d files verified)",
+				report.Source, report.Files)
+		}
+	}
+
+	// v0.9.2: per-launch runtime-config directories (and the core
+	// manager's validation/smoke folders) live under
+	// <workspace>/runtime instead of the system temp root.
+	core.SetRuntimeRoot(layout.Runtime)
 
 	st, err := store.Open(store.Options{
 		Path: layout.Data,
@@ -227,8 +282,9 @@ func New(opts Options) (*App, error) {
 	// (the v0.8 integration gap). The manager is cheap to create:
 	// it reads three small manifest files.
 	manager, err := coremgr.New(coremgr.Options{
-		RootDir: layout.Cores,
-		Logger:  logger,
+		RootDir:    layout.Cores,
+		RuntimeDir: layout.Runtime,
+		Logger:     logger,
 	})
 	if err != nil {
 		logger.Error("coremgr", "coremgr_error", "init", "environment",
@@ -327,6 +383,10 @@ func New(opts Options) (*App, error) {
 	// sampling goroutine.
 	app.memory = newMemoryService(app)
 
+	// v0.9.2 central cleanup coordinator: registers the bounded
+	// reclamation tasks and starts with the app's lifecycle.
+	app.registerCleanupTasks()
+
 	if !opts.SkipDefaultSources {
 		app.sources = source.DefaultSources()
 	}
@@ -371,6 +431,9 @@ func (a *App) Start() {
 	}, a.runIngestionCycle)
 
 	a.scheduler.Start(a.ctx)
+
+	// v0.9.2: opportunistic cleanup cadence (bounded, cancellable).
+	go a.cleanupLoop()
 
 	// Core availability refresh is background work: the registry
 	// stays usable (selection fails gracefully) while discovery is

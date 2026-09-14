@@ -49,11 +49,12 @@ func main() {
 
 	slog.Info("FreeIran starting", "version", version.String())
 
-	// Open the persistent runtime log first: every later failure
-	// (boot, store, migration, core) is captured with full context.
-	// Mirroring to stderr keeps development runs observable too.
+	// v0.9.2 workspace model: one root (the executable's directory,
+	// override FREEIRAN_HOME) holds config, data, cache, logs, cores
+	// and runtime state. The persistent runtime log is opened first
+	// so boot failures are captured; it is closed last.
 	logger, err := logging.Open(logging.Options{
-		Dir:          system.Layout(system.DefaultBaseDir()).Logs,
+		Dir:          system.WorkspaceLayout().Logs,
 		Name:         "freeiran.log",
 		MirrorStderr: true,
 	})
@@ -67,12 +68,14 @@ func main() {
 
 	if logger != nil {
 		logger.Info("app", "application_start",
-			"FreeIran %s starting", version.String())
+			"FreeIran %s starting (workspace %s)", version.String(), system.WorkspaceRoot())
 	}
 
+	// BaseDir is intentionally NOT set: app.New resolves the single
+	// Workspace Root itself and runs the one-time legacy migration
+	// when the workspace is fresh.
 	applicationInstance, err := app.New(app.Options{
-		BaseDir: system.DefaultBaseDir(),
-		Logger:  logger,
+		Logger: logger,
 	})
 	if err != nil {
 		if logger != nil {
@@ -81,7 +84,10 @@ func main() {
 			_ = logger.Close()
 		}
 
-		log.Fatalf("boot failed: %v", err)
+		// v0.9.2: a GUI-subsystem executable has no console, so a
+		// plain log.Fatalf would die silently for the user. Surface
+		// the failure natively and leave a readable artifact.
+		reportBootFailure(err)
 	}
 
 	applicationInstance.Start()
@@ -159,6 +165,34 @@ func main() {
 
 		log.Fatalf("run failed: %v", err)
 	}
+}
+
+// reportBootFailure surfaces a fatal boot error to a GUI user: a
+// native (console-free) message dialog plus a boot-error file next to
+// the executable — or the system temp directory when the workspace is
+// read-only — because a windowsgui binary has no console to print to.
+func reportBootFailure(err error) {
+	message := fmt.Sprintf("FreeIran failed to start:\n\n%v", err)
+
+	fix := "\n\nPossible fixes:\n" +
+		"  • Move FreeIran to a folder that is writable\n" +
+		"  • Or set the FREEIRAN_HOME environment variable to a writable path"
+
+	target := filepath.Join(system.WorkspaceRoot(), "boot-error.txt")
+
+	if writeErr := os.WriteFile(target, []byte(message+fix+"\n"), 0o600); writeErr != nil {
+		fallback := filepath.Join(os.TempDir(), "freeiran-boot-error.txt")
+		_ = os.WriteFile(fallback, []byte(message+fix+"\n"), 0o600)
+	}
+
+	wailsApp := application.New(application.Options{Name: "FreeIran"})
+
+	dialog := wailsApp.Dialog.Error()
+	dialog.SetTitle("FreeIran cannot start")
+	dialog.SetMessage(message + fix)
+	dialog.Show()
+
+	log.Fatalf("boot failed: %v", err)
 }
 
 // smokeTest exercises the headless application lifecycle:

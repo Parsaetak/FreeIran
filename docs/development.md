@@ -135,11 +135,15 @@ make -C native test
 ## Desktop builds
 
 Windows amd64 is the primary target (the Wails Windows backend needs no
-cgo):
+cgo). `-H=windowsgui` is MANDATORY for any binary a user will run: it
+selects the WINDOWS_GUI PE subsystem, so double-clicking the executable
+never opens a console window. CI and the release workflow assert the
+subsystem of the built binary (`TestWindowsGUISubsystem` reads the PE
+header of the artifact):
 
 ```bash
 GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build \
-  -trimpath -ldflags "-s -w \
+  -trimpath -ldflags "-s -w -H=windowsgui \
   -X github.com/Parsaetak/FreeIran/internal/version.Version=$(cat VERSION | tr -d '[:space:]')" \
   -o FreeIran-windows-amd64.exe ./cmd/freeiran
 ```

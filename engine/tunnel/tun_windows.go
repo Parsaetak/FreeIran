@@ -14,6 +14,7 @@ import (
 	"unsafe"
 
 	firerrors "github.com/Parsaetak/FreeIran/engine/errors"
+	"github.com/Parsaetak/FreeIran/system"
 )
 
 // wintunBackend implements TUNBackend using the official Wintun
@@ -301,7 +302,7 @@ func (b *wintunBackend) loadFrom(path string) error {
 
 // isElevated reports whether the current process has administrator
 // privileges. On Windows this checks the process token for the
-// DOMAIN_ALIAS_RID_ADMETERS group.
+// DOMAIN_ALIAS_RID_ADMINS group.
 func isElevated() bool {
 	// Simple shell-execute check: try to access a privileged
 	// resource. This is a placeholder; production code should use
@@ -309,18 +310,27 @@ func isElevated() bool {
 	if runtime.GOOS != "windows" {
 		return false
 	}
+	// `net` is a console-subsystem binary: without CREATE_NO_WINDOW
+	// this check flashes a visible console window on every TUN
+	// attempt. Hidden-window flags are mandatory on every launch.
 	cmd := exec.Command("net", "session")
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: 0x08000000, // CREATE_NO_WINDOW
+	}
 	return cmd.Run() == nil
 }
 
 // wintunInstallDir returns the directory where FreeIran stores the
-// Wintun DLL: <AppData>/FreeIran/cores/wintun/.
+// Wintun DLL: <workspace>/cores/wintun/ (v0.9.2: the single workspace
+// root replaces the old %APPDATA%\FreeIran split, so the DLL lives
+// beside the rest of the managed cores in portable deployments too).
 func wintunInstallDir() (string, error) {
-	appData := osGetEnv("APPDATA")
-	if appData == "" {
-		return "", fmt.Errorf("APPDATA not set")
+	dir := system.Layout(system.WorkspaceRoot()).Cores
+	if dir == "" {
+		return "", fmt.Errorf("workspace root not resolvable")
 	}
-	return filepath.Join(appData, "FreeIran", "cores", "wintun"), nil
+	return filepath.Join(dir, "wintun"), nil
 }
 
 // downloadAndExtractWintun downloads the official wintun release ZIP

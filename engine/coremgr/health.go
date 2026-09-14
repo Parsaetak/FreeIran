@@ -50,7 +50,7 @@ func (m *Manager) validateExecutable(ctx context.Context, name CoreName, path st
 		return fmt.Errorf("generate minimal config: %w", err)
 	}
 
-	tmpDir, err := os.MkdirTemp("", "coremgr-validate-*")
+	tmpDir, err := os.MkdirTemp(m.tempRoot(), "coremgr-validate-*")
 	if err != nil {
 		return err
 	}
@@ -120,7 +120,7 @@ func (m *Manager) smokeTest(ctx context.Context, name CoreName, path string, src
 		return result
 	}
 
-	tmpDir, err := os.MkdirTemp("", "coremgr-smoke-*")
+	tmpDir, err := os.MkdirTemp(m.tempRoot(), "coremgr-smoke-*")
 	if err != nil {
 		result.Details = fmt.Sprintf("tempdir: %v", err)
 		return result

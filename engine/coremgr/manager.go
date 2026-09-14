@@ -160,6 +160,7 @@ type UpdateInfo struct {
 // Manager owns the lifecycle of every managed protocol core.
 type Manager struct {
 	rootDir    string
+	runtimeDir string
 	sources    map[CoreName]Source
 	httpClient HTTPDoer
 	logger     *logging.Logger
@@ -184,7 +185,14 @@ func DefaultPlatform() Platform {
 
 // Options configures the Manager.
 type Options struct {
-	RootDir    string
+	RootDir string
+
+	// RuntimeDir is the workspace runtime directory (v0.9.2). Short-
+	// lived validation/smoke directories are created here instead of
+	// the system temp root, so no FreeIran state is ever split across
+	// %TEMP% / XDG tmp. Empty = fall back to the system temp root.
+	RuntimeDir string
+
 	Sources    map[CoreName]Source
 	HTTPClient HTTPDoer
 	Logger     *logging.Logger
@@ -231,6 +239,7 @@ func New(opts Options) (*Manager, error) {
 
 	m := &Manager{
 		rootDir:    opts.RootDir,
+		runtimeDir: opts.RuntimeDir,
 		sources:    sources,
 		httpClient: opts.HTTPClient,
 		logger:     opts.Logger,
@@ -261,7 +270,12 @@ func New(opts Options) (*Manager, error) {
 		// Tests may run without a global logger set. Use a no-op
 		// logger so the manager's lifecycle events are not lost in
 		// production but tests do not panic.
-		m.logger, _ = logging.Open(logging.Options{Dir: os.TempDir(), Name: "coremgr-test.log"})
+		dir := opts.RuntimeDir
+		if dir == "" {
+			dir = os.TempDir()
+		}
+
+		m.logger, _ = logging.Open(logging.Options{Dir: dir, Name: "coremgr-test.log"})
 	}
 
 	m.logger.Info(Subsystem, "manager_init",
@@ -273,6 +287,25 @@ func New(opts Options) (*Manager, error) {
 
 // RootDir returns the managed cores root directory.
 func (m *Manager) RootDir() string { return m.rootDir }
+
+// RuntimeDir returns the directory used for short-lived helper
+// directories (workspace runtime when configured, system temp
+// otherwise).
+func (m *Manager) RuntimeDir() string { return m.tempRoot() }
+
+// tempRoot resolves the runtime directory for temporary helper
+// folders, creating it when it is workspace-provided.
+func (m *Manager) tempRoot() string {
+	if m.runtimeDir == "" {
+		return os.TempDir()
+	}
+
+	if err := os.MkdirAll(m.runtimeDir, 0o700); err != nil {
+		return os.TempDir()
+	}
+
+	return m.runtimeDir
+}
 
 // CoreDir returns the per-core directory.
 func (m *Manager) CoreDir(name CoreName) string {
@@ -287,6 +320,89 @@ func (m *Manager) BinDir(name CoreName) string {
 // StagingDir returns the per-core staging directory.
 func (m *Manager) StagingDir(name CoreName) string {
 	return filepath.Join(m.CoreDir(name), "staging")
+}
+
+// CleanStaleStaging removes stale core-install staging trees and
+// abandoned failed-download artifacts older than maxAge. Staging is
+// reconstructable by definition: a live install re-creates it, and a
+// successful install never leaves content behind. Old rollback
+// binaries, manifests and bin/ executables are NEVER touched (they
+// are live core metadata). The walk is bounded to the per-core
+// staging directories plus top-level download leftovers, so the scan
+// stays cheap. Returns the bytes reclaimed.
+func (m *Manager) CleanStaleStaging(ctx context.Context, maxAge time.Duration) (int64, error) {
+	if maxAge <= 0 {
+		maxAge = 7 * 24 * time.Hour
+	}
+
+	var reclaimed int64
+
+	for _, name := range AllCores {
+		if err := ctx.Err(); err != nil {
+			return reclaimed, err
+		}
+
+		staging := m.StagingDir(name)
+
+		entries, err := os.ReadDir(staging)
+		if err != nil {
+			continue // no staging tree for this core
+		}
+
+		for _, entry := range entries {
+			if err := ctx.Err(); err != nil {
+				return reclaimed, err
+			}
+
+			path := filepath.Join(staging, entry.Name())
+
+			info, err := entry.Info()
+			if err != nil {
+				continue
+			}
+
+			if time.Since(info.ModTime()) < maxAge {
+				continue
+			}
+
+			size := dirSize(path)
+
+			if err := os.RemoveAll(path); err == nil {
+				reclaimed += size
+			}
+		}
+
+		// Also drop the staging directory itself when empty and old.
+		if info, err := os.Stat(staging); err == nil &&
+			time.Since(info.ModTime()) >= maxAge {
+			entries, err := os.ReadDir(staging)
+			if err == nil && len(entries) == 0 {
+				_ = os.Remove(staging)
+			}
+		}
+	}
+
+	return reclaimed, nil
+}
+
+// dirSize sums the file sizes under path (bounded walk used for
+// reclaimed-bytes accounting).
+func dirSize(path string) int64 {
+	var total int64
+
+	_ = filepath.WalkDir(path, func(_ string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+
+		if info, err := entry.Info(); err == nil && entry.Type().IsRegular() {
+			total += info.Size()
+		}
+
+		return nil
+	})
+
+	return total
 }
 
 // ManifestPath returns the per-core manifest file path.

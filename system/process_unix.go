@@ -23,6 +23,14 @@ func platformNote() string {
 	return runtime.GOOS + "/" + runtime.GOARCH
 }
 
+// concealChild is the non-Windows counterpart of the hidden-console
+// helper: there is no console-window concept to suppress, so it is a
+// deliberate no-op (the symbol exists so call sites stay
+// platform-neutral).
+func concealChild(cmd *exec.Cmd) {
+	_ = cmd
+}
+
 // launchProcess starts a managed process with stdout/stderr captured.
 // The child runs in its own process group (setpgid) so a forced group
 // kill cannot leak grandchildren: everything the core spawns inherits

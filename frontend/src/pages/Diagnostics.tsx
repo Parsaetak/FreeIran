@@ -36,6 +36,7 @@ import type {
   MetricsSnapshot,
   QueueStatsView,
   StorageDiagnostics,
+  StorageOverviewView,
   SystemInfo,
   VerifyResult,
 } from "../services";
@@ -399,10 +400,11 @@ function MaintenanceCards() {
   const [verifyResult, setVerifyResult] = useState<VerifyResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [legacyPath, setLegacyPath] = useState("");
+  const [overview, setOverview] = useState<StorageOverviewView | null>(null);
 
   const reload = useCallback(async () => {
     try {
-      const [caches, snap, diag, info, coreList, mem, queueStats] = await Promise.all([
+      const [caches, snap, diag, info, coreList, mem, queueStats, storageOverview] = await Promise.all([
         call(() => appService.CacheStats()),
         call(() => diagnosticsService.Metrics()),
         call(() => diagnosticsService.StoreDiagnostics()),
@@ -410,6 +412,7 @@ function MaintenanceCards() {
         call(() => diagnosticsService.Cores()),
         call(() => diagnosticsService.Memory()),
         call(() => testQueueService.Stats()).catch(() => null),
+        call(() => storageService.Overview()).catch(() => null),
       ]);
 
       setCacheStats(caches);
@@ -419,6 +422,7 @@ function MaintenanceCards() {
       setCores(coreList);
       setMemory(mem as MemorySnapshotView | null);
       setQueue(queueStats as QueueStatsView | null);
+      setOverview(storageOverview as StorageOverviewView | null);
     } catch (error) {
       toast("error", "Diagnostics unavailable", describeError(error));
     }
@@ -496,6 +500,55 @@ function MaintenanceCards() {
       toast("success", "Caches cleared");
     } catch (error) {
       toast("error", "Could not clear caches", describeError(error));
+    }
+  };
+
+  // v0.9.2: immediate safe cleanup + workspace/file-manager actions.
+  const runCleanupNow = async () => {
+    setBusy(true);
+
+    try {
+      const result = await call(() => storageService.CleanupNow());
+
+      if (result.rate_limited) {
+        toast("info", "Cleanup skipped", "A cleanup pass just ran — try again in a minute.");
+      } else {
+        toast(
+          "success",
+          "Cleanup finished",
+          `Reclaimed ${formatBytes(Number(result.bytes))} in ${formatNumber(Number(result.duration_ms))} ms.`,
+        );
+      }
+
+      await reload();
+    } catch (error) {
+      toast("error", "Cleanup failed", describeError(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const openWorkspace = async () => {
+    try {
+      await call(() => storageService.OpenWorkspace());
+    } catch (error) {
+      toast("error", "Could not open workspace", describeError(error));
+    }
+  };
+
+  const openDataDir = async () => {
+    try {
+      await call(() => storageService.OpenDataDir());
+    } catch (error) {
+      toast("error", "Could not open data directory", describeError(error));
+    }
+  };
+
+  const openLogsDir = async () => {
+    try {
+      await call(() => logService.OpenLogsDir());
+    } catch (error) {
+      toast("error", "Could not open logs directory", describeError(error));
     }
   };
 
@@ -642,6 +695,82 @@ function MaintenanceCards() {
           </div>
         </div>
       )}
+
+      {/* v0.9.2: workspace & storage overview (user-visible storage/memory info). */}
+      <div className="card">
+        <div className="card-header">
+          <h3 className="card-title">Storage &amp; workspace</h3>
+          <div className="toolbar">
+            {overview && (
+              <span className={`badge ${overview.pressure_state === "normal" ? "success" : "warn"}`}>
+                memory: {overview.pressure_state}
+              </span>
+            )}
+            {!overview?.workspace_writable && overview && (
+              <span className="badge error">workspace read-only</span>
+            )}
+          </div>
+        </div>
+
+        {overview ? (
+          <>
+            <div className="stat-grid">
+              <StatTile label="Data" value={formatBytes(overview.data_bytes)} />
+              <StatTile label="Chunks" value={formatBytes(overview.chunk_bytes)} />
+              <StatTile label="WAL" value={formatBytes(overview.wal_bytes)} />
+              <StatTile label="Cache" value={formatBytes(overview.cache_bytes)} />
+              <StatTile label="Logs" value={formatBytes(overview.logs_bytes)} />
+              <StatTile label="Cores" value={formatBytes(overview.core_bytes)} />
+              <StatTile label="Runtime" value={formatBytes(overview.runtime_bytes)} />
+              <StatTile label="Total (excl. data)" value={formatBytes(overview.total_bytes)} />
+              <StatTile label="Heap" value={formatBytes(Number(overview.heap_alloc_bytes))} />
+              <StatTile label="RSS" value={formatBytes(Number(overview.rss_bytes))} />
+              <StatTile
+                label="Last cleanup"
+                value={overview.last_cleanup_at ? formatBytes(overview.last_cleanup_bytes) : "—"}
+                sub={overview.last_cleanup_at ? new Date(overview.last_cleanup_at).toLocaleString() : "no pass yet"}
+              />
+              <StatTile
+                label="Reclaimed (total)"
+                value={formatBytes(overview.total_reclaimed_bytes)}
+                sub={`${formatNumber(overview.cleanup_passes)} passes`}
+              />
+            </div>
+
+            {overview.migration?.migrated && (
+              <p className="muted mt-4">
+                Migrated {formatNumber(overview.migration.files ?? 0)} files from the previous
+                installation location; the original folder was left untouched.
+              </p>
+            )}
+
+            <div className="toolbar">
+              <button type="button" className="btn" disabled={busy} onClick={() => void runCleanupNow()}>
+                Cleanup now
+              </button>
+              <button type="button" className="btn ghost" disabled={busy} onClick={() => void reload()}>
+                Refresh
+              </button>
+              <button type="button" className="btn ghost" onClick={() => void openWorkspace()}>
+                Open workspace
+              </button>
+              <button type="button" className="btn ghost" onClick={() => void openDataDir()}>
+                Open data
+              </button>
+              <button type="button" className="btn ghost" onClick={() => void openLogsDir()}>
+                Open logs
+              </button>
+            </div>
+
+            <p className="muted mono mt-4">{overview.workspace_path}</p>
+          </>
+        ) : (
+          <EmptyState
+            title="Workspace overview unavailable"
+            hint="Refresh to load the storage and memory summary."
+          />
+        )}
+      </div>
 
       {storeDiag && (
         <div className="card">

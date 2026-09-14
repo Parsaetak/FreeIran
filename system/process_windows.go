@@ -62,6 +62,19 @@ var (
 	procTerminateProcess     = kernel32.NewProc("TerminateProcess")
 )
 
+// concealChild applies the hidden-console SysProcAttr to an unmanaged
+// child command (version probes, capability checks — anything that
+// does NOT go through the managed launchProcess path). Every child
+// process FreeIran creates on Windows must use this or launchProcess:
+// a console-subsystem child without CREATE_NO_WINDOW flashes a visible
+// CMD window to the user.
+func concealChild(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: createNoWindow | createNewProcessGroup,
+	}
+}
+
 // launchProcess starts a managed process with stdout/stderr captured
 // WITHOUT opening a visible CMD/console window, then guarantees the
 // supervision invariant — a protocol core must never outlive FreeIran

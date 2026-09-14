@@ -9,7 +9,7 @@ configurations.
 **Project:** FreeIran
 **Architect:** Parsa Tak / SHEYTAN
 **Repository:** https://github.com/Parsaetak/FreeIran
-**Current version:** 0.9.1 (see `VERSION`)
+**Current version:** 0.9.2 (see `VERSION`)
 **Status:** production architecture — multi-core protocol runtime with
 managed installation, test queue, system proxy and TUN mode, unified
 adaptive memory control and kernel-level process supervision

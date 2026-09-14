@@ -2514,3 +2514,125 @@ hand-extended (`models.js` Settings fields; `DeveloperInfo`,
   ubuntu-latest with the headers installed.
 - Hand-extended bindings follow the project's `$Call.ByName`
   post-generator pattern; rerunning wails3 generate will fold them in.
+
+## Engineering Worklog — v0.9.2 (2026-09-14)
+
+**Objective:** workspace ownership → storage efficiency → safe data cleanup →
+memory lifecycle → background-process correctness → UI polish → verification.
+Root causes fixed on top of the existing architecture (no rewrites).
+
+### 1. Unified Workspace Root (P0)
+
+- `system/workspace.go` (new): `WorkspaceRoot()` (memoized;
+  `FREEIRAN_HOME` override → executable directory), `WorkspaceLayout()`,
+  `EnsureWorkspace()` (mkdir + writable probe), `WorkspaceWritable()`,
+  `WorkspaceSkipsMigration()`. Read-only workspace ⇒ boot fails with an
+  actionable error (native dialog + `boot-error.txt`), never silent.
+- `system/paths_windows.go` / `paths_unix.go` deleted: the split
+  `%APPDATA%` / `%LOCALAPPDATA%` / XDG roots are gone.
+  `DefaultBaseDir()` / `CacheBaseDir()` now both resolve to the workspace
+  root. `portableRoot()` survives only as a deployment-style label.
+- `system.DirNames` gains `Runtime` (`<root>/runtime`); `Layout` /
+  `EnsureLayout` create it.
+
+### 2. Every persistent path derives from the root (P0)
+
+- `engine/app/app.go`: defaulted boot resolves the workspace, runs the
+  one-time migration, then opens the store. `core.SetRuntimeRoot(layout.Runtime)`.
+- `engine/core/runtime_root.go` (new): per-launch runtime-config
+  directories now live under `<workspace>/runtime` (`NewRunConfig`),
+  with `RemoveStaleRunConfigs` (age-bounded sweeper).
+- `engine/coremgr`: `Options.RuntimeDir` — validation/smoke temp dirs
+  moved out of the system temp root; fallback logger writes to the
+  workspace runtime.
+- `engine/tunnel/tun_windows.go`: `wintunInstallDir()` uses
+  `<workspace>/cores/wintun` (was hard-coded `%APPDATA%\FreeIran`).
+- Audit result: no persistent state outside the root remains.
+
+### 3. One-time legacy migration (P1)
+
+- `system/workspace_migrate.go` (new): `LegacyLocations`,
+  `DetectLegacyWorkspace`, `MigrateLegacyWorkspace` (copy config/data/
+  cores/cache, byte-count verify, status recorded in
+  `config/workspace.json`, source preserved), `EnsureWorkspaceMigrated`
+  (boot gate: runs once on a fresh workspace; `FREEIRAN_SKIP_MIGRATION`
+  disables; never duplicates the dataset).
+
+### 4. Adaptive storage + safe cleanup entry points (P0)
+
+- `engine/store/pressure.go` (new): `PressureLevel`, `ApplyPressure`
+  (freeze thresholds 4096/8MiB → 1024/2MiB with hard floors 512 rec /
+  512 KiB — no fragmentation), `SetChunkTargetBytes` (clamped; finally
+  wires the booster's `ChunkFlushBytes`), `ForceFreeze`,
+  `CheckpointWAL` (removes only checkpoint-covered segments),
+  `RemoveTempArtifacts` (stale atomic-write temps, bounded),
+  `CompactIfWorthwhile` (garbage-ratio gate), `RebuildIndex`,
+  `CloseIdleHandles`.
+- `chunkHandleCache.CloseIdle`: unpinned handles reclaimed under
+  pressure, reopened transparently.
+- Booster `OnChange` now applies `ChunkFlushBytes` to the store.
+
+### 5. Central CleanupManager (P0)
+
+- `engine/cleanup` (new package): bounded, cancellable, serialized,
+  rate-limited passes reporting per-task reclaimed bytes.
+- `engine/app/cleanupservice.go` (new): tasks `runtime`, `store-tmp`,
+  `wal`, `chunks` (35 % garbage gate), `staging`
+  (`coremgr.CleanStaleStaging`, age-bounded). 15-minute opportunistic
+  cadence + pressure-triggered runs. Lifecycle classes documented in
+  the file header: permanent data is NEVER a target.
+- `engine/app/memoryservice.go`: pressure transitions now control the
+  full lifecycle (Elevated → smaller batches + cleanup; High → cache
+  clear + aggressive flush + cleanup; Critical → release caches +
+  idle handles + GC). Logging: transitions only, with reason
+  (heap/cache/queue %) and actions — never per sampling tick.
+
+### 6. Console audit (P0)
+
+- `system` gains `concealChild` (Windows: `HideWindow` +
+  `CREATE_NO_WINDOW` + `CREATE_NEW_PROCESS_GROUP`; no-op elsewhere);
+  applied to `queryCoreVersion` (was the last unprotected launch path)
+  and `OpenDirectory`. `tun_windows.isElevated` (`net session`) now
+  hides its console. `engine/core/contract` smoke launches hide too.
+- `cmd/freeiran/gui_check_windows_test.go` (new):
+  `TestWindowsGUISubsystem` parses the PE header of the built exe and
+  fails on console-subsystem artifacts (env-gated:
+  `FREEIRAN_GUI_EXE`). Wired into CI and release workflows.
+- `ci.yml`: dev builds now `-H=windowsgui` + subsystem check;
+  `release.yml`: subsystem check added after resource verification.
+- `reportBootFailure` (main.go): fatal boot errors surface as a native
+  dialog — no console needed.
+
+### 7. Diagnostics / developer controls / UI (P1)
+
+- `StorageService.Overview()` (new binding): workspace path +
+  writability, per-subsystem sizes (entry-bounded walks), store
+  counters, heap/RSS/pressure state, adaptive store limits, cleanup
+  state + migration status. `CleanupNow`, `RemoveStaleRuntime`,
+  `RebuildIndex`, `WorkspacePath`, `OpenWorkspace` added.
+- `DeveloperInfoView` extended (runtime dir, workspace writability,
+  migration status).
+- Frontend: Diagnostics gains the "Storage & workspace" card (sizes,
+  pressure badge, Cleanup now / Refresh / Open workspace / data / logs);
+  Settings → Developer gains Workspace cleanup, stale-runtime removal,
+  Rebuild index (confirm dialog — the only action that rewrites derived
+  state) and Open workspace. Bindings added via `Call.ByName`
+  (same pattern as v0.9.1 additions). tsc + vite + vitest green.
+
+### 8. Version / docs / CI
+
+- VERSION, `internal/version`, `build/winres.json`, frontend
+  `package.json` → 0.9.2; `.syso` resources regenerated with go-winres.
+- `docs/workspace.md` (new): workspace model, migration, lifecycle,
+  pressure table. `docs/development.md`: `-H=windowsgui` documented as
+  mandatory + subsystem regression check.
+
+### Verification performed
+
+- `gofmt -l` clean; `go vet ./...` (windows target, covers all build
+  tags) clean; `go test -count=1 ./engine/... ./system/... ./internal/...` all green.
+- `go test -race` green for store / cleanup / app / system / core.
+- Store benchmarks re-run (upsert/flush/get/compact/iterate/reopen).
+- Windows amd64 + 386 cross-builds green; final `-H=windowsgui` binary
+  verified: PE subsystem = 2 (WINDOWS_GUI); `.syso` resources linked.
+- Frontend: `npm run build` (tsc + vite) green; 31/31 vitest tests.

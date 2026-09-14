@@ -13,6 +13,7 @@ import {
 } from "../services";
 import { describeError, toast } from "../state/toastStore";
 import { EmptyState, TechDetails } from "../components/common";
+import { ConfirmDialog } from "../components/Dialog";
 import { IconFolder } from "../components/Icons";
 
 const BACKEND_OPTIONS = ["xray", "v2ray", "sing-box"] as const;
@@ -76,6 +77,8 @@ export function SettingsPage() {
   const [reportLoading, setReportLoading] = useState(false);
   const [reportCopied, setReportCopied] = useState(false);
   const [cacheCleared, setCacheCleared] = useState(false);
+  const [rebuildConfirm, setRebuildConfirm] = useState(false);
+  const [rebuildBusy, setRebuildBusy] = useState(false);
 
   // Developer info is read-only and cheap: load once, best-effort.
   useEffect(() => {
@@ -156,6 +159,55 @@ export function SettingsPage() {
       await call(() => logService.OpenLogsDir());
     } catch (error) {
       toast("error", "Could not open logs directory", describeError(error));
+    }
+  };
+
+  // v0.9.2 developer maintenance actions (safe vs destructive is kept
+  // explicit: cleanup/runtime removal are safe; index rebuild touches
+  // derived state and therefore asks for confirmation first).
+  const openWorkspace = async () => {
+    try {
+      await call(() => storageService.OpenWorkspace());
+    } catch (error) {
+      toast("error", "Could not open workspace", describeError(error));
+    }
+  };
+
+  const runCleanupNow = async () => {
+    try {
+      const result = await call(() => storageService.CleanupNow());
+
+      if (result.rate_limited) {
+        toast("info", "Cleanup skipped", "A cleanup pass just ran — try again in a minute.");
+      } else {
+        toast("success", "Cleanup finished", `Reclaimed ${result.bytes} bytes.`);
+      }
+    } catch (error) {
+      toast("error", "Cleanup failed", describeError(error));
+    }
+  };
+
+  const removeStaleRuntime = async () => {
+    try {
+      const reclaimed = await call(() => storageService.RemoveStaleRuntime());
+
+      toast("success", "Runtime files removed", `Reclaimed ${Number(reclaimed)} bytes.`);
+    } catch (error) {
+      toast("error", "Could not remove runtime files", describeError(error));
+    }
+  };
+
+  const rebuildIndex = async () => {
+    setRebuildBusy(true);
+
+    try {
+      await call(() => storageService.RebuildIndex());
+      toast("success", "Index rebuilt", "The configuration index was rebuilt from chunk files.");
+    } catch (error) {
+      toast("error", "Index rebuild failed", describeError(error));
+    } finally {
+      setRebuildBusy(false);
+      setRebuildConfirm(false);
     }
   };
 
@@ -577,6 +629,36 @@ export function SettingsPage() {
           </button>
         </ActionRow>
 
+        <ActionRow
+          label="Workspace cleanup"
+          hint="Runs the safe cleanup pass: stale runtime files, obsolete WAL segments, dead chunks, old staging. Never touches configurations or settings."
+        >
+          <button type="button" className="btn ghost" onClick={() => void runCleanupNow()}>
+            Cleanup now
+          </button>
+          <button type="button" className="btn ghost" onClick={() => void removeStaleRuntime()}>
+            Remove stale runtime files
+          </button>
+        </ActionRow>
+
+        <ActionRow
+          label="Rebuild configuration index"
+          hint="Rebuilds the derived index from the immutable chunk files. Stored data is not modified; the store briefly pauses reads while the index is rewritten."
+        >
+          <button type="button" className="btn" disabled={rebuildBusy} onClick={() => setRebuildConfirm(true)}>
+            {rebuildBusy ? "Rebuilding…" : "Rebuild index"}
+          </button>
+        </ActionRow>
+
+        <ActionRow
+          label="Workspace folder"
+          hint="Shows the workspace path (also listed below) and opens it in the system file manager. Every subsystem — config, data, cache, logs, cores, runtime — lives under this single root."
+        >
+          <button type="button" className="btn ghost" onClick={() => void openWorkspace()}>
+            <IconFolder aria-hidden /> Open workspace
+          </button>
+        </ActionRow>
+
         {devInfo && (
           <dl className="detail-grid dev-info">
             <dt>Version</dt>
@@ -594,10 +676,26 @@ export function SettingsPage() {
               depth {devInfo.queue_depth} · active {devInfo.active_workers} · enqueued{" "}
               {devInfo.total_enqueued} · passed {devInfo.total_passed} · failed {devInfo.total_failed}
             </dd>
+            <dt>Workspace</dt>
+            <dd className="mono-cell">
+              {devInfo.base_dir}
+              {" · "}
+              {devInfo.workspace_writable === false ? "read-only" : "writable"}
+            </dd>
             <dt>Data directory</dt>
             <dd className="mono-cell">{devInfo.data_dir}</dd>
             <dt>Logs directory</dt>
             <dd className="mono-cell">{devInfo.logs_dir}</dd>
+            <dt>Runtime directory</dt>
+            <dd className="mono-cell">{devInfo.runtime_dir || "—"}</dd>
+            {devInfo.migration?.migrated && (
+              <>
+                <dt>Workspace migration</dt>
+                <dd className="mono-cell">
+                  {devInfo.migration.files ?? 0} files from {devInfo.migration.source}
+                </dd>
+              </>
+            )}
           </dl>
         )}
       </SettingsSection>
@@ -612,6 +710,20 @@ export function SettingsPage() {
           <dd>MIT — see LICENSE in the installation directory</dd>
         </dl>
       </SettingsSection>
+
+      {/* v0.9.2: index rebuild is the only maintenance action that
+          rewrites derived state — confirm before running. */}
+      <ConfirmDialog
+        open={rebuildConfirm}
+        title="Rebuild configuration index?"
+        body="The index will be rebuilt from the immutable chunk files. Configurations are not modified. The store pauses briefly while the new index is written."
+        confirmLabel={rebuildBusy ? "Rebuilding…" : "Rebuild"}
+        busy={rebuildBusy}
+        onConfirm={() => void rebuildIndex()}
+        onCancel={() => {
+          if (!rebuildBusy) setRebuildConfirm(false);
+        }}
+      />
     </div>
   );
 }

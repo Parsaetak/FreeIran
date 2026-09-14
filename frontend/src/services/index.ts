@@ -249,7 +249,10 @@ export interface DeveloperInfoView {
   data_dir: string;
   logs_dir: string;
   cores_dir: string;
+  runtime_dir?: string;
   portable_mode: boolean;
+  workspace_writable?: boolean;
+  migration?: WorkspaceStatus;
   native_acceleration: string;
   queue_workers_override: number;
   net_timeout_override_seconds: number;
@@ -258,6 +261,72 @@ export interface DeveloperInfoView {
   total_enqueued: number;
   total_passed: number;
   total_failed: number;
+}
+
+// ---------------------------------------------------------------------------
+// v0.9.2 view types (workspace / storage / cleanup)
+// ---------------------------------------------------------------------------
+
+/** One-time workspace migration record (system.WorkspaceStatus). */
+export interface WorkspaceStatus {
+  version: number;
+  migrated: boolean;
+  source?: string;
+  migrated_at?: string;
+  files?: number;
+  bytes?: number;
+  skipped?: string;
+}
+
+/** One task of the last cleanup pass (app.LastCleanupTask). */
+export interface CleanupTaskView {
+  name: string;
+  bytes: number;
+  items: number;
+  error?: string;
+  status: string;
+}
+
+/** Storage & workspace overview (app.StorageOverview). */
+export interface StorageOverviewView {
+  workspace_path: string;
+  workspace_writable: boolean;
+  portable_mode: boolean;
+  data_bytes: number;
+  chunk_bytes: number;
+  wal_bytes: number;
+  cache_bytes: number;
+  logs_bytes: number;
+  core_bytes: number;
+  runtime_bytes: number;
+  total_bytes: number;
+  records: number;
+  disk_bytes: number;
+  chunk_count: number;
+  garbage_ratio: number;
+  heap_alloc_bytes: number;
+  heap_sys_bytes: number;
+  rss_bytes: number;
+  pressure_state: string;
+  usage_fraction: number;
+  memtable_records: number;
+  memtable_bytes: number;
+  chunk_target_bytes: number;
+  cleanup_passes: number;
+  total_reclaimed_bytes: number;
+  last_cleanup_bytes: number;
+  last_cleanup_at?: string;
+  last_cleanup_tasks?: CleanupTaskView[];
+  migration: WorkspaceStatus;
+}
+
+/** CleanupNow outcome (app.CleanupResult). */
+export interface CleanupResultView {
+  ok: boolean;
+  rate_limited?: boolean;
+  bytes: number;
+  duration_ms: number;
+  tasks?: CleanupTaskView[];
 }
 
 /**

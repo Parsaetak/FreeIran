@@ -78,6 +78,61 @@ export function OpenDataDir() {
     return $Call.ByName("github.com/Parsaetak/FreeIran/engine/app.StorageService.OpenDataDir");
 }
 
+/**
+ * Overview returns the storage & workspace report (sizes per
+ * subsystem, memory picture, cleanup state, migration status).
+ * (v0.9.2 addition — ByName path until the generator is rerun.)
+ * @returns {$CancellablePromise<any>}
+ */
+export function Overview() {
+    return $Call.ByName("github.com/Parsaetak/FreeIran/engine/app.StorageService.Overview");
+}
+
+/**
+ * CleanupNow runs one immediate bounded cleanup pass (safe classes
+ * only). (v0.9.2 addition — ByName path.)
+ * @returns {$CancellablePromise<any>}
+ */
+export function CleanupNow() {
+    return $Call.ByName("github.com/Parsaetak/FreeIran/engine/app.StorageService.CleanupNow");
+}
+
+/**
+ * RemoveStaleRuntime deletes leftover runtime-config directories now.
+ * (v0.9.2 addition — ByName path.)
+ * @returns {$CancellablePromise<BigInt>}
+ */
+export function RemoveStaleRuntime() {
+    return $Call.ByName("github.com/Parsaetak/FreeIran/engine/app.StorageService.RemoveStaleRuntime");
+}
+
+/**
+ * RebuildIndex rebuilds the fingerprint index from chunk files.
+ * (v0.9.2 addition — ByName path.)
+ * @returns {$CancellablePromise<void>}
+ */
+export function RebuildIndex() {
+    return $Call.ByName("github.com/Parsaetak/FreeIran/engine/app.StorageService.RebuildIndex");
+}
+
+/**
+ * WorkspacePath returns the workspace root path.
+ * (v0.9.2 addition — ByName path.)
+ * @returns {$CancellablePromise<string>}
+ */
+export function WorkspacePath() {
+    return $Call.ByName("github.com/Parsaetak/FreeIran/engine/app.StorageService.WorkspacePath");
+}
+
+/**
+ * OpenWorkspace opens the workspace root in the platform file manager.
+ * (v0.9.2 addition — ByName path.)
+ * @returns {$CancellablePromise<void>}
+ */
+export function OpenWorkspace() {
+    return $Call.ByName("github.com/Parsaetak/FreeIran/engine/app.StorageService.OpenWorkspace");
+}
+
 // Private type creation functions
 const $$createType0 = store$0.MigrationResult.createFrom;
 const $$createType1 = store$0.Stats.createFrom;

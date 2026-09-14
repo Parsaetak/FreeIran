@@ -34,6 +34,7 @@ import (
 
 	"github.com/Parsaetak/FreeIran/engine/booster"
 	"github.com/Parsaetak/FreeIran/engine/mempressure"
+	"github.com/Parsaetak/FreeIran/engine/store"
 )
 
 // SampleInterval is the pressure sampling cadence.
@@ -85,6 +86,8 @@ func newMemoryService(a *App) *MemoryService {
 	// ensureQueue consults the service via currentSettings.
 	// v0.9.1: a fixed developer override (DevQueueWorkers) wins over
 	// the adaptive proposal so the override is never silently undone.
+	// v0.9.2: the booster's chunk-flush proposal is finally wired to
+	// the store (clamped by the store into its safe range).
 	boost.OnChange(func(s booster.Settings) {
 		a.initMu.Lock()
 		tq := a.testQueue
@@ -101,37 +104,90 @@ func newMemoryService(a *App) *MemoryService {
 			a.hotCache.SetMaxEntries(s.CacheEntries)
 		}
 
+		if a.store != nil {
+			a.store.SetChunkTargetBytes(s.ChunkFlushBytes)
+		}
+
 		if a.logger != nil {
 			a.logger.Info("app", "memory_adjust",
-				"booster adjusted: workers=%d depth=%d cache=%d batch=%d",
-				concurrency, s.QueueDepth, s.CacheEntries, s.BatchSize)
+				"booster adjusted: workers=%d depth=%d cache=%d batch=%d chunk_target=%d KiB",
+				concurrency, s.QueueDepth, s.CacheEntries, s.BatchSize,
+				s.ChunkFlushBytes>>10)
 		}
 	})
 
-	// Pressure reactions beyond the gradual knobs: hard shedding at
-	// the top of the band, logged so degradation is never silent.
+	// Pressure reactions (v0.9.2): memory pressure now controls the
+	// FULL lifecycle, not just concurrency.
+	//
+	//   Normal    — normal caching/batching; light background cleanup
+	//   Elevated  — smaller store batches, cold-cache eviction, stale
+	//               runtime cleanup
+	//   High      — smaller batches + aggressive flush, compaction of
+	//               eligible data, staging cleanup
+	//   Critical  — release non-essential caches and idle handles,
+	//               smallest safe batches, GC
+	//
+	// Persistent user configuration (config/, sources, settings,
+	// live chunks, core metadata) is NEVER a reclamation target.
+	//
+	// Logging: state transitions only — never every sampling tick.
 	pressure.SetListener(func(old, new mempressure.State, snap mempressure.Snapshot) {
+		level := storePressureLevel(new)
+
+		if a.store != nil {
+			if a.store.ApplyPressure(level) {
+				records, bytes, chunkTarget := a.store.PressureLimits()
+
+				if a.logger != nil {
+					a.logger.Info("app", "memory_action",
+						"store adapted: memtable freeze %d records / %d MiB, chunk target %d KiB",
+						records, bytes>>20, chunkTarget>>10)
+				}
+			}
+		}
+
 		switch new {
+		case mempressure.StateElevated:
+			go a.runCleanupNow(a.ctx)
+
 		case mempressure.StateHigh:
 			if a.hotCache != nil {
 				a.hotCache.Clear()
 			}
+
+			if a.store != nil {
+				a.store.ForceFreeze() // flush pending writes
+			}
+
+			go a.runCleanupNow(a.ctx)
+
 		case mempressure.StateCritical:
 			if a.hotCache != nil {
 				a.hotCache.Clear()
 			}
+
 			if a.sourceCache != nil {
 				a.sourceCache.Clear()
 			}
+
+			if a.store != nil {
+				a.store.ForceFreeze()
+				a.store.CloseIdleHandles()
+			}
+
+			go a.runCleanupNow(a.ctx)
+
 			runtime.GC()
 		}
 
 		if a.logger != nil {
 			a.logger.Warn("app", "memory_pressure",
-				"pressure %s → %s (usage %.2f, heap %d MiB, rss %d MiB, cache %d MiB, queue %d MiB)",
-				old, new, snap.UsageFraction,
-				snap.HeapAlloc>>20, snap.RSS>>20,
-				snap.CacheBytes>>20, snap.QueueBytes>>20)
+				"memory pressure %s → %s | reason: heap %d%% / cache %d%% / queue %d%% (heap %d MiB, cache %d MiB, queue %d MiB)",
+				old, new,
+				percentOf(snap.HeapAlloc, snap.Ceiling.HeapBytes),
+				percentOf(snap.CacheBytes, snap.Ceiling.CacheBytes),
+				percentOf(snap.QueueBytes, snap.Ceiling.QueueBytes),
+				snap.HeapAlloc>>20, snap.CacheBytes>>20, snap.QueueBytes>>20)
 		}
 	})
 
@@ -331,4 +387,30 @@ func clampU64(n int64) uint64 {
 	}
 
 	return uint64(n)
+}
+
+// storePressureLevel maps the mempressure state to the store's
+// pressure levels (the persistence layer stays decoupled from the
+// mempressure library).
+func storePressureLevel(state mempressure.State) store.PressureLevel {
+	switch state {
+	case mempressure.StateElevated:
+		return store.PressureElevated
+	case mempressure.StateHigh:
+		return store.PressureHigh
+	case mempressure.StateCritical:
+		return store.PressureCritical
+	default:
+		return store.PressureNormal
+	}
+}
+
+// percentOf renders used/ceiling as a bounded percentage for the
+// pressure-transition reason line.
+func percentOf(used, ceiling uint64) int64 {
+	if ceiling == 0 {
+		return 0
+	}
+
+	return int64(used * 100 / ceiling)
 }

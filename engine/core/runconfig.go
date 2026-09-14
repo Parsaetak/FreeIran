@@ -28,8 +28,10 @@ type RunConfig struct {
 }
 
 // NewRunConfig creates the temporary runtime directory. When workDir
-// is empty a fresh directory is created under os.TempDir(); otherwise
-// workDir is used directly (tests).
+// is empty a fresh directory is created under the configured runtime
+// root (RuntimeRoot; v0.9.2 the workspace runtime directory, falling
+// back to the system temp root); otherwise workDir is used directly
+// (tests).
 func NewRunConfig(workDir, backendName string) (*RunConfig, error) {
 	dir := workDir
 
@@ -40,7 +42,7 @@ func NewRunConfig(workDir, backendName string) (*RunConfig, error) {
 				Subsystem, "runconfig", "generate directory suffix")
 		}
 
-		dir = filepath.Join(os.TempDir(),
+		dir = filepath.Join(RuntimeRoot(),
 			fmt.Sprintf("freeiran-%s-%s", sanitizeName(backendName), suffix))
 
 		if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -164,7 +166,7 @@ func removeWithRetry(path string) error {
 }
 
 // isManagedDir reports whether the directory was created by
-// NewRunConfig under the system temp root (prefix match).
+// NewRunConfig under the runtime root (prefix match).
 func isManagedDir(dir string) bool {
 	if dir == "" {
 		return false

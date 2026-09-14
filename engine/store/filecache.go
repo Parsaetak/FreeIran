@@ -262,6 +262,36 @@ func (c *chunkHandleCache) closeAll() error {
 	return errors.Join(errs...)
 }
 
+// CloseIdle closes every UNPINNED cached descriptor and returns how
+// many were closed. Pinned entries stay open (readers keep working).
+// Handles are reopened transparently on the next acquire, so this is
+// a safe memory/file-descriptor reclamation under pressure; it does
+// NOT disable the cache.
+func (c *chunkHandleCache) CloseIdle() int {
+	c.mu.Lock()
+
+	var closed []*handleEntry
+
+	for _, entry := range c.entries {
+		if entry.refs > 0 {
+			continue
+		}
+
+		c.removeEntryLocked(entry)
+		c.stats.Evictions++
+		c.stats.Closes++
+		closed = append(closed, entry)
+	}
+
+	c.mu.Unlock()
+
+	for _, entry := range closed {
+		_ = entry.file.Close()
+	}
+
+	return len(closed)
+}
+
 // len reports the number of cached descriptors (diagnostics).
 func (c *chunkHandleCache) len() int {
 	c.mu.Lock()

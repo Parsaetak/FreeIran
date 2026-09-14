@@ -201,6 +201,26 @@ type Store struct {
 	// derivedCount on the UI hot path (app.State calls Count() on
 	// every poll).
 	cachedCount atomic.Int64
+
+	// Adaptive limits (v0.9.2), guarded by mu and seeded from opts in
+	// Open. ApplyPressure rewrites them within safe floors so memory
+	// pressure shrinks the in-memory batch/chunk targets without ever
+	// fragmenting the on-disk layout below the floor sizes.
+	limits adaptiveLimits
+}
+
+// adaptiveLimits are the runtime-adjustable freeze/chunk targets.
+type adaptiveLimits struct {
+	// memtableRecords / memtableBytes freeze the active table when
+	// either bound is reached. Both bounds shrink under pressure.
+	memtableRecords int
+	memtableBytes   int
+
+	// chunkTargetBytes is the payload target reported to diagnostics
+	// and honored by the chunker grouping (each frozen table becomes
+	// one chunk, so the memtable bounds above remain the effective
+	// chunk-size control; the target documents the intended size).
+	chunkTargetBytes int
 }
 
 // chunkMeta is the per-chunk registry entry persisted in store.meta.
@@ -247,6 +267,12 @@ func Open(opts Options) (*Store, error) {
 
 	if s.opts.OpenFiles <= 0 {
 		s.opts.OpenFiles = defaultOpenFiles
+	}
+
+	s.limits = adaptiveLimits{
+		memtableRecords:  s.opts.MemtableRecords,
+		memtableBytes:    s.opts.MemtableBytes,
+		chunkTargetBytes: orDefault(opts.TargetChunkBytes, defaultTargetChunkBytes),
 	}
 
 	s.files = newChunkHandleCache(s.opts.OpenFiles, s.chunkPath)
@@ -792,10 +818,13 @@ func (s *Store) applyReplay(op walOp, bin [32]byte, value []byte, lsn uint64) er
 }
 
 // memtablePressureLocked reports whether the active table should be
-// frozen. Callers hold s.mu.
+// frozen. Callers hold s.mu. The adaptive limits (ApplyPressure)
+// replace the static options: both record-count and byte bounds are
+// considered, so large-record and small-record workloads freeze at
+// the right time under any pressure level.
 func (s *Store) memtablePressureLocked() bool {
-	return s.active.len() >= s.opts.MemtableRecords ||
-		s.active.bytes >= int64(s.opts.MemtableBytes)
+	return s.active.len() >= s.limits.memtableRecords ||
+		s.active.bytes >= int64(s.limits.memtableBytes)
 }
 
 // freezeLocked moves the active table into the flush queue.

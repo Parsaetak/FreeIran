@@ -98,6 +98,7 @@ func smokeOne(t *testing.T, opts SmokeOptions, cfg config.Config, workDir string
 
 	// Stage 1: the real core validates its own configuration.
 	validate := exec.Command(opts.BinaryPath, opts.ValidateArgs(file)...)
+	hideConsole(validate) // no CMD flash on Windows (§v0.9.2 audit)
 
 	if out, err := validate.CombinedOutput(); err != nil {
 		t.Fatalf("real core rejected the generated configuration: %v\n%s",

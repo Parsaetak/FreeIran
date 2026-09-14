@@ -40,25 +40,28 @@ const (
 )
 
 // DirNames enumerates the application directory layout. Every FreeIran
-// artifact lives under one platform-specific base directory.
+// artifact lives under one base directory — since v0.9.2 the single
+// Workspace Root (system/workspace.go), never per-user OS directories.
 type DirNames struct {
-	Root   string
-	Data   string
-	Cache  string
-	Logs   string
-	Cores  string
-	Config string
+	Root    string
+	Data    string
+	Cache   string
+	Logs    string
+	Cores   string
+	Config  string
+	Runtime string
 }
 
 // Layout resolves the application directories under base.
 func Layout(base string) DirNames {
 	return DirNames{
-		Root:   base,
-		Data:   filepath.Join(base, "data"),
-		Cache:  filepath.Join(base, "cache"),
-		Logs:   filepath.Join(base, "logs"),
-		Cores:  filepath.Join(base, "cores"),
-		Config: filepath.Join(base, "config"),
+		Root:    base,
+		Data:    filepath.Join(base, "data"),
+		Cache:   filepath.Join(base, "cache"),
+		Logs:    filepath.Join(base, "logs"),
+		Cores:   filepath.Join(base, "cores"),
+		Config:  filepath.Join(base, "config"),
+		Runtime: filepath.Join(base, "runtime"),
 	}
 }
 
@@ -73,7 +76,7 @@ func EnsureLayout(base string) (DirNames, error) {
 
 	for _, dir := range []string{
 		layout.Root, layout.Data, layout.Cache,
-		layout.Logs, layout.Cores, layout.Config,
+		layout.Logs, layout.Cores, layout.Config, layout.Runtime,
 	} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return layout, firerrors.Wrap(err, firerrors.KindEnvironment,
@@ -714,11 +717,19 @@ var versionProbeForms = [][]string{
 // queryCoreVersion asks a core for its version string. It returns an
 // empty string when every probe form fails; discovery then reports the
 // binary without version information rather than failing.
+//
+// The probe runs through concealChild: protocol cores are
+// console-subsystem executables and discovery runs while the user is
+// interacting with the GUI, so a visible CMD flash is a regression
+// (§v0.9.2 console audit).
 func queryCoreVersion(ctx context.Context, path string) string {
 	for _, args := range versionProbeForms {
 		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 
-		out, err := exec.CommandContext(probeCtx, path, args...).CombinedOutput()
+		cmd := exec.CommandContext(probeCtx, path, args...)
+		concealChild(cmd)
+
+		out, err := cmd.CombinedOutput()
 		cancel()
 
 		if err != nil {
