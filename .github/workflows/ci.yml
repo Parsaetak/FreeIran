@@ -114,7 +114,11 @@ jobs:
 
       - name: Benchmark native bridge
         run: |
-          CGO_ENABLED=1 go test -tags native_accel -bench=Native -benchtime=1x \
+          # -bench=. (v0.9.4): the previous -bench=Native filter matched
+          # no benchmark name (BenchmarkHashBatch / BenchmarkScanURLs /
+          # sub-benchmark "native" differ in case), so this step ran
+          # zero benchmarks silently.
+          CGO_ENABLED=1 go test -tags native_accel -bench=. -benchtime=1x \
             -run=NONE ./engine/native
 
   frontend:

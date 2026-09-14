@@ -5,8 +5,10 @@ name: Release
 #   FreeIran-windows-amd64.zip   (windows-latest)
 #   FreeIran-linux-amd64.zip     (ubuntu-latest, GTK3/WebKit2GTK build)
 #
-# The release contains ONLY the platform ZIPs: no .sha256 checksum
-# files are generated, uploaded or published by this workflow.
+# Since v0.9.4 every published artifact ships a SHA-256 checksum
+# sidecar (both platform ZIPs and the Windows installer), verified
+# for presence before publish and consumed by the application
+# updater (internal/appupdate) after download.
 
 on:
   push:
@@ -663,8 +665,8 @@ jobs:
           echo "Artifacts:"
           ls -la *.zip *.exe || true
 
-          # Exactly the two platform ZIPs plus the Windows installer —
-          # no checksum files, nothing else.
+          # Exactly the two platform ZIPs plus the Windows installer;
+          # every artifact MUST carry a .sha256 sidecar (checked below).
           actual="$(ls *.zip | sort | tr '\n' ' ')"
           if [ "$actual" != "FreeIran-linux-amd64.zip FreeIran-windows-amd64.zip " ]; then
             echo "unexpected release artifact set: $(ls *.zip)" >&2

@@ -95,6 +95,21 @@ type journal struct {
 	// live segment (the active segment is the last element).
 	segEnd []uint64
 
+	// segSizes mirrors segEnd with each live segment's on-disk byte
+	// size (the active entry tracks the live size via activeBytes at
+	// roll/checkpoint time). It lets Checkpoint subtract the exact
+	// bytes of removed segments from totalBytes without stat calls.
+	segSizes []int64
+
+	// totalBytes mirrors the sum of on-disk segment sizes. It is
+	// maintained exactly at every mutation point (open, append, roll,
+	// checkpoint) so walBytes() is O(1): the memory-pressure sampler
+	// reads it via Store.Inspect() every 2 s, and the previous
+	// implementation walked the journal directory (ReadDir + per-file
+	// stat) on every sample — permanent filesystem work in a hot path
+	// for a purely diagnostic byte count.
+	totalBytes int64
+
 	buf []byte // append scratch buffer (reused)
 }
 
@@ -514,9 +529,17 @@ func journalCRC(table *crc32.Table, r rawRecord) uint32 {
 // openActive prepares the segment that appends will go to.
 func (j *journal) openActive(segments []segmentInfo) error {
 	j.segEnd = j.segEnd[:0]
+	j.segSizes = j.segSizes[:0]
+
+	// Seed the byte total from the actual post-replay segment sizes
+	// (replay may have truncated corrupt tails): from here on the
+	// counter is maintained exactly at every mutation point.
+	j.totalBytes = 0
 
 	for _, seg := range segments {
 		j.segEnd = append(j.segEnd, seg.endLSN)
+		j.segSizes = append(j.segSizes, seg.size)
+		j.totalBytes += seg.size
 	}
 
 	if len(segments) > 0 {
@@ -599,6 +622,8 @@ func (j *journal) createSegment(seq uint64) error {
 	j.segSeq = seq
 	j.activeBytes = walHeaderSize
 	j.segEnd = append(j.segEnd, j.lsn)
+	j.segSizes = append(j.segSizes, walHeaderSize)
+	j.totalBytes += walHeaderSize
 
 	return nil
 }
@@ -606,6 +631,13 @@ func (j *journal) createSegment(seq uint64) error {
 // rollLocked closes the active segment and starts a new one.
 // Callers hold j.mu.
 func (j *journal) rollLocked() error {
+	// The closing segment's final on-disk size is the current active
+	// size; record it before the successor resets activeBytes so
+	// Checkpoint can subtract exact removed bytes from totalBytes.
+	if len(j.segSizes) > 0 {
+		j.segSizes[len(j.segSizes)-1] = j.activeBytes
+	}
+
 	if err := j.file.Sync(); err != nil {
 		return firerrors.Wrap(err, firerrors.KindEnvironment,
 			Subsystem, "wal", "sync before roll")
@@ -684,6 +716,7 @@ func (j *journal) Append(records []journalRecord) (uint64, error) {
 	}
 
 	j.activeBytes += int64(len(buffer))
+	j.totalBytes += int64(len(buffer))
 
 	if len(j.segEnd) > 0 {
 		j.segEnd[len(j.segEnd)-1] = j.lsn
@@ -715,29 +748,18 @@ func (j *journal) segmentCount() int {
 }
 
 // walBytes reports total on-disk journal bytes (diagnostics).
+//
+// O(1): totalBytes is maintained exactly at every mutation point
+// (open, append, roll, checkpoint). The memory-pressure sampler reads
+// it via Store.Inspect() every 2 s; the previous implementation walked
+// the journal directory (ReadDir + per-file stat) on every sample —
+// permanent filesystem work in a hot path for a purely diagnostic
+// byte count.
 func (j *journal) walBytes() int64 {
 	j.mu.Lock()
-	dir := j.dir
-	j.mu.Unlock()
+	defer j.mu.Unlock()
 
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return 0
-	}
-
-	var total int64
-
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-
-		if info, err := entry.Info(); err == nil {
-			total += info.Size()
-		}
-	}
-
-	return total
+	return j.totalBytes
 }
 
 // Checkpoint removes segments whose records are all incorporated
@@ -779,9 +801,15 @@ func (j *journal) Checkpoint(targetLSN uint64) error {
 
 	toRemove := make([]string, 0, removeCount+1)
 
+	removedBytes := int64(0)
+
 	for i := 0; i < removeCount; i++ {
 		toRemove = append(toRemove,
 			filepath.Join(j.dir, walSegmentName(firstSeq+uint64(i))))
+
+		if i < len(j.segSizes) {
+			removedBytes += j.segSizes[i]
+		}
 	}
 
 	if removeActive {
@@ -805,7 +833,14 @@ func (j *journal) Checkpoint(targetLSN uint64) error {
 
 		// Every live segment (active included) is being dropped: clear
 		// the bookkeeping BEFORE the successor segment appends itself.
+		// The loop above already accounted every closed segment
+		// (removeCount == len(segEnd)-1 here); only the active
+		// segment's exact live size remains unaccounted — its
+		// segSizes entry is stale (only roll finalizes it).
+		removedBytes += j.activeBytes
+
 		j.segEnd = j.segEnd[:0]
+		j.segSizes = j.segSizes[:0]
 
 		if err := j.createSegment(j.segSeq + 1); err != nil {
 			j.mu.Unlock()
@@ -813,8 +848,14 @@ func (j *journal) Checkpoint(targetLSN uint64) error {
 			return err
 		}
 	} else {
+		if removeCount <= len(j.segSizes) {
+			j.segSizes = j.segSizes[removeCount:]
+		}
+
 		j.segEnd = j.segEnd[removeCount:]
 	}
+
+	j.totalBytes -= removedBytes
 
 	j.mu.Unlock()
 

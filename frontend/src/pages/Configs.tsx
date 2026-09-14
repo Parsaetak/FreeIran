@@ -67,8 +67,21 @@ export function ConfigsPage() {
 
   const parentRef = useRef<HTMLDivElement>(null);
 
+  // The array actually rendered: the server-filtered result when one
+  // exists, otherwise the client-side protocol filter over items.
+  const visibleItems = useMemo(() => {
+    if (filtered !== null) return filtered;
+    if (protocol === "") return items;
+
+    return items.filter((item) => String(item["type"]) === protocol);
+  }, [items, protocol, filtered]);
+
+  // The virtualizer must size against the array that is actually
+  // RENDERED (visibleItems): sizing against the raw `items` while a
+  // protocol filter narrows the list produced a huge blank scroll
+  // range and wasted overscan rows.
   const virtualizer = useVirtualizer({
-    count: items.length,
+    count: visibleItems.length,
     estimateSize: () => 44,
     overscan: 12,
     getScrollElement: () => parentRef.current,
@@ -85,13 +98,6 @@ export function ConfigsPage() {
 
     return [...preferred, ...extra].slice(0, 6);
   }, [items]);
-
-  const visibleItems = useMemo(() => {
-    if (filtered !== null) return filtered;
-    if (protocol === "") return items;
-
-    return items.filter((item) => String(item["type"]) === protocol);
-  }, [items, protocol, filtered]);
 
   // Keep the virtualizer window in sync with the filtered count.
   useEffect(() => {
@@ -136,27 +142,39 @@ export function ConfigsPage() {
     void loadFiltered(1000);
   }, [loadFiltered]);
 
-  // Live queue stats while a batch is running.
+  // Live queue stats while a batch is running. Adaptive cadence:
+  // ~800 ms while work is queued/running, 5 s when idle — the panel
+  // only renders once total_enqueued > 0, so a fixed 1.5 s poll just
+  // burned binding traffic for a page left open in the background.
   useEffect(() => {
     let stop = false;
+    let timer = 0;
+
+    const cadence = (stats: QueueStatsView | null) =>
+      stats && (stats.queue_depth > 0 || stats.active_workers > 0) ? 800 : 5000;
 
     const tick = async () => {
+      let next = 5000;
+
       try {
         const stats = await call(() => testQueueService.Stats());
+
         if (!stop && stats) {
           setQueueStats(stats as QueueStatsView);
+          next = cadence(stats as QueueStatsView);
         }
       } catch {
         /* polling is best-effort */
       }
+
+      if (!stop) timer = window.setTimeout(tick, next);
     };
 
     void tick();
-    const interval = window.setInterval(tick, 1500);
 
     return () => {
       stop = true;
-      window.clearInterval(interval);
+      window.clearTimeout(timer);
     };
   }, []);
 

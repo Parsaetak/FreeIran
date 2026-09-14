@@ -153,6 +153,12 @@ type Controller struct {
 	// up/down thresholds for hysteresis. Indexed by current state.
 	up   []float64 // fraction at which we transition UP from state i
 	down []float64 // fraction at which we transition DOWN from state i
+
+	// last mirrors the most recent Sample() result. Snapshot() serves
+	// it without re-sampling: ReadMemStats is a documented
+	// stop-the-world pause and the sampler ticker keeps the stored
+	// value at most one sampling interval old.
+	last Snapshot
 }
 
 // New constructs a Controller with the given ceiling. If ceiling is
@@ -317,12 +323,13 @@ func (c *Controller) Sample() Snapshot {
 		newState = next
 	}
 
+	snap.State = newState
+
 	c.mu.Lock()
 	c.state = newState
 	listener := c.listener
+	c.last = snap
 	c.mu.Unlock()
-
-	snap.State = newState
 
 	if listener != nil && newState != oldState {
 		listener(oldState, newState, snap)
@@ -332,8 +339,15 @@ func (c *Controller) Sample() Snapshot {
 }
 
 // Snapshot returns the last-computed snapshot (without re-sampling).
-// The returned Snapshot is a value copy.
+// The returned Snapshot is a value copy. Before the first Sample()
+// it returns the zero Snapshot; the application's memory sampler
+// starts with the engine, so UI readers always observe a sampled
+// value. Re-sampling here would defeat the point: ReadMemStats is a
+// stop-the-world pause, not a cheap read, and every Diagnostics visit
+// stacked one on top of the 2 s sampler's own pauses.
 func (c *Controller) Snapshot() Snapshot {
-	// Re-sample to give a fresh view. This is cheap (one ReadMemStats).
-	return c.Sample()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.last
 }

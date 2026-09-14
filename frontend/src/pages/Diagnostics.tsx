@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   appService,
   storageService,
@@ -136,11 +136,20 @@ function LogViewer() {
     void fetchFull();
   }, [fetchFull]);
 
-  // Live tail poll (paused stops the timer, keeps the view).
+  // Live tail poll (paused stops the timer, keeps the view). The
+  // inFlight guard keeps ticks from stacking: a Recent call slower
+  // than POLL_MS previously started overlapping requests that applied
+  // out of order.
   useEffect(() => {
     if (paused) return;
 
+    let inFlight = false;
+
     const tick = async () => {
+      if (inFlight) return;
+
+      inFlight = true;
+
       try {
         const page = await call(() =>
           logService.Recent({
@@ -160,6 +169,8 @@ function LogViewer() {
         }
       } catch {
         setFailed(true);
+      } finally {
+        inFlight = false;
       }
     };
 
@@ -233,7 +244,12 @@ function LogViewer() {
     }
   };
 
-  const attention = entries.filter((entry) => levelAtLeast(entry.level, "warn")).length;
+  // Recomputed only when the buffer changes, not on every render of
+  // the surrounding card (up to 600 entries per poll tick).
+  const attention = useMemo(
+    () => entries.filter((entry) => levelAtLeast(entry.level, "warn")).length,
+    [entries],
+  );
 
   return (
     <div className="card">
@@ -351,7 +367,9 @@ function LogViewer() {
   );
 }
 
-function LogRow({ entry }: { entry: LogEntry }) {
+// Memoized: the live poll re-renders up to 600 rows per second when
+// new entries arrive; unchanged rows skip re-rendering entirely.
+const LogRow = memo(function LogRow({ entry }: { entry: LogEntry }) {
   return (
     <div className={`log-entry ${entry.level === "warn" || entry.level === "error" ? `level-${entry.level}` : ""}`}>
       <span className="log-time">{formatClock(entry.ts)}</span>
@@ -365,7 +383,7 @@ function LogRow({ entry }: { entry: LogEntry }) {
       </span>
     </div>
   );
-}
+});
 
 /** Plain-text rendering used by "copy diagnostics". */
 export function entriesToText(entries: LogEntry[]): string {

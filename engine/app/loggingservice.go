@@ -322,16 +322,26 @@ func (s *LogService) Recent(filter LogFilter) LogPage {
 	return page
 }
 
-// severityAtLeast compares levels for the UI filter.
+// severityAtLeast compares levels for the UI filter. A switch instead
+// of the previous per-call map literal: Recent() filters up to a
+// thousand entries per UI poll, and the map allocated once per entry.
 func severityAtLeast(level, min logging.Level) bool {
-	rank := map[logging.Level]int{
-		logging.LevelDebug: 0,
-		logging.LevelInfo:  1,
-		logging.LevelWarn:  2,
-		logging.LevelError: 3,
-	}
+	return levelRank(level) >= levelRank(min)
+}
 
-	return rank[level] >= rank[min]
+// levelRank orders log levels; unknown levels rank lowest (0), which
+// matches the zero value the previous map lookup returned.
+func levelRank(level logging.Level) int {
+	switch level {
+	case logging.LevelError:
+		return 3
+	case logging.LevelWarn:
+		return 2
+	case logging.LevelInfo:
+		return 1
+	default:
+		return 0
+	}
 }
 
 // Subsystems lists the subsystems present in the current buffer

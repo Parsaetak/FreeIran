@@ -3,8 +3,73 @@ package system
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"testing"
 )
+
+// TestWorkspacePathAuthoritySingleSource guards the v0.9.4
+// "one workspace authority" architecture at source level: each
+// workspace-path symbol must be declared exactly once across the
+// system package, regardless of build tags. The 0.9.4 regression
+// (obsolete paths_unix.go/paths_windows.go re-declaring
+// DefaultBaseDir/CacheBaseDir/portableRoot alongside workspace.go and
+// portable.go) broke go vet for every platform; this test fails
+// before any build-tag-specific combination can hide a duplicate.
+func TestWorkspacePathAuthoritySingleSource(t *testing.T) {
+	authorities := []string{
+		"WorkspaceRoot",
+		"WorkspaceLayout",
+		"EnsureWorkspace",
+		"WorkspaceWritable",
+		"DefaultBaseDir",
+		"CacheBaseDir",
+		"PortableMode",
+		"InstalledMode",
+	}
+
+	declRe := regexp.MustCompile(`^func\s+(` + regexp.QuoteMeta(authorities[0]) +
+		`|` + regexp.QuoteMeta(authorities[1]) + `|` + regexp.QuoteMeta(authorities[2]) +
+		`|` + regexp.QuoteMeta(authorities[3]) + `|` + regexp.QuoteMeta(authorities[4]) +
+		`|` + regexp.QuoteMeta(authorities[5]) + `|` + regexp.QuoteMeta(authorities[6]) +
+		`|` + regexp.QuoteMeta(authorities[7]) + `)\(`)
+
+	declared := map[string][]string{}
+
+	files, err := filepath.Glob(filepath.Join(".", "*.go"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("scan system package sources: %v", err)
+	}
+
+	for _, file := range files {
+		if filepath.Base(file) == "workspace_authority_test.go" {
+			continue
+		}
+
+		lines, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+
+		for _, line := range regexp.MustCompile(`\r?\n`).Split(string(lines), -1) {
+			if m := declRe.FindStringSubmatch(line); m != nil {
+				declared[m[1]] = append(declared[m[1]], filepath.Base(file))
+			}
+		}
+	}
+
+	for _, symbol := range authorities {
+		owners := declared[symbol]
+		if len(owners) == 0 {
+			t.Errorf("symbol %s has no declaration in package system", symbol)
+			continue
+		}
+
+		if len(owners) > 1 {
+			t.Errorf("symbol %s declared %d times (%v); exactly one implementation is required",
+				symbol, len(owners), owners)
+		}
+	}
+}
 
 // TestDefaultBaseDirIsWorkspaceRoot pins the v0.9.3 path authority:
 // DefaultBaseDir and CacheBaseDir are thin aliases of WorkspaceRoot.

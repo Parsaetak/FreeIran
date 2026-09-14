@@ -9,6 +9,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -219,6 +220,13 @@ type ConfigPage struct {
 	HasMore bool            `json:"has_more"`
 }
 
+// errPageComplete stops the store iteration once the requested page
+// is full (a normal condition, never an error): Total/HasMore derive
+// from Count(), so walking past the page boundary only burns decodes.
+// A dedicated sentinel — not context.Canceled — keeps a genuine
+// context timeout distinguishable from the clean stop.
+var errPageComplete = errors.New("page complete")
+
 // ListConfigs returns a page of configurations ordered by fingerprint.
 // Pages are virtualized in the UI; only the requested window is
 // decoded and materialised.
@@ -239,14 +247,25 @@ func (s *DataService) ListConfigs(offset, limit int) (*ConfigPage, error) {
 	skipped := 0
 
 	err := s.app.store.Iterate(ctx, func(key string, value []byte) error {
+		// Purely counted records: never decoded, never cached. Decoding
+		// records only to throw them away made deep pages cost O(offset)
+		// JSON unmarshals and page 0 of a large store decode the whole
+		// index; Count() below needs no iteration, so the walk can stop
+		// the moment the page is full.
+		if skipped < offset {
+			skipped++
+
+			return nil
+		}
+
+		if len(page.Items) >= limit {
+			return errPageComplete
+		}
+
 		// Hot cache: decoded configs are reused across pages.
 		if cached, ok := s.app.hotCache.Get(key, 0); ok {
 			if cfg, isCfg := cached.(config.Config); isCfg {
-				if skipped >= offset && len(page.Items) < limit {
-					page.Items = append(page.Items, cfg)
-				} else {
-					skipped++
-				}
+				page.Items = append(page.Items, cfg)
 
 				return nil
 			}
@@ -258,20 +277,14 @@ func (s *DataService) ListConfigs(offset, limit int) (*ConfigPage, error) {
 			return nil // skip undecodable record; never crash the UI
 		}
 
-		if skipped >= offset && len(page.Items) < limit {
-			s.app.hotCache.Put(key, cfg, 0)
+		s.app.hotCache.Put(key, cfg, 0)
 
-			page.Items = append(page.Items, cfg)
-
-			return nil
-		}
-
-		skipped++
+		page.Items = append(page.Items, cfg)
 
 		return nil
 	})
 
-	if err != nil {
+	if err != nil && !errors.Is(err, errPageComplete) {
 		return nil, err
 	}
 

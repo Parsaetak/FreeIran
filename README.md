@@ -72,6 +72,41 @@ adaptive memory control and kernel-level process supervision
 - CI now fails on version drift between `VERSION`,
   `package.json` and `internal/version` on every push.
 
+### Final stabilization (0.9.4)
+
+- **Workspace authority enforced at source level.** The duplicate
+  `DefaultBaseDir`/`CacheBaseDir`/`portableRoot` declarations that
+  broke `go vet` are gone (the two obsolete platform files are
+  deleted), and a package test now scans `system` sources to fail any
+  future build-tag-hidden duplicate of a workspace-path symbol.
+- **Race repairs.** The scheduler published `lastErr` outside its
+  mutex while `Status()` read it under the lock — UI status polling
+  raced the worker loop; the value is now published inside the same
+  critical section as `lastRun`/`runCount`.
+- **Constant-memory WAL byte accounting.** The memory-pressure
+  sampler read `WALBytes` from a full journal-directory walk
+  (`ReadDir` + per-file stat) every 2 s for the life of the process;
+  the count is now maintained exactly at open/append/roll/checkpoint
+  and served in O(1), with a regression test comparing it against the
+  real on-disk bytes across rolls and both checkpoint flavors.
+- **Pagination without wasted decodes.** `ListConfigs` decoded every
+  skipped record (and kept walking the store after the page was
+  full); the walk now stops at the page boundary and skip-range
+  records are never unmarshalled — deep pages and page 0 of large
+  stores stop paying O(store) JSON work.
+- **Honest memory snapshot.** `mempressure.Controller.Snapshot()`
+  re-sampled with a stop-the-world `ReadMemStats` despite its
+  documentation; it now serves the sampler's last snapshot. The log
+  filter stopped allocating a map per filtered entry.
+- **Frontend call discipline.** The initial data load runs once per
+  backend lifetime instead of on every state broadcast, a zero-result
+  search is no longer clobbered by a re-fetch, the queue-stats poll
+  backs off when idle, the live-log poll cannot stack overlapping
+  requests, unchanged log rows skip re-render, and event-injected
+  state preserves object identity when content is unchanged.
+- **CI truthfulness.** The native-bridge benchmark step's
+  `-bench=Native` filter matched zero benchmarks; it now runs them.
+
 ## What's new in v0.9.3
 
 ### The autonomous connection engine

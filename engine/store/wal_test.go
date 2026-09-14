@@ -427,3 +427,98 @@ func TestJournalDeleteRecordsReplay(t *testing.T) {
 		t.Fatalf("replayed ops = %v, want [upsert delete upsert]", ops)
 	}
 }
+
+// dirWalBytes measures the real on-disk segment bytes the way the
+// pre-0.9.4 walBytes() did (directory walk), so the O(1) counter has
+// an independent ground truth to be compared against.
+func dirWalBytes(t *testing.T, dir string) int64 {
+	t.Helper()
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var total int64
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+
+		if info, err := entry.Info(); err == nil {
+			total += info.Size()
+		}
+	}
+
+	return total
+}
+
+// TestJournalWalBytesTracksDisk pins the v0.9.4 O(1) walBytes()
+// accounting: the counter must equal the actual on-disk segment bytes
+// after appends that force segment rolls and after both checkpoint
+// flavors (closed-only and including the active segment). The
+// memory-pressure sampler reads this number every 2 s; a drifting
+// counter would silently corrupt pressure decisions.
+func TestJournalWalBytesTracksDisk(t *testing.T) {
+	dir := t.TempDir()
+	j := openTestJournal(t, dir, 0)
+	defer j.Close()
+
+	j.mu.Lock()
+	j.segmentMax = 512
+	j.mu.Unlock()
+
+	for b := 0; b < 20; b++ {
+		if _, err := j.Append(batchRecords(3)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if got, want := j.walBytes(), dirWalBytes(t, dir); got != want {
+		t.Fatalf("walBytes after appends/rolls = %d, on-disk = %d", got, want)
+	}
+
+	// Full checkpoint: all segments (active included) are replaced.
+	if err := j.Checkpoint(j.CurrentLSN()); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, want := j.walBytes(), dirWalBytes(t, dir); got != want {
+		t.Fatalf("walBytes after full checkpoint = %d, on-disk = %d", got, want)
+	}
+
+	// Post-checkpoint appends must keep tracking exactly.
+	if _, err := j.Append(batchRecords(4)); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, want := j.walBytes(), dirWalBytes(t, dir); got != want {
+		t.Fatalf("walBytes after post-checkpoint append = %d, on-disk = %d", got, want)
+	}
+
+	// Partial checkpoint: only closed segments are removed.
+	j.mu.Lock()
+	j.segmentMax = 256
+	j.mu.Unlock()
+
+	for b := 0; b < 8; b++ {
+		if _, err := j.Append(batchRecords(3)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if got := j.segmentCount(); got < 3 {
+		t.Fatalf("segments = %d, want >= 3 for a partial checkpoint", got)
+	}
+
+	// Checkpoint below the active segment's last LSN: closed segments
+	// are removed, the tail (with the active) is kept.
+	if err := j.Checkpoint(j.CurrentLSN() - 1); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, want := j.walBytes(), dirWalBytes(t, dir); got != want {
+		t.Fatalf("walBytes after partial checkpoint = %d, on-disk = %d", got, want)
+	}
+}

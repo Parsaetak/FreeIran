@@ -561,7 +561,16 @@ function ConfigPicker({ disabled }: { disabled: boolean }) {
   const [selected, setSelected] = useState("");
 
   useEffect(() => {
-    if (items.length === 0) void loadPage(0);
+    const { total, loading, searching, searchQuery } =
+      useConfigsStore.getState();
+
+    // Load only when the store has never been filled: an empty items
+    // array is also what a zero-result SEARCH looks like, and an
+    // unconditional loadPage(0) here would clobber that result with
+    // the unfiltered first page (and re-fire per state change).
+    if (total === 0 && !loading && !searching && searchQuery.trim() === "") {
+      void loadPage(0);
+    }
   }, [items.length, loadPage]);
 
   const top = useMemo(() => items.slice(0, 60), [items]);

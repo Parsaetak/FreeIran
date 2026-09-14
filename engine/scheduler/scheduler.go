@@ -220,15 +220,22 @@ func (s *Scheduler) runCycle(ctx context.Context) {
 
 	s.mu.Unlock()
 
+	// cycleErr is captured so the deferred critical section below can
+	// publish it together with lastRun/runCount: lastErr must never be
+	// written outside s.mu — Status() reads it under the lock, and a
+	// concurrent UI poll would otherwise be a data race.
+	var cycleErr error
+
 	defer func() {
 		s.mu.Lock()
 		s.busy = false
 		s.lastRun = time.Now().UTC()
+		s.lastErr = cycleErr
 		s.runCount++
 		s.mu.Unlock()
 	}()
 
 	if s.cycle != nil {
-		s.lastErr = s.cycle(ctx)
+		cycleErr = s.cycle(ctx)
 	}
 }

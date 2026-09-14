@@ -63,7 +63,26 @@ function deriveStatus(state: AppState | null, connected: boolean): AppStatus {
   return "loading";
 }
 
-export const useAppStore = create<AppStore>((set) => ({
+/**
+ * Content equality for the store's embedded sub-objects. State
+ * broadcasts re-deserialize an identical payload every interval; if
+ * the new sub-object replaced the old reference unconditionally,
+ * effects keyed on `backend?.last_ingestion` re-fired per broadcast
+ * (Diagnostics stacked a full diagnostics reload per event). Same
+ * construction path → stable key order → stringify compare is exact.
+ */
+function sameJSON(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a == null || b == null) return false;
+
+  try {
+    return JSON.stringify(a) === JSON.stringify(b);
+  } catch {
+    return false;
+  }
+}
+
+export const useAppStore = create<AppStore>((set, get) => ({
   status: "loading",
   backend: null,
   lastError: null,
@@ -91,14 +110,30 @@ export const useAppStore = create<AppStore>((set) => ({
     }
   },
 
-  ingestEvent: (state: AppState) =>
+  ingestEvent: (state: AppState) => {
+    // Preserve previous sub-object references when content is
+    // unchanged (see sameJSON): reference-keyed consumers only re-run
+    // when the underlying evidence actually changed.
+    const prev = get().backend;
+
+    if (prev) {
+      if (sameJSON(prev.last_ingestion, state.last_ingestion)) {
+        state.last_ingestion = prev.last_ingestion;
+      }
+
+      if (sameJSON(prev.storage, state.storage)) {
+        state.storage = prev.storage;
+      }
+    }
+
     set({
       backend: state,
       connected: true,
       status: deriveStatus(state, true),
       lastError: null,
       ...readBootFields(state),
-    }),
+    });
+  },
 }));
 
 /**

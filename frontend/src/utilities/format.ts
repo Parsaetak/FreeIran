@@ -29,8 +29,13 @@ export function formatDuration(ms: number): string {
   return `${minutes}m ${rest}s`;
 }
 
+// Module-level formatter: constructing Intl.NumberFormat is
+// comparatively expensive and formatNumber runs inside virtualized
+// rows and stat tiles on every render.
+const numberFormat = new Intl.NumberFormat();
+
 export function formatNumber(value: number): string {
-  return new Intl.NumberFormat().format(value);
+  return numberFormat.format(value);
 }
 
 export function formatPercent(rate: number): string {

@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Events } from "@wailsio/runtime";
 import { useAppStore, connectAppStore } from "./state/appStore";
 import { useSourcesStore, useConfigsStore } from "./state/stores";
-import { connectConnectionStore, useConnectionStore } from "./state/connectionStore";
+import { connectConnectionStore } from "./state/connectionStore";
 import { useSettingsStore, effectiveReducedMotion } from "./state/settingsStore";
 import { DashboardPage } from "./pages/Dashboard";
 import { SourcesPage } from "./pages/Sources";
@@ -69,13 +69,30 @@ export function App() {
     };
   }, []);
 
+  // Initial data load. Fetch ONCE per backend lifetime: `status` flips
+  // on every `freeiran:state` broadcast (loading → ready, and
+  // ready → ingesting → ready per ingestion cycle), and re-running
+  // this bundle per flip issued ~4 duplicate service calls per
+  // transition — a rolling fetch storm exactly while the engine is
+  // busy ingesting. The ref gates the load to the first reachable
+  // backend; a later `backend_unavailable` resets it so recovery
+  // re-fetches stale stores.
+  const initialLoadRef = useRef(false);
+
   useEffect(() => {
-    if (status !== "backend_unavailable") {
-      void useSourcesStore.getState().load();
-      void useConfigsStore.getState().loadPage(0);
-      void useSettingsStore.getState().load();
-      void useConnectionStore.getState().refreshBackends();
+    if (status === "backend_unavailable") {
+      initialLoadRef.current = false;
+
+      return;
     }
+
+    if (initialLoadRef.current) return;
+
+    initialLoadRef.current = true;
+
+    void useSourcesStore.getState().load();
+    void useConfigsStore.getState().loadPage(0);
+    void useSettingsStore.getState().load();
   }, [status]);
 
   useEffect(() => {
