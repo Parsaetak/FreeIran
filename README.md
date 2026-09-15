@@ -27,13 +27,13 @@ the full verification matrix end to end.
 
 - v0.9.4's release notes claimed the obsolete per-user path
   resolvers were removed; they were still shipped, and re-declaring
-  `DefaultBaseDir`/`CacheBaseDir`/`portableRoot` alongside
-  `workspace.go` and `portable.go` broke `go vet`, `go build` and
-  every test job. The two files (`system/paths_unix.go`,
-  `system/paths_windows.go`) are now really deleted, `system/`
-  compiles for every build-tag combination, and the existing
-  `TestWorkspacePathAuthoritySingleSource` guard stays as the
-  regression tripwire.
+  `DefaultBaseDir`/`CacheBaseDir`/`portableRoot`/`PortableMode`
+  alongside `workspace.go` broke `go vet`, `go build` and
+  every test job. The three files (`system/paths_unix.go`,
+  `system/paths_windows.go`, `system/portable.go`) are now really
+  deleted, `system/` compiles for every build-tag combination, and
+  the existing `TestWorkspacePathAuthoritySingleSource` guard stays
+  as the regression tripwire.
 
 ### Repository hygiene
 
@@ -546,8 +546,9 @@ pool, not retried in a tight loop.
 ### Documentation
 
 Every Markdown file was rewritten to describe the real architecture.
-Stale "v0.5.0" claims were removed. See `REPLACEMENT_MANIFEST.md` for
-the full change manifest.
+Stale "v0.5.0" claims were removed. Per-release change manifests live
+in the git history and release notes; the engineering worklog
+(`worklog.md`) remains the single handoff document.
 
 ---
 

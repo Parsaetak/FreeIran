@@ -128,12 +128,14 @@ secret scanning and static analysis with real failure conditions.
 
 ## v0.9.5 — the v0.9.4 regression actually fixed
 
-- v0.9.4 shipped with the two obsolete path resolvers still present,
-  so `go vet`, `go build` and all test jobs failed with duplicate
-  declarations of `DefaultBaseDir`/`CacheBaseDir`/`portableRoot`.
-  `system/paths_unix.go` and `system/paths_windows.go` are now really
-  deleted; the `TestWorkspacePathAuthoritySingleSource` guard added in
-  v0.9.4 keeps failing any future re-introduction.
+- v0.9.4 shipped with the three obsolete path/portable helpers still
+  present, so `go vet`, `go build` and all test jobs failed with
+  duplicate declarations of
+  `DefaultBaseDir`/`CacheBaseDir`/`portableRoot`/`PortableMode`.
+  `system/paths_unix.go`, `system/paths_windows.go` and
+  `system/portable.go` are now really deleted; the
+  `TestWorkspacePathAuthoritySingleSource` guard added in v0.9.4 keeps
+  failing any future re-introduction.
 - Repository hygiene: the stale per-session packaging manifests at the
   repository root were removed, and the Wails embed directory
   (`cmd/freeiran/frontend/dist`) was reduced to exactly the current

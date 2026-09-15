@@ -2857,3 +2857,61 @@ tree, re-introducing the exact redeclaration set that broke `go vet`
 - Source ZIP `FreeIran-0.9.5.zip` created from the committed tree
   and re-verified by extraction into a fresh directory + rerun of
   the critical build/test gates
+
+---
+
+## Session 2026-09-15 — v0.9.5 replacement actually executed
+
+Task ID: 1 (single-agent full replacement)
+Agent: Super Z (lead engineer session)
+
+The prior entry above described the v0.9.5 cleanup but the repository
+never actually received it: `system/portable.go`,
+`system/paths_unix.go` and `system/paths_windows.go` were still
+present (redeclaring portableRoot/PortableMode/DefaultBaseDir/
+CacheBaseDir against system/workspace.go), the three root session
+manifests were still tracked, and cmd/freeiran/frontend/dist still
+carried 10 stale hashed bundles. CI run 34897474331 failed at `go
+vet` with the five duplicate-declaration errors.
+
+Work Log:
+- Deleted system/portable.go, system/paths_unix.go,
+  system/paths_windows.go — zero unique symbols; workspace.go keeps
+  the single canonical implementation of all nine workspace APIs.
+- Deleted REPLACEMENT_MANIFEST.md, Release-Manifest.md,
+  Updated-Files.md (stale 0.9.1/0.9.2 session manifests).
+- Regenerated cmd/freeiran/frontend/dist from the current frontend
+  build (npm run build:embed): 4 assets + index.html, 10 stale
+  bundles removed.
+- README.md / docs/ci.md: corrected the v0.9.5 regression text (three
+  duplicate files, not two) and removed the stale reference to the
+  deleted REPLACEMENT_MANIFEST.md.
+- Verified version sync: VERSION, internal/version, frontend
+  package.json + lockfile, freeiran.iss, README — all 0.9.5.
+
+Verification (go1.26.8 toolchain, this machine):
+- gofmt -l — clean; go vet (engine/system/internal + windows cmd
+  target) — clean; go build — clean.
+- go test -count=1 and -race -count=1 over engine/system/internal
+  with the deterministic fake-core fixtures — 30 packages PASS.
+- Stress: testqueue -race -count=10 (134 s) PASS;
+  store/chunks/pipeline -race -count=5 PASS; mempressure/coremgr/
+  scheduler/cleanup -race -count=3 PASS; CI benchmark smoke suite
+  executed (chunks/store/pipeline/core/v2ray/logging).
+- Real cores (SHA-256-verified official archives): V2Ray 5.53.0
+  (7 protocol families), Xray 26.3.27 (9), sing-box 1.14.0 (10) —
+  smoke suites ALL PASS.
+- Native: make -C native test PASS; native_accel build + cross-
+  language tests + benchmarks PASS.
+- Frontend: npm ci, typecheck, 40 vitest tests, build:embed PASS.
+- Windows/amd64 desktop cross-compile (CGO_ENABLED=0) PASS.
+- govulncheck (engine set + windows cmd target) — no vulnerabilities.
+- Workflows ci.yml/release.yml/security.yml: valid YAML, no
+  duplicate keys, no disabled checks, real-core job intact.
+
+Stage Summary:
+- system/ now compiles for every platform: one workspace authority
+  (workspace.go), one migration path (workspace_migrate.go), guarded
+  by TestWorkspacePathAuthoritySingleSource.
+- FreeIran-0.9.5.zip rebuilt from the committed tree and re-verified
+  by fresh extraction + critical gates.
