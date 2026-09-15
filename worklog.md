@@ -2780,3 +2780,80 @@ repairs the repository as a whole rather than only silencing CI.
 - Real cores (official archives, SHA-256 verified): V2Ray 5.53.0, Xray 26.3.27, sing-box 1.14.0 — `TestV2RaySmokeRealBinary` / `TestXraySmokeRealBinary` / `TestSingBoxSmokeRealBinary` ALL PASS (config validation, startup, readiness, shutdown per protocol)
 - Frontend: `npm ci`, `npm run typecheck`, `npm test` (40 tests), `npm run build:embed` — PASS
 - Full source repository ZIP `FreeIran-0.9.5.zip` created and re-verified by fresh extraction + build gates from the extracted tree
+
+## v0.9.5 — duplicate workspace implementations removed for good (2026-09-15)
+
+Root-cause fix for CI run 34897474331 (commit b8697e8): the "v0.9.5"
+commit re-added `system/paths_unix.go`, `system/paths_windows.go` and
+`system/portable.go` (+184 lines) on top of the already-consolidated
+tree, re-introducing the exact redeclaration set that broke `go vet`
+(`portableRoot` ×3, `PortableMode` ×2, `DefaultBaseDir` ×2,
+`CacheBaseDir` ×2) and every downstream job that compiles the
+`system` package (real-core V2Ray; Xray/sing-box cancelled).
+
+### Changes
+
+- `system/paths_unix.go`, `system/paths_windows.go`,
+  `system/portable.go` DELETED again — every line duplicated the
+  workspace authority. `system/workspace.go` remains the single
+  implementation of `WorkspaceRoot`, `WorkspaceLayout`,
+  `WorkspaceWritable`, `EnsureWorkspace`, `DefaultBaseDir`,
+  `CacheBaseDir`, `portableRoot`, `PortableMode`, `InstalledMode`.
+  No compatibility wrappers, no renames — duplicate authority is
+  gone. `TestWorkspacePathAuthoritySingleSource` (source-level scan)
+  plus the hard compile failure make the regression impossible to
+  re-introduce unnoticed; the guard was proven live by temporarily
+  restoring `portable.go` (build fails, test fails, removed again).
+- Stale session manifests deleted for real this time (v0.9.5
+  documentation already declared them removed):
+  `REPLACEMENT_MANIFEST.md`, `Release-Manifest.md`,
+  `Updated-Files.md`.
+- Stale generated embed bundles removed: 10 old hashed
+  `cmd/freeiran/frontend/dist/assets/*` files deleted; the embed
+  directory contains exactly the current frontend build output
+  (index.html + index-D7JT-KWp.js + index-BSP_UE1w.css +
+  exportWorker-_TX2oPnP.js + exportWorker-Cn6l7QBp.js, reproduced by
+  `npm run build:embed`).
+- `docs/architecture.md` "Portable deployment" section rewritten to
+  describe the current single-authority model (WorkspaceRoot +
+  thin DefaultBaseDir/CacheBaseDir aliases; PortableMode/
+  InstalledMode are labels only) instead of the pre-0.9.2
+  `DefaultBaseDir`-prefers-layout mechanism.
+- Version stays 0.9.5; all sources verified in sync (VERSION,
+  internal/version, frontend/package.json + lockfile root,
+  scripts/freeiran.iss, README, CI gate).
+
+### Verification performed (Linux, go1.26.8)
+
+- `gofmt -l ./engine ./system ./cmd ./internal` — clean
+- `go vet ./engine/... ./system/... ./internal/...` — PASS
+- `go vet` windows target (`GOOS=windows CGO_ENABLED=0 ./cmd/...`) — PASS
+- `go build ./engine/... ./system/... ./internal/...` — PASS;
+  Darwin/arm64 cross-build — PASS
+- `go test -count=1` and `go test -race -count=1` over
+  `./engine/... ./system/... ./internal/...` (fake-core fixtures) —
+  PASS (30 packages each)
+- `go test -race -count=10 ./engine/testqueue` — PASS (133.6 s)
+- `go test -race -count=5` over store/chunks/pipeline/mempressure/cache — PASS
+- Benchmarks (smoke): chunks/store/pipeline/core/v2ray/logging — executed, PASS
+- Native: `make -C native test` — PASS; `native_accel` build +
+  cross-language tests + benchmarks — PASS
+- Real cores (SHA-256-verified official archives): V2Ray 5.53.0
+  (7 protocols), Xray 26.3.27 (9), sing-box 1.14.0 (10) — smoke
+  suites ALL PASS
+- Frontend: `npm ci`, typecheck, 40 unit tests, `npm run
+  build:embed` — PASS
+- Windows desktop build (CGO_ENABLED=0, `-H=windowsgui`): 13.1 MB
+  executable, PE subsystem = 2 (WINDOWS_GUI) verified
+- Security: govulncheck (linux engine set + windows cmd target) — no
+  vulnerabilities; suspicious-pattern scan — clean; gitleaks over
+  all 77 commits — no leaks
+- Workspace regression matrix re-run: default workspace,
+  FREEIRAN_HOME override, installed.marker relocation,
+  portable.marker detection, writable probe, root consistency
+  (DefaultBaseDir/CacheBaseDir ≡ WorkspaceRoot under XDG/APPDATA
+  pressure), PortableMode, InstalledMode, single-source authority —
+  ALL PASS
+- Source ZIP `FreeIran-0.9.5.zip` created from the committed tree
+  and re-verified by extraction into a fresh directory + rerun of
+  the critical build/test gates

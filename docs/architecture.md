@@ -599,10 +599,17 @@ and slowest measured latency for the live progress panel.
 
 ### Portable deployment
 
-`system.DefaultBaseDir` prefers a deployment layout next to the
-executable (`portable.marker` or a `config/` directory), so the
-official release ZIP — a full directory tree with `config/ data/
-logs/ cache/ cores/ runtime/ docs/ deployment/` and metadata — keeps
-all state inside the extracted folder. The release workflow
+`system.WorkspaceRoot()` — the single path authority since v0.9.2, as
+documented in `docs/workspace.md` — resolves every deployment style
+through one model: `$FREEIRAN_HOME` wins when set, `installed.marker`
+relocates the workspace to the per-user application-data directory,
+and every other deployment keeps the executable directory.
+`system.DefaultBaseDir()` and `system.CacheBaseDir()` are thin aliases
+of that root (never split per-user resolvers), so the official
+release ZIP — a full directory tree with `config/ data/ logs/ cache/
+cores/ runtime/ docs/ deployment/` and metadata — keeps all state
+inside the extracted folder. `portable.marker` and the diagnostic
+helpers `PortableMode()`/`InstalledMode()` only label the deployment
+style; they never influence path resolution. The release workflow
 validates the package (required files, directories, VERSION and
 metadata consistency, single archive root) before publishing.
