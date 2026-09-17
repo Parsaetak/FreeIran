@@ -97,6 +97,37 @@ type Config struct {
 	// stability and timeout frequency come from here, never invented.
 	// Runtime-only: never part of the fingerprint, never uploaded.
 	TestHistory []TestObservation `json:"test_history,omitempty"`
+
+	// --- v0.9.6 first-class test modes (§8) ---
+
+	// Ping holds the latest repeated-sample TCP latency measurement
+	// (min/median/avg/max/jitter/loss). Nil = never ping-tested.
+	// Runtime-only: never part of the fingerprint.
+	Ping *PingMetrics `json:"ping,omitempty"`
+
+	// URLTest holds the latest HTTP connectivity measurement through
+	// the candidate tunnel with its full phase breakdown (DNS/TCP/
+	// TLS/TTFB/total). Nil = never URL-tested. Runtime-only: never
+	// part of the fingerprint.
+	URLTest *URLTestMetrics `json:"url_test,omitempty"`
+
+	// Handshake holds the latest protocol-core handshake timing.
+	// Runtime-only: never part of the fingerprint.
+	Handshake *HandshakeMetrics `json:"handshake,omitempty"`
+
+	// LastSuccessAt is the last time this candidate provided verified
+	// usable connectivity (Unix milliseconds) — the freshness anchor
+	// for "Recently Verified" ranking. Runtime-only.
+	LastSuccessAt int64 `json:"last_success_at,omitempty"`
+
+	// FailureStreak counts consecutive failed verifications since the
+	// last success; reset on every success. Runtime-only.
+	FailureStreak int `json:"failure_streak,omitempty"`
+
+	// LastFailureReason is the classified cause of the most recent
+	// failure (timeout/refused/reset/handshake/verify), stored
+	// without credentials. Runtime-only.
+	LastFailureReason string `json:"last_failure_reason,omitempty"`
 }
 
 // TestHistoryLimit caps the per-config observation ring. Twelve

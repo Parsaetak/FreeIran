@@ -20,11 +20,21 @@
 //	FAKECORE_FAIL_FAST=1          exit(3) before listening
 //	FAKECORE_CRASH_AFTER_START=1  exit(5) 300ms after startup
 //	FAKECORE_HANG=1               never listen, never exit (timeout paths)
+//
+// v0.9.6 verification mode (connection-engine VERIFY + racing tests):
+//
+//	FAKECORE_SOCKS_RELAY=h:p      speak minimal SOCKS5 on the inbound
+//	                               listener and relay every CONNECT to
+//	                               the given upstream address, so the
+//	                               tunnel-verification path (a real
+//	                               HTTP request through the tunnel)
+//	                               can be exercised end-to-end.
 package main
 
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/signal"
@@ -112,13 +122,21 @@ func main() {
 	}
 
 	go func() {
+		relayTarget := os.Getenv("FAKECORE_SOCKS_RELAY")
+
 		for {
 			conn, err := listener.Accept()
 			if err != nil {
 				return
 			}
 
-			_ = conn.Close()
+			if relayTarget == "" {
+				_ = conn.Close()
+
+				continue
+			}
+
+			go serveSocks5(conn, relayTarget)
 		}
 	}()
 
@@ -251,4 +269,130 @@ func version() string {
 	}
 
 	return "v0-test"
+}
+
+// serveSocks5 implements just enough of RFC 1928 (no-auth greeting +
+// CONNECT) for engine/socks5.Dialer to establish a tunnel, then
+// relays bytes to the configured upstream. It exists so the
+// connection-engine verification and racing tests can exercise the
+// real tunnel-verification path against the deterministic fake core.
+func serveSocks5(conn net.Conn, upstream string) {
+	defer conn.Close()
+
+	greet := make([]byte, 3)
+	if _, err := io.ReadFull(conn, greet); err != nil {
+		return
+	}
+
+	if greet[0] != 0x05 {
+		return
+	}
+
+	if _, err := conn.Write([]byte{0x05, 0x00}); err != nil {
+		return
+	}
+
+	head := make([]byte, 4)
+	if _, err := io.ReadFull(conn, head); err != nil {
+		return
+	}
+
+	if head[1] != 0x01 {
+		_, _ = conn.Write([]byte{0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+
+		return
+	}
+
+	// Consume the request's DST.ADDR/DST.PORT fields; the relay
+	// always dials its configured upstream regardless of the
+	// requested destination (all the verification tests need).
+	if _, err := readSocksAddr(conn, head[3]); err != nil {
+		_, _ = conn.Write([]byte{0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+
+		return
+	}
+
+	up, err := net.Dial("tcp", upstream)
+	if err != nil {
+		_, _ = conn.Write([]byte{0x05, 0x04, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+
+		return
+	}
+
+	defer up.Close()
+
+	if _, err := conn.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0}); err != nil {
+		return
+	}
+
+	relay(conn, up)
+}
+
+// readSocksAddr consumes the DST.ADDR/DST.PORT fields of a SOCKS5
+// request (the relay ignores them and always dials its configured
+// upstream, which is all the verification tests need).
+func readSocksAddr(conn net.Conn, atyp byte) (string, error) {
+	switch atyp {
+	case 0x01:
+		b := make([]byte, 4)
+		if _, err := io.ReadFull(conn, b); err != nil {
+			return "", err
+		}
+
+		port := make([]byte, 2)
+		if _, err := io.ReadFull(conn, port); err != nil {
+			return "", err
+		}
+
+		return net.JoinHostPort(net.IP(b).String(), strconv.Itoa(int(port[0])<<8|int(port[1]))), nil
+	case 0x03:
+		l := make([]byte, 1)
+		if _, err := io.ReadFull(conn, l); err != nil {
+			return "", err
+		}
+
+		host := make([]byte, l[0])
+		if _, err := io.ReadFull(conn, host); err != nil {
+			return "", err
+		}
+
+		port := make([]byte, 2)
+		if _, err := io.ReadFull(conn, port); err != nil {
+			return "", err
+		}
+
+		return string(host) + ":" + strconv.Itoa(int(port[0])<<8|int(port[1])), nil
+	case 0x04:
+		b := make([]byte, 16)
+		if _, err := io.ReadFull(conn, b); err != nil {
+			return "", err
+		}
+
+		port := make([]byte, 2)
+		if _, err := io.ReadFull(conn, port); err != nil {
+			return "", err
+		}
+
+		return net.JoinHostPort(net.IP(b).String(), strconv.Itoa(int(port[0])<<8|int(port[1]))), nil
+	default:
+		return "", fmt.Errorf("unsupported atyp %d", atyp)
+	}
+}
+
+// relay copies bytes between the two connections until either side
+// closes.
+func relay(a, b net.Conn) {
+	done := make(chan struct{}, 2)
+
+	go func() {
+		_, _ = io.Copy(a, b)
+		done <- struct{}{}
+	}()
+
+	go func() {
+		_, _ = io.Copy(b, a)
+		done <- struct{}{}
+	}()
+
+	<-done
 }

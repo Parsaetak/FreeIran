@@ -236,6 +236,57 @@ export class Config {
              */
             this["tested_at"] = undefined;
         }
+        if (/** @type {any} */(false)) {
+            /**
+             * v0.9.6 Ping test metrics (min/median/avg/max/jitter/
+             * loss/samples), plain object on the wire.
+             * @member
+             * @type {any | undefined}
+             */
+            this["ping"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * v0.9.6 URL test metrics (dns/connect/tls/ttfb/total/
+             * status/ok), plain object on the wire.
+             * @member
+             * @type {any | undefined}
+             */
+            this["url_test"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * v0.9.6 protocol handshake metrics, plain object.
+             * @member
+             * @type {any | undefined}
+             */
+            this["handshake"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * v0.9.6 last verified-usable timestamp (Unix ms).
+             * @member
+             * @type {number | undefined}
+             */
+            this["last_success_at"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * v0.9.6 consecutive failed verifications since the last
+             * success.
+             * @member
+             * @type {number | undefined}
+             */
+            this["failure_streak"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * v0.9.6 classified cause of the most recent failure.
+             * @member
+             * @type {string | undefined}
+             */
+            this["last_failure_reason"] = undefined;
+        }
 
         Object.assign(this, $$source);
     }

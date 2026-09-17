@@ -112,6 +112,9 @@ func main() {
 			application.NewService(app.NewTunnelService(applicationInstance)),
 			// v0.9.0: manual Internet / Network Diagnostics (§3).
 			application.NewService(app.NewNetworkService(applicationInstance)),
+			// v0.9.6: discovery engine, environment intelligence and
+			// the adaptive start flow (§5/§15).
+			application.NewService(app.NewDiscoveryService(applicationInstance)),
 		},
 		Assets: application.AssetOptions{
 			Handler: application.BundledAssetFileServer(assets),
@@ -130,6 +133,13 @@ func main() {
 	// verification and smoke-test stages live (§9).
 	applicationInstance.SetCoreProgressListener(func(progress coremgr.InstallProgress) {
 		wailsApp.Event.Emit("freeiran:coreprogress", progress)
+	})
+
+	// v0.9.6: forward adaptive start-flow progress (detect → discover →
+	// test → rank → connect → verify) to the UI as events — real stage
+	// transitions with measured durations, never a fake animation.
+	applicationInstance.Discovery().SetFlowListener(func(ev app.StartFlowEvent) {
+		wailsApp.Event.Emit("freeiran:startflow", ev)
 	})
 
 	// Startup lifecycle (v0.9.4): the engine services are bound to

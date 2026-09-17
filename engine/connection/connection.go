@@ -136,6 +136,10 @@ type Manager struct {
 	latencyMS   int64
 	port        int
 
+	// v0.9.6: post-connect verification state (see verify.go).
+	verifiedAt time.Time
+	lastVerify VerifyResult
+
 	monitorCancel context.CancelFunc
 	shutdown      bool
 }
@@ -472,6 +476,52 @@ func (m *Manager) snapshotLocked() Snapshot {
 	}
 
 	return snapshot
+}
+
+// VerifyConnected verifies USABLE connectivity through the ACTIVE
+// session's tunnel (v0.9.6 §12: a ready listener proves the local
+// core, not the path). The verification result is recorded and
+// returned to the caller; a failed verification does NOT tear the
+// session down - that decision belongs to the recovery policy, which
+// uses the failure class.
+func (m *Manager) VerifyConnected(ctx context.Context, opts VerifyOptions) (VerifyResult, error) {
+	if m == nil {
+		return VerifyResult{}, firerrors.New(firerrors.KindFatal,
+			Subsystem, "verify", "manager is nil")
+	}
+
+	m.mu.Lock()
+	instance := m.instance
+	state := m.state
+	m.mu.Unlock()
+
+	if instance == nil || state != StateConnected {
+		return VerifyResult{}, firerrors.New(firerrors.KindConfiguration,
+			Subsystem, "verify",
+			"no active session to verify (state %s)", state)
+	}
+
+	result := VerifyTunnel(ctx, instance.Endpoint(), opts)
+
+	m.mu.Lock()
+	m.lastVerify = result
+
+	if result.OK {
+		m.verifiedAt = time.Now().UTC()
+	}
+
+	m.mu.Unlock()
+
+	return result, nil
+}
+
+// LastVerification returns the most recent verification result of the
+// active session (zero value when never verified).
+func (m *Manager) LastVerification() VerifyResult {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.lastVerify
 }
 
 // State returns the current lifecycle state.

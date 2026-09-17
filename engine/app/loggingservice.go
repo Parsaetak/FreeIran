@@ -79,6 +79,40 @@ type Settings struct {
 	// Applied to the live engine immediately on save.
 	DevForceGoFallback bool `json:"dev_force_go_fallback"`
 
+	// --- v0.9.6 test modes, ranking and racing (§9/§10/§13) ---------
+
+	// TestMode is the user-selected test mode: "ping", "url",
+	// "ping_url", "handshake" or "full" ("" = ping_url default).
+	TestMode string `json:"test_mode,omitempty"`
+
+	// TestPingSamples bounds the ping facet's sample count
+	// (0 = default 4; clamped 1-16).
+	TestPingSamples int `json:"test_ping_samples,omitempty"`
+
+	// TestURL is the URL-test target ("" = the standard 204 endpoint).
+	TestURL string `json:"test_url,omitempty"`
+
+	// TestURLTimeoutSeconds bounds the URL facet (0 = default 12s).
+	TestURLTimeoutSeconds int `json:"test_url_timeout_seconds,omitempty"`
+
+	// TestMaxCandidates caps how many candidates one flow tests
+	// (0 = default 20; clamped 1-200).
+	TestMaxCandidates int `json:"test_max_candidates,omitempty"`
+
+	// SortMode is the ranking order: best_overall (default),
+	// lowest_ping, lowest_median_ping, lowest_jitter,
+	// lowest_packet_loss, best_url_response, highest_success_rate,
+	// most_stable, recently_verified.
+	SortMode string `json:"sort_mode,omitempty"`
+
+	// EnableRacing turns on controlled connection racing of the top
+	// candidates (first VERIFIED usable connection wins).
+	EnableRacing bool `json:"enable_racing"`
+
+	// RacingCandidates is how many top candidates race (2-4,
+	// default 2).
+	RacingCandidates int `json:"racing_candidates,omitempty"`
+
 	// DisableAutoRecovery turns off the v0.9.3 automatic recovery
 	// supervisor. Recovery is ON by default (the autonomous
 	// connection engine's core promise): when the active

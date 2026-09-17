@@ -56,7 +56,10 @@ export function StatusBar({ version }: { version?: string }) {
       <span className="status-bar-spacer" />
 
       {(backend || version) && (
-        <span className="truncate-cell">{version || `v${backend?.version}`}</span>
+        <span className="truncate-cell">
+          {version || `v${backend?.version}`}
+          {backend?.identity ? ` · ${backend.identity}` : ""}
+        </span>
       )}
       {backend && <span className="truncate-cell">{backend.config_count} configurations</span>}
       {backend && <span className="truncate-cell hide-sm">accel: {backend.native_acceleration}</span>}

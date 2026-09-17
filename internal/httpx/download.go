@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -194,8 +193,15 @@ func (c *Client) download(ctx context.Context, url string, o DownloadOptions, mo
 		if attempted && err != nil {
 			// Parallel failed unrecoverably: fall back to the
 			// single-stream engine resuming from whatever contiguous
-			// prefix survived.
-			return c.downloadSingle(ctx, url, o, mon, -1)
+			// prefix survived. v0.9.6: rebase the aggregate telemetry
+			// onto the durable prefix - the failed workers' aborted
+			// bytes no longer count as progress, so the fallback
+			// reports honest numbers.
+			offset := partSize(partPath(o.DestPath))
+
+			mon.resetTo(offset)
+
+			return c.downloadSingle(ctx, url, o, mon, offset)
 		}
 	}
 
@@ -223,6 +229,11 @@ func (c *Client) downloadSingle(ctx context.Context, url string, o DownloadOptio
 
 	if forceOffset < 0 {
 		offset = partSize(part)
+	} else if forceOffset > 0 {
+		// Inherited resume (the parallel-fallback entry point): the
+		// transfer continues from an explicitly supplied durable
+		// offset, which counts as a resume in the result telemetry.
+		resumedAt = forceOffset
 	}
 
 	markResume := func(from int64) {
@@ -667,32 +678,9 @@ func hashPrefix(f *os.File, h io.Writer, n int64) error {
 	return err
 }
 
-// finalizeCompletedPart syncs the .part file and renames it into
-// place (the atomic activation point of a finished download).
-func finalizeCompletedPart(part, dest string) error {
-	f, err := os.Open(part)
-	if err != nil {
-		return fmt.Errorf("httpx: finalize: %w", err)
-	}
-
-	if serr := f.Sync(); serr != nil {
-		f.Close()
-
-		return fmt.Errorf("httpx: finalize sync: %w", serr)
-	}
-
-	f.Close()
-
-	if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
-		return fmt.Errorf("httpx: finalize mkdir: %w", err)
-	}
-
-	if err := os.Rename(part, dest); err != nil {
-		return fmt.Errorf("httpx: finalize rename: %w", err)
-	}
-
-	return nil
-}
+// finalizeCompletedPart moved to finalize.go in v0.9.6, where the
+// Windows root cause of the v0.9.5 CI regression was fixed (the
+// read-only open + Sync that FlushFileBuffers rejects on Windows).
 
 // fileSHA256 hashes a completed file (used for the 416-already-
 // complete shortcut and by callers that skip the streaming hash).
@@ -1003,6 +991,14 @@ func (m *progressMonitor) setWorkers(n int) { m.workers.Store(int32(n)) }
 func (m *progressMonitor) resetFresh() {
 	m.resumed.Store(0)
 	m.bytesDone.Store(0)
+}
+
+// resetTo rebases aggregate accounting onto a durable on-disk offset.
+// Used when the parallel engine falls back to single-stream: only the
+// preserved contiguous prefix counts as progress from that point on.
+func (m *progressMonitor) resetTo(offset int64) {
+	m.resumed.Store(offset)
+	m.bytesDone.Store(offset)
 }
 
 // emit delivers one sample to the callback (if any).

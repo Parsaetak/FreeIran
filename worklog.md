@@ -3092,3 +3092,65 @@ Stage Summary:
   logging is gone at the producer with a regression test.
 - Deliverable: FreeIran-0.9.5.zip (complete source replacement,
   verified by clean-dir extraction).
+
+---
+## v0.9.6 — Complete engineering upgrade
+
+Task ID: v0.9.6-upgrade
+Agent: Super Z (main)
+Task: Full v0.9.6 engineering upgrade: root-cause the Windows CI regression, redesign node discovery as a real multi-level pipeline, add Ping/URL test modes with real measurements and ranking separation, strengthen the connection engine (verify + racing), environment intelligence, SHEYTAN digital-system identity, documentation and version synchronization.
+
+Work Log:
+- INSPECT: cloned at fe66ea6 (v0.9.5). CI Run #21 on v0.9.5: "Go tests" green, "Windows tests and desktop build" FAILED (exit code 1 at "Run Go tests").
+- ROOT CAUSE (Windows-only): internal/httpx finalizeCompletedPart opened the .part read-only (os.Open) and called f.Sync(); Windows FlushFileBuffers requires GENERIC_WRITE → ERROR_ACCESS_DENIED on EVERY completed download → coremgr fail("download") → dependency_unavailable: xray: download. The whole httpx package was introduced in the very commit that broke Windows CI.
+- FIX: internal/httpx/finalize.go — open O_RDWR for the sync, close BEFORE rename, bounded retry (25–400 ms, ~775 ms cap) ONLY on Windows sharing violation (ERROR_SHARING_VIOLATION 32; nothing else is retried). .part stays recoverable on failure; destination stays untouched. Six regression tests including the direct finalize test that fails on Windows with the v0.9.5 code.
+- Parallel-range path: same finalize fix; concatenateSlices now closes its output handle explicitly (checked) before slice removal and finalization; fallback telemetry rebased onto the preserved contiguous prefix (mon.resetTo) so progress is honest after a failed parallel attempt; downloadSingle records inherited resumes in the result telemetry.
+- DISCOVERY (engine/discovery): full multi-level pipeline DISCOVER → INGEST → PARSE → NORMALIZE → DEDUPLICATE → VALIDATE with 8 levels (cached → configured → trusted public → smart search → content-derived → recovery → deep), bounded concurrency (6 fetchers), per-source failure isolation, source-health tracking (availability/parse success/valid yield/duplicate rate/latency/freshness/exponential backoff capped at 6 h — never a permanent blacklist) persisted to discovery-health.json, and target-satisfaction level skipping.
+- SMART SEARCH: GitHub repository search with query budget (3/cycle), repo budget (12), probe budget (24) across conventional raw paths, rate-limit backoff (10 min after 403/429), per-query cache (6 h TTL), staleness demotion (30 days), content validation (min 3 valid candidates to promote a probe to a source; 1 in deep mode). Content-derived discovery extracts bounded (≤8/body) raw-endpoint references from valid fetched content; GitHub HTML pages are never scraped.
+- NODE MODEL: one canonical representation — config.Config extended with Ping/URLTest/Handshake metrics, LastSuccessAt, FailureStreak, LastFailureReason (all runtime-only, never in the fingerprint); discovery.Node wraps Config with provenance (level, source, timestamps).
+- TEST MODES (engine/tester): PingProbe (repeated TCP-handshake samples; min/median/avg/max/jitter/loss/timeout counts; the honest user-space ICMP substitute — documented), URLTester (real HTTP through the tunnel with httptrace phases: DNS/connect/TLS/TTFB/total/status/bytes; disposable transports), ModeTester composing five user-selectable modes (ping | url | ping_url | handshake | full) with per-mode verdicts — a 20 ms ping with failed URL is NOT working in ping_url mode.
+- RANKING (engine/ranking/scores.go): separate PingScore/URLScore/StabilityScore/SuccessScore/FreshnessScore/SourceScore/CompatibilityScore/OverallScore with PROVENANCE (measured/estimated/unavailable/stale); nine sort modes; ping sorts partition measured-first so estimates are never displayed as measured pings; the spec's example (fast-but-broken vs slower-but-working) is a regression test.
+- CONNECTION (engine/connection): VerifyTunnel (real HTTP through the active tunnel, classified failures: timeout/refused/reset/tls/http_status/proxy_handshake/core), Manager.VerifyConnected + LastVerification; controlled racing (Race: 2–4 racers, per-racer cancellation, first VERIFIED-usable wins, losing instances closed deterministically, winner config returned for the definitive Connect).
+- ENVIRONMENT (engine/netcheck/environment.go): evidence-based signals — direct_ok/dns_failure/http_failure/tls_failure/repeated_timeout/captive_portal/proxy_environment/unstable_connectivity/restricted_access — with DeepDiscoveryAdvised. No QUIC claims (no stdlib QUIC client; QUIC-family transports belong to the cores). No censorship-certainty claims.
+- APP LAYER (engine/app/discoveryservice.go): the adaptive START → DETECT → DISCOVER → TEST → RANK → CONNECT → VERIFY flow with real stage events ("freeiran:startflow"), manual-selection override, DiscoverNow, source-health surface; Settings extended (TestMode/TestPingSamples/TestURL/TestURLTimeoutSeconds/TestMaxCandidates/SortMode/EnableRacing/RacingCandidates); testqueue adapter unchanged (mode flows through the start flow and manual tests).
+- FAKECORE UPGRADE: FAKECORE_SOCKS_RELAY=host:port — the deterministic fake core now speaks minimal RFC 1928 and relays to a configured upstream, so verification/racing/E2E paths are testable end-to-end with the fixture (TestRaceWithFakeCores runs a REAL race).
+- SHEYTAN IDENTITY: internal/version.SystemIdentity + IdentityLine() = "FreeIran — A SHEYTAN Digital System"; AppState.Identity surfaced in the UI status bar; winres.json (ProductName/Description/CompanyName) and the Inno Setup publisher updated. The product name stays FreeIran.
+- VERSION SYNC: VERSION, internal/version, frontend/package.json, frontend/package-lock.json, scripts/freeiran.iss, README, winres.json all say 0.9.6; CI version-consistency gate passes.
+- FRONTEND: SmartStartPanel (adaptive flow UI with real stage progress, environment evidence, measured result summary), startflowStore (+11 tests, 51 total), Settings "Test modes & ranking" section, Configs ping/URL columns with provenance labels (measured vs estimated vs stale vs not run), StatusBar identity line, hand-written DiscoveryService bindings following the repo's Call.ByName precedent, v0.9.6 fields added to the generated Config/Settings/AppState models. Frontend rebuilt; embed assets refreshed (copy-dist cleans stale bundles).
+- DOCUMENTATION: README v0.9.6 section; docs/architecture.md discovery/testing/ranking/connection/environment sections; docs/development.md new packages; docs/performance.md bounded concurrency; docs/security.md new surface review; this worklog. Release-Manifest.md / Updated-Files.md / REPLACEMENT_MANIFEST.md actually deleted (v0.9.5 claimed it but the files were still present).
+- REGRESSION: gofmt clean; go vet clean; full engine/system/internal matrix PASS (non-race and -race); benchmarks smoke PASS incl. httpx single vs parallel; frontend typecheck + 51 vitest tests + production build + build:embed PASS; GOOS=windows cross-compile PASS; go vet on GOOS=windows PASS. Linux desktop smoke test could not run here (no GTK on this machine — environment limitation, recorded; the Windows CI job runs it and the windows/amd64 build compiles the identical tree).
+
+Stage Summary:
+- The v0.9.5 Windows CI regression is root-caused and fixed at the exact defect site with regression tests that would have caught it.
+- Discovery, testing, ranking, connection and environment intelligence are measurement-grounded subsystems with provenance discipline end to end.
+- Deliverable: FreeIran-v0.9.6.zip (complete final repository state).
+
+---
+### v0.9.6 real-network validation (§23) — measured, not fabricated
+
+Run: 2026-09-17, `go run ./tools/neteval` from the final tree, live Internet.
+
+- DISCOVERY (live sources, FullLevels): 6565 valid nodes, 203 duplicates
+  removed, 963 ms total. 7/14 configured sources healthy (availability
+  1.00, parse 1.00, yield 0.55–1.00, fetch latency 188–553 ms); the 7
+  failing sources (0xRadikal data/protocol endpoints) failed in ISOLATION
+  and entered backoff — the healthy sources' results were untouched.
+- SMART SEARCH (live GitHub API, 2 queries): 12 repositories in 1102 ms,
+  all fresh (pushed within ~2 weeks), topped by 0xRadikal/Free-v2ray-Configs
+  (603 stars). No rate-limit responses; budgets respected.
+- REAL PING (4 TCP samples per endpoint, top 12 nodes): 12/12 answered;
+  medians 181–206 ms, jitter 0–10 ms, loss 0.00 on the live set (an
+  earlier run measured 8/12 answering with 4 black-holed endpoints
+  correctly counted as timeouts — the timeout classification works on
+  real dead nodes).
+- REAL URL TESTS (direct, machinery proof): gstatic 204 in 30 ms
+  (dns 1 / connect 6 / tls 19 / ttfb 4), cloudflare 204 in 24 ms
+  (dns 1 / connect 6 / tls 8 / ttfb 9).
+- RANKING over the measured pool: measured pings scored with
+  Provenance=measured; URL scores honestly "unavailable" in this
+  environment (no protocol core installed here) — recorded as a
+  limitation, never substituted with an estimate.
+- Tunnel-path URL verification and racing behaviour are covered by the
+  fake-core end-to-end tests in CI (TestRaceWithFakeCores drives a REAL
+  race through FAKECORE_SOCKS_RELAY); this environment cannot run real
+  protocol cores, so no real-tunnel numbers are claimed.

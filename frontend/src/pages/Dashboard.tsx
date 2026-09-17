@@ -20,6 +20,8 @@ import {
 } from "../components/common";
 import { IconClock, IconCpu, IconPlay, IconSignal, IconStop } from "../components/Icons";
 import type { Page } from "../types/ui";
+import { useStartFlowStore, stageIndex, STAGE_ORDER } from "../state/startflowStore";
+import { flowStageLabel } from "../types/discovery";
 
 const ACTIVITY_LIMIT = 8;
 const ACTIVITY_POLL_MS = 2000;
@@ -110,6 +112,10 @@ export function DashboardPage({ onNavigate }: { onNavigate: (page: Page) => void
         connected={connected}
         connecting={uiState === "connecting"}
       />
+
+      {/* v0.9.6 adaptive start flow: START → DETECT → DISCOVER →
+          TEST → RANK → CONNECT → VERIFY, with real stage progress. */}
+      <SmartStartPanel onNavigate={onNavigate} connected={connected} />
 
       {/* Live connection panel */}
       <section className="conn-panel" aria-label="Connection status">
@@ -310,6 +316,151 @@ export function DashboardPage({ onNavigate }: { onNavigate: (page: Page) => void
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * v0.9.6 Smart Start panel: the adaptive flow with real stage
+ * progress, environment evidence and measured result summary.
+ * Progress comes from engine events — every stage shows its measured
+ * duration, never a fabricated animation.
+ */
+function SmartStartPanel({
+  onNavigate,
+  connected,
+}: {
+  onNavigate: (page: Page) => void;
+  connected: boolean;
+}) {
+  const flowStatus = useStartFlowStore((state) => state.status);
+  const environment = useStartFlowStore((state) => state.environment);
+  const busy = useStartFlowStore((state) => state.busy);
+  const error = useStartFlowStore((state) => state.error);
+  const run = useStartFlowStore((state) => state.run);
+  const cancel = useStartFlowStore((state) => state.cancel);
+  const discoverNow = useStartFlowStore((state) => state.discoverNow);
+
+  const running = Boolean(flowStatus?.running) || busy;
+  const stage = flowStatus?.stage ?? "idle";
+  const current = stageIndex(stage);
+  const flowSteps = STAGE_ORDER.slice(1, 7); // detect … verify
+
+  return (
+    <section className="card mb-4" aria-label="Smart start">
+      <div className="card-header">
+        <h3 className="card-title">
+          <IconSignal size={14} /> Smart start
+        </h3>
+        <div className="toolbar">
+          <button
+            type="button"
+            className="btn sm ghost"
+            disabled={running}
+            onClick={() => void discoverNow(false)}
+            title="Run one discovery pass over the configured and trusted public sources"
+          >
+            Discover now
+          </button>
+          {running ? (
+            <button type="button" className="btn sm danger ghost" onClick={() => void cancel()}>
+              Cancel
+            </button>
+          ) : null}
+        </div>
+      </div>
+
+      <p className="page-subtitle" style={{ marginBottom: 12 }}>
+        One button runs the full flow: environment detection, multi-level discovery,
+        testing, ranking by your selected sort mode, connection and connectivity
+        verification. Manual selection on the Connection page always overrides
+        automatic selection.
+      </p>
+
+      {/* Stage progress: only real transitions, with measured durations */}
+      <div className="conn-steps" aria-label="Start flow progress">
+        {flowSteps.map((step, index) => {
+          const stepDone = current > index + 1 || stage === "connected";
+          const stepCurrent = stage === step || (stage === "connected" && step === "verifying");
+          return (
+            <Fragment key={step}>
+              {index > 0 && <span className="conn-step-sep" aria-hidden />}
+              <span
+                className={`conn-step ${stepDone ? "done" : stepCurrent ? "current" : ""}`}
+              >
+                {flowStageLabel(step)}
+              </span>
+            </Fragment>
+          );
+        })}
+      </div>
+
+      {/* Live stage message */}
+      {flowStatus?.message ? (
+        <p className="cell-sub" style={{ marginTop: 8 }}>
+          {flowStatus.message}
+        </p>
+      ) : null}
+
+      {/* Environment evidence */}
+      {environment ? (
+        <p className="cell-sub" style={{ marginTop: 4 }}>
+          <b>Environment:</b> {environment.summary}
+          {environment.signals.length > 0 ? ` (${environment.signals.join(", ")})` : ""}
+        </p>
+      ) : null}
+
+      {/* Measured result summary */}
+      {flowStatus?.last_result ? (
+        <div className="stat-grid" style={{ marginTop: 12 }}>
+          <StatTile
+            label="Valid candidates"
+            value={formatNumber(flowStatus.last_result.valid)}
+            sub={`${formatNumber(flowStatus.last_result.duplicates)} duplicates removed`}
+          />
+          <StatTile
+            label="Tested"
+            value={formatNumber(flowStatus.last_result.tested)}
+            sub="this flow run"
+          />
+          <StatTile
+            label="Verification"
+            value={flowStatus.last_result.verified ? "verified" : "failed"}
+            sub={flowStatus.last_result.failure_class || "usable connectivity"}
+          />
+          <StatTile
+            label="Flow duration"
+            value={`${(flowStatus.last_result.duration_ms / 1000).toFixed(1)}s`}
+            sub="measured"
+          />
+        </div>
+      ) : null}
+
+      {error ? <div className="error-banner mt-4">{error}</div> : null}
+
+      <div className="toolbar" style={{ marginTop: 12 }}>
+        <button
+          type="button"
+          className="btn primary lg"
+          disabled={running || connected}
+          onClick={() => void run()}
+        >
+          <IconPlay size={14} />
+          {connected ? "Connected" : "Start"}
+        </button>
+        <button
+          type="button"
+          className="btn ghost"
+          disabled={running}
+          onClick={() => void run()}
+          title="Re-run the flow to refresh candidates and re-verify"
+        >
+          Re-run flow
+        </button>
+        <button type="button" className="btn ghost" onClick={() => onNavigate("sources")}>
+          Sources &amp; health
+        </button>
+      </div>
+    </section>
   );
 }
 

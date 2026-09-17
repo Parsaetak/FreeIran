@@ -15,6 +15,7 @@ import { describeError, toast } from "../state/toastStore";
 import { EmptyState, TechDetails } from "../components/common";
 import { ConfirmDialog } from "../components/Dialog";
 import { IconFolder } from "../components/Icons";
+import { SORT_MODES, TEST_MODES } from "../types/discovery";
 
 const BACKEND_OPTIONS = ["xray", "v2ray", "sing-box"] as const;
 const TESTING_POLICIES = ["off", "on_add", "periodic"] as const;
@@ -417,6 +418,159 @@ export function SettingsPage() {
             re-tests them in the background.
           </span>
         </div>
+      </SettingsSection>
+
+      <SettingsSection
+        title="Test modes & ranking"
+        hint="v0.9.6: how candidates are measured and ranked (§9/§10)."
+      >
+        <div className="field">
+          <label className="field-label" htmlFor="test-mode">
+            Test mode
+          </label>
+
+          <select
+            id="test-mode"
+            className="select"
+            value={draft.test_mode || "ping_url"}
+            onChange={(event) => update({ test_mode: event.target.value })}
+          >
+            {TEST_MODES.map((mode) => (
+              <option key={mode.id} value={mode.id}>
+                {mode.label}
+              </option>
+            ))}
+          </select>
+
+          <span className="field-hint">
+            Ping measures real endpoint latency over repeated TCP samples; URL
+            proves usable HTTP connectivity through the tunnel; Full runs the
+            complete verification.
+          </span>
+        </div>
+
+        <div className="field">
+          <label className="field-label" htmlFor="test-samples">
+            Ping samples: {draft.test_ping_samples || 4}
+          </label>
+
+          <input
+            id="test-samples"
+            type="range"
+            min={1}
+            max={16}
+            step={1}
+            value={draft.test_ping_samples || 4}
+            onChange={(event) =>
+              update({ test_ping_samples: Number(event.target.value) })
+            }
+          />
+
+          <span className="field-hint">
+            More samples give a stabler median and jitter estimate; each sample
+            costs one TCP round trip.
+          </span>
+        </div>
+
+        <div className="field">
+          <label className="field-label" htmlFor="test-url">
+            URL test target
+          </label>
+
+          <input
+            id="test-url"
+            type="text"
+            className="input"
+            placeholder="https://www.gstatic.com/generate_204 (default)"
+            value={draft.test_url ?? ""}
+            onChange={(event) => update({ test_url: event.target.value })}
+          />
+
+          <span className="field-hint">
+            The endpoint URL tests request through each candidate's tunnel. A
+            204-style endpoint keeps the measurement small and cache-free.
+          </span>
+        </div>
+
+        <div className="field">
+          <label className="field-label" htmlFor="test-max">
+            Max candidates per flow: {draft.test_max_candidates || 20}
+          </label>
+
+          <input
+            id="test-max"
+            type="range"
+            min={5}
+            max={200}
+            step={5}
+            value={draft.test_max_candidates || 20}
+            onChange={(event) =>
+              update({ test_max_candidates: Number(event.target.value) })
+            }
+          />
+
+          <span className="field-hint">
+            Bounds how many candidates one Smart Start run measures (5–200).
+            Defaults stay lightweight.
+          </span>
+        </div>
+
+        <div className="field">
+          <label className="field-label" htmlFor="sort-mode">
+            Ranking order
+          </label>
+
+          <select
+            id="sort-mode"
+            className="select"
+            value={draft.sort_mode || "best_overall"}
+            onChange={(event) => update({ sort_mode: event.target.value })}
+          >
+            {SORT_MODES.map((mode) => (
+              <option key={mode.id} value={mode.id}>
+                {mode.label}
+              </option>
+            ))}
+          </select>
+
+          <span className="field-hint">
+            Ping-sorted lists only display MEASURED latencies — estimated or
+            stale numbers are labelled, never silently substituted.
+          </span>
+        </div>
+
+        <ToggleRow
+          id="enable-racing"
+          label="Race top candidates"
+          hint="When connecting, the top 2–4 candidates are raced in parallel and the first VERIFIED-USABLE connection wins; losing attempts are cancelled cleanly."
+          checked={Boolean(draft.enable_racing)}
+          onChange={(next) => update({ enable_racing: next })}
+        />
+
+        {draft.enable_racing ? (
+          <div className="field">
+            <label className="field-label" htmlFor="racing-candidates">
+              Racers: {draft.racing_candidates || 2}
+            </label>
+
+            <input
+              id="racing-candidates"
+              type="range"
+              min={2}
+              max={4}
+              step={1}
+              value={draft.racing_candidates || 2}
+              onChange={(event) =>
+                update({ racing_candidates: Number(event.target.value) })
+              }
+            />
+
+            <span className="field-hint">
+              Each racer temporarily starts one protocol-core process for the
+              duration of the race.
+            </span>
+          </div>
+        ) : null}
       </SettingsSection>
 
       <SettingsSection title="Appearance" hint="Motion and visual comfort.">

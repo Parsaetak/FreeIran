@@ -502,7 +502,8 @@ export function ConfigsPage() {
             <span>Proto</span>
             <span>Endpoint</span>
             <span className="hide-md">Transport</span>
-            <span>Latency</span>
+            <span title="Measured TCP ping (median of samples)">Ping</span>
+            <span className="hide-md" title="URL test through the tunnel">URL</span>
             <span className="hide-md">Health</span>
             <span className="hide-sm">Source</span>
             <span />
@@ -581,14 +582,16 @@ export function ConfigsPage() {
                       </span>
 
                       <span className="cell-latency">
-                        <span className={`latency ${latencyClass(Number(config["latency_ms"] ?? 0))}`}>
-                          {config["tested_at"] ? formatLatency(Number(config["latency_ms"] ?? 0)) : "—"}
-                        </span>
+                        <PingCell config={config} />
                         {config["test_backend"] && (
                           <span className="chip mono hide-sm" title="Backend that ran the last test">
                             {String(config["test_backend"])}
                           </span>
                         )}
+                      </span>
+
+                      <span className="hide-md">
+                        <URLCell config={config} />
                       </span>
 
                       <span className="hide-md">
@@ -788,6 +791,73 @@ function DetailPanel({ detail, onClose }: { detail: ConfigDetail; onClose: () =>
         </dl>
       </div>
     </aside>
+  );
+}
+
+/**
+ * v0.9.6 Ping cell: displays the MEASURED median TCP ping with its
+ * provenance. Estimated/unavailable latencies are labelled as such —
+ * never silently displayed as a ping (§10).
+ */
+function PingCell({ config }: { config: Config }) {
+  const ping = config["ping"] as
+    | { median_ms?: number; samples?: number; packet_loss?: number }
+    | undefined;
+  const testedAt = Number(config["tested_at"] ?? 0);
+  const legacyMs = Number(config["latency_ms"] ?? 0);
+
+  if (ping && (ping.samples ?? 0) > 0) {
+    const stale = testedAt > 0 && Date.now() - testedAt > 30 * 60 * 1000;
+    return (
+      <span
+        className={`latency ${latencyClass(ping.median_ms ?? 0)}`}
+        title={`median of ${ping.samples} samples${
+          ping.packet_loss ? ` · ${(ping.packet_loss * 100).toFixed(0)}% loss` : ""
+        }${stale ? " · measurement stale" : ""}`}
+      >
+        {formatLatency(ping.median_ms ?? 0)}
+        {stale ? <span className="chip mono"> stale</span> : null}
+      </span>
+    );
+  }
+
+  if (testedAt && legacyMs > 0) {
+    // Legacy measured latency (single probe through the tunnel): an
+    // honest estimate, labelled as such.
+    return (
+      <span
+        className="latency none"
+        title="estimated from the last tunnel probe — run a Ping test for a measured median"
+      >
+        ~{formatLatency(legacyMs)}
+      </span>
+    );
+  }
+
+  return <span className="value latency none">—</span>;
+}
+
+/** v0.9.6 URL cell: measured HTTP connectivity through the tunnel. */
+function URLCell({ config }: { config: Config }) {
+  const url = config["url_test"] as
+    | { ok?: boolean; status?: number; total_ms?: number; timeout?: boolean }
+    | undefined;
+
+  if (!url || !url.total_ms) {
+    return <span className="value latency none">not run</span>;
+  }
+
+  return (
+    <span
+      className={`latency ${url.ok ? latencyClass(url.total_ms ?? 0) : "bad"}`}
+      title={
+        url.ok
+          ? `HTTP ${url.status} in ${url.total_ms} ms through the tunnel`
+          : `failed${url.timeout ? " (timeout)" : ""}`
+      }
+    >
+      {url.ok ? `${url.total_ms} ms` : url.timeout ? "timeout" : "failed"}
+    </span>
   );
 }
 

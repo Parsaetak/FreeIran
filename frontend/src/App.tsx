@@ -3,6 +3,7 @@ import { Events } from "@wailsio/runtime";
 import { useAppStore, connectAppStore } from "./state/appStore";
 import { useSourcesStore, useConfigsStore } from "./state/stores";
 import { connectConnectionStore } from "./state/connectionStore";
+import { subscribeStartFlow, useStartFlowStore } from "./state/startflowStore";
 import { useSettingsStore, effectiveReducedMotion } from "./state/settingsStore";
 import { DashboardPage } from "./pages/Dashboard";
 import { SourcesPage } from "./pages/Sources";
@@ -54,6 +55,14 @@ export function App() {
     const disposeAppState = connectAppStore();
     const disposeConnection = connectConnectionStore();
 
+    // v0.9.6: start-flow broadcasts (detect → discover → test →
+    // rank → connect → verify) keep the Smart Start panel live.
+    const disposeStartFlow = subscribeStartFlow();
+
+    // Initial flow status + environment analysis for display.
+    void useStartFlowStore.getState().refresh();
+    void useStartFlowStore.getState().refreshEnvironment();
+
     // Startup lifecycle (v0.9.4): the first mounted frame reports
     // ui_ready to the backend — the real "interface usable" moment on
     // the boot telemetry scale. One-shot; failures are irrelevant.
@@ -66,6 +75,7 @@ export function App() {
     return () => {
       disposeAppState();
       disposeConnection();
+      disposeStartFlow();
     };
   }, []);
 

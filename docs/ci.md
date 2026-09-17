@@ -248,3 +248,22 @@ builds: `assets/freeiran-icon.svg` / `.ico` / `.png`, the embedded
 window icon copy (`internal/appicon`), and both committed Windows
 resource objects must exist, and the embedded PNG must be byte-identical
 to the canonical raster.
+
+## v0.9.6 — the regression the Windows matrix caught
+
+The v0.9.5 push added `internal/httpx` and turned the Windows CI job
+red while the Linux `go` job stayed green: the finalization bug
+(read-only open + `Sync`) is invisible on POSIX, where `fsync`
+accepts `O_RDONLY` descriptors, and fatal on Windows, where
+`FlushFileBuffers` requires `GENERIC_WRITE`. That asymmetry is
+precisely why the Windows job runs the FULL `go test ./...` matrix —
+it is the only place the defect was reproducible. The v0.9.6 fix
+(`internal/httpx/finalize.go`) ships with `TestFinalizeCompletedPartDirect`,
+a cross-platform regression test that fails on Windows against the
+v0.9.5 code, so the matrix keeps proving this class of defect.
+
+The new v0.9.6 engine packages (discovery, tester modes, ranking
+scores, connection verification/racing, netcheck environment) run in
+the existing `go` job (linux) and Windows matrix unchanged: they are
+pure-Go, network-free under tests (httptest + fake getters + the
+fake core's SOCKS-relay mode), so no workflow changes were required.

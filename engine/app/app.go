@@ -143,6 +143,13 @@ type App struct {
 	// candidate with bounded retries, cooldowns and failure memory.
 	recovery *RecoveryService
 
+	// discovery is the v0.9.6 discovery service: the multi-level
+	// node discovery engine, environment intelligence and the
+	// adaptive START → DETECT → DISCOVER → TEST → RANK → CONNECT →
+	// VERIFY flow. Lazily created by Discovery(); initMu serializes
+	// the lazy init exactly like the other v0.6 subsystems.
+	discovery *DiscoveryService
+
 	ctx    context.Context
 	cancel context.CancelFunc
 
@@ -176,8 +183,11 @@ type App struct {
 
 // AppState is the application state surfaced to the UI.
 type AppState struct {
-	Status           string          `json:"status"`
-	Version          string          `json:"version"`
+	Status  string `json:"status"`
+	Version string `json:"version"`
+	// Identity is the product identity line
+	// ("FreeIran — A SHEYTAN Digital System", v0.9.6 §19).
+	Identity         string          `json:"identity"`
 	StartedAt        int64           `json:"started_at"`
 	ConfigCount      int             `json:"config_count"`
 	IngestionRunning bool            `json:"ingestion_running"`
@@ -397,6 +407,7 @@ func New(opts Options) (*App, error) {
 		state: AppState{
 			Status:        "ready",
 			Version:       version.Version,
+			Identity:      version.IdentityLine(),
 			StartedAt:     time.Now().UTC().UnixMilli(),
 			NativeAcceler: nativeMode(),
 			Storage:       st.Snapshot(),
@@ -559,6 +570,21 @@ func (a *App) Context() context.Context {
 // New and never nil for a successfully booted app.
 func (a *App) CoreManager() *coremgr.Manager {
 	return a.coreMgr
+}
+
+// Discovery returns the v0.9.6 discovery service (multi-level node
+// discovery, environment intelligence, adaptive start flow). The
+// service is created lazily on first use and is a singleton for the
+// application lifetime.
+func (a *App) Discovery() *DiscoveryService {
+	a.initMu.Lock()
+	defer a.initMu.Unlock()
+
+	if a.discovery == nil {
+		a.discovery = NewDiscoveryService(a)
+	}
+
+	return a.discovery
 }
 
 // RefreshCores re-runs protocol-core discovery against the locator

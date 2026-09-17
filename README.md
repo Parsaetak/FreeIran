@@ -6,13 +6,168 @@ around a shared Go engine for discovering, testing, maintaining,
 running and tunneling through publicly available proxy/VPN
 configurations.
 
-**Project:** FreeIran
+**Project:** FreeIran — A SHEYTAN Digital System
 **Architect:** Parsa Tak / SHEYTAN
 **Repository:** https://github.com/Parsaetak/FreeIran
-**Current version:** 0.9.5 (see `VERSION`)
+**Current version:** 0.9.6 (see `VERSION`)
 **Status:** production architecture — multi-core protocol runtime with
-managed installation, test queue, system proxy and TUN mode, unified
-adaptive memory control and kernel-level process supervision
+managed installation, multi-level node discovery, Ping/URL test modes
+with measured ranking, verified-connection engine with racing,
+environment intelligence, system proxy and TUN mode, unified adaptive
+memory control and kernel-level process supervision
+
+---
+
+## What's new in v0.9.6
+
+v0.9.6 is a complete engineering upgrade: the Windows CI regression
+introduced by v0.9.5 is root-caused and fixed at the exact defect
+site, and the discovery → testing → ranking → connection chain is
+rebuilt around real measurements with provenance discipline.
+
+### The v0.9.5 Windows regression, actually root-caused
+
+v0.9.5 introduced `internal/httpx` (the unified production network
+path) and, with it, a Windows-only defect that failed the Windows CI
+job on every completed download while the Linux matrix stayed green:
+`finalizeCompletedPart` opened the staged `.part` file with a
+READ-ONLY handle and then called `Sync()` — on Windows,
+`FlushFileBuffers` requires `GENERIC_WRITE`, so every finalization
+returned *Access is denied* and surfaced downstream as
+`dependency_unavailable: <core>: download` (the download engine's
+failure, not a missing dependency). POSIX `fsync` accepts read-only
+descriptors, which is exactly why Linux could not reproduce it.
+
+The v0.9.6 finalization (`internal/httpx/finalize.go`):
+
+- opens the `.part` read-write (the access `FlushFileBuffers`
+  requires) and syncs it;
+- closes the descriptor BEFORE the rename — no goroutine of ours may
+  hold the file while it is replaced;
+- renames with a bounded, genuinely-appropriate retry for Windows
+  sharing violations ONLY (`ERROR_SHARING_VIOLATION`, ~775 ms worst
+  case — an antivirus scan, never a masked real error);
+- leaves the `.part` fully recoverable on failure and never touches
+  an existing destination until the replacement is safe.
+
+The parallel-range path shared the defect (it finalizes through the
+same function); it also gained honest fallback telemetry (a failed
+parallel attempt rebases the progress monitor onto the preserved
+contiguous prefix instead of double-counting aborted workers' bytes)
+and an explicitly-checked handle lifecycle in slice concatenation.
+Six regression tests guard the finalization semantics, including the
+direct test that fails on Windows with the v0.9.5 code.
+
+### Discovery as a real pipeline
+
+`engine/discovery` implements
+**DISCOVER → INGEST → PARSE → NORMALIZE → DEDUPLICATE → VALIDATE**
+across eight levels, cheapest and most trusted first:
+
+1. cached known nodes (the local store — no network);
+2. configured sources (the user's list);
+3. trusted public sources (the built-in verified registry);
+4. fresh public discovery via smart search;
+5. content-derived sources (references inside valid content);
+6. recovery discovery (emergency widening);
+7. deep discovery (restrictive-network escalation).
+
+Every level is bounded (fetch concurrency, query/repo/probe budgets),
+timeout-aware, rate-limit aware, cache-aware, duplicate-resistant and
+failure-isolated: a broken source never stops the others. Later
+levels are skipped when the pool already satisfies the target.
+
+### Smart node search
+
+Instead of a fixed list being the only entry point, the engine can
+SEARCH for public configuration candidates: GitHub repository search
+with protocol-appropriate terms, then probing a small bounded set of
+conventional raw-file paths, validated by actually parsing the
+content (a probe only becomes a source when it yields real
+candidates). Discipline: ≤3 API searches per cycle (≤10/min
+unauthenticated budget), ≤12 repositories, ≤24 raw-file probes, a
+10-minute backoff after any 403/429, 6-hour result caching, 30-day
+staleness demotion, and deduplication by repository and URL. GitHub
+HTML pages are never scraped — raw endpoints only.
+
+### Source intelligence
+
+Every source carries measured health: availability, parse success,
+valid-candidate yield, duplicate rate, latency, freshness, recent
+failures. Healthy sources are fetched first; failing sources enter an
+exponential backoff capped at six hours — one bad night never becomes
+a blacklist. Health persists in `discovery-health.json`.
+
+### Two first-class test modes
+
+**Ping** measures real endpoint latency over repeated TCP handshake
+samples (min/median/avg/max, jitter, packet loss, timeout counts —
+the honest user-space substitute for ICMP, which needs raw sockets).
+**URL** measures actual HTTP connectivity THROUGH the candidate's
+tunnel with a full phase breakdown (DNS, connect, TLS, TTFB, total,
+status, response size). Both are user-selectable alongside Protocol
+Handshake and Full Connectivity (`ping | url | ping_url | handshake |
+full`), with configurable samples, timeout, test URL and candidate
+cap. Defaults stay safe and lightweight.
+
+### Ranking by real measurements
+
+Nothing collapses into one unexplained number: PingScore, URLScore,
+StabilityScore, SuccessScore, FreshnessScore, SourceScore,
+CompatibilityScore and OverallScore are separate, and every latency
+number carries its provenance — **measured, estimated, unavailable or
+stale**. Nine sort modes (Best Overall, Lowest Ping, Lowest Median
+Ping, Lowest Jitter, Lowest Packet Loss, Best URL Response, Highest
+Success Rate, Most Stable, Recently Verified). A ping-sorted list
+never displays an estimated or source-provided number as a measured
+ping, and a 20 ms node with failed connectivity cannot outrank a
+75 ms node that consistently provides working Internet.
+
+### Verified connections and racing
+
+A tunnel whose core process started is not yet proven usable:
+FreeIran now VERIFIES usable connectivity with a real HTTP request
+through the active tunnel after connecting, classifies failures on
+evidence (timeout / refused / reset / TLS / HTTP status / proxy
+handshake / core), and feeds the class to the bounded recovery
+policy. When enabled, the top 2–4 candidates are raced in parallel —
+the first VERIFIED-USABLE connection wins and losing attempts are
+cancelled cleanly.
+
+### Environment intelligence
+
+Evidence-based signals — direct connectivity, DNS failure, HTTP
+failure, TLS failure against independent endpoints, repeated
+timeouts, captive portal, configured proxy, unstable latency,
+restricted access — drive discovery strategy (a restrictive
+environment escalates to deep discovery). No censorship-certainty
+claims; no QUIC-detection claims (the standard library ships no QUIC
+client — QUIC-family transports belong to the protocol cores).
+
+### The adaptive start flow
+
+**START → DETECT → DISCOVER → TEST → RANK → CONNECT → VERIFY →
+MONITOR**: one button runs the whole chain with real stage progress
+and measured durations. The user does not need to understand every
+protocol; advanced controls remain, and manual selection always
+overrides automatic selection.
+
+### SHEYTAN digital-system identity
+
+FreeIran is now identified as **a SHEYTAN Digital System** — in the
+About surface, the UI status bar, the Windows version resources, the
+installer metadata and this README. The product name stays FreeIran;
+branding never interferes with usability.
+
+### Verification
+
+Full matrix re-run on the upgraded tree: gofmt/vet clean, the
+fake-core test and race matrix (engine/system/internal), the frontend
+typecheck + 51 vitest tests + production build, the windows/amd64
+desktop cross-compile, and the benchmark smoke suite including the
+httpx single-stream vs parallel-range comparison. The fake test core
+gained a SOCKS-relay mode so verification and racing are exercised
+end-to-end against the deterministic fixture.
 
 ---
 

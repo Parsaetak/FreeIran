@@ -405,3 +405,35 @@ discipline:
 - The e2e ping adds one SOCKS5 CONNECT plus one small request per
   tested configuration — bounded by the per-config timeout and
   counted in the queue's throughput statistics like any other work.
+
+## 14. v0.9.6 additions
+
+The new subsystems keep the bounded-concurrency discipline:
+
+- **Discovery engine.** Fetch concurrency is capped (default 6
+  workers); parsing runs sequentially per fetched body (CPU-bound,
+  parallelism already happened at fetch time); level execution stops
+  when the candidate target is satisfied. Smart search is triple-
+  budgeted (3 API queries, 12 repositories, 24 raw probes per cycle),
+  caches per query for 6 hours and backs off 10 minutes after any
+  403/429 — GitHub's unauthenticated search budget is never at risk.
+- **Test modes.** Ping costs N TCP round trips per candidate (default
+  4, spaced 120 ms); the URL mode adds one disposable-transport HTTP
+  request bounded by the mode timeout. Both run inside the existing
+  bounded test budgets (default 20 candidates per start flow, clamp
+  5–200).
+- **Racing.** At most 4 concurrent temporary core instances, each
+  with independent cancellation; the first verified-usable winner
+  cancels the rest, so the expected steady state is one surviving
+  session exactly like the sequential path.
+- **Verification.** One bounded HTTP request through the active
+  tunnel per verification (default 12 s cap), user- or flow-
+  triggered — never a background poll.
+- **Environment analysis.** Five bounded probes (2 HTTPS, 1 plain-
+  HTTP, 1 DNS, computed latency spread) with results cached 5
+  minutes; the analyzer keeps only a small timeout-observation
+  memory.
+- **httpx finalization.** The bounded Windows sharing-violation
+  retry adds at most ~775 ms and ONLY in the transient-lock case;
+  healthy finalizations are unchanged (sync + rename, one extra
+  open-for-write compared to the broken v0.9.5 form).

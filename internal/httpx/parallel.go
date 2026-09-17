@@ -359,11 +359,24 @@ func concatenateSlices(slices []string, dest string) (string, int64, error) {
 		return "", 0, fmt.Errorf("httpx: concat open: %w", err)
 	}
 
-	defer out.Close()
-
 	hasher := sha256.New()
 
 	var total int64
+
+	// v0.9.6: the output handle is closed explicitly (and its close
+	// error checked) BEFORE the slice files are removed and before
+	// the caller renames the assembled .part into place. No deferred
+	// close may straddle the finalization boundary: the descriptor
+	// must be gone when finalizeCompletedPart opens the .part, and
+	// the slices must only be deleted once the assembled content is
+	// safely on disk.
+	succeeded := false
+
+	defer func() {
+		if !succeeded {
+			_ = out.Close()
+		}
+	}()
 
 	for _, s := range ordered {
 		f, err := os.Open(s)
@@ -385,7 +398,14 @@ func concatenateSlices(slices []string, dest string) (string, int64, error) {
 		return "", 0, fmt.Errorf("httpx: concat sync: %w", serr)
 	}
 
-	defer removeSlices(slices)
+	if cerr := out.Close(); cerr != nil {
+		return "", 0, fmt.Errorf("httpx: concat close: %w", cerr)
+	}
+
+	// Assembled and synced: the slices are redundant now.
+	removeSlices(slices)
+
+	succeeded = true
 
 	return hex.EncodeToString(hasher.Sum(nil)), total, nil
 }

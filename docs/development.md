@@ -272,3 +272,44 @@ go test -count=1 -run 'TestSetMaxEntries' ./engine/cache -v
 
 Windows code paths compile-verify from Linux with
 `GOOS=windows go vet ./...` and `GOOS=windows go test -c ./system`.
+
+## v0.9.6 — discovery, test modes, measured ranking, verification
+
+New packages and surfaces added by the v0.9.6 upgrade (see
+docs/architecture.md §v0.9.6 for the design):
+
+```sh
+# Multi-level discovery engine (levels, smart search, content refs,
+# source health; fake HTTP getter drives everything deterministically):
+go test -count=1 ./engine/discovery -v
+
+# Ping / URL test modes and the five-mode runner:
+go test -count=1 -run 'TestPing|TestURLTest|TestMode|TestApplyMode' ./engine/tester -v
+
+# Separated metric scores, provenance rules and the nine sort modes
+# (including the spec's fast-but-broken vs slower-but-working case):
+go test -count=1 -run 'TestSpecExample|TestPingSort|TestURLSort|TestRecentlyVerified|TestMetricScores|TestPingProvenance' ./engine/ranking -v
+
+# Tunnel verification + controlled racing (drives a REAL local SOCKS5
+# relay and the fake core in FAKECORE_SOCKS_RELAY mode):
+go test -count=1 -run 'TestVerifyTunnel|TestRace|TestClassifyVerifyFailure' ./engine/connection -v
+
+# Environment intelligence signals:
+go test -count=1 -run 'TestEnvironment' ./engine/netcheck -v
+
+# The httpx Windows finalization regression battery (the v0.9.5 CI
+# failure — the direct test fails on Windows with the old code):
+go test -count=1 -run 'TestFinalize|TestRenameAtomically' ./internal/httpx -v
+```
+
+The fake test core gained `FAKECORE_SOCKS_RELAY=host:port`: the
+inbound listener then speaks minimal RFC 1928 and relays every
+CONNECT to the configured upstream, so verification, racing and
+end-to-end tunnel tests run against the deterministic fixture
+instead of real servers.
+
+Frontend: the DiscoveryService bindings are hand-written
+(`frontend/bindings/.../discoveryservice.js`, the Call.ByName
+pattern documented in networkservice.js); their wire shapes live in
+`frontend/src/types/discovery.ts`, and the start-flow store tests
+mock only `Events.On` via a partial module mock.

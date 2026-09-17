@@ -192,3 +192,36 @@ are never treated as failures. Executable resolution for system
 shell binaries validates `%COMSPEC%` (must actually name cmd.exe)
 before use and falls back to the validated `%SystemRoot%\System32`
 location — a hijacked COMSPEC cannot smuggle an arbitrary binary.
+
+## v0.9.6 — discovery, testing and identity surfaces
+
+- **Smart search stays read-only and bounded.** The searcher only
+  issues GETs to GitHub's public repository-search API and
+  raw.githubusercontent.com; it never posts, never authenticates and
+  never scrapes HTML pages (raw endpoints only, enforced by the
+  reference extractor's pattern). Every budget exists to avoid
+  hammering third parties: 3 queries / 12 repositories / 24 probes
+  per cycle, 10-minute backoff after rate-limit responses, 6-hour
+  result caching.
+- **Untrusted content discipline.** Discovered candidates are
+  untrusted input exactly like classic source content: parse →
+  normalize → validate → dedupe before anything is stored; the parser
+  panics fail only their own body. Content-derived discovery only
+  follows references found inside content that already parsed
+  successfully (≤8 per body), never blind Internet crawling.
+- **Measurement records are credential-free.** Ping/URL/handshake
+  metrics, provenance labels and failure classes store numbers and
+  short classified strings; the URL-test failure classifier strips
+  errors to fixed classes before persistence. No credential ever
+  enters a metric record.
+- **Verification probes are bounded and disposable.** VerifyTunnel
+  issues one bounded HTTP request through the local tunnel with
+  `DisableKeepAlives` (measurement integrity AND no lingering
+  connections); the probe target honours the user's configured test
+  URL.
+- **Source health is observed, never self-reported.** Availability,
+  parse success and yield are computed from FreeIran's own fetch and
+  parse outcomes — no trust in source-provided claims.
+- **SHEYTAN identity is metadata only.** The digital-system identity
+  is a display string in the About surface, version resources and
+  installer metadata; it changes no code path and collects nothing.

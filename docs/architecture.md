@@ -613,3 +613,148 @@ helpers `PortableMode()`/`InstalledMode()` only label the deployment
 style; they never influence path resolution. The release workflow
 validates the package (required files, directories, VERSION and
 metadata consistency, single archive root) before publishing.
+
+## v0.9.6 additions — discovery pipeline, test modes, measured ranking, verified connections
+
+### engine/discovery — the multi-level discovery engine
+
+The ingestion pipeline of §3 remains the classic background refresh
+path. `engine/discovery` adds the interactive, strategy-driven
+discovery engine that the adaptive start flow drives:
+
+```text
+DISCOVER → INGEST → PARSE → NORMALIZE → DEDUPLICATE → VALIDATE
+     (TEST → SCORE → RANK → SELECT live downstream in
+      engine/tester, engine/ranking and engine/connection)
+```
+
+Discovery levels, cheapest and most trusted first:
+
+| Level | Name            | Source of candidates                                   |
+|-------|-----------------|--------------------------------------------------------|
+| 1     | cached          | the local store's pool (no network)                     |
+| 2     | configured      | the user's source list                                  |
+| 3     | trusted_public  | the built-in verified registry                          |
+| 4     | search          | smart GitHub repository search + raw-path probing       |
+| 5     | content         | references inside valid fetched content                 |
+| 6     | recovery        | emergency re-discovery on connection failure            |
+| 7     | deep            | restrictive-network escalation (more queries, min yield 1) |
+
+Guarantees: bounded fetch concurrency (6 default); per-source failure
+isolation; per-level statistics; target-satisfaction skipping (later
+levels only run when the pool is still short, unless ForceAll); and
+full context cancellation. The engine emits real `Progress` events at
+stage boundaries — parsing, validating, complete — never a fabricated
+animation.
+
+**Smart search** (`engine/discovery/search.go`) queries GitHub's
+repository search with protocol-appropriate terms, orders results by
+freshness (30-day staleness demotion) then stars, and probes a
+bounded set of conventional raw file paths
+(`raw.githubusercontent.com` ONLY — HTML blob pages are never
+scraped). Budgets: 3 queries, 12 repositories and 24 probes per
+cycle; a 403/429 backs the searcher off 10 minutes; results cache
+6 hours per query. A probe is promoted to a source only when its
+content parses into ≥3 valid candidates (≥1 in deep mode).
+
+**Source intelligence** (`engine/discovery/health.go`) tracks
+availability, parse success, valid yield, duplicate rate, latency,
+freshness and consecutive failures per source; fetches are issued
+healthiest-first, and failures drive an exponential backoff capped
+at six hours — never a permanent blacklist. State persists to
+`config/discovery-health.json` (corrupt files are discarded).
+
+**Canonical node model**: the ONE internal representation remains
+`config.Config` (protocol-specific parsing stays in `engine/parser`);
+v0.9.6 extends it with the measurement fields below.
+`discovery.Node` is the pipeline-stage view: Config plus provenance
+(level, source identity, discovery timestamp).
+
+### Test modes — engine/tester (ping.go, urltest.go, modes.go)
+
+`PingProbe` measures endpoint latency over repeated TCP handshake
+samples (default 4, 3 s timeout, 120 ms spacing): min/median/avg/max,
+jitter (mean absolute deviation of consecutive samples), packet loss,
+failure and timeout counts. TCP, not ICMP: ICMP echo needs raw
+sockets/privileges everywhere we run, and the TCP SYN/SYN-ACK RTT to
+the candidate's own port measures the exact path the production
+protocol uses. The UI labels the number a TCP ping accordingly.
+
+`URLTester` issues a real HTTP request through the candidate's tunnel
+(a `socks5.Dialer` bound to a running core instance) with an
+`httptrace` phase breakdown: DNS (local phase; for proxied requests
+the proxy resolves remotely — documented, its cost sits in the
+connect phase), connect (the SOCKS CONNECT round trip), TLS, TTFB,
+total, status code, response bytes, timeout classification. The
+transport is disposable (`DisableKeepAlives`) so measurements never
+ride a warmed-up connection.
+
+`ModeTester` composes five user-selectable modes —
+`ping | url | ping_url | handshake | full` — with per-mode verdicts:
+a candidate with a brilliant ping and a failed URL test is NOT
+working in `ping_url` mode; both facts stay visible. Outcomes land in
+the canonical Config fields (`Ping`, `URLTest`, `Handshake`,
+`LastSuccessAt`, `FailureStreak`, `LastFailureReason`) plus one
+bounded history observation, so ranking stays grounded in real
+outcomes.
+
+### Measured ranking — engine/ranking/scores.go
+
+Alongside the classic `Evaluate`/`Rank` surface, every candidate
+scores on SEPARATE dimensions: `PingScore`, `URLScore`,
+`StabilityScore`, `SuccessScore`, `FreshnessScore`, `SourceScore`,
+`CompatibilityScore`, and their weighted composite `OverallScore` —
+usable connectivity (URL + success) dominates the composite, so a
+fast-but-broken candidate cannot outrank a slower-working one. Every
+latency number carries provenance — `measured`, `estimated`,
+`unavailable` or `stale` (30-minute window) — and the ping sort modes
+partition measured-first, so estimated numbers are never displayed or
+ordered as measured pings. Nine sort modes (Best Overall through
+Recently Verified) with deterministic fingerprint tie-breaks.
+
+### Verified connections and racing — engine/connection (verify.go, racing.go)
+
+`VerifyTunnel` proves USABLE connectivity through an active tunnel
+with a bounded real HTTP request, classifying failures on evidence:
+`timeout`, `refused`, `reset`, `tls`, `http_status`,
+`proxy_handshake`, `core`. `Manager.VerifyConnected` exposes it for
+the active session and records the result; verification failure does
+not itself tear the session down — that decision belongs to the
+bounded recovery policy, which consumes the failure class.
+
+`Race` is the controlled racing capability: 2–4 top candidates each
+get a temporary core instance; the first candidate whose tunnel is
+VERIFIED USABLE wins; remaining racers are cancelled cleanly and
+every instance is closed deterministically. The winner's
+configuration is returned for the definitive `Manager.Connect`, so
+the production session lifecycle stays single-owner. Racing is
+opt-in (Settings), resource-bounded and fully cancellation-safe.
+
+### Environment intelligence — engine/netcheck/environment.go
+
+`EnvironmentAnalyzer` probes independent HTTPS endpoints
+(204-style), a plain-HTTP captive-portal probe, DNS and latency
+spread, producing evidence-based signals: `direct_ok`,
+`dns_failure`, `http_failure`, `tls_failure`, `repeated_timeout`
+(consecutive analyses), `captive_portal`, `proxy_environment`
+(HTTP(S)_PROXY/ALL_PROXY), `unstable_connectivity`,
+`restricted_access`. A restricted environment advises deep discovery;
+a captive portal reports the sign-in problem instead (discovery
+cannot fix an unauthenticated link). Deliberately NOT claimed: QUIC
+availability (no stdlib QUIC client — QUIC-family transports belong
+to the protocol cores) and censorship certainty (signals describe
+observed failures, not causes).
+
+### The adaptive start flow — engine/app/discoveryservice.go
+
+```text
+START → DETECT → DISCOVER → TEST → RANK → CONNECT → VERIFY → MONITOR
+        (env)    (levels)   (mode)  (sort)  (race/seq)  (HTTP)  (recovery)
+```
+
+`DiscoveryService.RunStartFlow` runs the chain with real stage events
+(`freeiran:startflow`: stage, message, measured duration) and a
+result summary (discovered/valid/duplicates/tested/verified/duration).
+Manual selection always overrides automatic selection. The service
+also exposes `DiscoverNow` (manual discovery pass), `SourceHealthList`
+(source intelligence for the UI) and the environment analysis.

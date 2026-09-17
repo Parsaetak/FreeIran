@@ -18,6 +18,7 @@ import * as coreService from "../../bindings/github.com/Parsaetak/FreeIran/engin
 import * as testQueueService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/testqueueservice.js";
 import * as tunnelService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/tunnelservice.js";
 import * as networkService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/networkservice.js";
+import * as discoveryService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/discoveryservice.js";
 import * as loggingModels from "../../bindings/github.com/Parsaetak/FreeIran/internal/logging/models.js";
 
 export {
@@ -33,6 +34,7 @@ export {
   testQueueService,
   tunnelService,
   networkService,
+  discoveryService,
   loggingModels,
 };
 

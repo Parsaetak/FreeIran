@@ -42,6 +42,15 @@ export class AppState {
              */
             this["version"] = "";
         }
+        if (!("identity" in $$source)) {
+            /**
+             * Product identity line ("FreeIran — A SHEYTAN Digital
+             * System", v0.9.6 §19).
+             * @member
+             * @type {string}
+             */
+            this["identity"] = "";
+        }
         if (!("started_at" in $$source)) {
             /**
              * @member
@@ -705,6 +714,71 @@ export class Settings {
              * @type {boolean}
              */
             this["disable_auto_recovery"] = false;
+        }
+        if (!("test_mode" in $$source)) {
+            /**
+             * v0.9.6 selected test mode: ping | url | ping_url |
+             * handshake | full.
+             * @member
+             * @type {string | undefined}
+             */
+            this["test_mode"] = undefined;
+        }
+        if (!("test_ping_samples" in $$source)) {
+            /**
+             * v0.9.6 ping facet sample count (default 4).
+             * @member
+             * @type {number | undefined}
+             */
+            this["test_ping_samples"] = undefined;
+        }
+        if (!("test_url" in $$source)) {
+            /**
+             * v0.9.6 URL test target.
+             * @member
+             * @type {string | undefined}
+             */
+            this["test_url"] = undefined;
+        }
+        if (!("test_url_timeout_seconds" in $$source)) {
+            /**
+             * v0.9.6 URL facet timeout (seconds).
+             * @member
+             * @type {number | undefined}
+             */
+            this["test_url_timeout_seconds"] = undefined;
+        }
+        if (!("test_max_candidates" in $$source)) {
+            /**
+             * v0.9.6 max candidates measured per flow.
+             * @member
+             * @type {number | undefined}
+             */
+            this["test_max_candidates"] = undefined;
+        }
+        if (!("sort_mode" in $$source)) {
+            /**
+             * v0.9.6 ranking order.
+             * @member
+             * @type {string | undefined}
+             */
+            this["sort_mode"] = undefined;
+        }
+        if (!("enable_racing" in $$source)) {
+            /**
+             * v0.9.6 controlled connection racing toggle.
+             * @member
+             * @type {boolean}
+             */
+            this["enable_racing"] = false;
+        }
+        if (!("racing_candidates" in $$source)) {
+            /**
+             * v0.9.6 racer count (2-4).
+             * @member
+             * @type {number | undefined}
+             */
+            this["racing_candidates"] = undefined;
         }
 
         Object.assign(this, $$source);
