@@ -108,12 +108,13 @@ func newMemoryService(a *App) *MemoryService {
 			a.store.SetChunkTargetBytes(s.ChunkFlushBytes)
 		}
 
-		if a.logger != nil {
-			a.logger.Info("app", "memory_adjust",
-				"booster adjusted: workers=%d depth=%d cache=%d batch=%d chunk_target=%d KiB",
-				concurrency, s.QueueDepth, s.CacheEntries, s.BatchSize,
-				s.ChunkFlushBytes>>10)
-		}
+		// v0.9.5: routine booster adjustments are NO LONGER logged.
+		// The OnChange callback fires on every settings change the
+		// 5-second booster tick proposes, which under oscillating load
+		// produced a stream of "info app memory_adjust" lines with no
+		// diagnostic value. The CURRENT settings remain observable
+		// through Diagnostics (MemorySnapshot); warnings and errors
+		// (pressure transitions, memory_pressure) are unaffected.
 	})
 
 	// Pressure reactions (v0.9.2): memory pressure now controls the

@@ -161,13 +161,21 @@ function CoreCard({
       {isBusy && progress && (
         <div className="install-progress">
           <div className="install-stage">{stageLabel(progress.stage)}</div>
-          {progress.stage === "download" && progress.bytes_total! > 0 && (
-            <div className="meter" role="progressbar">
-              <div
-                className="meter-fill"
-                style={{ width: `${Math.min(100, Math.round((progress.bytes_done! / progress.bytes_total!) * 100))}%` }}
-              />
-            </div>
+          {progress.message && progress.stage !== "complete" && progress.stage !== "failed" && (
+            <div className="install-note">{progress.message}</div>
+          )}
+          {progress.stage === "downloading" && progress.bytes_total! > 0 && (
+            <>
+              <div className="meter" role="progressbar">
+                <div
+                  className="meter-fill"
+                  style={{ width: `${Math.min(100, Math.round((progress.bytes_done! / progress.bytes_total!) * 100))}%` }}
+                />
+              </div>
+              {downloadTelemetry(progress) && (
+                <div className="install-telemetry">{downloadTelemetry(progress)}</div>
+              )}
+            </>
           )}
         </div>
       )}
@@ -372,22 +380,19 @@ function StateBadge({ state, progress }: { state: string; progress?: CoreInstall
 
 function stageLabel(stage?: string): string {
   switch (stage) {
-    case "resolve_release":
+    // Unified lifecycle (v0.9.5): every stage is real work.
+    case "resolving":
       return "Resolving release…";
-    case "download":
+    case "downloading":
       return "Downloading…";
-    case "verify_checksum":
+    case "verifying":
       return "Verifying checksum…";
-    case "unpack":
+    case "unpacking":
       return "Unpacking…";
-    case "locate_executable":
-      return "Locating executable…";
-    case "validate_executable":
+    case "validating":
       return "Validating…";
-    case "activate":
+    case "activating":
       return "Activating…";
-    case "smoke_test":
-      return "Smoke test…";
     case "complete":
       return "Installed";
     case "failed":
@@ -395,6 +400,39 @@ function stageLabel(stage?: string): string {
     default:
       return "Working…";
   }
+}
+
+/** Renders live download telemetry (real measurements only). */
+function downloadTelemetry(p: CoreInstallProgress): string | null {
+  const parts: string[] = [];
+
+  if (p.bytes_done !== undefined && p.bytes_total) {
+    parts.push(`${formatBytes(p.bytes_done)} / ${formatBytes(p.bytes_total)}`);
+  }
+
+  if (p.speed_bps && p.speed_bps > 0) {
+    parts.push(`${formatBytes(p.speed_bps)}/s`);
+  }
+
+  if (p.eta_seconds !== undefined && p.eta_seconds > 0) {
+    parts.push(`~${Math.ceil(p.eta_seconds)}s left`);
+  }
+
+  if (p.resumed_bytes) {
+    parts.push(`resumed from ${formatBytes(p.resumed_bytes)}`);
+  }
+
+  if (p.retries) {
+    parts.push(`${p.retries} retr${p.retries === 1 ? "y" : "ies"}`);
+  }
+
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${Math.round(n)} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
 function displayNameOf(name: string): string {

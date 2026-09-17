@@ -4,6 +4,8 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,26 +13,49 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Parsaetak/FreeIran/internal/httpx"
 )
 
-// installHarness stands in for the GitHub Releases API: it serves a
-// release JSON plus a downloadable zip containing a staged fakecore
-// binary, so the full install pipeline (resolve → download → verify →
-// unpack → probe → validate → activate → smoke) runs offline.
+// ---------------------------------------------------------------------------
+// Harness
+// ---------------------------------------------------------------------------
+
+// installHarness stands in for the GitHub Releases API over a real
+// local HTTP server (with the REAL production httpx client in front,
+// so the full control-plane and data-plane policy is exercised):
+// release JSON (with ETag + digest), the asset (Range-aware, with
+// failure injection) and the .dgst sidecar.
 type installHarness struct {
-	server      *httptest.Server
-	coresDir    string // FREEIRAN_TEST_CORES fixture dir with the fakecore
-	releaseTag  string
-	assetName   string // per-core asset filename
-	digestSHA   string // published .dgst body ("" = none)
+	server     *httptest.Server
+	releaseTag string
+	assetName  string
+
+	mu sync.Mutex
+
+	digestSHA string // published .dgst body ("" = none)
+	apiDigest string // release-API digest field ("" = none)
+
 	releaseJSON []byte
 	assetBody   []byte
-	mu          sync.Mutex
-	downloads   int
+
+	releaseETag string
+
+	// counters + captured request evidence
+	apiHits        int
+	assetHits      int
+	assetRanges    []string
+	apiIfNoneMatch []string
+
+	// failure injection
+	apiStatuses   []int // consumed before falling back to 200
+	assetFailures int   // hijack the first N asset requests mid-body
+	stallAsset    bool
 }
 
 // buildFakeCore once per test binary and reuse it across harnesses.
@@ -49,9 +74,6 @@ func buildFakeCore() {
 
 			return
 		}
-
-		main := filepath.Join(filepath.Dir(dummyMarker()), "..", "core", "testdata", "fakecore", "main.go")
-		_ = main // path resolved below through the test fixture dir
 
 		// Resolve the fixture relative to this package: ../core/testdata/fakecore.
 		pkgDir := "."
@@ -73,10 +95,6 @@ func buildFakeCore() {
 		fakeCorePath = out
 	})
 }
-
-// dummyMarker only exists so filepath.Dir has something meaningful in
-// buildFakeCore; the real path resolution uses os.Getwd.
-func dummyMarker() string { return "." }
 
 // zipAsset builds an in-memory zip containing the fakecore binary
 // named for the requested core.
@@ -115,7 +133,7 @@ func zipAsset(t *testing.T, coreName, srcPath string) []byte {
 func isWindowsTest() bool { return os.PathSeparator == '\\' }
 
 // newInstallHarness starts a fake release server for one core.
-func newInstallHarness(t *testing.T, coreName, versionLine, tag string) *installHarness {
+func newInstallHarness(t *testing.T, coreName, tag string) *installHarness {
 	t.Helper()
 
 	buildFakeCore()
@@ -128,45 +146,44 @@ func newInstallHarness(t *testing.T, coreName, versionLine, tag string) *install
 		assetName:  fmt.Sprintf("%s-%s-%s.zip", coreName, runtime.GOOS, runtime.GOARCH),
 	}
 
-	// FAKECORE_VERSION controls the version the fake binary reports.
-	// The asset is built per-core so the version line matches the tag.
-	assetBody := zipAsset(t, coreName, fakeCorePath)
-
-	h.assetBody = assetBody
-
-	assetURL := h.serverURL() // placeholder, replaced below
-
-	_ = assetURL
-
+	h.assetBody = zipAsset(t, coreName, fakeCorePath)
 	h.releaseJSON = []byte(fmt.Sprintf(`{
                 "tag_name": %q,
                 "name": %q,
                 "prerelease": false,
                 "published_at": "2026-09-01T00:00:00Z",
                 "html_url": "https://github.com/example/%s/releases/tag/%s",
-                "assets": [{"name": %q, "browser_download_url": "ASSET_URL_PLACEHOLDER", "size": %d}]
-        }`, tag, tag, coreName, tag, h.assetName, len(assetBody)))
+                "assets": [{
+                        "name": %q,
+                        "browser_download_url": "ASSET_URL_PLACEHOLDER",
+                        "size": %d,
+                        "digest": "DIGEST_PLACEHOLDER"
+                }]
+        }`, tag, tag, coreName, tag, h.assetName, len(h.assetBody)))
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/releases/latest", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(bytes.ReplaceAll(h.releaseJSON, []byte("ASSET_URL_PLACEHOLDER"), []byte(h.server.URL+"/asset")))
-	})
-	mux.HandleFunc("/asset", func(w http.ResponseWriter, r *http.Request) {
-		h.mu.Lock()
-		h.downloads++
-		h.mu.Unlock()
 
-		_, _ = w.Write(h.assetBody)
-	})
-	mux.HandleFunc("/asset.dgst", func(w http.ResponseWriter, r *http.Request) {
-		if h.digestSHA == "" {
-			w.WriteHeader(http.StatusNotFound)
+	// The routes mirror the GitHub layout the identity verifier
+	// expects: /<owner>/<repo>/releases/latest and
+	// /<owner>/<repo>/releases/download/<tag>/<asset>.
+	mux.HandleFunc("/repos/example/"+coreName+"/releases/latest", h.serveRelease)
 
-			return
-		}
-		_, _ = w.Write([]byte("SHA256(asset)= " + h.digestSHA + "\n"))
-	})
+	mux.HandleFunc("/repos/example/"+coreName+"/releases/download/"+tag+"/"+h.assetName, h.serveAsset)
+
+	mux.HandleFunc("/repos/example/"+coreName+"/releases/download/"+tag+"/"+h.assetName+".dgst",
+		func(w http.ResponseWriter, r *http.Request) {
+			h.mu.Lock()
+			digest := h.digestSHA
+			h.mu.Unlock()
+
+			if digest == "" {
+				w.WriteHeader(http.StatusNotFound)
+
+				return
+			}
+
+			_, _ = w.Write([]byte("SHA256(asset)= " + digest + "\n"))
+		})
 
 	h.server = httptest.NewServer(mux)
 	t.Cleanup(h.server.Close)
@@ -174,22 +191,175 @@ func newInstallHarness(t *testing.T, coreName, versionLine, tag string) *install
 	return h
 }
 
-func (h *installHarness) serverURL() string {
-	if h.server == nil {
-		return ""
+// serveRelease writes the release document (with ETag/304 and the
+// API digest field).
+func (h *installHarness) serveRelease(w http.ResponseWriter, r *http.Request) {
+	h.mu.Lock()
+
+	h.apiHits++
+
+	if inm := r.Header.Get("If-None-Match"); inm != "" {
+		h.apiIfNoneMatch = append(h.apiIfNoneMatch, inm)
 	}
 
-	return h.server.URL
+	statuses := h.apiStatuses
+	if len(statuses) > 0 {
+		h.apiStatuses = statuses[1:] // consume ONE per request
+	}
+
+	etag := h.releaseETag
+
+	apiDigest := h.apiDigest
+
+	body := h.releaseJSON
+
+	assetName := h.assetName
+
+	releaseTag := h.releaseTag
+
+	h.mu.Unlock()
+
+	if len(statuses) > 0 {
+		code := statuses[0]
+
+		if code == http.StatusTooManyRequests {
+			w.Header().Set("Retry-After", "0")
+		}
+
+		w.WriteHeader(code)
+
+		return
+	}
+
+	if etag != "" {
+		if inm := r.Header.Get("If-None-Match"); inm == etag {
+			w.WriteHeader(http.StatusNotModified)
+
+			return
+		}
+
+		w.Header().Set("ETag", etag)
+	}
+
+	// Digest VALUE: "sha256:<hex>" or the empty string (both valid
+	// JSON values for the "digest" field).
+	digestValue := ""
+	if apiDigest != "" {
+		digestValue = "sha256:" + apiDigest
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	// The asset URL mirrors this request's owner/repo path so the
+	// identity verifier sees the repository it expects.
+	downloadPath := strings.Replace(r.URL.Path,
+		"/releases/latest",
+		"/releases/download/"+releaseTag+"/"+assetName, 1)
+
+	assetURL := h.server.URL + downloadPath
+
+	out := bytes.ReplaceAll(body, []byte("ASSET_URL_PLACEHOLDER"), []byte(assetURL))
+	out = bytes.ReplaceAll(out, []byte("DIGEST_PLACEHOLDER"), []byte(digestValue))
+
+	_, _ = w.Write(out)
 }
 
-// fakeSource returns a Source pointing at the harness.
+// serveAsset serves the zip with byte-range support, failure
+// injection and stall injection.
+func (h *installHarness) serveAsset(w http.ResponseWriter, r *http.Request) {
+	h.mu.Lock()
+
+	h.assetHits++
+
+	failures := h.assetFailures
+
+	stall := h.stallAsset
+
+	h.mu.Unlock()
+
+	if failures > 0 {
+		h.mu.Lock()
+		h.assetFailures--
+		h.mu.Unlock()
+
+		// Write ~40% of the body, then reset the connection.
+		cut := len(h.assetBody) * 2 / 5
+
+		w.Header().Set("Content-Length", strconv.Itoa(len(h.assetBody)))
+		_, _ = w.Write(h.assetBody[:cut])
+
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t := w
+			_ = t
+			w.WriteHeader(http.StatusInternalServerError)
+
+			return
+		}
+
+		conn, _, _ := hj.Hijack()
+		_ = conn.Close()
+
+		return
+	}
+
+	if stall {
+		w.Header().Set("Content-Length", strconv.Itoa(len(h.assetBody)))
+		_, _ = w.Write(h.assetBody[:1024])
+
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+
+		select {
+		case <-r.Context().Done():
+		case <-time.After(30 * time.Second):
+		}
+
+		return
+	}
+
+	// Range-aware serving for resume support.
+	if rng := r.Header.Get("Range"); rng != "" {
+		h.mu.Lock()
+		h.assetRanges = append(h.assetRanges, rng)
+		h.mu.Unlock()
+
+		var start int64
+
+		if _, err := fmt.Sscanf(strings.TrimPrefix(rng, "bytes="), "%d-", &start); err != nil ||
+			start < 0 || start >= int64(len(h.assetBody)) {
+			w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+
+			return
+		}
+
+		w.Header().Set("Content-Range",
+			fmt.Sprintf("bytes %d-%d/%d", start, len(h.assetBody)-1, len(h.assetBody)))
+		w.Header().Set("Content-Length", strconv.Itoa(len(h.assetBody)-int(start)))
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write(h.assetBody[start:])
+
+		return
+	}
+
+	w.Header().Set("Content-Length", strconv.Itoa(len(h.assetBody)))
+	_, _ = w.Write(h.assetBody)
+}
+
+// fakeSource returns a Source pointing at the harness. The Repo
+// matches the URL layout the identity verifier expects.
 func (h *installHarness) fakeSource(coreName string) Source {
 	return Source{
 		Name:             CoreName(coreName),
 		DisplayName:      coreName,
 		Repo:             "example/" + coreName,
-		ReleaseAPI:       h.server.URL + "/releases",
-		ReleasePage:      h.server.URL + "/releases",
+		ReleaseAPI:       h.server.URL + "/repos/example/" + coreName + "/releases",
+		ReleasePage:      h.server.URL + "/repos/example/" + coreName + "/releases",
 		AssetPatterns:    []string{h.assetName},
 		VersionProbeArgs: []string{"version"},
 		ConfigCheckArgs:  []string{"check", "-c"},
@@ -197,66 +367,78 @@ func (h *installHarness) fakeSource(coreName string) Source {
 	}
 }
 
-// fakeDoer adapts plain HTTP GETs (release JSON) to the HTTPDoer
-// interface; downloads go through the same server.
-type fakeDoer struct{ base string }
-
-func (f fakeDoer) Do(url string) (*HTTPResponse, error) {
-	resp, err := http.Get(url) //nolint:gosec // test-only URL from the harness
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	body := make([]byte, 0, 4096)
-	buf := make([]byte, 4096)
-
-	for {
-		n, err := resp.Body.Read(buf)
-		body = append(body, buf[:n]...)
-
-		if err != nil {
-			break
-		}
-	}
-
-	return &HTTPResponse{StatusCode: resp.StatusCode, Body: body}, nil
+// testClient is the REAL production httpx client with a fast retry
+// policy — the tests exercise the actual network path.
+func testClient() *httpx.Client {
+	return httpx.NewClient(httpx.Policy{
+		RequestTimeout:    5 * time.Second,
+		MaxRetries:        3,
+		BackoffBase:       5 * time.Millisecond,
+		BackoffMax:        20 * time.Millisecond,
+		BackoffJitter:     0.1,
+		MaxRetryAfterWait: 10 * time.Second,
+		MaxBodyBytes:      4 << 20,
+	})
 }
 
-func TestInstallPipelineEndToEnd(t *testing.T) {
-	const (
-		coreName = "xray"
-		version  = "v1.2.3"
-	)
+// newTestManager builds a Manager bound to the harness.
+func newTestManager(t *testing.T, h *installHarness, coreName string) *Manager {
+	t.Helper()
 
-	h := newInstallHarness(t, coreName, "fakecore "+version+" ("+coreName+")", version)
-
-	// FAKECORE_VERSION makes the staged binary report the release tag.
-	t.Setenv("FAKECORE_VERSION", "v1.2.3")
-
-	root := t.TempDir()
 	mgr, err := New(Options{
-		RootDir:    root,
-		Sources:    map[CoreName]Source{CoreXray: h.fakeSource(coreName)},
-		HTTPClient: fakeDoer{},
+		RootDir:              t.TempDir(),
+		Sources:              map[CoreName]Source{CoreName(coreName): h.fakeSource(coreName)},
+		HTTPClient:           testClient(),
+		DownloadStallTimeout: 1500 * time.Millisecond,
+		DownloadMaxRetries:   2,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 
-	// Progress events must flow: record stages and assert the happy
-	// path emits download → smoke_test → complete.
+	return mgr
+}
+
+// ---------------------------------------------------------------------------
+// End-to-end pipeline
+// ---------------------------------------------------------------------------
+
+// TestInstallPipelineEndToEnd verifies the full transactional pipeline
+// and the unified stage lifecycle:
+// resolving → downloading → verifying → unpacking → validating →
+// activating → complete.
+func TestInstallPipelineEndToEnd(t *testing.T) {
+	const coreName = "xray"
+
+	const tag = "v1.2.3"
+
+	h := newInstallHarness(t, coreName, tag)
+
+	t.Setenv("FAKECORE_VERSION", "v1.2.3")
+
+	mgr := newTestManager(t, h, coreName)
+
 	var mu sync.Mutex
 
 	stages := []InstallStage{}
+
+	var downloadEvents []InstallProgress
+
 	OnProgress(func(p InstallProgress) {
 		if p.Core != CoreXray {
 			return
 		}
 
 		mu.Lock()
+		defer mu.Unlock()
+
+		if p.Stage == StageDownloading {
+			downloadEvents = append(downloadEvents, p)
+
+			return
+		}
+
 		stages = append(stages, p.Stage)
-		mu.Unlock()
 	})
 	defer OnProgress(nil)
 
@@ -288,19 +470,50 @@ func TestInstallPipelineEndToEnd(t *testing.T) {
 		t.Errorf("activated binary missing: %v", err)
 	}
 
+	// The unified lifecycle must be emitted in order. (Unlock
+	// explicitly: the second Install below emits more events through
+	// the same listener.)
 	mu.Lock()
 
-	seen := map[InstallStage]bool{}
-	for _, s := range stages {
-		seen[s] = true
+	want := []InstallStage{
+		StageResolving, StageVerifying, StageUnpacking,
+		StageValidating, StageActivating, StageComplete,
 	}
-	mu.Unlock()
 
-	for _, want := range []InstallStage{StageDownload, StageSmokeTest, StageComplete} {
-		if !seen[want] {
-			t.Errorf("progress stages missing %q (got %v)", want, stages)
+	if len(stages) < len(want) {
+		mu.Unlock()
+		t.Fatalf("stages = %v, want at least %v", stages, want)
+	}
+
+	for _, w := range want {
+		found := false
+
+		for _, s := range stages {
+			if s == w {
+				found = true
+
+				break
+			}
+		}
+
+		if !found {
+			t.Errorf("stage %q missing from %v", w, stages)
 		}
 	}
+
+	// Download telemetry must carry real byte counters.
+	if len(downloadEvents) == 0 {
+		mu.Unlock()
+		t.Fatal("no downloading progress events")
+	}
+
+	last := downloadEvents[len(downloadEvents)-1]
+
+	if last.BytesTotal != int64(len(h.assetBody)) {
+		t.Errorf("final download event total = %d, want %d", last.BytesTotal, len(h.assetBody))
+	}
+
+	mu.Unlock()
 
 	// Idempotency: a second install re-validates and stays ready.
 	if err := mgr.Install(ctx, CoreXray); err != nil {
@@ -312,24 +525,19 @@ func TestInstallPipelineEndToEnd(t *testing.T) {
 	}
 }
 
+// TestInstallRejectsCorruptedDownload proves a version mismatch is
+// caught BEFORE activation (the staged binary never reaches bin/).
 func TestInstallRejectsCorruptedDownload(t *testing.T) {
-	h := newInstallHarness(t, "v2ray", "fakecore v9.9.9 (v2ray)", "v1.0.0")
+	h := newInstallHarness(t, "v2ray", "v1.0.0")
+
 	t.Setenv("FAKECORE_VERSION", "v9.9.9") // mismatch with the release tag
 
-	root := t.TempDir()
-	mgr, err := New(Options{
-		RootDir:    root,
-		Sources:    map[CoreName]Source{CoreV2Ray: h.fakeSource("v2ray")},
-		HTTPClient: fakeDoer{},
-	})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
+	mgr := newTestManager(t, h, "v2ray")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	err = mgr.Install(ctx, CoreV2Ray)
+	err := mgr.Install(ctx, CoreV2Ray)
 	if err == nil {
 		t.Fatal("Install succeeded with a version mismatch, want failure")
 	}
@@ -346,13 +554,490 @@ func TestInstallRejectsCorruptedDownload(t *testing.T) {
 	if !strings.Contains(mf.FailureReason, "version") {
 		t.Errorf("FailureReason = %q, want a version-related explanation", mf.FailureReason)
 	}
+
+	// No binary may be active after a failed fresh install.
+	if _, statErr := os.Stat(mf.BinaryPath); statErr == nil {
+		t.Error("a binary was activated despite the failed install")
+	}
 }
 
+// TestInstallChecksumMismatchViaAPIDigest proves the GitHub
+// release-API digest field is the primary checksum authority.
+func TestInstallChecksumMismatchViaAPIDigest(t *testing.T) {
+	h := newInstallHarness(t, "xray", "v2.0.0")
+
+	t.Setenv("FAKECORE_VERSION", "v2.0.0")
+
+	// A WRONG digest published by the release API.
+	h.mu.Lock()
+	h.apiDigest = strings.Repeat("ab", 32)
+	h.mu.Unlock()
+
+	mgr := newTestManager(t, h, "xray")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	err := mgr.Install(ctx, CoreXray)
+	if err == nil {
+		t.Fatal("Install succeeded despite an API-digest mismatch")
+	}
+
+	mf, _ := mgr.Info(CoreXray)
+
+	if mf.FailureStage != "verify_digest" {
+		t.Fatalf("failure stage = %q, want verify_digest", mf.FailureStage)
+	}
+
+	if !strings.Contains(mf.FailureReason, "Checksum mismatch") &&
+		!strings.Contains(mf.FailureReason, "SHA-256") {
+		t.Errorf("FailureReason = %q, want checksum-mismatch wording", mf.FailureReason)
+	}
+}
+
+// TestInstallVerifiesAgainstPublishedSidecarDigest proves the .dgst
+// sidecar verification path (Xray/V2Ray convention) when the API
+// digest is absent.
+func TestInstallVerifiesAgainstPublishedSidecarDigest(t *testing.T) {
+	h := newInstallHarness(t, "xray", "v3.0.0")
+
+	t.Setenv("FAKECORE_VERSION", "v3.0.0")
+
+	sum := sha256.Sum256(h.assetBody)
+	h.mu.Lock()
+	h.digestSHA = hex.EncodeToString(sum[:])
+	h.mu.Unlock()
+
+	mgr := newTestManager(t, h, "xray")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	if err := mgr.Install(ctx, CoreXray); err != nil {
+		t.Fatalf("Install with a correct sidecar digest: %v", err)
+	}
+
+	mf, _ := mgr.Info(CoreXray)
+	if mf.State != StateReady {
+		t.Fatalf("state = %s (reason %q)", mf.State, mf.FailureReason)
+	}
+}
+
+// TestInstallRetriesRelease429 proves the release-resolution failure
+// mode is fixed: a rate-limited API is retried (honouring Retry-After)
+// and the install then succeeds.
+func TestInstallRetriesRelease429(t *testing.T) {
+	h := newInstallHarness(t, "xray", "v4.0.0")
+
+	t.Setenv("FAKECORE_VERSION", "v4.0.0")
+
+	// Two 429s before the real document.
+	h.mu.Lock()
+	h.apiStatuses = []int{http.StatusTooManyRequests, http.StatusTooManyRequests}
+	h.mu.Unlock()
+
+	mgr := newTestManager(t, h, "xray")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	if err := mgr.Install(ctx, CoreXray); err != nil {
+		t.Fatalf("Install: %v (429 should have been retried)", err)
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.apiHits != 3 {
+		t.Fatalf("API hits = %d, want 3 (two 429s + one 200)", h.apiHits)
+	}
+
+	if mf, _ := mgr.Info(CoreXray); mf.State != StateReady {
+		t.Errorf("state = %s, want ready", mf.State)
+	}
+}
+
+// TestInstallReleaseAPIUnavailable proves a persistent release-API
+// failure surfaces an actionable "release API unavailable" message
+// instead of a misleading "no asset" error.
+func TestInstallReleaseAPIUnavailable(t *testing.T) {
+	h := newInstallHarness(t, "xray", "v5.0.0")
+
+	// Exhaust the retry ladder with 503s.
+	h.mu.Lock()
+	h.apiStatuses = []int{
+		http.StatusServiceUnavailable,
+		http.StatusServiceUnavailable,
+		http.StatusServiceUnavailable,
+		http.StatusServiceUnavailable,
+	}
+	h.mu.Unlock()
+
+	mgr := newTestManager(t, h, "xray")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	err := mgr.Install(ctx, CoreXray)
+	if err == nil {
+		t.Fatal("Install succeeded, want release-API failure")
+	}
+
+	mf, _ := mgr.Info(CoreXray)
+
+	if mf.FailureStage != "resolve_release" {
+		t.Fatalf("failure stage = %q, want resolve_release", mf.FailureStage)
+	}
+
+	if !strings.Contains(mf.FailureReason, "temporary error") &&
+		!strings.Contains(mf.FailureReason, "unavailable") {
+		t.Errorf("FailureReason = %q, want release-API-unavailable wording", mf.FailureReason)
+	}
+}
+
+// TestInstallDownloadRetriesAndResumes proves a mid-body connection
+// loss is retried and RESUMED with an HTTP Range request.
+func TestInstallDownloadRetriesAndResumes(t *testing.T) {
+	h := newInstallHarness(t, "xray", "v6.0.0")
+
+	t.Setenv("FAKECORE_VERSION", "v6.0.0")
+
+	h.mu.Lock()
+	h.assetFailures = 1 // first asset request dies mid-body
+	h.mu.Unlock()
+
+	mgr := newTestManager(t, h, "xray")
+
+	var mu sync.Mutex
+
+	var sawResumedMessage bool
+
+	var lastProgress InstallProgress
+
+	OnProgress(func(p InstallProgress) {
+		if p.Core != CoreXray {
+			return
+		}
+
+		mu.Lock()
+		defer mu.Unlock()
+
+		lastProgress = p
+
+		if p.ResumedBytes > 0 || strings.Contains(p.Message, "resumed from") {
+			sawResumedMessage = true
+		}
+	})
+	defer OnProgress(nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	if err := mgr.Install(ctx, CoreXray); err != nil {
+		t.Fatalf("Install: %v (download should have resumed)", err)
+	}
+
+	h.mu.Lock()
+	ranges := append([]string(nil), h.assetRanges...)
+	assetHits := h.assetHits
+	h.mu.Unlock()
+
+	if assetHits != 2 {
+		t.Fatalf("asset hits = %d, want 2 (failed + resumed)", assetHits)
+	}
+
+	if len(ranges) == 0 || !strings.HasPrefix(ranges[0], "bytes=") {
+		t.Fatalf("resume request missing Range header: %v", ranges)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if !sawResumedMessage {
+		t.Errorf("no resumed telemetry observed (last progress = %+v)", lastProgress)
+	}
+
+	if mf, _ := mgr.Info(CoreXray); mf.State != StateReady {
+		t.Errorf("state = %s, want ready", mf.State)
+	}
+}
+
+// TestInstallStalledDownloadFailsCleanly proves a stalled asset
+// server fails the install with the actionable stall message and
+// leaves no partial activation.
+func TestInstallStalledDownloadFailsCleanly(t *testing.T) {
+	h := newInstallHarness(t, "xray", "v7.0.0")
+
+	t.Setenv("FAKECORE_VERSION", "v7.0.0")
+
+	h.mu.Lock()
+	h.stallAsset = true
+	h.mu.Unlock()
+
+	mgr := newTestManager(t, h, "xray")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	err := mgr.Install(ctx, CoreXray)
+	if err == nil {
+		t.Fatal("Install succeeded against a stalled server")
+	}
+
+	mf, _ := mgr.Info(CoreXray)
+
+	if mf.FailureStage != "download" {
+		t.Fatalf("failure stage = %q, want download", mf.FailureStage)
+	}
+
+	if !strings.Contains(mf.FailureReason, "stalled") {
+		t.Errorf("FailureReason = %q, want stall wording", mf.FailureReason)
+	}
+
+	if _, statErr := os.Stat(mf.BinaryPath); statErr == nil {
+		t.Error("a binary was activated despite the stalled download")
+	}
+}
+
+// TestInstallSmokeTestFailureKeepsPreviousCore proves the transaction:
+// when an UPDATE's staged binary fails its smoke test, the PREVIOUS
+// working binary stays active.
+func TestInstallSmokeTestFailureKeepsPreviousCore(t *testing.T) {
+	h := newInstallHarness(t, "xray", "v8.0.0")
+
+	t.Setenv("FAKECORE_VERSION", "v8.0.0")
+
+	mgr := newTestManager(t, h, "xray")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	// First install: healthy core active.
+	if err := mgr.Install(ctx, CoreXray); err != nil {
+		t.Fatalf("first Install: %v", err)
+	}
+
+	before, _ := mgr.Info(CoreXray)
+	beforeSum, _ := fileSHA256(before.BinaryPath)
+
+	// Second install: the staged binary fails its smoke run.
+	t.Setenv("FAKECORE_FAIL_FAST", "1")
+
+	if err := mgr.Install(ctx, CoreXray); err == nil {
+		t.Fatal("second Install succeeded despite the smoke-test failure")
+	}
+
+	after, _ := mgr.Info(CoreXray)
+
+	// The previous core is STILL the active binary, byte for byte.
+	afterSum, err := fileSHA256(after.BinaryPath)
+	if err != nil {
+		t.Fatalf("previous binary vanished: %v", err)
+	}
+
+	if afterSum != beforeSum {
+		t.Fatalf("active binary changed after a failed update: %s -> %s", beforeSum[:12], afterSum[:12])
+	}
+
+	// The core is NOT Broken: the previous version still works.
+	if after.State != StateReady {
+		t.Errorf("state = %s, want ready (previous healthy core preserved)", after.State)
+	}
+
+	// Staging is cleaned up.
+	if _, statErr := os.Stat(mgr.StagingDir(CoreXray)); statErr == nil {
+		t.Error("staging left behind after failed update")
+	}
+}
+
+// TestInstallConcurrentSingleflight proves duplicate simultaneous
+// installs of the same core are deduplicated: ONE download serves
+// every concurrent caller.
+func TestInstallConcurrentSingleflight(t *testing.T) {
+	h := newInstallHarness(t, "xray", "v9.0.0")
+
+	t.Setenv("FAKECORE_VERSION", "v9.0.0")
+
+	mgr := newTestManager(t, h, "xray")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	const callers = 4
+
+	errs := make([]error, callers)
+
+	var wg sync.WaitGroup
+
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+
+		go func(idx int) {
+			defer wg.Done()
+			errs[idx] = mgr.Install(ctx, CoreXray)
+		}(i)
+	}
+
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent Install #%d: %v", i, err)
+		}
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.assetHits != 1 {
+		t.Fatalf("asset downloads = %d, want 1 (singleflight)", h.assetHits)
+	}
+
+	if mf, _ := mgr.Info(CoreXray); mf.State != StateReady {
+		t.Errorf("state = %s, want ready", mf.State)
+	}
+}
+
+// TestInstallWrongPlatformAssetRejected proves a wrong-platform asset
+// is rejected by the identity verifier before any download.
+func TestInstallWrongPlatformAssetRejected(t *testing.T) {
+	h := newInstallHarness(t, "xray", "v10.0.0")
+
+	t.Setenv("FAKECORE_VERSION", "v10.0.0")
+
+	// Rewrite the release to publish a linux-only asset.
+	otherOS := "linux"
+	if runtime.GOOS == "linux" {
+		otherOS = "windows"
+	}
+
+	h.mu.Lock()
+	h.assetName = fmt.Sprintf("xray-%s-amd64.zip", otherOS)
+	h.releaseJSON = []byte(fmt.Sprintf(`{
+                "tag_name": "v10.0.0",
+                "prerelease": false,
+                "assets": [{"name": %q,
+                        "browser_download_url": "ASSET_URL_PLACEHOLDER",
+                        "size": %d}]
+        }`, h.assetName, len(h.assetBody)))
+	h.mu.Unlock()
+
+	mgr := newTestManager(t, h, "xray")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	err := mgr.Install(ctx, CoreXray)
+	if err == nil {
+		t.Fatal("Install succeeded with a wrong-platform asset")
+	}
+
+	h.mu.Lock()
+	assetHits := h.assetHits
+	h.mu.Unlock()
+
+	if assetHits != 0 {
+		t.Fatalf("asset downloads = %d, want 0 (rejected before download)", assetHits)
+	}
+
+	mf, _ := mgr.Info(CoreXray)
+
+	if !strings.Contains(mf.FailureReason, "platform") &&
+		!strings.Contains(mf.FailureReason, "architecture") &&
+		!strings.Contains(mf.FailureReason, "build for this platform") {
+		t.Errorf("FailureReason = %q, want wrong-platform wording", mf.FailureReason)
+	}
+}
+
+// TestInstallCachedReleaseLookup proves the release-metadata cache:
+// the first lookup stores the ETag, the second sends If-None-Match
+// and reuses the 304-validated cached body.
+func TestInstallCachedReleaseLookup(t *testing.T) {
+	h := newInstallHarness(t, "xray", "v11.0.0")
+
+	t.Setenv("FAKECORE_VERSION", "v11.0.0")
+
+	h.mu.Lock()
+	h.releaseETag = `"release-etag-1"`
+	h.mu.Unlock()
+
+	mgr := newTestManager(t, h, "xray")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	if err := mgr.Install(ctx, CoreXray); err != nil {
+		t.Fatalf("first Install: %v", err)
+	}
+
+	h.mu.Lock()
+	hitsAfterFirst := h.apiHits
+	h.mu.Unlock()
+
+	// Second install: conditional request must be sent.
+	if err := mgr.Install(ctx, CoreXray); err != nil {
+		t.Fatalf("second Install: %v", err)
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.apiHits != hitsAfterFirst+1 {
+		t.Fatalf("API hits grew by %d, want exactly 1 (conditional revalidation)",
+			h.apiHits-hitsAfterFirst)
+	}
+
+	if len(h.apiIfNoneMatch) == 0 {
+		t.Fatal("no If-None-Match header was sent on the second lookup")
+	}
+
+	if h.apiIfNoneMatch[len(h.apiIfNoneMatch)-1] != `"release-etag-1"` {
+		t.Fatalf("If-None-Match = %v, want the stored ETag", h.apiIfNoneMatch)
+	}
+}
+
+// TestInstallUntrustedAssetHostRejected proves an asset URL pointing
+// outside the source authority / GitHub hosts is refused.
+func TestInstallUntrustedAssetHostRejected(t *testing.T) {
+	h := newInstallHarness(t, "xray", "v12.0.0")
+
+	t.Setenv("FAKECORE_VERSION", "v12.0.0")
+
+	// Keep the platform-matching asset NAME so selection succeeds
+	// and the identity verifier is what rejects the foreign host.
+	platformAsset := fmt.Sprintf("xray-%s-%s.zip", runtime.GOOS, runtime.GOARCH)
+
+	h.mu.Lock()
+	h.releaseJSON = []byte(fmt.Sprintf(`{
+        "tag_name": "v12.0.0",
+        "prerelease": false,
+        "assets": [{"name": %q,
+                "browser_download_url": "https://evil.example.com/%s",
+                "size": %d}]
+        }`, platformAsset, platformAsset, len(h.assetBody)))
+	h.assetName = platformAsset
+	h.mu.Unlock()
+
+	mgr := newTestManager(t, h, "xray")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	if err := mgr.Install(ctx, CoreXray); err == nil {
+		t.Fatal("Install succeeded with an untrusted asset host")
+	}
+
+	mf, _ := mgr.Info(CoreXray)
+
+	if !strings.Contains(mf.FailureReason, "unrecognized host") &&
+		!strings.Contains(mf.FailureReason, "does not belong to repository") {
+		t.Errorf("FailureReason = %q, want untrusted-host wording", mf.FailureReason)
+	}
+}
+
+// TestSelectAssetLegacyNaming keeps the v0.9.0 regression coverage for
+// the Xray/V2Ray legacy naming scheme.
 func TestSelectAssetLegacyNaming(t *testing.T) {
-	// Regression: Xray/V2Ray publish "Xray-windows-64.zip"; the v0.8
-	// matcher required the platform hint inside the asset name and
-	// never matched. Both legacy and modern names must resolve on
-	// every common platform.
 	src := Source{AssetPatterns: []string{"windows-64.zip", "linux-64.zip", "macos-64.zip", "macos-arm64.zip"}}
 
 	assets := []githubAsset{
@@ -374,19 +1059,20 @@ func TestSelectAssetLegacyNaming(t *testing.T) {
 	}
 
 	for _, c := range cases {
-		got, _ := selectAsset(assets, c.p, src)
+		got, _, _, _ := selectAsset(assets, c.p, src)
 		if got != c.want {
 			t.Errorf("selectAsset(%s/%s) = %q, want %q", c.p.OS, c.p.Arch, got, c.want)
 		}
 	}
 
 	// A windows/arm64 host must NOT receive the x86_64 asset.
-	got, _ := selectAsset(assets, Platform{"windows", "arm64"}, src)
+	got, _, _, _ := selectAsset(assets, Platform{"windows", "arm64"}, src)
 	if got != "" {
 		t.Errorf("selectAsset(windows/arm64) = %q, want no match", got)
 	}
 }
 
+// TestExtractVersionToken keeps the version-token extraction coverage.
 func TestExtractVersionToken(t *testing.T) {
 	cases := map[string]string{
 		"Xray 26.3.27 (Xray, Penetrates Everything.) Custom CGo.": "26.3.27",
@@ -404,25 +1090,13 @@ func TestExtractVersionToken(t *testing.T) {
 	}
 }
 
+// TestRepairDeadlockFix keeps the v0.9.0 deadlock regression coverage.
 func TestRepairDeadlockFix(t *testing.T) {
-	// Regression: v0.8 Repair held the per-core mutex and then called
-	// Rollback/HealthCheck/Install, which take the same mutex — an
-	// instant deadlock. With no manifest and no previous version the
-	// fixed implementation must return via Install's not-installed
-	// path (which fails fast against a dead source) instead of
-	// hanging. A timeout guards the regression.
-	h := newInstallHarness(t, "sing-box", "fakecore v1.0.1 (sing-box)", "v1.0.1")
+	h := newInstallHarness(t, "sing-box", "v1.0.1")
+
 	t.Setenv("FAKECORE_VERSION", "v1.0.1")
 
-	root := t.TempDir()
-	mgr, err := New(Options{
-		RootDir:    root,
-		Sources:    map[CoreName]Source{CoreSingBox: h.fakeSource("sing-box")},
-		HTTPClient: fakeDoer{},
-	})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
+	mgr := newTestManager(t, h, "sing-box")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
@@ -441,5 +1115,24 @@ func TestRepairDeadlockFix(t *testing.T) {
 
 	if mf, _ := mgr.Info(CoreSingBox); mf.State != StateReady {
 		t.Errorf("state after repair = %s (reason %q), want ready", mf.State, mf.FailureReason)
+	}
+}
+
+// TestDigestSHANormalization covers the GitHub digest-field parser.
+func TestDigestSHANormalization(t *testing.T) {
+	good := strings.Repeat("cd", 32)
+
+	cases := map[string]string{
+		"sha256:" + good:                  good,
+		"SHA256:" + strings.ToUpper(good): good,
+		"sha512:" + good + good:           "",
+		"":                                "",
+		"sha256:tooshort":                 "",
+	}
+
+	for in, want := range cases {
+		if got := digestSHA(in); got != want {
+			t.Errorf("digestSHA(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

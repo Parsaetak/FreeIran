@@ -801,7 +801,7 @@ func (a *App) loadSources() error {
 	}
 
 	if len(persisted.Sources) > 0 {
-		a.sources = persisted.Sources
+		a.sources = normalizePersistedSources(persisted.Sources)
 	}
 
 	if persisted.ContentHashes != nil {
@@ -809,6 +809,48 @@ func (a *App) loadSources() error {
 	}
 
 	return nil
+}
+
+// legacySourceURLs maps known legacy endpoint forms of mandated
+// sources to their canonical raw URLs. The ScrapeAndCategorize
+// registry entry moved from the /main/ shorthand to the fully
+// qualified /refs/heads/main/ form; both resolve to the same content,
+// so the migration is purely cosmetic — but the persisted registry
+// must converge on the canonical form exactly once.
+var legacySourceURLs = map[string]string{
+	"https://raw.githubusercontent.com/10ium/ScrapeAndCategorize/main/output_configs/Netherlands.txt": "https://raw.githubusercontent.com/10ium/ScrapeAndCategorize/refs/heads/main/output_configs/Netherlands.txt",
+}
+
+// normalizePersistedSources upgrades legacy source URLs to their
+// canonical form and drops EXACT duplicate URLs (same endpoint
+// registered under two IDs), keeping the first (default) entry.
+func normalizePersistedSources(sources []source.Source) []source.Source {
+	seen := make(map[string]int, len(sources))
+
+	out := make([]source.Source, 0, len(sources))
+
+	for i, src := range sources {
+		if canonical, ok := legacySourceURLs[src.URL]; ok {
+			src.URL = canonical
+			sources[i].URL = canonical
+		}
+
+		if first, dup := seen[src.URL]; dup {
+			// Duplicate endpoint: keep the first registration only.
+			if !sources[first].Custom && src.Custom {
+				// Prefer keeping a custom entry over a default one.
+				sources[first] = src
+			}
+
+			continue
+		}
+
+		seen[src.URL] = i
+
+		out = append(out, src)
+	}
+
+	return out
 }
 
 func (a *App) saveSources() error {

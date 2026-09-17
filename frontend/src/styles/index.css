@@ -2917,6 +2917,19 @@ html.reduced-motion .skeleton::after {
   color: var(--text-dim);
 }
 
+/* Live download telemetry: real bytes / speed / ETA / resume info. */
+.install-telemetry {
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+}
+
+.install-note {
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+
 .meter {
   height: 6px;
   border-radius: 999px;

@@ -1,11 +1,13 @@
 package app
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/Parsaetak/FreeIran/engine/booster"
 	"github.com/Parsaetak/FreeIran/engine/mempressure"
+	"github.com/Parsaetak/FreeIran/internal/logging"
 )
 
 // TestMemoryServiceWiredOnBoot verifies the Memory Booster 2.0 wiring:
@@ -144,5 +146,86 @@ func TestMemoryServiceStartStopLifecycle(t *testing.T) {
 	case <-done:
 	case <-time.After(10 * time.Second):
 		t.Fatal("Shutdown blocked on the memory controller")
+	}
+}
+
+// TestRoutineMemoryAdjustLoggingSuppressed is the v0.9.5 regression
+// guard: routine booster adjustments must NOT produce "memory_adjust"
+// INFO entries (they fired on every 5-second tick under oscillating
+// load), while genuine warnings — pressure transitions — MUST still
+// be logged. The suppression happens at the producer, not by hiding
+// INFO globally, so other informational events keep flowing.
+func TestRoutineMemoryAdjustLoggingSuppressed(t *testing.T) {
+	logDir := t.TempDir()
+
+	lg, err := logging.Open(logging.Options{Dir: logDir, Name: "memtest.log"})
+	if err != nil {
+		t.Fatalf("open logger: %v", err)
+	}
+	t.Cleanup(func() { _ = lg.Close() })
+
+	entries, stop := lg.Subscribe(512)
+	t.Cleanup(stop)
+
+	app, err := New(Options{
+		BaseDir:             filepath.Join(t.TempDir(), "freeiran"),
+		Logger:              lg,
+		RefreshInterval:     time.Hour,
+		RunIngestionOnStart: false,
+		SkipDefaultSources:  true,
+	})
+	if err != nil {
+		t.Fatalf("new app: %v", err)
+	}
+	t.Cleanup(app.Shutdown)
+
+	// 1. Routine booster adjustment: a deep backlog grows the worker
+	// pool, firing OnChange — the removed "memory_adjust" producer.
+	inputs := app.memory.boost.Inputs()
+	inputs.QueueBacklog.Store(1 << 20) // deep backlog
+	app.memory.boost.Tick()
+	app.memory.boost.Tick()
+
+	// 2. A REAL memory-pressure transition must still log a warning.
+	// (Set the reporter input directly: memoryservice.sample() would
+	// overwrite it with the live subsystem measurements, which are all
+	// small in a fresh test app.)
+	app.memory.pressure.SetQueueBytes(1 << 40) // far above any ceiling
+	_ = app.memory.pressure.Sample()
+
+	// Collect entries for a bounded window.
+	collect := func(d time.Duration) []logging.Entry {
+		var got []logging.Entry
+
+		deadline := time.After(d)
+
+		for {
+			select {
+			case e := <-entries:
+				got = append(got, e)
+			case <-deadline:
+				return got
+			}
+		}
+	}
+
+	seen := collect(300 * time.Millisecond)
+
+	for _, e := range seen {
+		if e.Event == "memory_adjust" {
+			t.Fatalf("routine memory_adjust entry survived: %+v", e)
+		}
+	}
+
+	var sawPressureWarn bool
+
+	for _, e := range seen {
+		if e.Event == "memory_pressure" && e.Level == logging.LevelWarn {
+			sawPressureWarn = true
+		}
+	}
+
+	if !sawPressureWarn {
+		t.Fatalf("pressure warning missing after transition (entries: %d)", len(seen))
 	}
 }

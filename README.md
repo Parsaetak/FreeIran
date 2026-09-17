@@ -55,6 +55,55 @@ the full verification matrix end to end.
   triple agreement on every push.
 - **Makefile clean-target typo** (`FreeIron-linux-amd64`) fixed.
 
+### The unified production network path (v0.9.5 follow-up)
+
+Core installation and source refresh previously suffered two failure
+classes: GitHub release-resolution failures (a rate-limited 429/403
+body decoded into an "empty release" and surfaced as a misleading
+"no asset for platform" error) and download stalls/timeouts (one
+shared `http.Client{Timeout: 60s}` was used for BOTH the release API
+and multi-megabyte archive bodies, so any transfer needing more than
+60 seconds aborted mid-body with no resume).
+
+These are fixed by consolidating every artifact transfer onto ONE
+policy engine, `internal/httpx`:
+
+- **Control plane** (release API, app-update feed, source fetches):
+  bounded per-attempt timeouts, connection/TLS/header timeouts,
+  retries for transient network errors and 429/502/503/504 with
+  exponential backoff + jitter, Retry-After honoured (capped),
+  keep-alive connection reuse, bounded response bodies, cancellation.
+- **Data plane** (core archives): streaming downloads straight to
+  `.part` files with byte/speed/ETA telemetry, a no-progress stall
+  watchdog instead of a total timeout, HTTP Range resume with
+  Content-Range validation, safe restart when resume is unsupported
+  or lying, and bounded memory. Adaptive 2–4 ranged workers exist as
+  an opt-in optimization for sufficiently large files (default
+  threshold 64 MiB — every current core archive stays single-stream;
+  measured on loopback: 64 MiB in 155.9 ms single vs 133.6 ms with 4
+  workers, a mechanism-level comparison, not a network claim).
+- **Release metadata cache**: persisted per release feed with ETag
+  conditional requests (If-None-Match → 304 revalidation), halving
+  unauthenticated API-budget consumption.
+- **Transactional installs**: resolve → select asset (repo, platform,
+  architecture, size, digest identity verified — never the filename
+  alone) → download → checksum (API digest, then .dgst sidecar) →
+  unpack → validate → smoke test the STAGED binary → atomic
+  activation. The previous working core stays active until the new
+  one passes everything; concurrent installs of the same core share
+  one download through a per-core singleflight.
+- **Source refresh isolation**: the configuration-source fetcher runs
+  on the same policy (per-source timeout, retry/backoff, size cap),
+  parser panics fail only their own source, and the default registry
+  carries the three mandated sources exactly once as raw endpoints.
+- **One progress language**: resolving → downloading → verifying →
+  unpacking → validating → activating → complete, with real
+  bytes/speed/ETA/retries/resumed telemetry and actionable errors
+  ("release API unavailable", "download stalled", "checksum
+  mismatch", "wrong platform asset", …). Routine `memory_adjust`
+  INFO logging was removed at its producer (warnings and pressure
+  events remain).
+
 ### Verification re-run
 
 The full matrix was executed on the cleaned tree: gofmt/vet/build,

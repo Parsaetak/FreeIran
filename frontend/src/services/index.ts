@@ -212,13 +212,27 @@ export interface CoreLifecycleView {
   failure_message?: string;
 }
 
-/** Install progress event (coremgr.InstallProgress). */
+/**
+ * Install progress event (coremgr.InstallProgress). The stage is the
+ * unified lifecycle: resolving | downloading | verifying | unpacking |
+ * validating | activating | complete | failed — every stage reflects
+ * real work; telemetry (bytes/speed/ETA/retries/resumed) is populated
+ * from the downloader's actual measurements, never fabricated.
+ */
 export interface CoreInstallProgress {
   core: string;
   stage: string;
   message?: string;
   bytes_done?: number;
   bytes_total?: number;
+  /** Measured download throughput in bytes/second. */
+  speed_bps?: number;
+  /** Estimated seconds remaining (-1 = unknown). */
+  eta_seconds?: number;
+  /** Download resume attempts so far. */
+  retries?: number;
+  /** Byte offset a resumed download continued from. */
+  resumed_bytes?: number;
   at: string;
 }
 

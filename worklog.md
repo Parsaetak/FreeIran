@@ -2915,3 +2915,180 @@ Stage Summary:
   by TestWorkspacePathAuthoritySingleSource.
 - FreeIran-0.9.5.zip rebuilt from the committed tree and re-verified
   by fresh extraction + critical gates.
+
+---
+
+## Session 2026-09-17 — v0.9.5: one production network path, transactional installs
+
+Task ID: 1 (single-agent full replacement)
+Agent: Super Z (lead engineer session)
+
+The green v0.9.5 baseline was the regression baseline; nothing
+unrelated was redesigned. This session fixed the two reported
+failure classes (GitHub release-resolution failures, download
+stalls/timeouts) plus the latent transactionality gap, and removed
+the routine memory_adjust log noise.
+
+Root cause (verified by following the call paths, not filenames):
+- Release resolution: httpAdapter.Do had NO retry, NO Retry-After
+  handling, and checkRelease never checked the HTTP status — a
+  rate-limited 429/403 body ({"message":...}) decoded into an empty
+  githubRelease and surfaced as a misleading "no asset for platform"
+  failure. Nothing was cached, so every check burned API budget.
+- Downloads: ONE shared http.Client{Timeout:60s} served both the
+  release API and multi-MB archive bodies — any transfer needing
+  >60s aborted mid-body with zero resume and no stall watchdog.
+- Transactionality: the smoke test ran AFTER activation, so a bad
+  binary could end up active.
+
+Work Log:
+- Added internal/httpx: one policy engine for every artifact
+  transfer. Control plane: bounded per-attempt timeout,
+  connection/TLS/header timeouts, retries (transient errors +
+  429/502/503/504) with exponential backoff + jitter, Retry-After
+  honoured and capped (ErrRateLimited beyond 60s), keep-alive reuse
+  (single transport), bounded bodies (per-request override),
+  cancellation. Data plane: streaming .part downloads, byte/speed/
+  ETA telemetry from a dedicated monitor goroutine, blocking-read
+  stall watchdog (ping-pong buffered reader + timer — detects
+  stalled bodies even while Read blocks), HTTP Range resume with
+  Content-Range start/total validation, safe restart when a resume
+  is unsupported or lying (200-instead-of-206, wrong start, size
+  changed), streaming SHA-256 (prefix re-hashed on resume), 416-
+  already-complete finalize, hard byte cap. Optional adaptive 2-4
+  ranged workers for files >= 64 MiB: deterministic offsets,
+  per-range retry, automatic single-stream fallback resuming from
+  the contiguous slice prefix.
+- Added the persisted release-metadata cache (httpx.MetaCache):
+  entries keyed by feed URL, ETag/If-None-Match 304 revalidation,
+  corrupt entries dropped, never served stale on network failure.
+- Rewrote coremgr on httpx (old HTTPDoer/HTTPResponse/httpAdapter/
+  HTTPDownloader/HTTPStream/downloadFile/httpGet removed — no
+  parallel systems left). Install pipeline is now transactional:
+  resolve (cached, status-aware) -> select asset + identity
+  verification (https, host = source authority or GitHub hosts,
+  repo path, platform token, arch convention, published size,
+  release tag — never the filename alone) -> download (.part,
+  resumable, telemetry) -> checksum (API digest field first, then
+  .dgst sidecar, size enforced) -> unpack -> validate staged binary
+  (version probe + tag match + config check) -> SMOKE TEST THE
+  STAGED BINARY -> atomic activation with rollback retention and
+  automatic restore on failure. Failed updates over a healthy core
+  preserve its Ready state (Broken only for failed fresh installs);
+  staging is always cleaned. Concurrent Installs share one flight
+  (singleflight) instead of serializing behind the per-core mutex.
+- checkRelease parses the prerelease channel once (the old code
+  parsed the document twice), CheckForUpdates reuses the same
+  conditional cached lookup.
+- Unified progress lifecycle: resolving -> downloading -> verifying
+  -> unpacking -> validating -> activating -> complete (+ failed),
+  with real telemetry (bytes/total/speed/ETA/retries/resumed).
+  HumanizeInstallFailure gained actionable wordings: rate-limited,
+  release API unavailable, download stalled, checksum mismatch,
+  wrong platform/architecture asset, untrusted host, executable
+  validation failed, smoke test failed, previous core restored.
+- Source fetcher (engine/source) rewritten on httpx.Default: one
+  shared client+pool, per-source bounded budget covering retries,
+  10 MiB cap, ETag conditional requests kept. Pipeline parse stage
+  now recovers per-source parser panics (parse isolation). The
+  Netherlands source URL migrated to the canonical
+  refs/heads/main raw form; persisted registries are upgraded via
+  normalizePersistedSources (legacy map + duplicate-URL dedup).
+  Required-sources-exactly-once regression test added (raw URLs,
+  no /blob/ endpoints).
+- Removed the routine memory_adjust INFO logging at its producer
+  (memoryservice OnChange); pressure warnings/errors preserved;
+  regression test proves routine entries are absent while
+  memory_pressure WARN entries survive.
+- appupdate.Check now takes the shared httpx.Getter (bounded body,
+  retries); the AppUpdateService's ad-hoc 15s per-call client is
+  deleted. Probe clients (netcheck, core_probe) intentionally keep
+  disposable transports (DisableKeepAlives) — latency measurement,
+  not artifact transfer — and carry boundary comments.
+- Frontend: CoreInstallProgress carries speed_bps/eta_seconds/
+  retries/resumed_bytes; Cores.tsx renders the unified stage labels
+  plus a live telemetry line (bytes, speed, ETA, resumed-from,
+  retries); stageLabel keys updated; styles added; embed assets
+  regenerated (also purging the 10 stale hashed bundles that had
+  re-accumulated in cmd/freeiran/frontend/dist).
+- Deleted the stale REPLACEMENT_MANIFEST.md / Release-Manifest.md /
+  Updated-Files.md session manifests (documented as deleted in
+  v0.9.5 but still tracked — the tree now matches its docs).
+
+Verification (go1.26.8, this machine; CI-parity — the Makefile
+targets map 1:1 to .github/workflows/ci.yml):
+- gofmt -l: clean; go vet (engine/system/internal): clean; go
+  build: clean (linux + GOOS=windows/amd64 CGO_ENABLED=0
+  ./cmd/freeiran).
+- go test -count=1: 30 packages PASS; go test -race -count=1: PASS.
+- Stress: httpx + coremgr + source + pipeline -race -count=5 PASS
+  (coremgr 234 s).
+- New deterministic local HTTP suites: httpx (policy: 429 with
+  Retry-After honoured (measured >= declared 1s), 503, transient
+  connection-reset retry, 404 not retried, bounded body,
+  cancellation during backoff, conditional 304, keep-alive reuse
+  (4 GETs over 1 connection), Retry-After-too-long -> ErrRateLimited,
+  jitter bounds, Content-Range parser; download: normal, slow (no
+  total timeout), stalled watchdog, partial-failure resume with
+  observed Range header + re-hashed prefix, Range-ignored restart,
+  lying Content-Range restart, size mismatch, byte cap,
+  cancellation, 429 retry, 416-complete finalize, telemetry
+  (bytes/speed/ETA + terminal sample), parallel deterministic
+  offsets (probe + 4 exact chunk ranges), parallel->single
+  fallback, bounded memory; cache: round-trip, persistence,
+  corrupt-entry drop) and coremgr (end-to-end lifecycle + stage
+  order + telemetry, corrupted-download rejection BEFORE activation,
+  API-digest checksum mismatch, correct .dgst sidecar pass, 429 x2
+  retried (3 API hits), persistent 503 -> "release API unavailable",
+  mid-body download failure resumed with observed Range + resumed
+  telemetry, stalled asset -> stall wording + no activation,
+  smoke-test failure leaves the previous binary byte-identical and
+  Ready, concurrent installs -> exactly 1 asset download, wrong-
+  platform asset rejected with 0 downloads, cached release lookup
+  (ETag + If-None-Match observed, exactly 1 revalidation hit),
+  untrusted asset host rejected, singleflight, legacy asset naming,
+  version-token extraction, digest normalization, repair deadlock
+  regression).
+- Memory-adjust regression: no routine memory_adjust entries; warn
+  memory_pressure survives the transition.
+- Source refresh: required sources exactly once (raw endpoints);
+  fetcher retry/size/conditional covered by the suite.
+- Real cores (SHA-256-verified official archives): V2Ray 5.53.0,
+  Xray 26.3.27, sing-box 1.14.0 — all three real-binary smoke
+  suites PASS.
+- Native: make -C native test PASS; native_accel build +
+  cross-language tests PASS.
+- Frontend: npm ci, typecheck, 40 vitest tests, build +
+  build:embed PASS.
+- Benchmarks: CI smoke suite ran; parallel-range mechanism measured
+  on loopback (64 MiB: 155.9 ms single vs 133.6 ms with 4 workers —
+  mechanism-level comparison only, NOT a real-network speed claim;
+  production cores stay single-stream under the 64 MiB threshold).
+- GitHub Actions could NOT be inspected: this environment has no
+  push credentials for github.com (git push fails with no
+  username/token available). The exact ci.yml steps were executed
+  locally instead (the commands above). The Linux-only gaps vs the
+  windows job (full `go test ./...` incl. the GTK-dependent cmd
+  package and the interactive smoke test) were substituted by the
+  windows/amd64 cross-compile plus the full engine/system/internal
+  matrix, which is what those jobs exercise.
+- FreeIran-0.9.5.zip rebuilt from the committed tree (git archive —
+  no .git, no node_modules, no native/build, no .cores/.test-cores,
+  no vite dist, no runtime caches) and re-verified from a FRESH
+  extraction: gofmt clean, go vet clean, go build (linux + windows),
+  full test matrix PASS, frontend npm ci/typecheck/40 tests/build
+  PASS — the extracted tree works independently of the original.
+
+Stage Summary:
+- internal/httpx is the single production download/network path;
+  coremgr, the source fetcher and the application updater all route
+  through it (httpx.Default shares one policy + one connection
+  pool). Probe-style clients are separate by design and documented.
+- Installs are transactional (staged smoke test before activation,
+  automatic rollback, per-core singleflight) with asset identity
+  verification and the unified progress lifecycle + telemetry.
+- The three mandated sources exist exactly once as raw endpoints;
+  source refresh is isolated per source; routine memory_adjust
+  logging is gone at the producer with a regression test.
+- Deliverable: FreeIran-0.9.5.zip (complete source replacement,
+  verified by clean-dir extraction).

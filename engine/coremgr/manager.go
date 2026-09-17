@@ -38,6 +38,7 @@ import (
 	"time"
 
 	firerrors "github.com/Parsaetak/FreeIran/engine/errors"
+	"github.com/Parsaetak/FreeIran/internal/httpx"
 	"github.com/Parsaetak/FreeIran/internal/logging"
 )
 
@@ -152,9 +153,14 @@ type UpdateInfo struct {
 	ReleaseURL       string    `json:"release_url"`
 	ChangelogURL     string    `json:"changelog_url,omitempty"`
 	AssetURL         string    `json:"asset_url"`
+	AssetName        string    `json:"asset_name,omitempty"`
 	AssetSize        int64     `json:"asset_size"`
-	CheckedAt        time.Time `json:"checked_at"`
-	Err              string    `json:"err,omitempty"`
+	// AssetSHA256 is the release-API-provided asset digest when
+	// published ("sha256:<hex>" normalized to bare hex). It is the
+	// strongest checksum source for install verification.
+	AssetSHA256 string    `json:"asset_sha256,omitempty"`
+	CheckedAt   time.Time `json:"checked_at"`
+	Err         string    `json:"err,omitempty"`
 }
 
 // Manager owns the lifecycle of every managed protocol core.
@@ -162,14 +168,32 @@ type Manager struct {
 	rootDir    string
 	runtimeDir string
 	sources    map[CoreName]Source
-	httpClient HTTPDoer
+	httpClient httpx.Interface
+	metaCache  *httpx.MetaCache
 	logger     *logging.Logger
 
 	mu        sync.RWMutex
 	manifests map[CoreName]*Manifest
 	coreMu    map[CoreName]*sync.Mutex
 
+	// Install singleflight: a concurrent Install for the same
+	// core waits for the in-flight one and shares its outcome
+	// instead of running a second download.
+	flightMu      sync.Mutex
+	installFlight map[CoreName]*installFlight
+
 	platform Platform
+
+	// download tuning (normalized in New)
+	dlStallTimeout time.Duration
+	dlMaxRetries   int
+}
+
+// installFlight is one in-flight (or just-finished) install whose
+// result is shared with every concurrent caller.
+type installFlight struct {
+	done chan struct{}
+	err  error
 }
 
 // Platform describes the target OS/arch pair for asset selection.
@@ -193,26 +217,28 @@ type Options struct {
 	// %TEMP% / XDG tmp. Empty = fall back to the system temp root.
 	RuntimeDir string
 
+	// CacheDir persists release-metadata cache entries (conditional
+	// ETag requests). Empty = <RootDir>/cache/release-meta.
+	CacheDir string
+
 	Sources    map[CoreName]Source
-	HTTPClient HTTPDoer
+	HTTPClient httpx.Interface
 	Logger     *logging.Logger
 	Platform   Platform
+
+	// DownloadStallTimeout tunes the no-progress watchdog for core
+	// archive downloads (default 30s). Zero = default.
+	DownloadStallTimeout time.Duration
+
+	// DownloadMaxRetries bounds resume attempts for core archive
+	// downloads (default 4). Negative = zero retries.
+	DownloadMaxRetries int
 }
 
-// HTTPDoer is the minimal HTTP interface the manager needs.
-// In production it wraps *http.Client; tests inject a fake.
-type HTTPDoer interface {
-	Do(url string) (*HTTPResponse, error)
-}
-
-// HTTPResponse is the response shape returned by HTTPDoer.Do.
-type HTTPResponse struct {
-	StatusCode int
-	Body       []byte
-	Headers    map[string]string
-}
-
-// ErrAlreadyInstalling is returned when an install is already in flight.
+// ErrAlreadyInstalling is returned when a NON-install operation
+// (health check, rollback) hits a core whose install is in flight.
+// Concurrent Install calls themselves share the in-flight result via
+// the per-core singleflight instead of receiving this error.
 var ErrAlreadyInstalling = errors.New("coremgr: install already in progress")
 
 // ErrNoRollbackTarget is returned when rollback has no target.
@@ -238,18 +264,48 @@ func New(opts Options) (*Manager, error) {
 	}
 
 	m := &Manager{
-		rootDir:    opts.RootDir,
-		runtimeDir: opts.RuntimeDir,
-		sources:    sources,
-		httpClient: opts.HTTPClient,
-		logger:     opts.Logger,
-		manifests:  make(map[CoreName]*Manifest, len(AllCores)),
-		coreMu:     make(map[CoreName]*sync.Mutex, len(AllCores)),
-		platform:   opts.Platform,
+		rootDir:       opts.RootDir,
+		runtimeDir:    opts.RuntimeDir,
+		sources:       sources,
+		httpClient:    opts.HTTPClient,
+		logger:        opts.Logger,
+		manifests:     make(map[CoreName]*Manifest, len(AllCores)),
+		coreMu:        make(map[CoreName]*sync.Mutex, len(AllCores)),
+		installFlight: make(map[CoreName]*installFlight, len(AllCores)),
+		platform:      opts.Platform,
 	}
 
 	for _, name := range AllCores {
 		m.coreMu[name] = &sync.Mutex{}
+	}
+
+	m.dlStallTimeout = opts.DownloadStallTimeout
+	if m.dlStallTimeout <= 0 {
+		m.dlStallTimeout = 30 * time.Second
+	}
+
+	m.dlMaxRetries = opts.DownloadMaxRetries
+	if m.dlMaxRetries == 0 {
+		m.dlMaxRetries = 4
+	}
+	if m.dlMaxRetries < 0 {
+		m.dlMaxRetries = 0
+	}
+
+	// Release-metadata cache: conditional requests halve the API
+	// budget consumption; entries are keyed by URL and validated
+	// through If-None-Match.
+	cacheDir := opts.CacheDir
+	if cacheDir == "" {
+		cacheDir = filepath.Join(opts.RootDir, "cache", "release-meta")
+	}
+
+	if opts.HTTPClient != nil {
+		// A real cache is only meaningful with a real client; a
+		// test fake controls its own responses.
+		if cache, cerr := httpx.NewMetaCache(cacheDir); cerr == nil {
+			m.metaCache = cache
+		}
 	}
 
 	if err := os.MkdirAll(opts.RootDir, 0o700); err != nil {
@@ -261,6 +317,10 @@ func New(opts Options) (*Manager, error) {
 		if mf, err := m.loadManifest(name); err == nil && mf != nil {
 			m.manifests[name] = mf
 		}
+	}
+
+	if m.httpClient == nil {
+		m.httpClient = ProductionHTTPClient()
 	}
 
 	if m.logger == nil {

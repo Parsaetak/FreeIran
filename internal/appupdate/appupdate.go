@@ -24,11 +24,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/Parsaetak/FreeIran/internal/httpx"
 )
 
 // TrustedRepo is the ONLY release feed the updater accepts (§30:
@@ -161,36 +162,36 @@ func IsNewer(candidate, current string) bool {
 }
 
 // Check queries the trusted release feed and returns availability for
-// the running platform. apiURL is injectable for tests; http.Client
-// must carry sane timeouts (the caller owns the policy).
-func Check(ctx context.Context, client *http.Client, apiURL, currentVersion, goos string) (Info, error) {
+// the running platform. apiURL is injectable for tests; the client is
+// the shared production httpx policy engine (retries, backoff,
+// Retry-After, bounded bodies) — the caller does NOT need to build
+// its own client or timeout policy.
+func Check(ctx context.Context, client httpx.Getter, apiURL, currentVersion, goos string) (Info, error) {
 	if apiURL == "" {
 		apiURL = DefaultReleaseAPI
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
-	if err != nil {
-		return Info{}, fmt.Errorf("appupdate: build request: %w", err)
+	if client == nil {
+		client = httpx.Default()
 	}
 
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-
-	resp, err := client.Do(req)
+	resp, err := client.Get(ctx, apiURL, httpx.GetOptions{
+		Header: map[string]string{
+			"Accept":               "application/vnd.github+json",
+			"X-GitHub-Api-Version": "2022-11-28",
+		},
+		MaxBodyBytes: 4 << 20,
+	})
 	if err != nil {
 		return Info{}, fmt.Errorf("appupdate: query release feed: %w", err)
 	}
 
-	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
-
 		return Info{}, fmt.Errorf("appupdate: release feed returned HTTP %d", resp.StatusCode)
 	}
 
 	var rel releaseFeed
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&rel); err != nil {
+	if err := json.Unmarshal(resp.Body, &rel); err != nil {
 		return Info{}, fmt.Errorf("appupdate: decode release feed: %w", err)
 	}
 

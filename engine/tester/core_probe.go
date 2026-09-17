@@ -298,6 +298,10 @@ func (p *CoreProbe) probeEndToEnd(ctx context.Context, instance *core.Instance) 
 	_ = conn.Close()
 
 	// 2. Verify the tunnel forwards real traffic.
+	// Disposable per-probe transport (DisableKeepAlives): this probe
+	// MEASURES round-trip latency through the tunnel — connection
+	// reuse (internal/httpx) would corrupt the measurement. It is a
+	// probe, not a download path.
 	transport := &http.Transport{
 		DialContext:           dialer.Dial,
 		DisableKeepAlives:     true,

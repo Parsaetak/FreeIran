@@ -189,7 +189,7 @@ func DefaultSources() []Source {
 		{
 			ID:            "scrape-and-categorize-netherlands",
 			Name:          "ScrapeAndCategorize Netherlands",
-			URL:           "https://raw.githubusercontent.com/10ium/ScrapeAndCategorize/main/output_configs/Netherlands.txt",
+			URL:           "https://raw.githubusercontent.com/10ium/ScrapeAndCategorize/refs/heads/main/output_configs/Netherlands.txt",
 			Enabled:       true,
 			Provider:      "10ium",
 			Project:       "10ium/ScrapeAndCategorize",

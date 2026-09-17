@@ -2,6 +2,8 @@ package appupdate
 
 import (
 	"context"
+
+	"github.com/Parsaetak/FreeIran/internal/httpx"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -26,6 +28,23 @@ const feedJSON = `{
   ]
 }`
 
+// appUpdateTestClient is the real httpx client with a fast retry
+// policy, so the tests exercise the production network path.
+func appUpdateTestClient(t *testing.T) *httpx.Client {
+	t.Helper()
+
+	c := httpx.NewClient(httpx.Policy{
+		RequestTimeout: 5 * time.Second,
+		MaxRetries:     1,
+		BackoffBase:    2 * time.Millisecond,
+		BackoffMax:     5 * time.Millisecond,
+	})
+
+	t.Cleanup(c.Close)
+
+	return c
+}
+
 func feedServer(t *testing.T, body string, status int) *httptest.Server {
 	t.Helper()
 
@@ -45,7 +64,7 @@ func feedServer(t *testing.T, body string, status int) *httptest.Server {
 func TestCheckSelectsPlatformAsset(t *testing.T) {
 	server := feedServer(t, feedJSON, http.StatusOK)
 
-	info, err := Check(context.Background(), server.Client(), server.URL, "0.9.4", "windows")
+	info, err := Check(context.Background(), appUpdateTestClient(t), server.URL, "0.9.4", "windows")
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -76,7 +95,7 @@ func TestCheckSelectsPlatformAsset(t *testing.T) {
 func TestCheckNoUpdateWhenCurrent(t *testing.T) {
 	server := feedServer(t, feedJSON, http.StatusOK)
 
-	info, err := Check(context.Background(), server.Client(), server.URL, "0.10.0", "windows")
+	info, err := Check(context.Background(), appUpdateTestClient(t), server.URL, "0.10.0", "windows")
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -94,7 +113,7 @@ func TestCheckNoUpdateWhenCurrent(t *testing.T) {
 func TestCheckFeedErrorIsHonest(t *testing.T) {
 	server := feedServer(t, `{"message": "rate limited"}`, http.StatusForbidden)
 
-	if _, err := Check(context.Background(), server.Client(), server.URL, "0.9.4", "windows"); err == nil {
+	if _, err := Check(context.Background(), appUpdateTestClient(t), server.URL, "0.9.4", "windows"); err == nil {
 		t.Fatal("HTTP 403 accepted as a valid check")
 	}
 }
@@ -102,7 +121,7 @@ func TestCheckFeedErrorIsHonest(t *testing.T) {
 func TestCheckLinuxGetsNoWindowsAsset(t *testing.T) {
 	server := feedServer(t, feedJSON, http.StatusOK)
 
-	info, err := Check(context.Background(), server.Client(), server.URL, "0.9.4", "linux")
+	info, err := Check(context.Background(), appUpdateTestClient(t), server.URL, "0.9.4", "linux")
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -185,7 +204,8 @@ func TestCheckHonoursContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := httpx.NewClient(httpx.Policy{RequestTimeout: 5 * time.Second})
+	defer client.Close()
 
 	if _, err := Check(ctx, client, server.URL, "0.9.4", "windows"); err == nil {
 		t.Fatal("cancelled context accepted")

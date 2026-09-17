@@ -148,7 +148,10 @@ func TestFetchRejectsOversizedResponse(t *testing.T) {
 		t.Fatal("expected oversized response to fail")
 	}
 
-	if !strings.Contains(err.Error(), "exceeds maximum size") {
+	// The size limit is enforced inside the shared httpx policy now;
+	// either wording proves the cap fired.
+	if !strings.Contains(err.Error(), "exceeds maximum size") &&
+		!strings.Contains(err.Error(), "exceeds the size limit") {
 		t.Fatalf(
 			"unexpected error: %v",
 			err,

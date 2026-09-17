@@ -14,11 +14,11 @@ package app
 
 import (
 	"context"
-	"net/http"
 	"runtime"
 	"time"
 
 	"github.com/Parsaetak/FreeIran/internal/appupdate"
+	"github.com/Parsaetak/FreeIran/internal/httpx"
 	"github.com/Parsaetak/FreeIran/internal/version"
 )
 
@@ -34,13 +34,17 @@ func NewAppUpdateService(app *App) *AppUpdateService {
 
 // CheckApplicationUpdate queries the trusted release feed once and
 // returns the availability outcome. It never blocks long (15 s
-// budget) and never mutates anything: a failed check returns an
-// error the UI can surface as "could not check for updates".
+// budget, retries and Retry-After waits included) and never mutates
+// anything: a failed check returns an error the UI can surface as
+// "could not check for updates".
+//
+// v0.9.5: the ad-hoc per-call http.Client (with its own duplicated
+// timeout policy) is gone — the ONE shared production client
+// (httpx.Default) serves the application updater, the core manager
+// and the source fetcher alike.
 func (s *AppUpdateService) CheckApplicationUpdate() (appupdate.Info, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	client := &http.Client{Timeout: 15 * time.Second}
-
-	return appupdate.Check(ctx, client, "", version.Version, runtime.GOOS)
+	return appupdate.Check(ctx, httpx.Default(), "", version.Version, runtime.GOOS)
 }

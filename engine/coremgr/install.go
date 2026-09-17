@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	firerrors "github.com/Parsaetak/FreeIran/engine/errors"
+	"github.com/Parsaetak/FreeIran/internal/httpx"
 )
 
 // Install downloads, verifies and activates the latest stable release
@@ -23,27 +25,66 @@ import (
 // it for an already-up-to-date core re-validates the active binary and
 // corrects the manifest.
 //
-// Pipeline (every step fails-safe: a partial install never replaces
-// the active binary):
+// Concurrent Install calls for the same core are deduplicated through
+// a per-core singleflight: the first caller runs the pipeline, every
+// concurrent caller waits and receives the same outcome. A second,
+// LATER install runs normally.
+//
+// Transactional pipeline (the previous working core stays ACTIVE
+// until the new one has passed every check):
 //
 //  1. setState(Installing)
-//  2. resolve the latest release for the configured channel
-//  3. download the asset into StagingDir
-//  4. compute SHA-256; verify against the GitHub-provided digest if
-//     one is available (Xray and V2Ray publish .dgst files;
-//     sing-box relies on asset SHA-256 from the release API)
-//  5. unpack into StagingDir/unpacked/
-//  6. locate the executable inside the unpacked archive
-//  7. query the executable's version (must match the release tag)
-//  8. validate the executable can accept a minimal config (test/check
-//     subcommand)
-//  9. retain the current active binary as the rollback target
-//  10. atomic rename staged executable into BinDir
-//  11. setState(Ready); persist manifest
+//  2. RESOLVE   the latest release for the configured channel
+//     (conditional, cached release lookup)
+//  3. SELECT    the platform asset + verify its identity (repo,
+//     platform, architecture, size) — never trusting the filename alone
+//  4. DOWNLOAD  the asset into staging as a .part file (streamed,
+//     resumable, stall-watched, with byte/speed/ETA telemetry)
+//  5. VERIFY    the size and SHA-256 (published digest when available)
+//  6. UNPACK    into staging/unpacked/
+//  7. VALIDATE  version probe + minimal-config acceptance of the
+//     STAGED executable
+//  8. SMOKE TEST the STAGED executable (launch → listener → shutdown)
+//  9. ACTIVATE  atomically: retain rollback, rename into bin/
 //
-// If any step fails, StagingDir is removed and the previous binary is
-// left untouched. State becomes Broken with details in LastHealthResult.
+// Any failure before activation leaves the previous binary active and
+// untouched; a failure during activation automatically restores the
+// previous binary. Staging is always cleaned up.
 func (m *Manager) Install(ctx context.Context, name CoreName) error {
+	// ---- Per-core singleflight ----
+	m.flightMu.Lock()
+
+	if fl, ok := m.installFlight[name]; ok {
+		m.flightMu.Unlock()
+
+		select {
+		case <-fl.done:
+			return fl.err
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
+	fl := &installFlight{done: make(chan struct{})}
+	m.installFlight[name] = fl
+	m.flightMu.Unlock()
+
+	defer func() {
+		close(fl.done)
+
+		m.flightMu.Lock()
+		delete(m.installFlight, name)
+		m.flightMu.Unlock()
+	}()
+
+	fl.err = m.installCore(ctx, name)
+
+	return fl.err
+}
+
+// installCore runs the transactional install pipeline while holding
+// the per-core mutex.
+func (m *Manager) installCore(ctx context.Context, name CoreName) error {
 	unlock := m.lock(name)
 	defer unlock()
 
@@ -53,13 +94,17 @@ func (m *Manager) Install(ctx context.Context, name CoreName) error {
 			Subsystem, "install", "no source defined for %s", name)
 	}
 
-	// Mark installing. If state was already Installing, refuse the
-	// second call so we never run two installs for the same core.
-	snap, _ := m.snapshotManifest(name)
-	if snap.State == StateInstalling {
-		return ErrAlreadyInstalling
+	// Snapshot the pre-install state: a healthy previous binary stays
+	// active (and its state intact) when an UPDATE fails; a fresh
+	// install that fails ends up Broken.
+	preSnap, _ := m.snapshotManifest(name)
+	hasActiveBinary := false
+
+	if preSnap.BinaryPath != "" {
+		if _, statErr := os.Stat(preSnap.BinaryPath); statErr == nil {
+			hasActiveBinary = true
+		}
 	}
-	channel := snap.Channel
 
 	if err := m.setState(name, StateInstalling); err != nil {
 		return err
@@ -68,18 +113,30 @@ func (m *Manager) Install(ctx context.Context, name CoreName) error {
 	m.logger.Info(Subsystem, "install_start",
 		"installing core %s from %s", name, src.Repo)
 
-	// Failure handler: clear staging, set Broken with a human-readable
-	// reason (surfaced verbatim in the UI), log, emit progress.
+	// fail records the failure, cleans staging and — for updates over
+	// a healthy core — preserves the previous core's active state.
 	fail := func(stage string, ferr error) error {
 		_ = os.RemoveAll(m.StagingDir(name))
 
 		reason := HumanizeInstallFailure(stage, ferr)
-		_ = m.updateManifest(name, func(mf *Manifest) {
-			mf.State = StateBroken
-			mf.FailureReason = reason
-			mf.FailureStage = stage
-			mf.UpdatedAt = time.Now().UTC()
-		})
+
+		if hasActiveBinary && (preSnap.State == StateReady || preSnap.State == StateUpdateAvailable) {
+			// The previous core is still active and healthy: restore
+			// its state instead of marking it Broken.
+			_ = m.updateManifest(name, func(mf *Manifest) {
+				mf.State = preSnap.State
+				mf.FailureReason = ""
+				mf.FailureStage = ""
+				mf.UpdatedAt = time.Now().UTC()
+			})
+		} else {
+			_ = m.updateManifest(name, func(mf *Manifest) {
+				mf.State = StateBroken
+				mf.FailureReason = reason
+				mf.FailureStage = stage
+				mf.UpdatedAt = time.Now().UTC()
+			})
+		}
 
 		emitProgress(name, StageFailed, reason, 0, 0)
 		m.logger.Error(Subsystem, "install_failed", "install", string(firerrors.KindDependencyUnavailable),
@@ -89,21 +146,22 @@ func (m *Manager) Install(ctx context.Context, name CoreName) error {
 			Subsystem, "install", "%s: %s", name, stage)
 	}
 
-	// 1. Resolve the latest release.
-	emitProgress(name, StageResolveRelease, "resolving latest release for channel "+string(channel), 0, 0)
-	update, err := m.checkRelease(ctx, name, channel)
+	// ---- 2. RESOLVE ------------------------------------------------
+	emitProgress(name, StageResolving, "resolving latest release for channel "+string(preSnap.Channel), 0, 0)
+
+	update, err := m.checkRelease(ctx, name, preSnap.Channel)
 	if err != nil {
 		return fail("resolve_release", err)
 	}
 
-	if update.AssetURL == "" {
-		return fail("select_asset",
-			firerrors.New(firerrors.KindDependencyUnavailable,
-				Subsystem, "install",
-				"no asset for %s/%s", m.platform.OS, m.platform.Arch))
+	// ---- 3. SELECT + identity verification -------------------------
+	emitProgress(name, StageResolving, "selected "+path.Base(update.AssetURL), 0, 0)
+
+	if err := verifyAssetIdentity(src, m.platform, update); err != nil {
+		return fail("select_asset", err)
 	}
 
-	// 2. Prepare staging directory.
+	// ---- 4. Prepare staging ----------------------------------------
 	if err := os.RemoveAll(m.StagingDir(name)); err != nil {
 		return fail("reset_staging", err)
 	}
@@ -111,38 +169,64 @@ func (m *Manager) Install(ctx context.Context, name CoreName) error {
 		return fail("mkdir_staging", err)
 	}
 
-	// 3. Download (streamed, with byte progress through the injected
-	// HTTP downloader). The staged file keeps the asset's real
-	// extension so unpackArchive can pick the format — v0.8 staged
-	// everything as "asset.bin" and unpack always failed with
-	// "unknown archive format".
+	// ---- 5. DOWNLOAD (streamed, resumable, .part) -------------------
+	// The staged file keeps the asset's real extension so
+	// unpackArchive can pick the format.
 	assetName := path.Base(update.AssetURL)
 	if assetName == "" || assetName == "." || strings.Contains(assetName, "?") {
 		assetName = "asset.zip"
 	}
 
 	assetPath := filepath.Join(m.StagingDir(name), assetName)
-	emitProgress(name, StageDownload, "downloading "+update.AssetURL, 0, update.AssetSize)
-	if err := m.downloadFile(ctx, update.AssetURL, assetPath, func(done, total int64) {
-		emitProgress(name, StageDownload, "downloading", done, total)
-	}); err != nil {
+
+	emitProgress(name, StageDownloading, "downloading "+update.AssetURL, 0, update.AssetSize)
+
+	dlResult, err := m.httpClient.Download(ctx, update.AssetURL, httpx.DownloadOptions{
+		DestPath:     assetPath,
+		ExpectedSize: update.AssetSize,
+		StallTimeout: m.dlStallTimeout,
+		MaxRetries:   m.dlMaxRetries,
+		OnProgress: func(p httpx.Progress) {
+			emitDownloadProgress(name, p)
+		},
+	})
+	if err != nil {
 		return fail("download", err)
 	}
 
-	// 4. Verify SHA-256.
-	emitProgress(name, StageVerifyChecksum, "verifying SHA-256", 0, 0)
-	actual, err := fileSHA256(assetPath)
-	if err != nil {
-		return fail("hash", err)
+	if dlResult.Resumed {
+		m.logger.Info(Subsystem, "download_resumed",
+			"core %s download resumed from %s (retries=%d)",
+			name, formatSize(dlResult.ResumedFrom), dlResult.Retries)
 	}
-	// If the source provided a digest URL (Xray/V2Ray convention),
-	// verify against it. Otherwise, store the computed hash.
-	if err := m.verifyAgainstPublishedDigest(ctx, src, update, actual); err != nil {
+
+	// ---- 6. VERIFY size + checksum ---------------------------------
+	emitProgress(name, StageVerifying, "verifying SHA-256", dlResult.Bytes, update.AssetSize)
+
+	actual := dlResult.SHA256
+	if actual == "" {
+		actual, err = fileSHA256(assetPath)
+		if err != nil {
+			return fail("hash", err)
+		}
+	}
+
+	// Size check: the published size is part of asset identity.
+	if update.AssetSize > 0 && dlResult.Bytes != update.AssetSize {
+		return fail("verify_digest", fmt.Errorf(
+			"downloaded size %d does not match the published size %d",
+			dlResult.Bytes, update.AssetSize))
+	}
+
+	// Digest verification: prefer the API-provided digest, then the
+	// published .dgst sidecar, then record the computed hash.
+	if err := m.verifyAssetDigest(ctx, src, update, actual); err != nil {
 		return fail("verify_digest", err)
 	}
 
-	// 5. Unpack.
-	emitProgress(name, StageUnpack, "unpacking archive", 0, 0)
+	// ---- 7. UNPACK --------------------------------------------------
+	emitProgress(name, StageUnpacking, "unpacking archive", 0, 0)
+
 	unpackedDir := filepath.Join(m.StagingDir(name), "unpacked")
 	if err := os.MkdirAll(unpackedDir, 0o700); err != nil {
 		return fail("mkdir_unpacked", err)
@@ -151,32 +235,30 @@ func (m *Manager) Install(ctx context.Context, name CoreName) error {
 		return fail("unpack", err)
 	}
 
-	// 6. Locate the executable.
-	emitProgress(name, StageLocate, "locating executable", 0, 0)
+	// ---- 8. VALIDATE the STAGED executable --------------------------
+	emitProgress(name, StageValidating, "locating executable", 0, 0)
+
 	execPath, err := findExecutable(unpackedDir, string(name))
 	if err != nil {
 		return fail("locate_executable", err)
 	}
 
-	// 6b. Ensure the executable bit BEFORE any probe runs: zip
-	// extraction writes 0600, so a version probe would fail with
-	// permission-denied on Unix (v0.8 chmodded only after the
-	// probes — a Linux install could never succeed).
+	// Ensure the executable bit BEFORE any probe runs: zip extraction
+	// writes 0600, so a version probe would fail with
+	// permission-denied on Unix.
 	if err := ensureExecutable(execPath); err != nil {
 		return fail("chmod", err)
 	}
 
-	// 7. Query version.
-	emitProgress(name, StageValidate, "probing version", 0, 0)
+	emitProgress(name, StageValidating, "probing version", 0, 0)
+
 	versionStr, err := m.queryVersion(ctx, execPath, src.VersionProbeArgs)
 	if err != nil || versionStr == "" {
 		return fail("probe_version",
 			fmt.Errorf("version query returned %q (err=%v)", versionStr, err))
 	}
 
-	// 7b. Sanity-check the probed version against the release tag.
-	// Both sides pass through the same loose-semver extraction, so
-	// a corrupted or wrong asset fails here instead of activating.
+	// Sanity-check the probed version against the release tag.
 	if probeVer := ExtractVersionToken(versionStr); probeVer != "" {
 		if tagVer := ExtractVersionToken(update.LatestVersion); tagVer != "" {
 			if compareVersions(probeVer, tagVer) != 0 {
@@ -187,76 +269,38 @@ func (m *Manager) Install(ctx context.Context, name CoreName) error {
 		}
 	}
 
-	// 8. Validate executable accepts a minimal config.
-	emitProgress(name, StageValidate, "validating executable", 0, 0)
+	emitProgress(name, StageValidating, "validating executable", 0, 0)
+
 	if err := m.validateExecutable(ctx, name, execPath, src); err != nil {
 		return fail("validate_executable", err)
 	}
 
-	// 9. Ensure executable bit (Unix) — also covers the tar path
-	// where the archive lost its mode bits.
-	if err := ensureExecutable(execPath); err != nil {
-		return fail("chmod", err)
+	// ---- 9. SMOKE TEST the STAGED executable ------------------------
+	// The new binary proves itself BEFORE activation; the previous
+	// binary remains the active one until this passes.
+	emitProgress(name, StageValidating, "running smoke test", 0, 0)
+
+	result := m.smokeTest(ctx, name, execPath, src)
+	if !result.OK {
+		return fail("smoke_test", fmt.Errorf(
+			"smoke test failed: %s", HumanizeHealthFailure(result)))
 	}
 
-	// 10. Retain rollback target.
-	emitProgress(name, StageActivate, "activating", 0, 0)
-	prevPath := m.RollbackPath(name)
-	prevExists := false
-	currentBinaryPath := snap.BinaryPath
-	if currentBinaryPath == "" {
-		// Re-snapshot in case it was set since the start of Install.
-		snap2, _ := m.snapshotManifest(name)
-		currentBinaryPath = snap2.BinaryPath
-	}
-	if currentBinaryPath != "" {
-		if _, statErr := os.Stat(currentBinaryPath); statErr == nil {
-			// Move the current binary aside.
-			_ = os.Remove(prevPath)
-			if err := os.Rename(currentBinaryPath, prevPath); err != nil {
-				// If rename fails (file locked), keep the old
-				// binary in place; rollback will not be available
-				// for this update.
-				m.logger.Warn(Subsystem, "rollback_retain_failed",
-					"could not retain rollback for %s: %v", name, err)
-				prevExists = false
-			} else {
-				prevExists = true
-			}
-		}
+	// ---- 10. ACTIVATE atomically ------------------------------------
+	emitProgress(name, StageActivating, "activating", 0, 0)
+
+	finalPath, prevPath, prevExists, err := m.activate(name, execPath, preSnap)
+	if err != nil {
+		return fail("activate", err)
 	}
 
-	// 11. Atomic activation: rename staged exec into BinDir.
-	if err := os.MkdirAll(m.BinDir(name), 0o700); err != nil {
-		return fail("mkdir_bin", err)
-	}
-	finalPath := m.BinaryPath(name)
-	if err := os.Rename(execPath, finalPath); err != nil {
-		// Try copy fallback if rename fails (cross-device).
-		if err := copyFile(execPath, finalPath, 0o700); err != nil {
-			// Restore the previous binary so we are not left
-			// without one.
-			if prevExists {
-				_ = os.Rename(prevPath, finalPath)
-			}
-			return fail("activate", err)
-		}
-	}
-
-	// 12. Update the manifest under m.mu via updateManifest.
+	// ---- 11. Record the successful transaction ----------------------
 	var prevChecksumStr string
 	if prevExists {
 		prevChecksumStr, _ = fileSHA256(prevPath)
 	}
-	prevChecksumFinal := prevChecksumStr
 
-	// 13. Run a smoke test to confirm readiness.
-	emitProgress(name, StageSmokeTest, "running smoke test", 0, 0)
-	result := m.smokeTest(ctx, name, finalPath, src)
-
-	// Capture the OLD version for the rollback trail before the
-	// manifest overwrite (v0.8 never recorded it).
-	previousVersion := snap.Version
+	previousVersion := preSnap.Version
 
 	if err := m.updateManifest(name, func(mf *Manifest) {
 		mf.State = StateReady
@@ -273,107 +317,274 @@ func (m *Manager) Install(ctx context.Context, name CoreName) error {
 		mf.FailureReason = ""
 		mf.FailureStage = ""
 		if prevExists {
-			mf.PreviousChecksum = prevChecksumFinal
+			mf.PreviousChecksum = prevChecksumStr
 			mf.PreviousPath = prevPath
 			mf.PreviousVersion = previousVersion
 		}
 		mf.LastHealthCheck = time.Now().UTC()
 		mf.LastHealthResult = result
-		if !result.OK {
-			mf.State = StateBroken
-			mf.FailureReason = HumanizeHealthFailure(result)
-			mf.FailureStage = "smoke_test"
-		}
 	}); err != nil {
 		m.logger.Warn(Subsystem, "persist_failed",
 			"could not persist manifest for %s: %v", name, err)
 	}
 
-	// 14. Cleanup staging.
+	// ---- 12. Cleanup staging ----------------------------------------
 	_ = os.RemoveAll(m.StagingDir(name))
 
-	// Re-snapshot to log the final state.
-	finalSnap, _ := m.snapshotManifest(name)
-	if finalSnap.State == StateReady {
-		emitProgress(name, StageComplete, "installed "+versionStr, 0, 0)
-		m.logger.Info(Subsystem, "install_complete",
-			"core %s %s installed (sha256=%s)",
-			name, versionStr, actual[:12])
+	emitProgress(name, StageComplete, "installed "+versionStr, 0, 0)
+	m.logger.Info(Subsystem, "install_complete",
+		"core %s %s installed (sha256=%s)",
+		name, versionStr, actual[:12])
+
+	return nil
+}
+
+// activate moves the staged executable into BinDir atomically and
+// retains the previous binary as the rollback target. On any failure
+// it restores the previous binary (automatic rollback) so the manager
+// never ends up without an active core.
+func (m *Manager) activate(name CoreName, execPath string, preSnap Manifest) (finalPath, prevPath string, prevExists bool, err error) {
+	prevPath = m.RollbackPath(name)
+
+	currentBinaryPath := preSnap.BinaryPath
+
+	if currentBinaryPath != "" {
+		if _, statErr := os.Stat(currentBinaryPath); statErr == nil {
+			// Move the current binary aside (rollback retention).
+			_ = os.Remove(prevPath)
+
+			if rerr := os.Rename(currentBinaryPath, prevPath); rerr != nil {
+				// Rename failed (file locked): keep the old binary in
+				// place; this update will have no rollback target.
+				m.logger.Warn(Subsystem, "rollback_retain_failed",
+					"could not retain rollback for %s: %v", name, rerr)
+				prevExists = false
+			} else {
+				prevExists = true
+			}
+		}
+	}
+
+	if err := os.MkdirAll(m.BinDir(name), 0o700); err != nil {
+		return "", prevPath, prevExists, err
+	}
+
+	finalPath = m.BinaryPath(name)
+
+	if err := os.Rename(execPath, finalPath); err != nil {
+		// Copy fallback (cross-device staging).
+		if cerr := copyFile(execPath, finalPath, 0o700); cerr != nil {
+			// Automatic rollback: restore the previous binary.
+			if prevExists {
+				_ = os.Remove(finalPath)
+				_ = os.Rename(prevPath, finalPath)
+			}
+
+			return "", prevPath, prevExists, cerr
+		}
+	}
+
+	return finalPath, prevPath, prevExists, nil
+}
+
+// verifyAssetIdentity proves the SELECTED asset really belongs to the
+// expected repository, release, platform and architecture — never
+// trusting the filename alone:
+//
+//   - https scheme and an allowlisted host;
+//   - the URL path names THIS repository's releases/download area;
+//   - the asset name matches the target platform AND architecture
+//     (a wrong-OS or wrong-arch asset is rejected);
+//   - the published size is present and positive;
+//   - the release tag is present.
+func verifyAssetIdentity(src Source, p Platform, info UpdateInfo) error {
+	if info.ReleaseTag == "" {
+		return firerrors.New(firerrors.KindDependencyUnavailable,
+			Subsystem, "select_asset", "release has no tag")
+	}
+
+	if info.AssetURL == "" {
+		return firerrors.New(firerrors.KindDependencyUnavailable,
+			Subsystem, "select_asset", "no asset for %s/%s", p.OS, p.Arch)
+	}
+
+	u, err := url.Parse(info.AssetURL)
+	if err != nil {
+		return firerrors.New(firerrors.KindInvalidInput,
+			Subsystem, "select_asset", "asset URL is malformed: %s", info.AssetURL)
+	}
+
+	if u.Scheme != "https" && u.Scheme != "http" {
+		return firerrors.New(firerrors.KindInvalidInput,
+			Subsystem, "select_asset", "asset URL scheme %q is not usable", u.Scheme)
+	}
+
+	// Host trust: the asset must be served by the source's own release
+	// API authority (the configured trust anchor — same host) or by a
+	// known GitHub release host. A compromised API response cannot
+	// redirect the downloader at an arbitrary server.
+	if !trustedAssetHost(u.Host, src.ReleaseAPI) {
+		return firerrors.New(firerrors.KindInvalidInput,
+			Subsystem, "select_asset", "asset host %q is not a trusted release host", u.Host)
+	}
+
+	// Repository identity: the download path must live under this
+	// source's repo ("github.com/<repo>/releases/download/...").
+	repoPath := "/" + strings.TrimPrefix(src.Repo, "/") + "/releases/download/"
+	if !strings.Contains(strings.ToLower(u.Path), strings.ToLower(repoPath)) {
+		return firerrors.New(firerrors.KindInvalidInput,
+			Subsystem, "select_asset",
+			"asset URL %s does not belong to repository %s", u.Path, src.Repo)
+	}
+
+	// Platform + architecture identity from the asset NAME.
+	assetName := path.Base(u.Path)
+
+	if !assetNamesPlatform(assetName, p.OS) {
+		return firerrors.New(firerrors.KindInvalidInput,
+			Subsystem, "select_asset",
+			"asset %q does not target platform %s (wrong platform asset)", assetName, p.OS)
+	}
+
+	if !assetNamesArch(assetName, p.Arch) {
+		return firerrors.New(firerrors.KindInvalidInput,
+			Subsystem, "select_asset",
+			"asset %q does not target architecture %s (wrong architecture asset)", assetName, p.Arch)
+	}
+
+	if info.AssetSize <= 0 {
+		return firerrors.New(firerrors.KindInvalidInput,
+			Subsystem, "select_asset",
+			"asset %q has no published size", assetName)
 	}
 
 	return nil
 }
 
-// checkRelease fetches the latest release for the given channel and
-// returns the resolved asset URL + metadata.
-func (m *Manager) checkRelease(ctx context.Context, name CoreName, ch Channel) (UpdateInfo, error) {
-	src := m.sources[name]
-	client := m.resolveHTTPClient()
-
-	// Stable channel: GET /releases/latest.
-	// Prerelease channel: GET /releases, take the first entry.
-	var raw []byte
-	var err error
-	var releaseURL string
-
-	if ch == ChannelPrerelease {
-		raw, _, err = m.httpGet(ctx, client, src.ReleaseAPI+"?per_page=10")
-		if err != nil {
-			return UpdateInfo{}, err
-		}
-		releaseURL = src.ReleasePage
-	} else {
-		raw, _, err = m.httpGet(ctx, client, src.ReleaseAPI+"/latest")
-		if err != nil {
-			return UpdateInfo{}, err
-		}
-		releaseURL = src.ReleasePage + "/latest"
+// trustedAssetHost reports whether an asset host is acceptable: the
+// host serving the source's release API (same authority) or a known
+// GitHub release host. Comparison is case-insensitive; a port is
+// preserved so local test authorities (127.0.0.1:PORT) qualify.
+func trustedAssetHost(assetHost, releaseAPIURL string) bool {
+	assetHost = strings.ToLower(strings.TrimSpace(assetHost))
+	if assetHost == "" {
+		return false
 	}
 
-	info, err := parseRelease(raw, name, m.platform, src, releaseURL)
-	if err != nil {
-		return UpdateInfo{}, err
+	// GitHub's official release hosts.
+	switch assetHost {
+	case "github.com", "api.github.com",
+		"objects.githubusercontent.com", "release-assets.githubusercontent.com":
+		return true
 	}
 
-	if ch == ChannelPrerelease {
-		// parseRelease returns the latest non-prerelease by default.
-		// For the prerelease channel we want the first entry of the
-		// list (which may be a prerelease).
-		info, err = parseFirstRelease(raw, name, m.platform, src, releaseURL)
-		if err != nil {
-			return UpdateInfo{}, err
+	// The source's own release-API authority (e.g. a pinned mirror or
+	// a test harness).
+	if api, err := url.Parse(releaseAPIURL); err == nil {
+		if strings.ToLower(api.Host) == assetHost {
+			return true
 		}
 	}
 
-	return info, nil
+	return false
 }
 
-// verifyAgainstPublishedDigest downloads the .dgst file published
-// alongside the asset (Xray/V2Ray convention) and verifies the
-// computed SHA-256 matches. If no digest file exists for the asset,
-// the function returns nil (the manager records the computed hash in
-// the manifest, so the user has a tamper-evidence trail even without
-// a published digest).
-func (m *Manager) verifyAgainstPublishedDigest(ctx context.Context, src Source, info UpdateInfo, computedSHA string) error {
-	// Xray publishes <asset>.dgst next to <asset>. V2Ray publishes
-	// <asset>.dgst. sing-box does not publish digests.
+// assetNamesPlatform reports whether an asset name targets osName,
+// using the shared OS token table (case-insensitive).
+func assetNamesPlatform(assetName, osName string) bool {
+	lower := strings.ToLower(assetName)
+
+	osTokens := map[string][]string{
+		"windows": {"windows", "win32", "win64"},
+		"linux":   {"linux"},
+		"darwin":  {"darwin", "macos", "macosx", "osx", "mac"},
+		"freebsd": {"freebsd"},
+	}
+
+	tokens, ok := osTokens[osName]
+	if !ok {
+		return strings.Contains(lower, osName)
+	}
+
+	for _, token := range tokens {
+		if strings.Contains(lower, token) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// assetNamesArch reports whether an asset name's architecture
+// convention is compatible with archName. Legacy "64" means
+// x86_64/amd64 and never arm64; arm64/aarch64 are explicit.
+func assetNamesArch(assetName, archName string) bool {
+	lower := strings.ToLower(assetName)
+
+	hasArm64 := strings.Contains(lower, "arm64") || strings.Contains(lower, "aarch64")
+	hasAmd64 := strings.Contains(lower, "amd64") || strings.Contains(lower, "x86_64") || strings.Contains(lower, "x86-64")
+	has64 := strings.Contains(lower, "64")
+
+	switch archName {
+	case "arm64", "aarch64":
+		return hasArm64
+	case "amd64", "x86_64", "x86-64":
+		// "arm64" contains "64": check it first.
+		if hasArm64 {
+			return false
+		}
+
+		return hasAmd64 || has64
+	case "386", "i386":
+		return strings.Contains(lower, "386") || strings.Contains(lower, "32")
+	default:
+		return true
+	}
+}
+
+// verifyAssetDigest verifies the computed SHA-256 against the
+// published digests, in order of authority:
+//
+//  1. the GitHub release-API digest field (asset.digest,
+//     "sha256:<hex>" — strongest, comes with the signed metadata);
+//  2. the .dgst sidecar file published next to the asset
+//     (Xray/V2Ray convention);
+//  3. none published → the computed hash is recorded in the manifest
+//     (tamper-evidence trail) and verification passes.
+func (m *Manager) verifyAssetDigest(ctx context.Context, src Source, info UpdateInfo, computedSHA string) error {
+	// 1. API-provided digest.
+	if info.AssetSHA256 != "" {
+		if !strings.EqualFold(info.AssetSHA256, computedSHA) {
+			return firerrors.New(firerrors.KindInvalidInput,
+				Subsystem, "install",
+				"checksum mismatch: release API digest=%s asset=%s",
+				info.AssetSHA256, computedSHA)
+		}
+
+		return nil
+	}
+
+	// 2. Published .dgst sidecar (Xray/V2Ray convention).
 	if info.AssetURL == "" {
 		return nil
 	}
 
 	digestURL := info.AssetURL + ".dgst"
-	raw, status, err := m.httpGet(ctx, m.resolveHTTPClient(), digestURL)
-	if err != nil || status != 200 {
+
+	resp, err := m.httpClient.Get(ctx, digestURL, httpx.GetOptions{
+		Header: map[string]string{"Accept": "application/octet-stream"},
+	})
+	if err != nil || resp.StatusCode != 200 {
 		// No digest published; not an error.
 		return nil
 	}
 
-	expected, err := extractSHA256FromDigest(string(raw))
-	if err != nil {
+	expected, perr := extractSHA256FromDigest(string(resp.Body))
+	if perr != nil {
 		return nil // ignore unparseable digest; the computed hash is recorded
 	}
 
-	if expected != computedSHA {
+	if !strings.EqualFold(expected, computedSHA) {
 		return firerrors.New(firerrors.KindInvalidInput,
 			Subsystem, "install",
 			"checksum mismatch: digest=%s asset=%s", expected, computedSHA)
@@ -394,9 +605,9 @@ func extractSHA256FromDigest(raw string) (string, error) {
 		if strings.Contains(line, "SHA256") {
 			parts := strings.SplitN(line, "=", 2)
 			if len(parts) == 2 {
-				hex := strings.TrimSpace(parts[1])
-				if len(hex) == 64 {
-					return hex, nil
+				hexd := strings.TrimSpace(parts[1])
+				if len(hexd) == 64 {
+					return hexd, nil
 				}
 			}
 		}
@@ -415,63 +626,6 @@ func isHex(s string) bool {
 		}
 	}
 	return true
-}
-
-// downloadFile streams a URL to a local path with bounded memory and
-// byte-level progress reporting. It routes through the manager's
-// resolved HTTPDownloader so injected clients (and test fakes) apply
-// to asset downloads — the v0.8 implementation bypassed them.
-func (m *Manager) downloadFile(ctx context.Context, url, dst string, onBytes func(done, total int64)) error {
-	stream, err := m.resolveDownloader().Download(ctx, url)
-	if err != nil {
-		return err
-	}
-	defer stream.Body.Close()
-
-	if stream.StatusCode < 200 || stream.StatusCode >= 300 {
-		return fmt.Errorf("download %s: HTTP %d", url, stream.StatusCode)
-	}
-
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	buf := make([]byte, 256<<10)
-	var done int64
-
-	for {
-		n, readErr := stream.Body.Read(buf)
-		if n > 0 {
-			if _, werr := out.Write(buf[:n]); werr != nil {
-				return werr
-			}
-
-			done += int64(n)
-
-			if onBytes != nil {
-				onBytes(done, stream.Total)
-			}
-		}
-
-		if readErr == io.EOF {
-			return nil
-		}
-
-		if readErr != nil {
-			return readErr
-		}
-	}
-}
-
-// httpGet fetches a URL and returns body + status code.
-func (m *Manager) httpGet(ctx context.Context, client HTTPDoer, url string) ([]byte, int, error) {
-	resp, err := client.Do(url)
-	if err != nil {
-		return nil, 0, err
-	}
-	return resp.Body, resp.StatusCode, nil
 }
 
 // unpackArchive unpacks a .zip, .tar.gz or .tgz archive into dst.
@@ -523,16 +677,16 @@ func unpackZip(archivePath, dst string) error {
 }
 
 func extractZipFile(f *zip.File, dst string) error {
-	path := filepath.Join(dst, f.Name)
-	if !strings.HasPrefix(filepath.Clean(path), filepath.Clean(dst)+string(os.PathSeparator)) && path != dst {
-		return fmt.Errorf("zip slip: %s", path)
+	p := filepath.Join(dst, f.Name)
+	if !strings.HasPrefix(filepath.Clean(p), filepath.Clean(dst)+string(os.PathSeparator)) && p != dst {
+		return fmt.Errorf("zip slip: %s", p)
 	}
 
 	if f.FileInfo().IsDir() {
-		return os.MkdirAll(path, 0o700)
+		return os.MkdirAll(p, 0o700)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 		return err
 	}
 
@@ -542,7 +696,7 @@ func extractZipFile(f *zip.File, dst string) error {
 	}
 	defer rc.Close()
 
-	out, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	out, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}
@@ -587,21 +741,21 @@ func unpackTarReader(tr *tar.Reader, dst string) error {
 			return err
 		}
 
-		path := filepath.Join(dst, hdr.Name)
-		if !strings.HasPrefix(filepath.Clean(path), filepath.Clean(dst)+string(os.PathSeparator)) && path != dst {
-			return fmt.Errorf("tar slip: %s", path)
+		p := filepath.Join(dst, hdr.Name)
+		if !strings.HasPrefix(filepath.Clean(p), filepath.Clean(dst)+string(os.PathSeparator)) && p != dst {
+			return fmt.Errorf("tar slip: %s", p)
 		}
 
 		switch hdr.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(path, 0o700); err != nil {
+			if err := os.MkdirAll(p, 0o700); err != nil {
 				return err
 			}
 		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 				return err
 			}
-			out, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.FileMode(hdr.Mode)&0o700)
+			out, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.FileMode(hdr.Mode)&0o700)
 			if err != nil {
 				return err
 			}
@@ -625,15 +779,15 @@ func findExecutable(root, name string) (string, error) {
 	}
 
 	var found string
-	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+	_ = filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
 		}
 		if info.IsDir() {
 			return nil
 		}
-		if strings.EqualFold(filepath.Base(path), target) {
-			found = path
+		if strings.EqualFold(filepath.Base(p), target) {
+			found = p
 			return filepath.SkipAll
 		}
 		return nil

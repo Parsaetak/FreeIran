@@ -5,12 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
 
-	"github.com/Parsaetak/FreeIran/internal/version"
+	"github.com/Parsaetak/FreeIran/internal/httpx"
 )
 
 // bytesSHA256 returns the hex-encoded SHA-256 of data.
@@ -215,31 +214,43 @@ type Result struct {
 	LastModified string `json:"last_modified,omitempty"`
 }
 
-// Fetcher downloads configuration sources.
+// Fetcher downloads configuration sources through the ONE shared
+// production HTTP policy engine (internal/httpx): retries with
+// exponential backoff + jitter for transient failures and 429/502/
+// 503/504, Retry-After honouring, connection reuse and bounded
+// response bodies.
 //
-// In v0.6 the Fetcher supports:
+// Per-source isolation (one broken source must not break the others):
 //
-//   - gzip / deflate transport (saves bandwidth on large sources)
-//   - conditional requests: If-None-Match (ETag) and If-Modified-Since
-//     (Last-Modified) sourced from the Source metadata
+//   - a bounded per-source budget (Timeout, default 20s) that covers
+//     the request AND its retries, enforced through the context;
+//   - a response-size hard cap (default 10 MiB);
+//   - conditional requests: If-None-Match (ETag) and
+//     If-Modified-Since (Last-Modified) from the Source metadata;
 //   - content-hash short-circuit: if the response body hashes to the
 //     same value as Source.LastContentHash, the parser is told the
-//     body is unchanged (NotModified=true)
-//   - per-source timeout override via Source.RefreshInterval (the
-//     interval itself is enforced by the scheduler; the timeout here
-//     bounds a single fetch)
-//   - response-size hard cap (default 10 MiB, configurable)
+//     body is unchanged (NotModified=true).
+//
+// Parse isolation is provided by the ingestion pipeline, which recovers
+// per-source parser panics so one hostile payload cannot kill the
+// cycle.
 type Fetcher struct {
-	Client      *http.Client
+	// Client is the shared production HTTP client. nil = httpx.Default.
+	Client httpx.Getter
+
+	// Timeout bounds one source fetch INCLUDING retries (per-source
+	// isolation). Zero = DefaultTimeout.
+	Timeout time.Duration
+
+	// MaxBodySize caps the response body. Zero = DefaultMaxBodySize.
 	MaxBodySize int64
 }
 
 // NewFetcher creates a Fetcher with safe defaults.
 func NewFetcher() *Fetcher {
 	return &Fetcher{
-		Client: &http.Client{
-			Timeout: DefaultTimeout,
-		},
+		Client:      httpx.Default(),
+		Timeout:     DefaultTimeout,
 		MaxBodySize: DefaultMaxBodySize,
 	}
 }
@@ -269,9 +280,12 @@ func (f *Fetcher) Fetch(ctx context.Context, src Source) (Result, error) {
 
 	client := f.Client
 	if client == nil {
-		client = &http.Client{
-			Timeout: DefaultTimeout,
-		}
+		client = httpx.Default()
+	}
+
+	timeout := f.Timeout
+	if timeout <= 0 {
+		timeout = DefaultTimeout
 	}
 
 	maxBodySize := f.MaxBodySize
@@ -279,37 +293,30 @@ func (f *Fetcher) Fetch(ctx context.Context, src Source) (Result, error) {
 		maxBodySize = DefaultMaxBodySize
 	}
 
-	req, err := http.NewRequestWithContext(
-		ctx,
-		http.MethodGet,
-		src.URL,
-		nil,
-	)
-	if err != nil {
-		return Result{}, fmt.Errorf("create source request: %w", err)
+	// Per-source isolation: the bounded budget (including retries)
+	// applies to THIS source only; the caller's ctx still governs the
+	// overall cycle.
+	fetchCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	// Conditional requests: send the ETag from the previous successful
+	// fetch. If the body has not changed, the server returns 304.
+	header := map[string]string{
+		"Accept": "*/*",
 	}
 
-	req.Header.Set("User-Agent", version.UserAgent())
-	req.Header.Set("Accept", "*/*")
-	// net/http adds "Accept-Encoding: gzip" transparently and
-	// decompresses on read. We do not need to handle gzip manually
-	// unless we set Transport.DisableCompression=true (we don't).
-
-	// Conditional requests: send the ETag and Last-Modified from the
-	// previous successful fetch. If the body has not changed, the
-	// server returns 304 Not Modified.
-	if src.ETag != "" {
-		req.Header.Set("If-None-Match", src.ETag)
-	}
 	if src.LastModifiedHeader != "" {
-		req.Header.Set("If-Modified-Since", src.LastModifiedHeader)
+		header["If-Modified-Since"] = src.LastModifiedHeader
 	}
 
-	resp, err := client.Do(req)
+	resp, err := client.Get(fetchCtx, src.URL, httpx.GetOptions{
+		Header:       header,
+		IfNoneMatch:  src.ETag,
+		MaxBodyBytes: maxBodySize,
+	})
 	if err != nil {
 		return Result{}, fmt.Errorf("fetch source %q: %w", src.ID, err)
 	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotModified {
 		// Server confirmed the body is unchanged. No parse needed.
@@ -333,16 +340,9 @@ func (f *Fetcher) Fetch(ctx context.Context, src Source) (Result, error) {
 		)
 	}
 
-	reader := io.LimitReader(resp.Body, maxBodySize+1)
-
-	content, err := io.ReadAll(reader)
-	if err != nil {
-		return Result{}, fmt.Errorf(
-			"read source %q: %w",
-			src.ID,
-			err,
-		)
-	}
+	// The shared policy already bounded the body to maxBodySize; the
+	// local length check documents the invariant for callers.
+	content := resp.Body
 
 	if int64(len(content)) > maxBodySize {
 		return Result{}, fmt.Errorf(

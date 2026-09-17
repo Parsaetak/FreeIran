@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"hash/fnv"
 	"sync"
 	"sync/atomic"
@@ -318,8 +319,11 @@ func (p *Pipeline) Run(
 				}
 
 				if payload.err == nil && payload.unchangedHash == "" {
+					// PARSE ISOLATION: one hostile payload that panics
+					// the parser must fail ONLY its own source — never
+					// the worker, the pipeline or the process.
 					configs, parseStats, parseErr :=
-						pr.ParseDetailed(payload.content)
+						parseIsolated(pr, payload.content)
 
 					item.configs = configs
 					item.err = parseErr
@@ -496,6 +500,23 @@ func (p *Pipeline) Run(
 	p.metrics.AddRecordsUnique(stats.Persisted)
 
 	return stats, newHashes, nil
+}
+
+// parseIsolated runs one payload through the parser with panic
+// recovery: a panic becomes a per-source parse error instead of a
+// crashed ingestion cycle.
+func parseIsolated(pr *parser.Parser, content []byte) (configs []config.Config, stats parser.ParseStats, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			configs = nil
+			stats = parser.ParseStats{}
+			err = fmt.Errorf("parser panic (source content rejected): %v", r)
+		}
+	}()
+
+	configs, stats, err = pr.ParseDetailed(content)
+
+	return configs, stats, err
 }
 
 func countOK(results []SourceResult) int {

@@ -2,7 +2,6 @@ package coremgr
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 
@@ -29,15 +28,12 @@ func (m *Manager) CheckForUpdates(ctx context.Context, name CoreName) (UpdateInf
 			Subsystem, "check", "no source for core %s", name)
 	}
 
-	client := m.resolveHTTPClient()
-	raw, status, err := m.httpGet(ctx, client, src.ReleaseAPI+"?per_page=20")
+	// Conditional, cached lookup: the /releases endpoint serves both
+	// the latest stable AND the latest prerelease in one document, and
+	// the ETag cache keeps repeated checks off the API budget.
+	raw, err := m.fetchReleaseDocument(ctx, src.ReleaseAPI+"?per_page=20")
 	if err != nil {
 		return UpdateInfo{Err: err.Error()}, err
-	}
-	if status != 200 {
-		return UpdateInfo{Err: fmt.Sprintf("HTTP %d", status)},
-			firerrors.New(firerrors.KindRetryable, Subsystem, "check",
-				"GitHub returned HTTP %d for %s", status, name)
 	}
 
 	releases, err := parseAllReleases(raw)
@@ -76,16 +72,19 @@ func (m *Manager) CheckForUpdates(ctx context.Context, name CoreName) (UpdateInf
 				Subsystem, "check", "no releases for %s", name)
 	}
 
-	assetURL, assetSize := selectAsset(chosen.Assets, m.platform, src)
+	assetURL, assetSize, assetName, assetSHA := selectAsset(chosen.Assets, m.platform, src)
 	info := UpdateInfo{
 		Name:           name,
 		CurrentVersion: mf.Version,
 		LatestVersion:  stripV(chosen.TagName),
+		ReleaseTag:     chosen.TagName,
 		ReleaseDate:    chosen.PublishedAt,
 		ReleaseURL:     chosen.HTMLURL,
 		ChangelogURL:   chosen.HTMLURL,
 		AssetURL:       assetURL,
+		AssetName:      assetName,
 		AssetSize:      assetSize,
+		AssetSHA256:    assetSHA,
 		CheckedAt:      time.Now().UTC(),
 	}
 	if latestPre != nil {

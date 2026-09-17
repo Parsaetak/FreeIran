@@ -494,6 +494,11 @@ func probeTCP(ctx context.Context, target string) (bool, int64, string) {
 }
 
 // probeHTTPS performs one GET and reports the total latency.
+//
+// NOTE: this deliberately builds a disposable transport with
+// DisableKeepAlives instead of routing through internal/httpx —
+// connection reuse would corrupt the latency measurement this probe
+// exists to take. It is a probe, not a download path.
 func probeHTTPS(ctx context.Context, url string) (bool, int64, string) {
 	client := &http.Client{
 		Timeout: 8 * time.Second,
