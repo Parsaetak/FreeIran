@@ -15,6 +15,7 @@ import (
 	"github.com/Parsaetak/FreeIran/engine/connection"
 	"github.com/Parsaetak/FreeIran/engine/core"
 	firerrors "github.com/Parsaetak/FreeIran/engine/errors"
+	"github.com/Parsaetak/FreeIran/internal/logging"
 )
 
 // ConnectionService exposes the protocol-core connection lifecycle.
@@ -165,11 +166,42 @@ func (s *ConnectionService) Connect(configID string) (connection.Snapshot, error
 
 	s.app.metricsR.AddCoreSelection()
 
-	s.app.logger.Info("connection", "connection_success",
-		"connected via %s on %s (latency %d ms)",
-		snapshot.Core, snapshot.Endpoint, snapshot.LatencyMS)
+	s.logConnectionSuccess("connection_success", "connected", snapshot)
 
 	return snapshot, nil
+}
+
+func (s *ConnectionService) logConnectionSuccess(event, subject string, snapshot connection.Snapshot) {
+	// v0.9.7: a local listener becoming ready is NOT Internet
+	// connectivity. The success record separates local core readiness
+	// from verified end-to-end measurements and states the
+	// verification stage explicitly.
+	message := fmt.Sprintf("%s via %s on %s (core ready in %d ms)",
+		subject, snapshot.Core, snapshot.Endpoint, snapshot.CoreReadyMS)
+
+	if snapshot.Verification == "usable" {
+		message += fmt.Sprintf(", verified: ping %d ms, url %d ms",
+			snapshot.PingMedianMS, snapshot.URLTotalMS)
+	} else {
+		message += ", connectivity not yet verified"
+	}
+
+	s.app.logger.Log(logging.Record{
+		Level:      logging.LevelInfo,
+		Subsystem:  "connection",
+		Event:      event,
+		ConfigID:   snapshot.ConfigID,
+		Core:       snapshot.Core,
+		Listener:   snapshot.Endpoint,
+		DurationMS: snapshot.CoreReadyMS,
+		Status:     snapshot.Verification,
+		Message:    message,
+		Fields: map[string]any{
+			"core_ready_ms":  snapshot.CoreReadyMS,
+			"ping_median_ms": snapshot.PingMedianMS,
+			"url_total_ms":   snapshot.URLTotalMS,
+		},
+	})
 }
 
 // ConnectConfig establishes the tunnel for an ad-hoc configuration
@@ -196,9 +228,7 @@ func (s *ConnectionService) ConnectConfig(cfg config.Config) (connection.Snapsho
 		return snapshot, humanizeWithDetails(err, humanSubject(snapshot.Core))
 	}
 
-	s.app.logger.Info("connection", "connection_success",
-		"connected via %s on %s (latency %d ms)",
-		snapshot.Core, snapshot.Endpoint, snapshot.LatencyMS)
+	s.logConnectionSuccess("connection_success", "connected", snapshot)
 
 	return snapshot, nil
 }
@@ -226,8 +256,7 @@ func (s *ConnectionService) Reconnect() (connection.Snapshot, error) {
 		s.app.logger.Error("connection", "connection_failure", "reconnect", "backend",
 			"reconnect failed: %v", err)
 	} else {
-		s.app.logger.Info("connection", "connection_success",
-			"reconnected via %s", snapshot.Core)
+		s.logConnectionSuccess("connection_success", "reconnected", snapshot)
 	}
 
 	return snapshot, err

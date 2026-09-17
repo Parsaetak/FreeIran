@@ -82,6 +82,13 @@ type Attempt struct {
 // Snapshot is the immutable state view surfaced to the UI (§16):
 // connection state, backend identity, configuration identity,
 // latency and the attempt history — all credential-free.
+//
+// v0.9.7 metric semantics: CoreReadyMS is the LOCAL core startup→ready
+// duration; PingMedianMS / URLTotalMS come from an actual tunnel
+// verification (end-to-end). A ready listener is NOT Internet
+// connectivity — the two value families never substitute for each
+// other. LatencyMS mirrors the best known end-to-end measurement and
+// is empty until a verification (or tunnel probe) produced one.
 type Snapshot struct {
 	State         State     `json:"state"`
 	Core          string    `json:"core,omitempty"`
@@ -95,6 +102,12 @@ type Snapshot struct {
 	LastError     string    `json:"last_error,omitempty"`
 	Attempts      []Attempt `json:"attempts,omitempty"`
 	FallbacksUsed int       `json:"fallbacks_used,omitempty"`
+
+	// v0.9.7 separated measurements.
+	CoreReadyMS  int64  `json:"core_ready_ms,omitempty"`
+	PingMedianMS int64  `json:"ping_median_ms,omitempty"`
+	URLTotalMS   int64  `json:"url_total_ms,omitempty"`
+	Verification string `json:"verification,omitempty"` // none|usable|failed
 }
 
 // Options configure the connection manager.
@@ -135,6 +148,10 @@ type Manager struct {
 	startedAt   time.Time
 	latencyMS   int64
 	port        int
+
+	// coreReadyMS is the LOCAL core startup→ready duration of the
+	// active session (v0.9.7: never reported as network latency).
+	coreReadyMS int64
 
 	// v0.9.6: post-connect verification state (see verify.go).
 	verifiedAt time.Time
@@ -201,7 +218,7 @@ func (m *Manager) Connect(
 	m.state = StateSelecting
 	m.attempts = nil
 	m.lastError = ""
-	m.latencyMS = 0
+	m.coreReadyMS = 0
 
 	m.mu.Unlock()
 
@@ -366,7 +383,11 @@ func (m *Manager) attempt(
 		m.opts.Metrics.ObserveCoreStartup(time.Since(started))
 	}
 
-	health := instance.Health(ctx)
+	coreReadyMS := time.Since(started).Milliseconds()
+
+	// Warm the local listener probe (readiness evidence only; the
+	// loopback latency is deliberately NOT stored as network latency).
+	_ = instance.Health(ctx)
 
 	m.mu.Lock()
 	m.instance = instance
@@ -374,7 +395,10 @@ func (m *Manager) attempt(
 	m.coreVersion = registry.Version(backend.Name())
 	m.state = StateConnected
 	m.startedAt = time.Now().UTC()
-	m.latencyMS = health.LatencyMS
+	// v0.9.7: the loopback listener probe is stored as the local
+	// readiness fallback ONLY — it is not network latency and the
+	// end-to-end fields stay empty until a real verification runs.
+	m.coreReadyMS = coreReadyMS
 	m.port = opts.LocalPort
 	m.mu.Unlock()
 
@@ -468,7 +492,20 @@ func (m *Manager) snapshotLocked() Snapshot {
 
 	if m.instance != nil {
 		snapshot.Endpoint = m.instance.Endpoint()
-		snapshot.LatencyMS = m.latencyMS
+		snapshot.CoreReadyMS = m.coreReadyMS
+
+		// LatencyMS reflects the best known END-TO-END measurement
+		// (tunnel verification), never the loopback probe.
+		if m.verifiedAt.IsZero() {
+			snapshot.Verification = "none"
+		} else if m.lastVerify.OK {
+			snapshot.Verification = "usable"
+			snapshot.LatencyMS = m.lastVerify.TunnelProbeMS
+			snapshot.PingMedianMS = m.lastVerify.TunnelProbeMS
+			snapshot.URLTotalMS = m.lastVerify.Metrics.TotalMS
+		} else {
+			snapshot.Verification = "failed"
+		}
 
 		if !m.startedAt.IsZero() {
 			snapshot.StartedAt = m.startedAt.UnixMilli()
@@ -550,9 +587,10 @@ func (m *Manager) Health(ctx context.Context) core.HealthReport {
 
 	m.mu.Lock()
 
-	if report.LatencyMS > 0 {
-		m.latencyMS = report.LatencyMS
-	}
+	// v0.9.7: a loopback probe latency is readiness evidence only —
+	// it never replaces the startup duration or the verified
+	// end-to-end measurement.
+	_ = report
 
 	m.mu.Unlock()
 
@@ -630,7 +668,10 @@ func (m *Manager) startMonitor() {
 				}
 
 				m.mu.Lock()
-				m.latencyMS = report.LatencyMS
+				// v0.9.7: loopback probe latency is NOT
+				// network latency — the verified end-to-end
+				// measurement stays authoritative.
+				_ = report
 				m.mu.Unlock()
 			}
 		}

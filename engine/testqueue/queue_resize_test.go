@@ -36,13 +36,18 @@ func (c *countingTester) Test(ctx context.Context, fp string, backends []string)
 // growth is immediate, shrinkage retires idle workers promptly (no
 // wait for the next task), busy workers finish their current task,
 // and no task is ever dropped.
+//
+// v0.9.7: the queue is configured with CoreProbeConcurrency = 4 so
+// the full worker pool can run concurrently (the default cap of 2
+// core slots applies to the dedicated bounded-core tests below).
 func TestSetConcurrencyGrowShrink(t *testing.T) {
 	tester := newCountingTester()
 	q := New(tester, Config{
-		Concurrency:  1,
-		MaxQueueSize: 100,
-		Timeout:      10 * time.Second,
-		MaxAttempts:  1,
+		Concurrency:          1,
+		MaxQueueSize:         100,
+		Timeout:              10 * time.Second,
+		MaxAttempts:          1,
+		CoreProbeConcurrency: 4,
 	})
 	q.Start(context.Background())
 	defer q.Stop()

@@ -314,6 +314,19 @@ type LogFilter struct {
 
 	// Level filters to entries at or above the level ("" = all).
 	Level string `json:"level,omitempty"`
+
+	// Event filters to an exact event name ("" = all) — v0.9.7 §20.
+	Event string `json:"event,omitempty"`
+
+	// BatchID / TestID / ConfigID / Core narrow the view to one
+	// causal group (v0.9.7 §20).
+	BatchID  string `json:"batch_id,omitempty"`
+	TestID   string `json:"test_id,omitempty"`
+	ConfigID string `json:"config_id,omitempty"`
+	Core     string `json:"core,omitempty"`
+
+	// ErrorsOnly keeps only warn/error entries (v0.9.7 §20).
+	ErrorsOnly bool `json:"errors_only,omitempty"`
 }
 
 // LogPage is one bounded page of runtime log entries.
@@ -328,21 +341,21 @@ func (s *LogService) Recent(filter LogFilter) LogPage {
 		return LogPage{Entries: []logging.Entry{}}
 	}
 
-	entries := s.app.logger.Recent(
-		filter.SinceSeq, filter.Limit, filter.Subsystem, filter.Query)
-
-	if filter.Level != "" {
-		min := logging.Level(filter.Level)
-
-		kept := entries[:0]
-		for _, entry := range entries {
-			if severityAtLeast(entry.Level, min) {
-				kept = append(kept, entry)
-			}
-		}
-
-		entries = kept
-	}
+	// v0.9.7: structured filters run through Logger.Query — one
+	// matching pass over the ring instead of post-filtering.
+	entries := s.app.logger.Query(logging.Filter{
+		SinceSeq:   filter.SinceSeq,
+		Limit:      filter.Limit,
+		Subsystem:  filter.Subsystem,
+		Level:      logging.Level(filter.Level),
+		Event:      filter.Event,
+		BatchID:    filter.BatchID,
+		TestID:     filter.TestID,
+		ConfigID:   filter.ConfigID,
+		Core:       filter.Core,
+		ErrorsOnly: filter.ErrorsOnly,
+		Query:      filter.Query,
+	})
 
 	page := LogPage{
 		Entries: entries,
@@ -354,6 +367,22 @@ func (s *LogService) Recent(filter LogFilter) LogPage {
 	}
 
 	return page
+}
+
+// Related returns every entry correlated with the given event id
+// (children via parent_event_id, batch/test/config siblings). Powers
+// the diagnostics "show related" action (v0.9.7 §20).
+func (s *LogService) Related(eventID string, limit int) []logging.Entry {
+	if s.app.logger == nil {
+		return []logging.Entry{}
+	}
+
+	entries := s.app.logger.Related(eventID, limit)
+	if entries == nil {
+		entries = []logging.Entry{}
+	}
+
+	return entries
 }
 
 // severityAtLeast compares levels for the UI filter. A switch instead

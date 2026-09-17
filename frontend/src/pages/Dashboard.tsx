@@ -488,6 +488,12 @@ function ActivityFeed() {
             subsystem: "",
             query: "",
             level: "",
+            event: "",
+            batch_id: "",
+            test_id: "",
+            config_id: "",
+            core: "",
+            errors_only: false,
           }),
         );
 

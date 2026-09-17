@@ -22,6 +22,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Parsaetak/FreeIran/engine/booster"
 	"github.com/Parsaetak/FreeIran/engine/cache"
 	"github.com/Parsaetak/FreeIran/engine/cleanup"
 	"github.com/Parsaetak/FreeIran/engine/config"
@@ -132,6 +133,12 @@ type App struct {
 	// queue, caches, store thresholds and ingestion knobs.
 	memory *MemoryService
 
+	// lastBooster + boosterSettingsMu remember the most recently
+	// applied adaptive settings so memory_policy_changed records
+	// fire only on material changes (v0.9.7).
+	boosterSettingsMu sync.Mutex
+	lastBooster       booster.Settings
+
 	// cleanups is the central cleanup coordinator (v0.9.2): one
 	// place decides when reconstructable/replaceable data is
 	// reclaimed, driven by memory pressure and the opportunistic
@@ -149,6 +156,12 @@ type App struct {
 	// VERIFY flow. Lazily created by Discovery(); initMu serializes
 	// the lazy init exactly like the other v0.6 subsystems.
 	discovery *DiscoveryService
+
+	// publicSources is the v0.9.7 bounded public-URL discovery
+	// orchestrator (§7): GitHub adapter + generic HTTP connector
+	// with SSRF/rate-limit/budget guardrails and a staging ledger
+	// for discovered sources. Created with the app.
+	publicSources *publicSourceDiscovery
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -264,8 +277,30 @@ func New(opts Options) (*App, error) {
 	}
 
 	logging.SetGlobal(logger)
-	logger.Info("app", "application_start",
-		"FreeIran %s starting (base %s)", version.String(), opts.BaseDir)
+
+	// v0.9.7 lifecycle semantics: ONE application_start record per
+	// launch. Workspace/base-path initialization is represented as
+	// structured fields on this record — never as a second start
+	// message.
+	logger.Log(logging.Record{
+		Level:      logging.LevelInfo,
+		Subsystem:  "app",
+		Event:      "application_start",
+		Message:    fmt.Sprintf("FreeIran %s starting", version.String()),
+		Status:     "starting",
+		DurationMS: time.Since(bootStart).Milliseconds(),
+		Fields: map[string]any{
+			"version":             version.Version,
+			"commit":              version.Commit,
+			"base_dir":            opts.BaseDir,
+			"defaulted_workspace": defaultedWorkspace,
+			"session_id":          logger.SessionID(),
+		},
+	})
+
+	// v0.9.7: workspace-ready is its own lifecycle stage (distinct
+	// event name — no duplicate start messages).
+	logger.Info("app", "workspace_ready", "workspace ready (%s)", opts.BaseDir)
 
 	// v0.9.2 one-time legacy migration: when the defaulted workspace
 	// is fresh, discover pre-0.9.2 per-user data and copy it in
@@ -430,6 +465,10 @@ func New(opts Options) (*App, error) {
 	// sampling goroutine.
 	app.memory = newMemoryService(app)
 
+	// v0.9.7: bounded public-source discovery (GitHub + generic HTTP
+	// connectors, staging ledger, rate-limit accounting).
+	app.publicSources = newPublicSourceDiscovery(app)
+
 	// v0.9.2 central cleanup coordinator: registers the bounded
 	// reclamation tasks and starts with the app's lifecycle.
 	app.registerCleanupTasks()
@@ -458,8 +497,17 @@ func New(opts Options) (*App, error) {
 	app.settings = app.loadSettings()
 	app.applySettings(app.settings)
 
-	logger.Info("app", "application_ready",
-		"application ready (%d configurations)", st.Count())
+	logger.Log(logging.Record{
+		Level:      logging.LevelInfo,
+		Subsystem:  "app",
+		Event:      "application_ready",
+		Message:    fmt.Sprintf("application ready (%d configurations)", st.Count()),
+		Status:     "ready",
+		DurationMS: time.Since(bootStart).Milliseconds(),
+		Fields: map[string]any{
+			"config_count": st.Count(),
+		},
+	})
 
 	app.markBoot(BootServicesReady)
 
@@ -602,9 +650,25 @@ func (a *App) RefreshCores() {
 	a.coreRegistry.Refresh(ctx)
 
 	for _, backend := range a.coreRegistry.Backends() {
-		a.logger.Info("core", "core_discovered",
-			"%s %s available at %s",
-			backend.Name, backend.Version, backend.Path)
+		// v0.9.7 fix: only AVAILABLE cores are "discovered" — the
+		// previous unfiltered loop logged "xray  available at " for
+		// missing/invalid backends on every refresh.
+		if backend.Status != core.StatusAvailable {
+			continue
+		}
+
+		a.logger.Log(logging.Record{
+			Level:     logging.LevelInfo,
+			Subsystem: "core",
+			Event:     "core_discovered",
+			Message:   fmt.Sprintf("%s %s available at %s", backend.Name, backend.Version, backend.Path),
+			Core:      backend.Name,
+			Status:    "available",
+			Fields: map[string]any{
+				"version": backend.Version,
+				"path":    backend.Path,
+			},
+		})
 	}
 }
 
@@ -634,7 +698,7 @@ func (a *App) SetCoreProgressListener(fn func(coremgr.InstallProgress)) {
 func (a *App) Shutdown() {
 	a.shutdownOnce.Do(func() {
 		if a.logger != nil {
-			a.logger.Info("app", "shutdown_start", "stopping subsystems")
+			a.logger.Info("app", "application_shutdown", "stopping subsystems")
 		}
 
 		// The memory controller stops first: it observes the very
@@ -698,7 +762,19 @@ func (a *App) Shutdown() {
 		}
 
 		if a.logger != nil {
-			a.logger.Info("app", "shutdown_complete", "all subsystems stopped")
+			// v0.9.7: aggregate counters (job fallbacks, etc.) close out
+			// the session as compact summaries instead of per-event spam.
+			system.FlushFallbackSummary()
+
+			a.logger.Log(logging.Record{
+				Level:      logging.LevelInfo,
+				Subsystem:  "app",
+				Event:      "application_shutdown",
+				Message:    "all subsystems stopped",
+				Status:     "shutdown",
+				DurationMS: time.Since(a.bootStart).Milliseconds(),
+			})
+
 			_ = a.logger.Close()
 		}
 	})

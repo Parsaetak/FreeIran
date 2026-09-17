@@ -9,7 +9,7 @@ configurations.
 **Project:** FreeIran — A SHEYTAN Digital System
 **Architect:** Parsa Tak / SHEYTAN
 **Repository:** https://github.com/Parsaetak/FreeIran
-**Current version:** 0.9.6 (see `VERSION`)
+**Current version:** 0.9.7 (see `VERSION`)
 **Status:** production architecture — multi-core protocol runtime with
 managed installation, multi-level node discovery, Ping/URL test modes
 with measured ranking, verified-connection engine with racing,
@@ -17,6 +17,118 @@ environment intelligence, system proxy and TUN mode, unified adaptive
 memory control and kernel-level process supervision
 
 ---
+
+## What's new in v0.9.7
+
+v0.9.7 is a deep runtime, UI, discovery and memory upgrade built on
+the measured evidence of bulk-testing behaviour (thousands of queued
+configurations, many temporary core processes, repetitive log events
+and a "latency 0 ms" connection report).
+
+### Structured logging & session identity
+
+- Every log entry now carries `session_id` (unique per launch),
+  `event_id` (unique per entry), the monotonic per-session `seq`, and
+  correlation fields (`parent_event_id`, `batch_id`, `test_id`,
+  `config_id`, `core`, `pid`, `listener`, `duration_ms`, `status`) —
+  important structured values never hide inside `message`.
+- Lifecycle semantics are explicit and non-duplicative:
+  `application_start` → `workspace_ready` → `services_ready` →
+  `application_ready` → `background_warmup` → `application_shutdown`.
+  Workspace/base-path initialization rides structured fields, not a
+  second start message.
+- Core lifecycle: `core_start` is debug-level, `core_ready` is the one
+  info record (with startup duration), `core_exit` carries the
+  lifetime and reason; `core_discovered` only fires for actually
+  available cores (the unfiltered refresh loop bug is fixed).
+- Noise control: `memory_policy_changed` replaces per-tick
+  `memory_adjust` (fires only on material policy changes);
+  `job_fallback` logs once per session with an aggregate
+  `fallback_processes` counter instead of one warning per process;
+  downward pressure transitions are `memory_pressure_recovered` (info),
+  not warnings; cleanup passes emit one `cleanup_completed` summary
+  with byte totals. JSONL remains the on-disk format; redaction
+  applies to every entry and every structured string.
+
+### Connection metrics — core readiness is not latency
+
+- The "connection_success (latency 0 ms)" defect is fixed at the
+  root: the loopback listener probe is no longer reported as network
+  latency. Snapshots now separate `core_ready_ms` (local startup),
+  `ping_median_ms` / `url_total_ms` (verified end-to-end) and a
+  `verification` stage (`none` → `usable`/`failed`). Recovery reports
+  name the candidate and backend correctly and never print a fabricated
+  ping.
+
+### Bounded test pipeline & core-probe pool
+
+- The test queue gains an independent CORE-PROBE POOL:
+  `core_probe_concurrency` (default 2, hard ceiling 4) bounds the
+  number of simultaneous temporary Xray/V2Ray/sing-box processes no
+  matter how many workers or queued configurations exist. Excess
+  workers park on the core-slot semaphore (backpressure). Cancellation
+  unwinds parked tasks without spawning cores; no slot is ever leaked.
+- The adaptive memory booster may scale the worker pool but can never
+  raise the core-probe cap: memory availability does not create more
+  core processes.
+- Queue pause / resume from the testing control bar; the queue panel
+  shows Passed/Failed/Timeout/Cancelled plus live `Active cores` and
+  `Queue` depth as one aggregated stream.
+
+### Configurations page (§6/§18/§19)
+
+- The row grid is fixed at nine one-to-one tracks (the v0.9.6 URL
+  column regression that pushed the Test button into an implicit
+  column). The Test action lives in a dedicated `.actions` cell —
+  fixed width, `justify-self:end`, `nowrap`, never shrinking — so it
+  stays visible with long names, long endpoints and translated font
+  metrics. Content columns clamp and truncate first.
+- Below 860px the table becomes a compact two-row card: content on
+  the first row, the action area on a dedicated second row (never
+  underneath text).
+- Search/filter toolbar and the TESTING CONTROL BAR are separate
+  areas; the control bar owns Test selected / Test all / Test untested,
+  pause-resume and the recovery actions (retry failed / timed out /
+  working, cancel all).
+- The detail panel groups Connect + Test now as one primary action row
+  and reports Test state, Last test, Ping (measured or explicitly
+  estimated), URL, Health, Core and Verification — measured values
+  only, never fabricated.
+- Diagnostics gains structured log filters (event, errors-only,
+  session/subsystem/level) and a related-events causality panel
+  (parent/batch/test/config correlation).
+
+### Real public-URL discovery (§7–§11)
+
+- New bounded discovery pipeline:
+  DETECT → DISCOVER → INGEST → PARSE → NORMALIZE → DEDUP → VALIDATE →
+  staged PERSIST, with staged selection instead of auto-testing every
+  discovered node.
+- Generic HTTP/HTTPS connector: SSRF-guarded fetching (scheme/port/IP
+  validation, DNS-rebinding prevention at dial time, bounded and
+  re-validated redirects), body-size caps, timeouts, gzip/deflate,
+  ETag / Last-Modified conditional requests, Retry-After, exponential
+  backoff, text/binary identification, malformed-content tolerance.
+- GitHub adapter with bounded strategies: repository search, code
+  search (protocol URI patterns), recursive tree inspection for
+  candidate files (.txt/.yaml/.yml/.json/.conf/.list/.sub), raw file
+  fetching (never HTML pages), README reference extraction feeding the
+  bounded queue, release assets and public gists.
+- Rate-limit engineering: per-provider accounting (requests,
+  successes, failures, 429s, 403s, remaining, reset, average latency),
+  request budgets, pacing, cooldowns with exponential backoff and
+  Retry-After honouring. Rate limiting is never a fatal error — the
+  engine degrades to cached/local sources.
+- Bounded recursion: max depth, max URLs per source, max URLs per run,
+  body caps, per-host cooldowns and a total time budget — discovery
+  can never become an uncontrolled crawler.
+- Source trust & provenance: every candidate retains its full ledger
+  (source type, origin repository/path, discovered-from chain, first/
+  last seen, HTTP status, content hash/size, fetch latency, parser,
+  candidate/valid/duplicate counts). Validated material lands in a
+  staging ledger (config/discovered-sources.json) — manually
+  configured sources are never displaced, and trust is earned through
+  validation/testing, never mixed silently.
 
 ## What's new in v0.9.6
 

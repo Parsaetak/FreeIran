@@ -81,6 +81,11 @@ function LogViewer() {
   const [subsystems, setSubsystems] = useState<string[]>([]);
   const [queryInput, setQueryInput] = useState("");
   const [query, setQuery] = useState("");
+  // v0.9.7 §20: structured filters — event name, errors-only and the
+  // related-events causality view.
+  const [eventFilter, setEventFilter] = useState("");
+  const [errorsOnly, setErrorsOnly] = useState(false);
+  const [related, setRelated] = useState<{ anchor: LogEntry; entries: LogEntry[] } | null>(null);
   const [paused, setPaused] = useState(false);
   const [logPath, setLogPath] = useState("");
   const [failed, setFailed] = useState(false);
@@ -120,6 +125,12 @@ function LogViewer() {
           subsystem,
           query,
           level,
+          event: eventFilter || "",
+          batch_id: "",
+          test_id: "",
+          config_id: "",
+          core: "",
+          errors_only: errorsOnly,
         }),
       );
 
@@ -127,7 +138,7 @@ function LogViewer() {
     } catch {
       setFailed(true);
     }
-  }, [subsystem, query, level, applyPage]);
+  }, [subsystem, query, level, eventFilter, errorsOnly, applyPage]);
 
   // Filter changes rebuild the view from the beginning of the buffer.
   useEffect(() => {
@@ -158,6 +169,12 @@ function LogViewer() {
             subsystem,
             query,
             level,
+            event: eventFilter || "",
+            batch_id: "",
+            test_id: "",
+            config_id: "",
+            core: "",
+            errors_only: errorsOnly,
           }),
         );
 
@@ -177,7 +194,7 @@ function LogViewer() {
     const timer = window.setInterval(() => void tick(), POLL_MS);
 
     return () => window.clearInterval(timer);
-  }, [paused, subsystem, query, level, applyPage]);
+  }, [paused, subsystem, query, level, eventFilter, errorsOnly, applyPage]);
 
   // Metadata: subsystems + log file location.
   useEffect(() => {
@@ -290,6 +307,24 @@ function LogViewer() {
         </select>
 
         <input
+          className="input slim"
+          placeholder="Event…"
+          aria-label="Event filter (exact event name)"
+          title="Exact event name, e.g. connection_success, core_ready, batch_started"
+          value={eventFilter}
+          onChange={(event) => setEventFilter(event.target.value)}
+        />
+
+        <button
+          type="button"
+          className={`btn sm ${errorsOnly ? "danger" : ""}`}
+          aria-pressed={errorsOnly}
+          onClick={() => setErrorsOnly((value) => !value)}
+        >
+          Errors only
+        </button>
+
+        <input
           className="input"
           placeholder="Filter by text…"
           aria-label="Filter log text"
@@ -338,6 +373,26 @@ function LogViewer() {
         </button>
       </div>
 
+      {/* v0.9.7 §20: related-events causality panel. */}
+      {related && (
+        <div className="related-panel" role="region" aria-label="Related events">
+          <div className="related-head">
+            <span>
+              Related to <b className="mono">{related.anchor.event_id}</b> —{" "}
+              {related.entries.length} entr{related.entries.length === 1 ? "y" : "ies"}
+            </span>
+            <button type="button" className="btn sm ghost" onClick={() => setRelated(null)}>
+              Close
+            </button>
+          </div>
+          <div className="related-body">
+            {related.entries.map((entry) => (
+              <LogRow key={`related-${entry.seq}`} entry={entry} />
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="log-entries" ref={scrollRef} onScroll={onScroll}>
         {entries.length === 0 ? (
           failed ? (
@@ -348,7 +403,20 @@ function LogViewer() {
             <div className="log-empty">No entries match the current filters.</div>
           )
         ) : (
-          entries.map((entry) => <LogRow key={entry.seq} entry={entry} />)
+          entries.map((entry) => (
+            <LogRow
+              key={entry.seq}
+              entry={entry}
+              onShowRelated={async (anchor) => {
+                try {
+                  const list = await call(() => logService.Related(anchor.event_id, 200));
+                  setRelated({ anchor, entries: (list ?? []) as LogEntry[] });
+                } catch {
+                  toast("error", "Related events unavailable", describeError(new Error("service call failed")));
+                }
+              }}
+            />
+          ))
         )}
       </div>
 
@@ -369,9 +437,38 @@ function LogViewer() {
 
 // Memoized: the live poll re-renders up to 600 rows per second when
 // new entries arrive; unchanged rows skip re-rendering entirely.
-const LogRow = memo(function LogRow({ entry }: { entry: LogEntry }) {
+// v0.9.7: rows carry the correlation tooltip (event_id / batch /
+// test / config) and a "related" action for causal debugging (§20).
+const LogRow = memo(function LogRow({
+  entry,
+  onShowRelated,
+}: {
+  entry: LogEntry;
+  onShowRelated?: (entry: LogEntry) => void;
+}) {
+  const correlated = Boolean(
+    entry.event_id || entry.batch_id || entry.test_id || entry.config_id,
+  );
+
+  const tip = [
+    entry.event_id ? `event ${entry.event_id}` : null,
+    entry.parent_event_id ? `parent ${entry.parent_event_id}` : null,
+    entry.batch_id ? `batch ${entry.batch_id}` : null,
+    entry.test_id ? `test ${entry.test_id}` : null,
+    entry.config_id ? `config ${entry.config_id}` : null,
+    entry.core ? `core ${entry.core}` : null,
+    entry.duration_ms ? `${entry.duration_ms} ms` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
   return (
-    <div className={`log-entry ${entry.level === "warn" || entry.level === "error" ? `level-${entry.level}` : ""}`}>
+    <div
+      className={`log-entry ${entry.level === "warn" || entry.level === "error" ? `level-${entry.level}` : ""} ${correlated ? "correlated" : ""}`}
+      title={tip || undefined}
+      onClick={() => onShowRelated?.(entry)}
+      style={onShowRelated ? { cursor: correlated ? "pointer" : undefined } : undefined}
+    >
       <span className="log-time">{formatClock(entry.ts)}</span>
       <span className={`log-level ${entry.level || "info"}`}>{entry.level || "info"}</span>
       <span className="log-subsystem">{entry.subsystem}</span>
@@ -380,6 +477,8 @@ const LogRow = memo(function LogRow({ entry }: { entry: LogEntry }) {
         {entry.message}
         {entry.operation && <span className="log-suffix">{entry.operation}</span>}
         {entry.error_kind && <span className="log-suffix error-kind">{entry.error_kind}</span>}
+        {entry.batch_id && <span className="log-suffix">batch {entry.batch_id}</span>}
+        {entry.config_id && <span className="log-suffix">cfg {entry.config_id}</span>}
       </span>
     </div>
   );

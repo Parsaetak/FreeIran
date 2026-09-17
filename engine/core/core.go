@@ -269,15 +269,39 @@ func (i *Instance) markReady(err error) {
 
 		name := i.coreName()
 		pid := i.proc.PID()
+		readyMS := time.Since(i.started).Milliseconds()
 
 		i.mu.Unlock()
 
 		if err == nil {
-			logging.E("core", "core_ready",
-				"core %s (pid %d) is ready on %s", name, pid, i.listen)
+			// v0.9.7: readiness is the interesting lifecycle moment;
+			// the earlier core_start becomes a debug record so a
+			// routine launch emits ONE info line, not two. The
+			// startup duration and the listener ride structured
+			// fields — never only the message.
+			logging.LogR(logging.Record{
+				Level:      logging.LevelInfo,
+				Subsystem:  "core",
+				Event:      "core_ready",
+				Message:    fmt.Sprintf("core %s (pid %d) ready on %s in %d ms", name, pid, i.listen, readyMS),
+				Core:       name,
+				PID:        pid,
+				Listener:   i.listen,
+				DurationMS: readyMS,
+				Status:     "ready",
+			})
 		} else {
-			logging.Err("core", "core_error", "wait_ready", "process",
-				"core %s (pid %d) failed to become ready: %v", name, pid, err)
+			logging.LogR(logging.Record{
+				Level:     logging.LevelError,
+				Subsystem: "core",
+				Event:     "core_error",
+				Operation: "wait_ready",
+				ErrorKind: "process",
+				Message:   fmt.Sprintf("core %s (pid %d) failed to become ready: %v", name, pid, err),
+				Core:      name,
+				PID:       pid,
+				Status:    "start_failed",
+			})
 		}
 
 		close(i.ready)
@@ -420,9 +444,16 @@ func (i *Instance) Close() error {
 			name := i.core.Name()
 			i.mu.Unlock()
 
-			logging.W("core", "core_exit",
-				"core %s (pid %d) stop returned an error: %v",
-				name, i.proc.PID(), err)
+			logging.LogR(logging.Record{
+				Level:      logging.LevelWarn,
+				Subsystem:  "core",
+				Event:      "core_exit",
+				Message:    fmt.Sprintf("core %s (pid %d) stop returned an error: %v", name, i.proc.PID(), err),
+				Core:       name,
+				PID:        i.proc.PID(),
+				DurationMS: time.Since(i.started).Milliseconds(),
+				Status:     "stop_error",
+			})
 
 			// The process may still hold the config file open; still
 			// attempt removal (bounded retry) before returning.
@@ -438,10 +469,27 @@ func (i *Instance) Close() error {
 	i.stopErr = err
 	i.state = StateStopped
 	name := i.coreName()
+	pid := 0
+	lifetimeMS := time.Since(i.started).Milliseconds()
+	if i.proc != nil {
+		pid = i.proc.PID()
+	}
 	i.mu.Unlock()
 
-	logging.E("core", "core_exit",
-		"core %s (pid %d) stopped cleanly", name, i.proc.PID())
+	// v0.9.7: the clean exit line is the ONE teardown record for a
+	// normal run (start is debug, ready is info, exit completes the
+	// triple with lifetime + reason).
+	logging.LogR(logging.Record{
+		Level:      logging.LevelDebug,
+		Subsystem:  "core",
+		Event:      "core_exit",
+		Message:    fmt.Sprintf("core %s (pid %d) stopped cleanly", name, pid),
+		Core:       name,
+		PID:        pid,
+		DurationMS: lifetimeMS,
+		Status:     "stopped",
+		Fields:     map[string]any{"reason": "close"},
+	})
 
 	return err
 }
@@ -531,9 +579,18 @@ func Launch(
 		state:   StateStarting,
 	}
 
-	logging.E("core", "core_start",
-		"core %s started (pid %d, listener %s)",
-		backend.Name(), proc.PID(), listen)
+	// v0.9.7: routine launch is debug-level; core_ready carries the
+	// full structured start record (listener, duration, pid).
+	logging.LogR(logging.Record{
+		Level:     logging.LevelDebug,
+		Subsystem: "core",
+		Event:     "core_start",
+		Message:   fmt.Sprintf("core %s starting (pid %d, listener %s)", backend.Name(), proc.PID(), listen),
+		Core:      backend.Name(),
+		PID:       proc.PID(),
+		Listener:  listen,
+		Status:    "starting",
+	})
 
 	// Observe readiness in the background; WaitReady consumers get
 	// the result through the ready channel.

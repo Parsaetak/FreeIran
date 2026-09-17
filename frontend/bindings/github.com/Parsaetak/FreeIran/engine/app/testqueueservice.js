@@ -110,3 +110,28 @@ export function Drain() {
 export function EnqueueByFilter(filter) {
     return $Call.ByName($prefix + "EnqueueByFilter", filter);
 }
+
+/**
+ * Pause suspends task pickup: queued tests stay pending while
+ * in-flight tests finish (v0.9.7).
+ * @returns {$CancellablePromise<void>}
+ */
+export function Pause() {
+    return $Call.ByName($prefix + "Pause");
+}
+
+/**
+ * Resume lifts a Pause.
+ * @returns {$CancellablePromise<void>}
+ */
+export function Resume() {
+    return $Call.ByName($prefix + "Resume");
+}
+
+/**
+ * Paused reports whether the queue is paused.
+ * @returns {$CancellablePromise<boolean>}
+ */
+export function Paused() {
+    return $Call.ByName($prefix + "Paused");
+}

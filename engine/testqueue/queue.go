@@ -234,6 +234,13 @@ type Stats struct {
 	AvgLatencyMS     int64 `json:"avg_latency_ms,omitempty"`
 	FastestLatencyMS int64 `json:"fastest_latency_ms,omitempty"`
 	SlowestLatencyMS int64 `json:"slowest_latency_ms,omitempty"`
+
+	// v0.9.7 (§13/§14): temporary core-process accounting for the UI.
+	// ActiveCores is the number of temporary protocol-core processes
+	// alive right now (≤ CoreProbeConcurrency); CoreProbeConcurrency
+	// is the effective cap.
+	ActiveCores          int `json:"active_cores"`
+	CoreProbeConcurrency int `json:"core_probe_concurrency"`
 }
 
 // Mode selects the testing mode. Each mode presets Concurrency,
@@ -310,6 +317,16 @@ type Config struct {
 	// MaxAttempts is the retry cap per task. Default 2.
 	MaxAttempts int
 
+	// CoreProbeConcurrency caps how many temporary protocol-core
+	// PROCESSES may be alive simultaneously during testing (v0.9.7
+	// §14: 10,000 queued configurations must not imply uncontrolled
+	// core-process creation). Default 2; hard ceiling
+	// MaxCoreProbeConcurrency (4) — adaptive memory tuning may lower
+	// the effective value under pressure but never raises it above
+	// the ceiling. Queue workers (goroutines) may exceed this:
+	// excess workers block on the core-slot semaphore (backpressure).
+	CoreProbeConcurrency int
+
 	// Measurements is how many latency samples to take and average
 	// for a passing test. Default 1.
 	Measurements int
@@ -334,6 +351,15 @@ func DefaultConfig() Config {
 // ErrQueueFull is returned when Enqueue is called with TryEnqueue and
 // the queue is at capacity.
 var ErrQueueFull = errors.New("testqueue: queue is full")
+
+// Core-probe pool sizing (v0.9.7 §13/§14): memory availability must
+// not automatically create more Xray/V2Ray/sing-box processes. The
+// default cap of 2 keeps bulk testing light; 4 is the absolute
+// maximum no adaptive tuner may exceed.
+const (
+	DefaultCoreProbeConcurrency = 2
+	MaxCoreProbeConcurrency     = 4
+)
 
 // ErrDuplicate is returned when Enqueue is called for a fingerprint
 // that is already queued and the EnqueueOption does not allow
@@ -426,6 +452,21 @@ type Queue struct {
 	// resizeCh is closed+recreated by SetConcurrency to wake idle
 	// workers so the pool can shrink without waiting for work.
 	resizeCh chan struct{}
+
+	// coreSlots is the bounded CORE-PROBE POOL (v0.9.7 §14): every
+	// tester.Test call that spawns a temporary protocol-core
+	// process holds exactly one slot. The queue may keep many
+	// worker goroutines, but at most cap(coreSlots) temporary core
+	// processes are alive at any moment; excess workers park here
+	// (backpressure) instead of multiplying processes.
+	coreSlots chan struct{}
+
+	// activeCores counts in-flight tests holding a core slot.
+	activeCores atomic.Int32
+
+	// paused gates task pickup: while paused, workers block in
+	// Dequeue and pending tasks stay queued (v0.9.7 bulk UX).
+	paused atomic.Bool
 }
 
 // New constructs a Queue. The queue is not started; call Start.
@@ -450,6 +491,14 @@ func New(tester Tester, config Config) *Queue {
 	if config.MaxAttempts <= 0 {
 		config.MaxAttempts = 2
 	}
+	if config.CoreProbeConcurrency <= 0 {
+		config.CoreProbeConcurrency = DefaultCoreProbeConcurrency
+	}
+	// v0.9.7 hard ceiling: no configuration path may raise the
+	// temporary-core process cap above the safe maximum.
+	if config.CoreProbeConcurrency > MaxCoreProbeConcurrency {
+		config.CoreProbeConcurrency = MaxCoreProbeConcurrency
+	}
 	if config.Measurements <= 0 {
 		config.Measurements = 1
 	}
@@ -464,6 +513,7 @@ func New(tester Tester, config Config) *Queue {
 		byFingerprint: make(map[string]*Task),
 		results:       make(map[string]*Result),
 		perBackend:    make(map[string]int),
+		coreSlots:     make(chan struct{}, config.CoreProbeConcurrency),
 		startedAt:     time.Now().UTC(),
 		notifyCh:      make(chan struct{}),
 		resizeCh:      make(chan struct{}),
@@ -528,6 +578,11 @@ func (q *Queue) SetConcurrency(n int) {
 	if n > 64 {
 		n = 64
 	}
+
+	// v0.9.7: the WORKER pool may scale with memory/CPU availability,
+	// but the CORE-PROBE cap is untouched — adaptive tuning must never
+	// create more temporary protocol-core processes (§13). Workers
+	// beyond the cap simply park on the core-slot semaphore.
 
 	q.desiredWorkers.Store(int32(n))
 
@@ -642,6 +697,31 @@ func (q *Queue) Drain(ctx context.Context) error {
 	}
 }
 
+// Pause suspends task pickup: in-flight tests run to completion (or
+// cancellation) while queued tasks stay pending. Resume restores the
+// configured worker pool. Idempotent; no-op after Stop.
+func (q *Queue) Pause() {
+	if q.stopped.Load() {
+		return
+	}
+
+	q.paused.Store(true)
+}
+
+// Resume lifts a Pause and wakes the worker pool.
+func (q *Queue) Resume() {
+	q.paused.Store(false)
+
+	q.mu.Lock()
+	q.notifyLocked()
+	q.mu.Unlock()
+}
+
+// Paused reports whether task pickup is suspended.
+func (q *Queue) Paused() bool {
+	return q.paused.Load()
+}
+
 // Enqueue adds one task. Returns the task ID, or an error.
 func (q *Queue) Enqueue(
 	fingerprint string,
@@ -717,8 +797,10 @@ func (q *Queue) Dequeue(ctx context.Context) (*Task, error) {
 	for {
 		q.mu.Lock()
 
-		// Pop the highest-priority task.
-		if q.pending.Len() > 0 {
+		// v0.9.7: a paused queue does not hand out tasks — pending
+		// work stays queued until Resume. The notify channel wakes
+		// paused workers so Resume is prompt.
+		if q.pending.Len() > 0 && !q.paused.Load() {
 			task := heap.Pop(&q.pending).(*Task)
 			task.heapIdx = -1
 			q.inflight[task.ID] = task
@@ -733,6 +815,7 @@ func (q *Queue) Dequeue(ctx context.Context) (*Task, error) {
 
 		notifyCh := q.notifyCh
 		resizeCh := q.resizeCh
+		paused := q.paused.Load()
 		q.mu.Unlock()
 
 		select {
@@ -744,6 +827,11 @@ func (q *Queue) Dequeue(ctx context.Context) (*Task, error) {
 			// spurious wake for external callers; workers use it to
 			// retire when the pool shrinks
 			return nil, ErrResize
+		case <-time.After(200 * time.Millisecond):
+			// Pause poll: workers re-check the gate periodically so
+			// Resume without a fresh enqueue is still observed even
+			// if no notify fired.
+			_ = paused
 		}
 	}
 }
@@ -1018,6 +1106,33 @@ func (q *Queue) runTask(task *Task) {
 		task.Attempt = attempt
 		task.mu.Unlock()
 
+		// v0.9.7: acquire one bounded CORE-PROBE slot before spawning
+		// the temporary core process. Workers beyond the cap park here
+		// (backpressure) — thousands of queued configurations never
+		// imply thousands of simultaneous processes. The short poll
+		// keeps cancellation responsive while parked: a cancelled task
+		// leaves the slot queue instead of waiting for a free slot.
+		parked := false
+
+		for !parked {
+			task.mu.Lock()
+			cancelled := task.State == StateCancelled
+			task.mu.Unlock()
+
+			if cancelled {
+				return // finishTask already handled bookkeeping
+			}
+
+			select {
+			case q.coreSlots <- struct{}{}:
+				parked = true
+			case <-q.ctx.Done():
+				return
+			case <-time.After(100 * time.Millisecond):
+				// Re-check cancellation at loop top.
+			}
+		}
+
 		testCtx, testCancel := context.WithTimeout(q.ctx, q.config.Timeout)
 
 		// Publish the cancel func so Cancel can interrupt the test.
@@ -1025,14 +1140,20 @@ func (q *Queue) runTask(task *Task) {
 		if task.State == StateCancelled {
 			task.mu.Unlock()
 			testCancel()
+			<-q.coreSlots
 			return
 		}
 		task.cancelFunc = testCancel
 		task.mu.Unlock()
 
+		q.activeCores.Add(1)
+
 		start := time.Now()
 		result, err := q.tester.Test(testCtx, task.Fingerprint, task.Backends)
 		duration := time.Since(start)
+
+		q.activeCores.Add(-1)
+		<-q.coreSlots
 
 		// Capture the test context's error BEFORE calling testCancel,
 		// because testCancel itself sets testCtx.Err() = Canceled,
@@ -1332,6 +1453,9 @@ func (q *Queue) Stats() Stats {
 		AvgLatencyMS:     q.avgLatencyMS(),
 		FastestLatencyMS: q.fastestLatency.Load(),
 		SlowestLatencyMS: q.slowestLatency.Load(),
+
+		ActiveCores:          int(q.activeCores.Load()),
+		CoreProbeConcurrency: q.config.CoreProbeConcurrency,
 	}
 }
 

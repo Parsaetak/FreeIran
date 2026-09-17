@@ -19,10 +19,12 @@
 package app
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
 	"github.com/Parsaetak/FreeIran/engine/connection"
+	"github.com/Parsaetak/FreeIran/internal/logging"
 )
 
 // Recovery tuning constants. Plain numbers, one place, documented.
@@ -275,9 +277,28 @@ func (r *RecoveryService) tick(now time.Time) {
 		r.episodes = 0
 		r.episode = nil
 
-		r.app.logger.Info("recovery", "recovered",
-			"recovered on %s via %s (%d ms)",
-			result.Chosen.Name, result.Snapshot.Core, result.Snapshot.LatencyMS)
+		// v0.9.7: the recovery report separates local core readiness
+		// from verified connectivity (the pre-0.9.7 line reported the
+		// loopback probe as "latency", typically "0 ms") and names the
+		// candidate/backend in the right order.
+		verification := result.Snapshot.Verification
+		if verification == "" {
+			verification = "none"
+		}
+
+		r.app.logger.Log(logging.Record{
+			Level:      logging.LevelInfo,
+			Subsystem:  "recovery",
+			Event:      "recovered",
+			ConfigID:   result.Snapshot.ConfigID,
+			Core:       result.Snapshot.Core,
+			Listener:   result.Snapshot.Endpoint,
+			DurationMS: result.Snapshot.CoreReadyMS,
+			Status:     verification,
+			Message: fmt.Sprintf("recovered on candidate %s via %s (core ready in %d ms, verification %s)",
+				result.Chosen.Name, result.Snapshot.Core,
+				result.Snapshot.CoreReadyMS, verification),
+		})
 
 		return
 	}

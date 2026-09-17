@@ -801,3 +801,33 @@ type TestModeSelection struct {
 	// MaxCandidates caps how many candidates one flow tests.
 	MaxCandidates int
 }
+
+// PublicSourceDiscovery runs one bounded public-source discovery
+// cycle (v0.9.7 §7): the GitHub adapter plus the generic HTTP
+// connector feed the shared candidate queue; validated material lands
+// in the staging ledger with full provenance. Configured sources are
+// never displaced and discovered nodes are NOT auto-tested.
+func (s *DiscoveryService) PublicSourceDiscovery() (*discovery.GitHubOutcome, error) {
+	if s.app.publicSources == nil {
+		return nil, fmt.Errorf("public discovery unavailable")
+	}
+
+	return s.app.publicSources.Run(s.app.ctx)
+}
+
+// PublicSourceStaged returns the staged discovered sources (§9
+// provenance ledger view for the UI).
+func (s *DiscoveryService) PublicSourceStaged() []stagingEntry {
+	return s.app.LoadStaged()
+}
+
+// PublicSourceRateLimits returns the per-provider request accounting
+// (v0.9.7 §8): requests, successes, failures, 429/403 counters,
+// remaining budget and cooldown state.
+func (s *DiscoveryService) PublicSourceRateLimits() []discovery.ProviderStats {
+	if s.app.publicSources == nil {
+		return nil
+	}
+
+	return s.app.publicSources.RateLimitStats()
+}

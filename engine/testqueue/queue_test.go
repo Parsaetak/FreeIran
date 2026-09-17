@@ -281,6 +281,13 @@ func TestCancelBySourceWhileWorkersDequeue(t *testing.T) {
 
 // TestCancelBySourceWhileTasksRunning: in-flight tests are cancelled
 // via per-task context. The tester must observe ctx.Done().
+//
+// v0.9.7: with the bounded core-probe pool (default cap 2), exactly
+// the tasks HOLDING a core slot run the tester and observe per-task
+// context cancellation; tasks parked on the slot semaphore detect the
+// cancelled state at their next poll and return WITHOUT spawning a
+// core — the queue cancels everything while only 2 temporary core
+// processes ever exist.
 func TestCancelBySourceWhileTasksRunning(t *testing.T) {
 	var observedCancellation atomic.Int64
 	tester := &fakeTester{delay: 5 * time.Second}
@@ -305,7 +312,7 @@ func TestCancelBySourceWhileTasksRunning(t *testing.T) {
 		q.Enqueue(fmt.Sprintf("fp-run-%d", i), "vless", nil, 100, "src-run", EnqueueDefault)
 	}
 
-	// Wait for all 4 workers to enter the test.
+	// Wait for the slot-holding tasks to enter the test.
 	time.Sleep(100 * time.Millisecond)
 
 	cancelled := q.CancelBySource("src-run")
@@ -314,21 +321,25 @@ func TestCancelBySourceWhileTasksRunning(t *testing.T) {
 	}
 
 	// The tester's 5s delay should be interrupted by the per-task
-	// context cancellation. Wait for the observations.
+	// context cancellation for the in-flight (slot-holding) tasks.
+	// Parked tasks are cancelled without ever reaching the tester.
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if observedCancellation.Load() == 4 {
+		if observedCancellation.Load() == 2 {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if got := observedCancellation.Load(); got != 4 {
-		t.Errorf("observedCancellation = %d, want 4 (per-task ctx not cancelled)", got)
+	if got := observedCancellation.Load(); got != 2 {
+		t.Errorf("observedCancellation = %d, want 2 (in-flight ctx cancelled; parked tasks must not spawn)", got)
 	}
 
 	stats := q.Stats()
 	if stats.TotalCancelled != 4 {
 		t.Errorf("TotalCancelled = %d, want 4", stats.TotalCancelled)
+	}
+	if stats.ActiveCores != 0 {
+		t.Errorf("ActiveCores = %d, want 0 (no leaked core slots)", stats.ActiveCores)
 	}
 }
 
@@ -564,9 +575,13 @@ func TestCancellationDuringShutdown(t *testing.T) {
 
 // TestConcurrentEnqueueCancel: many goroutines enqueue and cancel
 // concurrently. Final counters must be consistent.
+//
+// v0.9.7: CoreProbeConcurrency = 4 keeps the pre-0.9.7 throughput for
+// this consistency test (the bounded-pool behavior is covered by the
+// dedicated core-probe tests).
 func TestConcurrentEnqueueCancel(t *testing.T) {
 	tester := &fakeTester{delay: 10 * time.Millisecond}
-	q := New(tester, Config{Concurrency: 4, MaxQueueSize: 10000, Timeout: 1 * time.Second, MaxAttempts: 1})
+	q := New(tester, Config{Concurrency: 4, MaxQueueSize: 10000, Timeout: 1 * time.Second, MaxAttempts: 1, CoreProbeConcurrency: 4})
 	q.Start(context.Background())
 	defer q.Stop()
 

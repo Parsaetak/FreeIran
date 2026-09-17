@@ -1616,13 +1616,18 @@ button {
 }
 
 /*
- * virtualized config rows — v0.9.1 layout fix.
+ * virtualized config rows — v0.9.1 layout fix, v0.9.7 actions column.
  *
- * Each row renders exactly eight children (select, protocol, endpoint,
- * transport, latency, health, source, action). The grid below mirrors
- * that one-to-one so no child ever wraps onto an implicit second grid
- * row (the v0.9.0 overlap bug), and the sticky header renders the same
- * eight-cell skeleton with two invisible spacers.
+ * Each row renders exactly NINE children (select, protocol, endpoint,
+ * transport, latency, URL, health, source, actions). The grid below
+ * mirrors that one-to-one so no child ever wraps onto an implicit
+ * second grid row (the v0.9.0 overlap bug). v0.9.7 fixes the
+ * v0.9.6 regression where the URL column was added without extending
+ * the grid — the action button landed in an IMPLICIT column.
+ *
+ * The ACTIONS track is fixed-width and never shrinks: content columns
+ * clamp/truncate first, so the Test action stays visible with long
+ * names, long endpoints and translated font metrics.
  */
 .config-row-v2 {
   grid-template-columns:
@@ -1631,9 +1636,10 @@ button {
     minmax(0, 1fr) /* endpoint (name + address) */
     minmax(0, 150px) /* transport chips */
     96px /* latency */
+    92px /* URL test */
     92px /* health */
     minmax(0, 120px) /* source */
-    64px; /* test action */
+    96px; /* ACTIONS — dedicated, fixed, never shrinks */
 }
 
 .config-row-v2 > * {
@@ -1644,8 +1650,134 @@ button {
   justify-content: flex-end;
 }
 
-.config-row-v2 > :last-child {
+/*
+ * ACTIONS wrapper (v0.9.7 §6): the test action never depends on
+ * :last-child styling — it lives in a dedicated cell that cannot
+ * collapse, cannot wrap and cannot slide underneath other text.
+ */
+.config-row-v2 .actions {
   justify-self: end;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  min-width: 0;
+  flex-wrap: nowrap;
+  overflow: visible;
+}
+
+.config-row-v2 .actions-header {
+  justify-self: end;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.config-row-v2 .actions .btn {
+  flex: none;
+}
+
+/*
+ * Test-state feedback chips (§18): Queued / Testing / Passed / Failed /
+ * Timed out / Cancelled / Stale — one compact vocabulary shared by the
+ * table rows and the detail panel.
+ */
+.test-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: var(--text-11);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.test-state .btn-spinner {
+  width: 10px;
+  height: 10px;
+}
+
+.test-state.queued {
+  background: rgba(108, 167, 248, 0.14);
+  color: var(--info);
+}
+
+.test-state.testing {
+  background: rgba(240, 180, 41, 0.14);
+  color: var(--warn);
+}
+
+.test-state.passed {
+  background: rgba(61, 220, 132, 0.14);
+  color: var(--accent);
+}
+
+.test-state.failed {
+  background: rgba(248, 113, 113, 0.14);
+  color: var(--error);
+}
+
+.test-state.untested {
+  background: var(--surface-raised);
+  color: var(--text-dim);
+}
+
+/*
+ * TESTING CONTROL BAR (v0.9.7 §6): a dedicated control area between
+ * the search/filter toolbar and the configuration table — clearly
+ * separated from the search controls, never competing with them.
+ */
+.testing-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-8);
+  background: linear-gradient(180deg, rgba(61, 220, 132, 0.05), transparent 70%), var(--surface);
+}
+
+.testing-bar-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding-right: 8px;
+  margin-right: 4px;
+  border-right: 1px solid var(--border);
+  font-size: var(--text-11);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+/* Detail panel primary action group (§6): Connect + Test now are one
+   unmistakable row, always above the descriptive grid. */
+.detail-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
+  padding-bottom: 10px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.detail-actions .btn {
+  flex: 1 1 0;
+  justify-content: center;
+}
+
+/* Queue panel paused state (§19). */
+.queue-panel.paused {
+  border-color: rgba(240, 180, 41, 0.5);
+}
+
+.queue-panel.paused .queue-title::after {
+  content: "⏸";
+  margin-left: 6px;
+  color: var(--warn);
 }
 
 .config-scroll {
@@ -1959,6 +2091,40 @@ button {
 .log-suffix.error-kind {
   color: var(--error);
   background: var(--error-dim);
+}
+
+/* v0.9.7 §20: related-events causality panel. */
+.related-panel {
+  margin: 0 var(--space-3) var(--space-2);
+  border: 1px solid rgba(108, 167, 248, 0.45);
+  border-radius: var(--radius-8);
+  background: var(--surface-raised);
+  overflow: hidden;
+}
+
+.related-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  background: rgba(108, 167, 248, 0.1);
+  font-size: var(--text-12);
+}
+
+.related-head .mono {
+  font-family: var(--font-mono);
+  font-size: var(--text-11);
+}
+
+.related-body {
+  max-height: 220px;
+  overflow-y: auto;
+  border-top: 1px solid var(--border);
+}
+
+.log-entry.correlated .log-event {
+  color: var(--info);
 }
 
 .log-footer {
@@ -2662,15 +2828,16 @@ button {
     display: none !important;
   }
 
-  /* transport + health hidden: 6 visible children */
+  /* transport + URL hidden: 7 visible children */
   .config-row-v2 {
     grid-template-columns:
       26px
       72px
       minmax(0, 1fr)
       96px
+      92px
       minmax(0, 120px)
-      64px;
+      96px;
   }
 }
 
@@ -2679,14 +2846,15 @@ button {
     display: none !important;
   }
 
-  /* source hidden as well: 5 visible children */
+  /* source hidden as well: 6 visible children */
   .config-row-v2 {
     grid-template-columns:
       26px
       72px
       minmax(0, 1fr)
       96px
-      64px;
+      92px
+      96px;
   }
 
   .source-row {
@@ -2714,6 +2882,66 @@ button {
 
   .stat-grid {
     grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  }
+}
+
+/*
+ * COMPACT CARD LAYOUT (v0.9.7 §6, narrow windows / mobile): the table
+ * grid is replaced by a two-row configuration card. Content occupies
+ * the first row; the ACTIONS area owns a DEDICATED second row, so the
+ * Test button can never drop underneath arbitrary text or wrap into
+ * the content flow. (Horizontal scrolling is deliberately rejected:
+ * a card keeps the action visible without a hidden-overflow hunt.)
+ */
+@media (max-width: 860px) {
+  .config-row-v2,
+  .row.header.config-row-v2 {
+    grid-template-columns:
+      26px /* checkbox */
+      minmax(0, 1fr) /* proto + endpoint flow */
+      minmax(0, 1fr); /* metrics flow */
+    grid-auto-rows: auto;
+    row-gap: 4px;
+  }
+
+  /* Sticky header collapses to a minimal skeleton. */
+  .row.header.config-row-v2 > :not(:nth-child(3)) {
+    display: none;
+  }
+
+  .config-row-v2 .cell-main {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  /* Metric cells flow inline after the endpoint. */
+  .config-row-v2 .cell-latency,
+  .config-row-v2 .actions {
+    justify-self: start;
+  }
+
+  /* The actions area owns its own full-width second row. */
+  .config-row-v2 .actions {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    justify-self: end;
+    padding: 2px 0;
+    border-top: 1px dashed var(--border);
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  .config-row-v2 .actions .btn {
+    min-width: 72px;
+  }
+
+  /* The virtualizer keeps rows at the fixed compact-card height; the
+     React layer sizes rows to 78px below 860px (estimateSize). */
+  .config-row-v2 {
+    min-height: 78px;
+    padding-top: 6px;
+    padding-bottom: 6px;
   }
 }
 

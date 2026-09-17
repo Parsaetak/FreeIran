@@ -71,6 +71,91 @@ export class Entry {
              */
             this["error_kind"] = "";
         }
+        if (!("session_id" in $$source)) {
+            /**
+             * Session identity (v0.9.7): unique per application launch.
+             * @member
+             * @type {string}
+             */
+            this["session_id"] = "";
+        }
+        if (!("event_id" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["event_id"] = "";
+        }
+        if (!("parent_event_id" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["parent_event_id"] = "";
+        }
+        if (!("batch_id" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["batch_id"] = "";
+        }
+        if (!("test_id" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["test_id"] = "";
+        }
+        if (!("config_id" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["config_id"] = "";
+        }
+        if (!("core" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["core"] = "";
+        }
+        if (!("pid" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["pid"] = 0;
+        }
+        if (!("listener" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["listener"] = "";
+        }
+        if (!("duration_ms" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["duration_ms"] = 0;
+        }
+        if (!("status" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["status"] = "";
+        }
+        if (!("fields" in $$source)) {
+            /**
+             * @member
+             * @type {Object<string, any> | undefined}
+             */
+            this["fields"] = undefined;
+        }
 
         Object.assign(this, $$source);
     }

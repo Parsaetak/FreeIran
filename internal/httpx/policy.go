@@ -133,6 +133,15 @@ type Client struct {
 	http   *http.Client // no total Timeout: per-request contexts bound attempts
 	tr     *http.Transport
 
+	// preGet, when non-nil, validates one request before any network
+	// activity (SSRF guard, v0.9.7). A returned error fails the Get
+	// immediately — no attempt, no retry.
+	preGet func(ctx context.Context, url string, o GetOptions) error
+
+	// userAgent overrides the default request identity when non-empty
+	// (discovery fetchers declare themselves honestly).
+	userAgent string
+
 	rng   *rand.Rand
 	rngMu sync.Mutex
 }
@@ -247,6 +256,13 @@ func (c *Client) Policy() Policy { return c.policy }
 func (c *Client) Get(ctx context.Context, rawURL string, o GetOptions) (*Response, error) {
 	p := c.policy
 
+	// SSRF pre-flight (v0.9.7): reject before any network activity.
+	if c.preGet != nil {
+		if err := c.preGet(ctx, rawURL, o); err != nil {
+			return nil, err
+		}
+	}
+
 	var lastErr error
 
 	for attempt := 0; attempt <= p.MaxRetries; attempt++ {
@@ -292,7 +308,12 @@ func (c *Client) getOnce(ctx context.Context, rawURL string, o GetOptions) (*Res
 		return nil, fmt.Errorf("httpx: build request: %w", err)
 	}
 
-	req.Header.Set("User-Agent", version.UserAgent())
+	userAgent := c.userAgent
+	if userAgent == "" {
+		userAgent = version.UserAgent()
+	}
+
+	req.Header.Set("User-Agent", userAgent)
 
 	for k, v := range o.Header {
 		req.Header.Set(k, v)
@@ -493,6 +514,17 @@ func (e *statusError) Error() string {
 	}
 
 	return fmt.Sprintf("httpx: HTTP %d", e.status)
+}
+
+// StatusCodeOf extracts the HTTP status carried by a request failure
+// (-1 for transport errors, the status code for HTTP failures).
+func StatusCodeOf(err error) int {
+	var se *statusError
+	if errors.As(err, &se) {
+		return se.status
+	}
+
+	return -1
 }
 
 // parseRetryAfter parses the Retry-After header in either its

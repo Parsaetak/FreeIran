@@ -22,10 +22,13 @@ package app
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Parsaetak/FreeIran/engine/cleanup"
 	"github.com/Parsaetak/FreeIran/engine/core"
+	"github.com/Parsaetak/FreeIran/internal/logging"
 )
 
 // cleanup cadence: an opportunistic pass every 15 minutes, bounded to
@@ -156,30 +159,57 @@ func (a *App) runCleanupNow(ctx context.Context) *cleanup.Result {
 	return result
 }
 
-// logCleanupResult renders one pass into the structured log.
+// logCleanupResult renders one pass into the structured log as TWO
+// compact records (v0.9.7 §15): one cleanup_completed summary with the
+// byte totals, and one cleanup_task record per executed task —
+// individual deleted files are NEVER logged at INFO.
 func (a *App) logCleanupResult(trigger string, result *cleanup.Result) {
 	if a.logger == nil || result == nil {
 		return
 	}
 
-	a.logger.Info("app", "cleanup",
-		"cleanup (%s): reclaimed %d bytes in %d ms",
-		trigger, result.Bytes, result.DurationMS)
+	var reclaimed, items int64
+	var failed []string
 
 	for _, task := range result.Tasks {
 		if task.Skipped {
 			continue
 		}
 
+		reclaimed += task.Bytes
+		items += task.Items
+
 		if task.Error != "" {
-			a.logger.Warn("app", "cleanup_task",
-				"cleanup task %s failed: %s", task.Name, task.Error)
-
-			continue
+			failed = append(failed, task.Name+": "+task.Error)
+		} else {
+			a.logger.Log(logging.Record{
+				Level:      logging.LevelDebug,
+				Subsystem:  "cleanup",
+				Event:      "cleanup_task",
+				Message:    fmt.Sprintf("cleanup task %s: %d bytes, %d items (%d ms)", task.Name, task.Bytes, task.Items, task.DurationMS),
+				DurationMS: task.DurationMS,
+				Status:     "done",
+				Fields: map[string]any{
+					"task":            task.Name,
+					"bytes_reclaimed": task.Bytes,
+					"items":           task.Items,
+				},
+			})
 		}
-
-		a.logger.Info("app", "cleanup_task",
-			"cleanup task %s: %d bytes, %d items (%d ms)",
-			task.Name, task.Bytes, task.Items, task.DurationMS)
 	}
+
+	a.logger.Log(logging.Record{
+		Level:      logging.LevelInfo,
+		Subsystem:  "cleanup",
+		Event:      "cleanup_completed",
+		DurationMS: result.DurationMS,
+		Status:     trigger,
+		Message:    fmt.Sprintf("cleanup (%s): reclaimed %d bytes in %d items (%d ms)", trigger, reclaimed, items, result.DurationMS),
+		Fields: map[string]any{
+			"bytes_reclaimed": reclaimed,
+			"items":           items,
+			"tasks":           len(result.Tasks),
+			"failed":          strings.Join(failed, "; "),
+		},
+	})
 }

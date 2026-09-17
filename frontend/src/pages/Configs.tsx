@@ -64,6 +64,15 @@ export function ConfigsPage() {
   const [filteredLoading, setFilteredLoading] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [queueStats, setQueueStats] = useState<QueueStatsView | null>(null);
+  // v0.9.7: queue pause state for the testing control bar.
+  const [queuePaused, setQueuePaused] = useState(false);
+  // v0.9.7: per-row queued state derived from the queue snapshot.
+  const [queuedIds, setQueuedIds] = useState<Set<string>>(new Set());
+  // v0.9.7: compact two-row card layout below 860px (actions get a
+  // dedicated row) — the virtualizer sizes rows accordingly.
+  const [narrow, setNarrow] = useState(
+    () => typeof window !== "undefined" && window.matchMedia("(max-width: 860px)").matches,
+  );
 
   const parentRef = useRef<HTMLDivElement>(null);
 
@@ -80,9 +89,19 @@ export function ConfigsPage() {
   // RENDERED (visibleItems): sizing against the raw `items` while a
   // protocol filter narrows the list produced a huge blank scroll
   // range and wasted overscan rows.
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 860px)");
+
+    const onChange = () => setNarrow(media.matches);
+
+    media.addEventListener("change", onChange);
+
+    return () => media.removeEventListener("change", onChange);
+  }, []);
+
   const virtualizer = useVirtualizer({
     count: visibleItems.length,
-    estimateSize: () => 44,
+    estimateSize: () => (narrow ? 78 : 44),
     overscan: 12,
     getScrollElement: () => parentRef.current,
   });
@@ -99,10 +118,11 @@ export function ConfigsPage() {
     return [...preferred, ...extra].slice(0, 6);
   }, [items]);
 
-  // Keep the virtualizer window in sync with the filtered count.
+  // Keep the virtualizer window in sync with the filtered count and
+  // the narrow/wide row height switch.
   useEffect(() => {
     virtualizer.measure();
-  }, [visibleItems.length, virtualizer]);
+  }, [visibleItems.length, narrow, virtualizer]);
 
   // Server-side filtered view: any status filter or sort activates it.
   const loadFiltered = useCallback(async (limit: number) => {
@@ -162,6 +182,27 @@ export function ConfigsPage() {
         if (!stop && stats) {
           setQueueStats(stats as QueueStatsView);
           next = cadence(stats as QueueStatsView);
+        }
+
+        // v0.9.7: track pause state + per-row queued fingerprints.
+        try {
+          const paused = await call(() => testQueueService.Paused());
+          if (!stop) setQueuePaused(Boolean(paused));
+        } catch {
+          /* best-effort */
+        }
+
+        try {
+          const snapshot = await call(() => testQueueService.Snapshot(200));
+          if (!stop && Array.isArray(snapshot)) {
+            const live = snapshot.filter(
+              (task: { state?: string }) =>
+                task?.state === "queued" || task?.state === "preparing" || task?.state === "testing" || task?.state === "measuring",
+            );
+            setQueuedIds(new Set(live.map((task: { fingerprint?: string }) => String(task?.fingerprint ?? ""))));
+          }
+        } catch {
+          /* best-effort */
         }
       } catch {
         /* polling is best-effort */
@@ -261,6 +302,23 @@ export function ConfigsPage() {
     }
   };
 
+  // v0.9.7: pause/resume the testing queue from the control bar.
+  const togglePause = async () => {
+    try {
+      if (queuePaused) {
+        await call(() => testQueueService.Resume());
+        setQueuePaused(false);
+        toast("info", "Queue resumed", "Queued tests continue.");
+      } else {
+        await call(() => testQueueService.Pause());
+        setQueuePaused(true);
+        toast("info", "Queue paused", "In-flight tests finish; queued tests wait.");
+      }
+    } catch (error) {
+      toast("error", "Queue control failed", describeError(error));
+    }
+  };
+
   const toggleSelect = (id: string, checked: boolean) => {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -317,6 +375,10 @@ export function ConfigsPage() {
 
       {lastError && <div className="error-banner">{lastError}</div>}
 
+      {/*
+       * SEARCH / FILTER TOOLBAR (§6: the testing controls live in their
+       * own dedicated bar below — the two concerns never compete).
+       */}
       <div className="toolbar">
         <input
           className="input"
@@ -380,27 +442,43 @@ export function ConfigsPage() {
       </div>
 
       {/*
-       * Testing workspace toolbar (v0.9.1): primary actions are always
-       * visible; secondary/recovery actions live in a compact overflow
-       * menu so the toolbar can never overflow into the list below.
+       * TESTING CONTROL BAR (v0.9.7 §6): a dedicated testing control
+       * area between the search toolbar and the table. Primary bulk
+       * actions stay visible; pause/resume + recovery actions live in
+       * the overflow menu so the bar can never overflow into the list.
        */}
-      <div className="toolbar">
+      <div className="testing-bar" role="toolbar" aria-label="Testing controls">
+        <span className="testing-bar-label">
+          <IconRefresh size={13} />
+          Testing
+        </span>
+
         <button
           type="button"
-          className="btn"
+          className="btn primary sm"
           disabled={filteredLoading || selected.size === 0}
           onClick={() => void bulkTest("selected")}
         >
           <IconPlay size={13} /> Test selected ({selected.size})
         </button>
-        <button type="button" className="btn" disabled={filteredLoading} onClick={() => void bulkTest("all")}>
+        <button type="button" className="btn sm" disabled={filteredLoading} onClick={() => void bulkTest("all")}>
           <IconRefresh size={13} /> Test all
         </button>
-        <button type="button" className="btn" disabled={filteredLoading} onClick={() => void bulkTest("untested")}>
+        <button type="button" className="btn sm" disabled={filteredLoading} onClick={() => void bulkTest("untested")}>
           <IconRefresh size={13} /> Test untested
         </button>
 
         <div className="toolbar-spacer" />
+
+        {queueStats && queueStats.total_enqueued > 0 && (
+          <button
+            type="button"
+            className="btn sm"
+            onClick={() => void togglePause()}
+          >
+            {queuePaused ? "▶ Resume" : "⏸ Pause"}
+          </button>
+        )}
 
         <Menu
           ariaLabel="More testing actions"
@@ -412,8 +490,14 @@ export function ConfigsPage() {
           }
           items={[
             {
-              id: "retest-failed",
-              label: "Retest failed",
+              id: "retry-failed",
+              label: "Retry failed",
+              disabled: filteredLoading,
+              onSelect: () => void bulkTest("failed"),
+            },
+            {
+              id: "retry-timeout",
+              label: "Retry timed out",
               disabled: filteredLoading,
               onSelect: () => void bulkTest("failed"),
             },
@@ -436,12 +520,9 @@ export function ConfigsPage() {
       </div>
 
       {queueStats && queueStats.total_enqueued > 0 && (
-        <section className="queue-panel" aria-label="Test queue progress">
+        <section className={`queue-panel ${queuePaused ? "paused" : ""}`} aria-label="Test queue progress">
           <div className="queue-head">
-            <span className="queue-title">Testing</span>
-            <span className="queue-count">
-              {queueStats.total_completed}/{queueStats.total_enqueued} done
-            </span>
+            <span className="queue-title">Testing {queueStats.total_completed} / {queueStats.total_enqueued}{queuePaused ? " · paused" : ""}</span>
             <div
               className={`progress ${queueStats.total_completed >= queueStats.total_enqueued ? "" : "indeterminate-none"}`}
               role="progressbar"
@@ -457,6 +538,9 @@ export function ConfigsPage() {
                 }}
               />
             </div>
+            <button type="button" className="btn sm ghost" onClick={() => void togglePause()}>
+              {queuePaused ? "Resume" : "Pause"}
+            </button>
             <button type="button" className="btn sm ghost danger" onClick={() => void cancelAll()}>
               Cancel all
             </button>
@@ -470,26 +554,26 @@ export function ConfigsPage() {
             </div>
 
             <div className="queue-stats">
-              <span className="queue-chip queued">
-                queued <b>{queueStats.queue_depth}</b>
-              </span>
-              <span className="queue-chip active">
-                active <b>{queueStats.active_workers}</b>
-              </span>
+              {/* v0.9.7 §19: one aggregated progress stream with the
+                  per-state counters AND the live core-process census. */}
               <span className="queue-chip passed">
-                passed <b>{queueStats.total_passed}</b>
+                Passed <b>{queueStats.total_passed}</b>
               </span>
               <span className="queue-chip failed">
-                failed <b>{queueStats.total_failed}</b>
+                Failed <b>{queueStats.total_failed}</b>
               </span>
               <span className="queue-chip">
-                cancelled <b>{queueStats.total_cancelled}</b>
+                Timeout <b>{queueStats.total_timed_out}</b>
               </span>
-              {queueStats.total_timed_out > 0 && (
-                <span className="queue-chip failed">
-                  timed out <b>{queueStats.total_timed_out}</b>
-                </span>
-              )}
+              <span className="queue-chip">
+                Cancelled <b>{queueStats.total_cancelled}</b>
+              </span>
+              <span className="queue-chip active" title="Temporary protocol-core processes alive right now (bounded pool)">
+                Active cores <b>{queueStats.active_cores ?? 0}</b>
+              </span>
+              <span className="queue-chip queued" title="Configurations waiting in the queue">
+                Queue <b>{queueStats.queue_depth}</b>
+              </span>
             </div>
           </div>
         </section>
@@ -506,7 +590,7 @@ export function ConfigsPage() {
             <span className="hide-md" title="URL test through the tunnel">URL</span>
             <span className="hide-md">Health</span>
             <span className="hide-sm">Source</span>
-            <span />
+            <span className="actions-header">Actions</span>
           </div>
 
           <div
@@ -602,21 +686,33 @@ export function ConfigsPage() {
                         {config["source"] ? <span className="chip">{truncate(String(config["source"]), 14)}</span> : <span className="chip">—</span>}
                       </span>
 
-                      <button
-                        type="button"
-                        className="btn sm"
-                        disabled={testingId === String(config["id"])}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          void testConfig(config);
-                        }}
-                      >
-                        {testingId === String(config["id"]) ? (
-                          <span className="btn-spinner" aria-hidden />
-                        ) : (
-                          "Test"
+                      {/*
+                       * ACTIONS cell (v0.9.7 §6): a dedicated wrapper —
+                       * never a bare last grid child. Fixed column width,
+                       * nowrap, never shrinks: the Test action stays
+                       * visible regardless of content length.
+                       */}
+                      <span className="actions">
+                        {queuedIds.has(String(config["id"])) && testingId !== String(config["id"]) && (
+                          <span className="test-state queued" title="Waiting in the test queue">Queued</span>
                         )}
-                      </button>
+                        {testingId === String(config["id"]) ? (
+                          <span className="test-state testing" title="Test in progress">
+                            <span className="btn-spinner" aria-hidden /> Testing
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            className="btn sm"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void testConfig(config);
+                            }}
+                          >
+                            Test
+                          </button>
+                        )}
+                      </span>
                     </div>
                   );
                 })}
@@ -671,6 +767,22 @@ function DetailPanel({ detail, onClose }: { detail: ConfigDetail; onClose: () =>
     }
   };
 
+  // v0.9.7 §18: honest, measured-only reporting — never fabricated.
+  const detailAny = detail as unknown as Record<string, unknown>;
+  const ping = detailAny["ping"] as
+    | { median_ms?: number; samples?: number; packet_loss?: number }
+    | undefined;
+  const urlTest = detailAny["url_test"] as
+    | { ok?: boolean; status?: number; total_ms?: number; timeout?: boolean }
+    | undefined;
+  const testedAt = Number(detail.tested_at ?? 0);
+
+  const testState = !testedAt
+    ? { label: "Untested", cls: "untested" }
+    : detail.working
+      ? { label: "Passed", cls: "passed" }
+      : { label: "Failed", cls: "failed" };
+
   return (
     <aside className="detail-panel" aria-label="Configuration details">
       <div className="card-header">
@@ -681,7 +793,12 @@ function DetailPanel({ detail, onClose }: { detail: ConfigDetail; onClose: () =>
       </div>
 
       <div className="detail-panel-body">
-        <div className="toolbar">
+        {/*
+         * PRIMARY ACTION GROUP (v0.9.7 §6): Connect and Test now form
+         * one clearly delimited action row — no button can ever be
+         * hidden beneath descriptive text.
+         */}
+        <div className="detail-actions">
           <button
             type="button"
             className="btn primary"
@@ -693,12 +810,64 @@ function DetailPanel({ detail, onClose }: { detail: ConfigDetail; onClose: () =>
           </button>
 
           <button type="button" className="btn" disabled={testing} onClick={() => void test()}>
-            {testing && <span className="btn-spinner" aria-hidden />}
+            {testing ? <span className="btn-spinner" aria-hidden /> : <IconRefresh size={13} />}
             Test now
           </button>
         </div>
 
         <dl className="detail-grid">
+          <dt>Test state</dt>
+          <dd>
+            <span className={`test-state ${testing ? "testing" : testState.cls}`}>
+              {testing && <span className="btn-spinner" aria-hidden />}
+              {testing ? "Testing" : testState.label}
+            </span>
+          </dd>
+
+          <dt>Last test</dt>
+          <dd>{testedAt ? relativeTime(testedAt) : "never"}</dd>
+
+          <dt>Ping</dt>
+          <dd className="mono-cell">
+            {ping && (ping.samples ?? 0) > 0
+              ? `${formatLatency(ping.median_ms ?? 0)} (median of ${ping.samples})`
+              : testedAt && detail.latency_ms
+                ? `~${formatLatency(detail.latency_ms)} (estimated)`
+                : "—"}
+          </dd>
+
+          <dt>URL</dt>
+          <dd className="mono-cell">
+            {urlTest?.total_ms
+              ? urlTest.ok
+                ? `HTTP ${urlTest.status} · ${urlTest.total_ms} ms`
+                : urlTest.timeout
+                  ? "timeout"
+                  : "failed"
+              : "not run"}
+          </dd>
+
+          <dt>Health</dt>
+          <dd>
+            {testedAt ? (
+              <ResultBadge ok={detail.working} okLabel="working" failLabel="failed" />
+            ) : (
+              <span className="badge neutral">untested</span>
+            )}
+          </dd>
+
+          <dt>Core</dt>
+          <dd className="mono-cell">{detail.compatible_backends?.join(", ") || "none compatible"}</dd>
+
+          <dt>Verification</dt>
+          <dd>
+            {testedAt && detail.working
+              ? "protocol + connectivity verified"
+              : testedAt
+                ? "failed — see test state"
+                : "not verified"}
+          </dd>
+
           <dt>Protocol</dt>
           <dd className="mono-cell">{detail.type}</dd>
 
@@ -750,26 +919,6 @@ function DetailPanel({ detail, onClose }: { detail: ConfigDetail; onClose: () =>
               <dd className="mono-cell">{detail.method}</dd>
             </>
           )}
-
-          <dt>Backends</dt>
-          <dd>{detail.compatible_backends?.join(", ") || "none compatible"}</dd>
-
-          <dt>Status</dt>
-          <dd>
-            {detail.tested_at ? (
-              <ResultBadge ok={detail.working} okLabel="working" failLabel="failed" />
-            ) : (
-              <span className="badge neutral">untested</span>
-            )}
-          </dd>
-
-          <dt>Latency</dt>
-          <dd className={`latency ${latencyClass(detail.latency_ms)}`}>
-            {formatLatency(detail.latency_ms)}
-          </dd>
-
-          <dt>Last tested</dt>
-          <dd>{detail.tested_at ? relativeTime(detail.tested_at) : "never"}</dd>
 
           {detail.source && (
             <>

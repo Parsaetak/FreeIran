@@ -335,6 +335,25 @@ func Start(ctx context.Context, spec ProcessSpec) (*ManagedProcess, error) {
 	return proc, nil
 }
 
+// jobFallbackDedupe collapses per-process job-binding fallbacks into
+// one session-level warning (v0.9.7): the expected fallback mechanism
+// must not visually dominate the log during bulk testing — the first
+// occurrence is logged in full, later occurrences are counted and
+// surfaced as an aggregate summary (FallbackCount / FlushFallbackSummary).
+var jobFallbackDedupe = logging.NewDedupe()
+
+// FallbackCount returns how many processes this session launched
+// without kernel job binding.
+func FallbackCount() uint64 {
+	return jobFallbackDedupe.Count("job-fallback")
+}
+
+// FlushFallbackSummary emits the aggregate job-fallback counter as a
+// compact info event (called at shutdown / diagnostics refresh).
+func FlushFallbackSummary() {
+	jobFallbackDedupe.FlushSummary(nil, "system", "job_fallback", true, false)
+}
+
 // supervise wraps a started child in the ManagedProcess lifecycle:
 // it records the binding state, starts the wait goroutine that
 // classifies the exit, and never fails after the child exists (all
@@ -363,10 +382,14 @@ func supervise(
 	}
 
 	if !bound {
-		logging.W("system", "job_fallback",
-			"process %q (pid %d) launched without kernel job binding (%s); "+
-				"deterministic supervised tree-kill cleanup is active",
-			spec.Name, proc.pid, note)
+		// v0.9.7: once-per-session warning + silent counter instead of
+		// one warning per temporary core process. The structural state
+		// remains available via JobBound()/Diagnostics().
+		jobFallbackDedupe.Do(nil, logging.LevelWarn, "system", "job_fallback",
+			"job-fallback",
+			"kernel job binding unavailable (%s); deterministic supervised "+
+				"tree-kill cleanup is active for spawned processes",
+			note)
 	}
 
 	go func() {

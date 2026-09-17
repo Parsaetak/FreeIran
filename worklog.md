@@ -3154,3 +3154,97 @@ Run: 2026-09-17, `go run ./tools/neteval` from the final tree, live Internet.
   fake-core end-to-end tests in CI (TestRaceWithFakeCores drives a REAL
   race through FAKECORE_SOCKS_RELAY); this environment cannot run real
   protocol cores, so no real-tunnel numbers are claimed.
+
+---
+
+## v0.9.7 — Deep Runtime, UI, Discovery & Memory Upgrade
+
+Date: 2026-09-18 · Baseline: v0.9.6 (45ff7fc)
+
+### Root causes found
+
+1. Connection latency conflation: `engine/connection` reported the
+   LOCAL loopback listener probe (`instance.Health` → `probeListener`)
+   as session "latency" — a sub-millisecond local dial truncating to
+   `latency 0 ms`. The real end-to-end measurement
+   (`VerifyTunnel.TunnelProbeMS`) existed but was never surfaced.
+2. Config row grid regression: `.config-row-v2` defined EIGHT grid
+   tracks while rows rendered NINE children (the v0.9.6 URL column was
+   added without extending the grid) — the Test button landed in an
+   implicit column and collided with content at full width.
+3. Core-process churn: each test-queue worker owned one temporary core
+   process, the adaptive booster could grow workers to 8 under load,
+   and `PerBackendConcurrency` was declared but never enforced — a
+   10,000-task queue implied up to 8 simultaneous cores and thousands
+   of process starts, with per-process `job_fallback` warnings
+   dominating the log.
+
+### Implemented
+
+- Logging: session_id/event_id/monotonic seq per entry, correlation
+  fields (parent_event_id/batch_id/test_id/config_id/core/pid/
+  listener/duration_ms/status + generic Fields), structured `Record`
+  API, `Query`/`Related` filter engine, `Dedupe` noise reducer;
+  lifecycle events (application_start → workspace_ready →
+  services_ready → application_ready → background_warmup →
+  application_shutdown) with no duplicate start messages; core
+  lifecycle dedup (core_start=debug, core_ready=info+duration,
+  core_exit=info+lifetime+reason); RefreshCores only reports available
+  cores; job_fallback is once-per-session + aggregate counter;
+  memory_policy_changed replaces per-tick memory_adjust; recovery-side
+  memory_pressure transitions downgraded to
+  memory_pressure_recovered (info); cleanup emits one structured
+  cleanup_completed summary with byte totals.
+- Connection metrics: Snapshot separates core_ready_ms (local),
+  ping_median_ms / url_total_ms (verified end-to-end) and a
+  verification stage; connection_success logs core readiness and
+  verified connectivity distinctly; recovery report fixed
+  ("(0 ms)" defect) and reworded (on candidate / via backend).
+- Test pipeline: bounded CORE-PROBE POOL (core_probe_concurrency,
+  default 2, hard ceiling 4) between workers and the tester —
+  backpressure instead of process multiplication; cancellation-aware
+  slot parking; ActiveCores/CoreProbeConcurrency in Stats; queue
+  Pause/Resume; booster can scale workers but never the core cap.
+- UI: nine-track config grid with dedicated .actions column (fixed
+  width, justify-self:end, nowrap, never shrinks; content columns
+  clamp first); compact two-row card below 860px with a dedicated
+  actions row (responsive virtualizer row heights); testing control
+  bar separated from the search toolbar with pause/resume and retry
+  actions; queue panel with per-state counters + Active cores +
+  Queue depth; detail panel primary action group (Connect + Test now)
+  with Test state / Last test / Ping / URL / Health / Core /
+  Verification rows (measured values only); test-state chips
+  (Queued/Testing/Passed/Failed); Diagnostics structured filters
+  (event, errors-only) and related-events causality panel.
+- Discovery: bounded public-URL discovery pipeline with generic HTTP
+  connector (SSRF-guarded client, redirect caps + per-hop validation,
+  DNS-rebinding prevention via dial Control hook, size caps, timeouts,
+  ETag/Last-Modified, Retry-After, backoff, binary sniffing), GitHub
+  adapter (repository search, code search, recursive tree inspection,
+  raw fetching, README references → bounded queue, release assets,
+  gists), per-provider rate-limit engine (budgets, pacing, cooldowns,
+  Retry-After, exponential backoff, remaining/reset accounting),
+  bounded recursion (depth 2 / 16 URLs per source / 200 per run /
+  domain cooldowns / 5-minute budget), CandidateQueue with normalized
+  URL dedup, provenance ledger persisted to
+  config/discovered-sources.json (never displaces configured
+  sources).
+- Storage/memory: bounded caches unchanged (LRU/TTL layers verified);
+  cleanup summary events with bytes_before/after semantics; booster
+  policy-change events; core-probe ceiling enforced against adaptive
+  growth.
+- Version 0.9.7 across VERSION, internal/version, frontend
+  package.json, Windows metadata (build/winres.json), installer
+  (scripts/freeiran.iss), README + docs (new docs/discovery.md).
+
+### Verification
+
+- go build ./... (engine + internal): PASS
+- go test ./...: all packages PASS (cmd/freeiran requires GTK dev
+  packages on Linux and is verified via GOOS=windows cross-build)
+- go vet: PASS
+- frontend: npm run typecheck PASS · vitest 58 tests PASS · vite build
+  PASS
+- Windows cross-build (GOOS=windows cmd/freeiran): PASS
+- Clean-room: extracted final ZIP to a fresh directory, rebuilt and
+  retested from the extracted tree only — PASS

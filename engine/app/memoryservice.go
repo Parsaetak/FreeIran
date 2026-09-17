@@ -27,6 +27,7 @@
 package app
 
 import (
+	"fmt"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -35,6 +36,7 @@ import (
 	"github.com/Parsaetak/FreeIran/engine/booster"
 	"github.com/Parsaetak/FreeIran/engine/mempressure"
 	"github.com/Parsaetak/FreeIran/engine/store"
+	"github.com/Parsaetak/FreeIran/internal/logging"
 )
 
 // SampleInterval is the pressure sampling cadence.
@@ -52,6 +54,49 @@ type MemoryService struct {
 	stopCh      chan struct{}
 	stopOnce    sync.Once
 	samplesDone atomic.Int64
+}
+
+// boosterPolicyChanged reports whether a booster proposal materially
+// differs from the previously applied settings (v0.9.7: the trigger
+// for one "memory_policy_changed" record; stable operation logs
+// nothing).
+func boosterPolicyChanged(previous, next booster.Settings, effective int) bool {
+	return previous.QueueConcurrency != next.QueueConcurrency ||
+		previous.QueueDepth != next.QueueDepth ||
+		previous.CacheEntries != next.CacheEntries ||
+		previous.BatchSize != next.BatchSize ||
+		previous.ChunkFlushBytes != next.ChunkFlushBytes ||
+		previous.QueueConcurrency != effective
+}
+
+// severityRank ranks mempressure states for recovery detection.
+func severityRank(s mempressure.State) int {
+	switch s {
+	case mempressure.StateCritical:
+		return 4
+	case mempressure.StateHigh:
+		return 3
+	case mempressure.StateElevated:
+		return 2
+	default:
+		return 1
+	}
+}
+
+// lastBoosterSettings returns the most recently applied booster
+// settings (zero value before the first tick).
+func (a *App) lastBoosterSettings() booster.Settings {
+	a.boosterSettingsMu.Lock()
+	defer a.boosterSettingsMu.Unlock()
+
+	return a.lastBooster
+}
+
+// rememberBoosterSettings stores the applied booster settings.
+func (a *App) rememberBoosterSettings(s booster.Settings) {
+	a.boosterSettingsMu.Lock()
+	a.lastBooster = s
+	a.boosterSettingsMu.Unlock()
 }
 
 // MemorySnapshot is the structured, UI-bindable memory report. It
@@ -93,6 +138,8 @@ func newMemoryService(a *App) *MemoryService {
 		tq := a.testQueue
 		a.initMu.Unlock()
 
+		previous := a.lastBoosterSettings()
+
 		concurrency := a.effectiveQueueConcurrency(s.QueueConcurrency)
 
 		if tq != nil {
@@ -108,13 +155,36 @@ func newMemoryService(a *App) *MemoryService {
 			a.store.SetChunkTargetBytes(s.ChunkFlushBytes)
 		}
 
-		// v0.9.5: routine booster adjustments are NO LONGER logged.
-		// The OnChange callback fires on every settings change the
-		// 5-second booster tick proposes, which under oscillating load
-		// produced a stream of "info app memory_adjust" lines with no
-		// diagnostic value. The CURRENT settings remain observable
-		// through Diagnostics (MemorySnapshot); warnings and errors
-		// (pressure transitions, memory_pressure) are unaffected.
+		a.rememberBoosterSettings(s)
+
+		// v0.9.5: routine booster adjustments are NO LONGER logged
+		// (the old per-tick "memory_adjust" stream had no diagnostic
+		// value). v0.9.7: instead of silence, emit ONE compact
+		// "memory_policy_changed" record when a policy value
+		// materially changes (workers, queue depth, cache target,
+		// batch size) — normal stable operation stays silent.
+		if a.logger != nil && boosterPolicyChanged(previous, s, concurrency) {
+			a.logger.Log(logging.Record{
+				Level:     logging.LevelInfo,
+				Subsystem: "app",
+				Event:     "memory_policy_changed",
+				Message: fmt.Sprintf("memory policy adjusted: workers %d→%d, queue depth %d→%d, cache entries %d→%d",
+					previous.QueueConcurrency, s.QueueConcurrency,
+					previous.QueueDepth, s.QueueDepth,
+					previous.CacheEntries, s.CacheEntries),
+				Fields: map[string]any{
+					"workers_from":       previous.QueueConcurrency,
+					"workers_to":         s.QueueConcurrency,
+					"workers_effective":  concurrency,
+					"queue_depth_from":   previous.QueueDepth,
+					"queue_depth_to":     s.QueueDepth,
+					"cache_entries_from": previous.CacheEntries,
+					"cache_entries_to":   s.CacheEntries,
+					"batch_size":         s.BatchSize,
+					"chunk_flush_bytes":  s.ChunkFlushBytes,
+				},
+			})
+		}
 	})
 
 	// Pressure reactions (v0.9.2): memory pressure now controls the
@@ -182,13 +252,36 @@ func newMemoryService(a *App) *MemoryService {
 		}
 
 		if a.logger != nil {
-			a.logger.Warn("app", "memory_pressure",
-				"memory pressure %s → %s | reason: heap %d%% / cache %d%% / queue %d%% (heap %d MiB, cache %d MiB, queue %d MiB)",
-				old, new,
-				percentOf(snap.HeapAlloc, snap.Ceiling.HeapBytes),
-				percentOf(snap.CacheBytes, snap.Ceiling.CacheBytes),
-				percentOf(snap.QueueBytes, snap.Ceiling.QueueBytes),
-				snap.HeapAlloc>>20, snap.CacheBytes>>20, snap.QueueBytes>>20)
+			record := logging.Record{
+				Level:     logging.LevelWarn,
+				Subsystem: "app",
+				Event:     "memory_pressure",
+				Message: fmt.Sprintf("memory pressure %s → %s | reason: heap %d%% / cache %d%% / queue %d%% (heap %d MiB, cache %d MiB, queue %d MiB)",
+					old, new,
+					percentOf(snap.HeapAlloc, snap.Ceiling.HeapBytes),
+					percentOf(snap.CacheBytes, snap.Ceiling.CacheBytes),
+					percentOf(snap.QueueBytes, snap.Ceiling.QueueBytes),
+					snap.HeapAlloc>>20, snap.CacheBytes>>20, snap.QueueBytes>>20),
+				Status: new.String(),
+				Fields: map[string]any{
+					"from":      old.String(),
+					"to":        new.String(),
+					"heap_mib":  snap.HeapAlloc >> 20,
+					"cache_mib": snap.CacheBytes >> 20,
+					"queue_mib": snap.QueueBytes >> 20,
+				},
+			}
+
+			// v0.9.7: upward transitions (toward pressure) are
+			// actionable warnings; downward RECOVERY transitions
+			// are informational — a machine healing must not look
+			// like an incident.
+			if severityRank(new) < severityRank(old) {
+				record.Level = logging.LevelInfo
+				record.Event = "memory_pressure_recovered"
+			}
+
+			a.logger.Log(record)
 		}
 	})
 

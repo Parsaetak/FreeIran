@@ -492,6 +492,36 @@ func (s *TestQueueService) Stats() testqueue.Stats {
 	return q.Stats()
 }
 
+// Pause suspends task pickup: queued tests stay pending while
+// in-flight tests finish (v0.9.7 bulk-testing UX).
+func (s *TestQueueService) Pause() error {
+	q, err := s.ensureQueue()
+	if err != nil {
+		return err
+	}
+	q.Pause()
+	return nil
+}
+
+// Resume lifts a Pause.
+func (s *TestQueueService) Resume() error {
+	q, err := s.ensureQueue()
+	if err != nil {
+		return err
+	}
+	q.Resume()
+	return nil
+}
+
+// Paused reports whether the queue is paused.
+func (s *TestQueueService) Paused() (bool, error) {
+	q, err := s.ensureQueue()
+	if err != nil {
+		return false, err
+	}
+	return q.Paused(), nil
+}
+
 // Snapshot returns the current pending + in-flight tasks (up to limit).
 func (s *TestQueueService) Snapshot(limit int) []testqueue.TaskSnapshot {
 	q, err := s.ensureQueue()

@@ -62,3 +62,15 @@ export function OpenLogsDir() {
 
 // Private type creation functions
 const $$createType1 = $models.LogPage.createFrom;
+
+/**
+ * Related returns every entry correlated with the given event id
+ * (children via parent_event_id, batch/test/config siblings) —
+ * v0.9.7 diagnostics causality view.
+ * @param {string} eventID
+ * @param {number} limit
+ * @returns {$CancellablePromise<Array<any>>}
+ */
+export function Related(eventID, limit) {
+    return $Call.ByName("github.com/Parsaetak/FreeIran/engine/app.LogService.Related", eventID, limit);
+}

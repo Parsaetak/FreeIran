@@ -144,6 +144,10 @@ export interface QueueStatsView {
   avg_latency_ms?: number;
   fastest_latency_ms?: number;
   slowest_latency_ms?: number;
+  /** v0.9.7: temporary core processes alive right now (bounded pool). */
+  active_cores?: number;
+  /** v0.9.7: effective core-probe cap. */
+  core_probe_concurrency?: number;
 }
 
 // ---------------------------------------------------------------------------

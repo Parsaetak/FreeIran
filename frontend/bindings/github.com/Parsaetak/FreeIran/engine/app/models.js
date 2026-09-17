@@ -839,6 +839,49 @@ export class LogFilter {
              */
             this["level"] = "";
         }
+        if (!("event" in $$source)) {
+            /**
+             * Exact event name filter (v0.9.7).
+             * @member
+             * @type {string}
+             */
+            this["event"] = "";
+        }
+        if (!("batch_id" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["batch_id"] = "";
+        }
+        if (!("test_id" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["test_id"] = "";
+        }
+        if (!("config_id" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["config_id"] = "";
+        }
+        if (!("core" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["core"] = "";
+        }
+        if (!("errors_only" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["errors_only"] = false;
+        }
 
         Object.assign(this, $$source);
     }
