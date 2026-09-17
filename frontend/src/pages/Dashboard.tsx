@@ -18,7 +18,7 @@ import {
   CONNECT_STEPS,
   StatTile,
 } from "../components/common";
-import { IconClock, IconCpu, IconPlay, IconSignal, IconStop } from "../components/Icons";
+import { IconCheck, IconClock, IconCpu, IconPlay, IconSignal, IconStop } from "../components/Icons";
 import type { Page } from "../types/ui";
 import { useStartFlowStore, stageIndex, STAGE_ORDER } from "../state/startflowStore";
 import { flowStageLabel } from "../types/discovery";
@@ -96,7 +96,7 @@ export function DashboardPage({ onNavigate }: { onNavigate: (page: Page) => void
   return (
     <div>
       <div className="page-header">
-        <div>
+        <div className="page-heading">
           <h1 className="page-title">Dashboard</h1>
           <div className="page-subtitle">
             App started {relativeTime(backend.started_at)} · native acceleration:{" "}
@@ -302,7 +302,7 @@ export function DashboardPage({ onNavigate }: { onNavigate: (page: Page) => void
       {ingestion && (
         <div className="card mt-4">
           <div className="card-header">
-            <h3 className="card-title eyebrow">Last ingestion</h3>
+            <h3 className="card-title">Last ingestion</h3>
           </div>
 
           <div className="stat-grid">
@@ -617,12 +617,12 @@ function OnboardingChecklist({
 
   return (
     <section className="card onboarding" aria-label="Get started">
-      <h2 className="card-title">Get started</h2>
+      <h3 className="card-title">Get started</h3>
       <ol className="onboarding-steps">
         {steps.map((step, index) => (
           <li key={step.key} className={step.done ? "done" : ""}>
             <span className="step-num" aria-hidden>
-              {step.done ? "✓" : index + 1}
+              {step.done ? <IconCheck size={12} /> : index + 1}
             </span>
             <span className="step-body">
               <b>{step.title}</b>

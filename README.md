@@ -9,12 +9,90 @@ configurations.
 **Project:** FreeIran — A SHEYTAN Digital System
 **Architect:** Parsa Tak / SHEYTAN
 **Repository:** https://github.com/Parsaetak/FreeIran
-**Current version:** 0.9.7 (see `VERSION`)
+**Current version:** 0.9.8 (see `VERSION`)
 **Status:** production architecture — multi-core protocol runtime with
 managed installation, multi-level node discovery, Ping/URL test modes
 with measured ranking, verified-connection engine with racing,
 environment intelligence, system proxy and TUN mode, unified adaptive
 memory control and kernel-level process supervision
+
+---
+
+## What's new in v0.9.8
+
+v0.9.8 is a focused UX release: a new **Quick Connect** home surface
+built entirely on the existing connection engine, plus a
+full-application visual professionalization pass driven by a UI audit
+(one design system, no per-page hacks).
+
+### Quick Connect — the home connection surface
+
+- New top-level **Quick Connect** page, first item in the primary
+  navigation and the application landing surface. It contains exactly
+  one primary action — **CONNECT** — and intentionally nothing else:
+  no tables, diagnostics or management actions.
+- The compact configuration picker sits directly above the connect
+  button. It is populated ONLY from the ranking engine's
+  credential-free candidate views (`BestCandidates`, bounded and
+  TTL-cached server-side) — the full configuration database is never
+  loaded to render it, and it never displays URIs, UUIDs, secrets or
+  source URLs.
+- **Measured-ping ordering, honestly labelled.** Candidates are
+  ordered: verified usable first, then by measured ping (median of
+  real test observations — never source-provided or estimated
+  latency), then by the engine's own aggregates (recent success,
+  stability, freshness, score). Untested configurations are shown
+  AFTER every verified candidate with an explicit dash and an
+  "untested" status dot; measurements older than 30 minutes are
+  labelled "stale". Dead/unconnectable candidates never appear.
+- One connect decision tree, all of it existing engine paths:
+  an explicit selection connects to that configuration; otherwise the
+  engine's best-candidate selection runs; with no viable candidates at
+  all the adaptive discovery flow (detect → discover → test → rank →
+  connect → verify) runs — the user never needs to understand the
+  discovery engine.
+- State visuals are driven by the real backend state machine
+  (preparing / connecting / verifying / connected / failed) with
+  CSS-only animations per state (scan pulse, progressive orbit, radar
+  heartbeat, stable success glow, brief failure shake). Reduced motion
+  (preference or in-app setting) removes every continuous animation
+  and keeps usability.
+- While connected, CONNECTED becomes the single primary state
+  representation — no competing second button. A small secondary link
+  leads to the advanced Connection page for disconnect, recovery
+  details and diagnostics.
+
+### UI professionalization (whole application)
+
+- Design-system repairs: legacy CSS tokens that never existed
+  (`--text-11/--text-12/--radius-8`) are now defined, so test-state
+  chips and panels render their intended sizes and radii; the shared
+  button spinner got a base rule (inline loading and status-chip
+  spinners were invisible before); `.page-body` no longer double-spaces
+  its children.
+- Page headers normalized to one structure (title block +
+  `.page-actions`) across all nine pages — Cores and Network included.
+- Loading buttons reserve a fixed icon slot (Save, Refresh now, dialog
+  footers, Quick Connect): a spinner can never resize the control.
+- The Connection "Re-scan" control stays put while scanning instead of
+  being replaced by a chip; unicode glyph buttons (▶/⏸/✓/⚠) now use
+  the real icon set.
+- One icon-size hierarchy (icon-only 15, text buttons 14, compact rows
+  13, empty states 20), one casing for test-state chips, eyebrow card
+  titles applied consistently, table cells that can carry long values
+  (core paths, attempt errors) clip instead of stretching cards.
+- Accessibility: Quick Connect is fully keyboard operable (listbox
+  with `aria-activedescendant`, focus management, Escape to close),
+  exposes `aria-live` status and `aria-busy` while in flight, and all
+  pages keep visible focus rings.
+
+### Quick Connect vs Connection
+
+Quick Connect is simple, fast and minimal — the one-tap path.
+Connection remains advanced and diagnostic: per-configuration
+selection, attempt history, recovery details, tunnel/system
+integration and core controls. Dashboard keeps its overview role and
+its connect behaviour is unchanged.
 
 ---
 

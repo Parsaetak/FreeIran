@@ -66,6 +66,33 @@ export function IconConnection(props: IconProps) {
   );
 }
 
+/**
+ * v0.9.8: Quick Connect navigation icon — the same bolt the brand
+ * mark uses, so the fastest path reads as "connect now" at a glance.
+ */
+export function IconZap(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="M13 2 4.5 13.5H11L9.5 22 19 10h-6.5L13 2Z" />
+    </svg>
+  );
+}
+
+/**
+ * v0.9.8: advanced Connection page icon (plug) — distinguishes the
+ * diagnostic connection surface from the one-tap Quick Connect bolt.
+ */
+export function IconPlug(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <path d="M12 22v-4" />
+      <path d="M9 8V2.5" />
+      <path d="M15 8V2.5" />
+      <path d="M18 8v4a6 6 0 0 1-6 6 6 6 0 0 1-6-6V8Z" />
+    </svg>
+  );
+}
+
 export function IconDiagnostics(props: IconProps) {
   return (
     <svg {...base(props)}>

@@ -1,6 +1,7 @@
 import { useAppStore } from "../state/appStore";
 import { useConnectionStore } from "../state/connectionStore";
 import { CONNECTION_STATE_LABELS } from "./common";
+import { IconAlert } from "./Icons";
 import { formatLatency } from "../utilities/format";
 
 const STATUS_LABELS: Record<string, string> = {
@@ -64,8 +65,8 @@ export function StatusBar({ version }: { version?: string }) {
       {backend && <span className="truncate-cell">{backend.config_count} configurations</span>}
       {backend && <span className="truncate-cell hide-sm">accel: {backend.native_acceleration}</span>}
       {lastError && (
-        <span className="truncate-cell" data-tip={lastError}>
-          ⚠ {lastError}
+        <span className="truncate-cell status-warn" data-tip={lastError}>
+          <IconAlert size={11} aria-hidden /> {lastError}
         </span>
       )}
     </footer>

@@ -53,7 +53,7 @@ export function DiagnosticsPage() {
   return (
     <div>
       <div className="page-header">
-        <div>
+        <div className="page-heading">
           <h1 className="page-title">Diagnostics</h1>
           <div className="page-subtitle">
             Live runtime log, storage health and engine metrics.
@@ -799,7 +799,7 @@ function MaintenanceCards() {
           <div className="card-header">
             <h3 className="card-title">Caches</h3>
             <button type="button" className="btn sm" onClick={() => void clearCaches()}>
-              <IconRefresh size={13} />
+              <IconRefresh size={14} />
               Clear caches
             </button>
           </div>
@@ -1000,7 +1000,7 @@ function MaintenanceCards() {
               {cores.map((core) => (
                 <tr key={core.path}>
                   <td className="mono-cell">{core.name}</td>
-                  <td className="mono-cell" data-tip={core.path}>
+                  <td className="mono-cell cell-clip" data-tip={core.path}>
                     {core.path}
                   </td>
                   <td className="mono-cell">{core.version || "—"}</td>

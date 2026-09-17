@@ -310,7 +310,9 @@ export function SettingsPage() {
             disabled={!dirty || saving || errors.length > 0}
             onClick={() => void onSave()}
           >
-            {saving && <span className="btn-spinner" aria-hidden />}
+            <span className="btn-icon-slot" aria-hidden>
+              {saving && <span className="btn-spinner" />}
+            </span>
             Save
           </button>
         </div>
@@ -691,11 +693,11 @@ export function SettingsPage() {
           hint="Inspect the data directory (database, caches) or the runtime logs."
         >
           <button type="button" className="btn ghost" onClick={() => void openDataDir()}>
-            <IconFolder size={13} />
+            <IconFolder size={14} />
             Open data
           </button>
           <button type="button" className="btn ghost" onClick={() => void openLogsDir()}>
-            <IconFolder size={13} />
+            <IconFolder size={14} />
             Open logs
           </button>
         </ActionRow>
@@ -823,7 +825,7 @@ export function SettingsPage() {
           hint="Shows the workspace path (also listed below) and opens it in the system file manager. Every subsystem — config, data, cache, logs, cores, runtime — lives under this single root."
         >
           <button type="button" className="btn ghost" onClick={() => void openWorkspace()}>
-            <IconFolder aria-hidden /> Open workspace
+            <IconFolder size={14} aria-hidden /> Open workspace
           </button>
         </ActionRow>
 

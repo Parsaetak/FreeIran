@@ -67,7 +67,7 @@ export function CoresPage() {
 
   return (
     <div className="page-body">
-      <header className="page-header">
+      <div className="page-header">
         <div className="page-heading">
           <h1 className="page-title">Cores</h1>
           <div className="page-subtitle">
@@ -75,7 +75,7 @@ export function CoresPage() {
             smoke-tested and only then activated. Never a bundled binary, never an unverified download.
           </div>
         </div>
-        <div className="toolbar">
+        <div className="page-actions">
           <button
             type="button"
             className="btn ghost"
@@ -93,7 +93,7 @@ export function CoresPage() {
             <IconDownload size={14} /> Update all
           </button>
         </div>
-      </header>
+      </div>
 
       {installable && (
         <div className="callout info">
@@ -149,7 +149,7 @@ function CoreCard({
     <section className={`card core-card ${m.state === "broken" ? "card-broken" : ""}`}>
       <header className="card-head">
         <div>
-          <h2>{displayName}</h2>
+          <h3>{displayName}</h3>
           <div className="core-meta muted">
             {m.version ? `v${stripV(m.version)}` : "not installed"}
             {m.latest_known && isOlder(m.version, m.latest_known) ? ` → ${m.latest_known} available` : ""}

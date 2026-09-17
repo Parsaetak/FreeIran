@@ -152,7 +152,7 @@ export function ConnectionPage() {
   return (
     <div>
       <div className="page-header">
-        <div>
+        <div className="page-heading">
           <h1 className="page-title">Connection</h1>
           <div className="page-subtitle">
             Credential-free view — all configuration material is redacted by the engine.
@@ -270,7 +270,7 @@ export function ConnectionPage() {
 
         {connected && (
           <button type="button" className="btn sm find-better" onClick={findBetter} disabled={busy}>
-            <IconRefresh size={13} />
+            <IconRefresh size={14} />
             Find better connection
           </button>
         )}
@@ -318,7 +318,7 @@ export function ConnectionPage() {
                     </span>
                   </td>
                   <td className="mono-cell">{formatDuration(attempt.duration_ms)}</td>
-                  <td>{attempt.error || "—"}</td>
+                  <td className="cell-clip" data-tip={attempt.error}>{truncate(attempt.error || "—", 120)}</td>
                 </tr>
               ))}
             </tbody>
@@ -392,7 +392,7 @@ function TunnelModeCard({ connected, endpoint }: { connected: boolean; endpoint:
   return (
     <div className="card">
       <div className="card-header">
-        <h3 className="card-title">System integration</h3>
+        <h3 className="card-title eyebrow">System integration</h3>
         <span className={`badge ${mode === "off" || mode === "" ? "info" : "success"}`}>
           {mode === "" ? "unknown" : mode === "system_proxy" ? "system proxy" : mode}
         </span>
@@ -487,7 +487,7 @@ function BestCandidateCard({ disabled }: { disabled: boolean }) {
       <div className="card-header">
         <h3 className="card-title eyebrow">Best candidate</h3>
         <button type="button" className="btn sm" onClick={() => void load()} disabled={loading}>
-          <IconRefresh size={13} />
+          <IconRefresh size={14} />
           Refresh
         </button>
       </div>
@@ -605,7 +605,7 @@ function ConfigPicker({ disabled }: { disabled: boolean }) {
 
         {top.length === 0 ? (
           <div className="log-empty">
-            <IconSearch size={16} /> No configurations loaded yet.
+            <IconSearch size={20} /> No configurations loaded yet.
           </div>
         ) : (
           <div className="picker-list" role="listbox" aria-label="Configurations">
@@ -698,16 +698,19 @@ function CoresCard({
       <div className="card-header">
         <h3 className="card-title eyebrow">Protocol cores</h3>
 
-        {scanning ? (
-          <span className="chip">
-            scanning <BootDots />
-          </span>
-        ) : (
-          <button type="button" className="btn sm" onClick={onRescan}>
-            <IconRefresh size={13} />
-            Re-scan
-          </button>
-        )}
+        <button type="button" className="btn sm" onClick={onRescan} disabled={scanning}>
+          {scanning ? (
+            <Fragment>
+              <BootDots />
+              Scanning…
+            </Fragment>
+          ) : (
+            <Fragment>
+              <IconRefresh size={14} />
+              Re-scan
+            </Fragment>
+          )}
+        </button>
       </div>
 
       {backends.length === 0 ? (

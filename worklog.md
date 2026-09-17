@@ -3248,3 +3248,71 @@ Date: 2026-09-18 · Baseline: v0.9.6 (45ff7fc)
 - Windows cross-build (GOOS=windows cmd/freeiran): PASS
 - Clean-room: extracted final ZIP to a fresh directory, rebuilt and
   retested from the extracted tree only — PASS
+
+---
+
+## v0.9.8 — Quick Connect + full UI professionalization (2026-09-18)
+
+### Scope
+
+- Quick Connect: new top-level navigation item ("Quick Connect", bolt
+  icon) and application landing surface. Exactly one primary action —
+  CONNECT — implemented as a pure UX layer over the existing engine:
+  `useConnectionStore.connect/connectBest`, the adaptive discovery
+  flow (`RunStartFlow`) for the no-candidate case, and the real
+  connection state machine for every visual state
+  (preparing/connecting/verifying/connected/failed). No duplicate
+  connection logic; no fake states; no invented metrics.
+- Compact configuration picker above the connect button: Auto (best
+  candidate) default, keyboard-operable listbox
+  (`aria-activedescendant`, Home/End/Arrows/Enter/Escape), shows only
+  redacted display data (protocol, name, measured ping, provenance
+  dot). Data source is `ConnectionService.BestCandidates(100)`
+  (bounded, TTL-cached, credential-free) — never the configuration
+  database.
+- Measured-ping ordering (pure module `quickConnectModel.ts`, fully
+  unit-tested): verified usable first, then measured ping ascending,
+  engine aggregates as tie-breaks, untested last with an explicit
+  dash + neutral dot, stale (>30 min) labelled, dead/unconnectable
+  excluded. Deterministic (fingerprint tie-break).
+- Connection states: single CONNECT button becomes CONNECTED (non-
+  interactive status representation) while a session is live; failed
+  state offers the same CONNECT retry plus one link to the advanced
+  Connection page. Disconnect stays on Connection/Dashboard (§31).
+- Loading animations per state, CSS-only; every continuous animation
+  is disabled under `prefers-reduced-motion` and the in-app
+  reduced-motion setting.
+- UI professionalization (audit-driven): defined missing tokens
+  (--text-11/--text-12/--radius-8), base `.btn-spinner` rule (inline
+  and chip spinners were invisible), `.page-body` no longer adds
+  flex-gap on top of child margins, one page-header structure across
+  all nine pages, reserved `.btn-icon-slot` for loading buttons
+  (Settings save, Sources refresh, dialog footers), Re-scan control
+  no longer disappears while scanning, unicode glyphs replaced by
+  real icons (▶/⏸/✓/⚠), one icon-size hierarchy (icon-only 15, text
+  buttons 14, compact 13, empty states 20), consistent lowercase
+  test-state chips, eyebrow card titles applied consistently, long
+  table cells (core paths, attempt errors) clipped via `.cell-clip`,
+  Network/Cores/QuickConnect headers normalized.
+- Version 0.9.8 across VERSION, internal/version, frontend
+  package.json (+lock), Windows metadata (build/winres.json),
+  installer (scripts/freeiran.iss), README (+ "What's new in v0.9.8")
+  and new docs/ui.md (UI architecture & design-system contract).
+
+### Verification
+
+- go build ./engine/... ./system/... ./internal/...: PASS
+- go test ./engine/... ./system/... ./internal/... (32 packages): PASS
+- go test -race: PASS
+- gofmt/vet (linux + GOOS=windows ./cmd/...): PASS
+- govulncheck v1.8.0 (engine packages + GOOS=windows ./cmd/...): no
+  vulnerabilities
+- native C++ tests (make -C native test): PASS
+- frontend: npm ci + typecheck PASS · vitest 91 tests PASS (was 58;
+  +18 Quick Connect model/store, +14 jsdom page tests, +1)
+- vite production build + build:embed: PASS
+- Windows cross-build (GOOS=windows cmd/freeiran, -H=windowsgui):
+  PASS; PE optional-header subsystem field verified = 2
+  (IMAGE_SUBSYSTEM_WINDOWS_GUI) — equivalent of
+  TestWindowsGUISubsystem, whose Go form requires a Windows runner.
+- Benchmark smoke (chunks/store/pipeline/core/v2ray/logging): PASS

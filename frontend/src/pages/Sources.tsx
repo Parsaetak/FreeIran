@@ -57,7 +57,7 @@ export function SourcesPage() {
   return (
     <div>
       <div className="page-header">
-        <div>
+        <div className="page-heading">
           <h1 className="page-title">Sources</h1>
           <div className="page-subtitle">
             Subscription lists scanned for proxy configurations.
@@ -76,7 +76,9 @@ export function SourcesPage() {
             onClick={() => void refreshNow()}
             disabled={refreshing}
           >
-            {refreshing ? <span className="btn-spinner" aria-hidden /> : <IconRefresh size={14} />}
+            <span className="btn-icon-slot" aria-hidden>
+              {refreshing ? <span className="btn-spinner" /> : <IconRefresh size={14} />}
+            </span>
             Refresh now
           </button>
         </div>

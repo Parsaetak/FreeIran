@@ -21,7 +21,15 @@ import { configToRow } from "../utilities/export";
 import { useConnectionStore } from "../state/connectionStore";
 import { describeError, toast } from "../state/toastStore";
 import { EmptyState, Menu, ResultBadge, SegmentedControl } from "../components/common";
-import { IconChevronDown, IconDownload, IconPlay, IconRefresh, IconSearch, IconX } from "../components/Icons";
+import {
+  IconChevronDown,
+  IconDownload,
+  IconPause,
+  IconPlay,
+  IconRefresh,
+  IconSearch,
+  IconX,
+} from "../components/Icons";
 
 const searchRunner = makeSearchRunner(250);
 
@@ -449,23 +457,23 @@ export function ConfigsPage() {
        */}
       <div className="testing-bar" role="toolbar" aria-label="Testing controls">
         <span className="testing-bar-label">
-          <IconRefresh size={13} />
+          <IconRefresh size={14} />
           Testing
         </span>
 
         <button
           type="button"
-          className="btn primary sm"
+          className="btn sm primary"
           disabled={filteredLoading || selected.size === 0}
           onClick={() => void bulkTest("selected")}
         >
           <IconPlay size={13} /> Test selected ({selected.size})
         </button>
         <button type="button" className="btn sm" disabled={filteredLoading} onClick={() => void bulkTest("all")}>
-          <IconRefresh size={13} /> Test all
+          <IconRefresh size={14} /> Test all
         </button>
         <button type="button" className="btn sm" disabled={filteredLoading} onClick={() => void bulkTest("untested")}>
-          <IconRefresh size={13} /> Test untested
+          <IconRefresh size={14} /> Test untested
         </button>
 
         <div className="toolbar-spacer" />
@@ -476,7 +484,8 @@ export function ConfigsPage() {
             className="btn sm"
             onClick={() => void togglePause()}
           >
-            {queuePaused ? "▶ Resume" : "⏸ Pause"}
+            {queuePaused ? <IconPlay size={13} /> : <IconPause size={13} />}
+            {queuePaused ? "Resume" : "Pause"}
           </button>
         )}
 
@@ -778,10 +787,10 @@ function DetailPanel({ detail, onClose }: { detail: ConfigDetail; onClose: () =>
   const testedAt = Number(detail.tested_at ?? 0);
 
   const testState = !testedAt
-    ? { label: "Untested", cls: "untested" }
+    ? { label: "untested", cls: "untested" }
     : detail.working
-      ? { label: "Passed", cls: "passed" }
-      : { label: "Failed", cls: "failed" };
+      ? { label: "passed", cls: "passed" }
+      : { label: "failed", cls: "failed" };
 
   return (
     <aside className="detail-panel" aria-label="Configuration details">

@@ -43,23 +43,22 @@ export function NetworkPage() {
 
   return (
     <div className="page-body">
-      <header className="page-header">
+      <div className="page-header">
         <div className="page-heading">
           <h1 className="page-title">Network</h1>
-          <div className="page-subtitle">
-            Manual connectivity diagnostics. Multiple independent probes classify your connection:
-            local network, DNS, raw TCP, HTTPS and — when a session is connected — the tunnel itself.
-          </div>
+          <div className="page-subtitle">Independent probes classify your connection and the tunnel.</div>
         </div>
-        <button type="button" className="btn primary" disabled={checking} onClick={() => void check()}>
-          <IconRefresh size={14} className={checking ? "spin" : undefined} />
-          {checking ? "Checking…" : "Check connection"}
-        </button>
-      </header>
+        <div className="page-actions">
+          <button type="button" className="btn primary" disabled={checking} onClick={() => void check()}>
+            <IconRefresh size={14} className={checking ? "spin" : undefined} />
+            {checking ? "Checking…" : "Check connection"}
+          </button>
+        </div>
+      </div>
 
       {report === null && !checking && (
         <EmptyState
-          icon={<IconGlobe size={36} />}
+          icon={<IconGlobe size={20} />}
           title="No check has run yet"
           hint="Run a manual check to classify your current connectivity."
         />
@@ -107,10 +106,10 @@ export function NetworkPage() {
 function ProbeList({ title, results }: { title: string; results?: Array<{ name: string; ok: boolean; latency_ms?: number; error?: string }> }) {
   return (
     <section className="card">
-      <h2 className="card-title">{title}</h2>
+      <h3 className="card-title">{title}</h3>
 
       {!results || results.length === 0 ? (
-        <p className="muted">No probes in this class ran.</p>
+        <div className="log-empty">No probes in this class ran.</div>
       ) : (
         <ul className="probe-list">
           {results.map((r) => (

@@ -6,8 +6,9 @@
  * file only holds frontend-own concepts.
  */
 
-/** Top-level navigation pages. */
+/** Top-level navigation pages. v0.9.8 adds "quick" (Quick Connect). */
 export type Page =
+  | "quick"
   | "dashboard"
   | "sources"
   | "configs"

@@ -77,7 +77,9 @@ export function ConfirmDialog({
             onClick={onConfirm}
             disabled={busy}
           >
-            {busy && <span className="btn-spinner" aria-hidden />}
+            <span className="btn-icon-slot" aria-hidden>
+              {busy && <span className="btn-spinner" />}
+            </span>
             {confirmLabel}
           </button>
         </div>
@@ -157,7 +159,9 @@ export function FormDialog({
           </button>
 
           <button type="submit" className="btn primary" disabled={busy}>
-            {busy && <span className="btn-spinner" aria-hidden />}
+            <span className="btn-icon-slot" aria-hidden>
+              {busy && <span className="btn-spinner" />}
+            </span>
             {submitLabel}
           </button>
         </div>

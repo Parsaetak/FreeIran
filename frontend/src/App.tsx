@@ -6,6 +6,7 @@ import { connectConnectionStore } from "./state/connectionStore";
 import { subscribeStartFlow, useStartFlowStore } from "./state/startflowStore";
 import { useSettingsStore, effectiveReducedMotion } from "./state/settingsStore";
 import { DashboardPage } from "./pages/Dashboard";
+import { QuickConnectPage } from "./pages/QuickConnect";
 import { SourcesPage } from "./pages/Sources";
 import { ConfigsPage } from "./pages/Configs";
 import { CoresPage } from "./pages/Cores";
@@ -21,30 +22,36 @@ import {
   IconChevronLeft,
   IconChevronRight,
   IconConfigs,
-  IconConnection,
   IconCores,
   IconDashboard,
   IconDiagnostics,
   IconGlobe,
+  IconPlug,
   IconSettings,
   IconSources,
+  IconZap,
 } from "./components/Icons";
 import { call, diagnosticsService } from "./services";
 import type { Page } from "./types/ui";
 
 const NAV: Array<{ id: Page; label: string; icon: typeof IconDashboard }> = [
+  // v0.9.8: Quick Connect first — the fastest user path and the
+  // application's home connection surface.
+  { id: "quick", label: "Quick Connect", icon: IconZap },
   { id: "dashboard", label: "Dashboard", icon: IconDashboard },
   { id: "configs", label: "Configurations", icon: IconConfigs },
   { id: "sources", label: "Sources", icon: IconSources },
   { id: "cores", label: "Cores", icon: IconCores },
-  { id: "connection", label: "Connection", icon: IconConnection },
+  { id: "connection", label: "Connection", icon: IconPlug },
   { id: "network", label: "Network", icon: IconGlobe },
   { id: "diagnostics", label: "Diagnostics", icon: IconDiagnostics },
   { id: "settings", label: "Settings", icon: IconSettings },
 ];
 
 export function App() {
-  const [page, setPage] = useState<Page>("dashboard");
+  // v0.9.8: Quick Connect is the landing surface — the application's
+  // home connection action.
+  const [page, setPage] = useState<Page>("quick");
   const [collapsed, setCollapsed] = useState(false);
   const [version, setVersion] = useState("");
   const status = useAppStore((state) => state.status);
@@ -200,6 +207,7 @@ export function App() {
             <BootProgress phase={bootPhase} timings={bootTimings} />
             <ErrorBoundary onOpenDiagnostics={() => setPage("diagnostics")}>
               <div className="page" key={page}>
+                {page === "quick" && <QuickConnectPage onNavigate={setPage} />}
                 {page === "dashboard" && <DashboardPage onNavigate={setPage} />}
                 {page === "sources" && <SourcesPage />}
                 {page === "configs" && <ConfigsPage />}

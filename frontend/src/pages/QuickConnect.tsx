@@ -1,0 +1,519 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useConnectionStore } from "../state/connectionStore";
+import { useQuickConnectStore } from "../state/quickConnectStore";
+import { useStartFlowStore } from "../state/startflowStore";
+import { useSettingsStore, effectiveReducedMotion } from "../state/settingsStore";
+import type { CandidateView } from "../services";
+import type { Page } from "../types/ui";
+import { formatLatency, truncate } from "../utilities/format";
+import {
+  candidateStatus,
+  pickerLatencyText,
+  pickerStatusClass,
+} from "../utilities/quickConnectModel";
+import { IconCheck, IconChevronDown, IconZap } from "../components/Icons";
+
+/**
+ * Quick Connect (v0.9.8) — the application's home connection surface.
+ *
+ * This page is a thin UX layer over the EXISTING connection engine:
+ * every action routes through useConnectionStore (connect /
+ * connectBest) or the v0.9.6 adaptive start flow; the backend state
+ * machine remains the single source of truth. Nothing here duplicates
+ * the engine — no new connection logic, no fake states, no invented
+ * metrics.
+ *
+ * One primary action only: CONNECT (which becomes the CONNECTED state
+ * representation while a session is live). Detailed diagnostics stay
+ * on the Connection and Diagnostics pages.
+ */
+
+/** Hero states rendered by this page (derived from real backend state). */
+type QuickHeroState =
+  | "ready"
+  | "preparing"
+  | "connecting"
+  | "verifying"
+  | "connected"
+  | "failed"
+  | "disconnecting";
+
+/** Start-flow stages that happen BEFORE a connection is attempted. */
+const FLOW_PREPARING_STAGES = new Set(["detecting", "discovering", "testing", "ranking"]);
+
+/**
+ * v0.9.7 connection-snapshot fields that the generated binding does
+ * not carry yet; read structurally (same pattern as appStore).
+ */
+interface SnapshotExtras {
+  verification?: string;
+  ping_median_ms?: number;
+}
+
+const HEADLINES: Record<QuickHeroState, string> = {
+  ready: "Ready to connect",
+  preparing: "Preparing connection",
+  connecting: "Connecting",
+  verifying: "Verifying",
+  connected: "Connected",
+  failed: "Connection failed",
+  disconnecting: "Disconnecting",
+};
+
+const BUTTON_LABELS: Record<QuickHeroState, string> = {
+  ready: "CONNECT",
+  preparing: "PREPARING…",
+  connecting: "CONNECTING…",
+  verifying: "VERIFYING…",
+  connected: "CONNECTED",
+  failed: "CONNECT",
+  disconnecting: "DISCONNECTING…",
+};
+
+export function QuickConnectPage({ onNavigate }: { onNavigate: (page: Page) => void }) {
+  // Selective subscriptions only (§29): primitives and stable refs,
+  // never whole-store objects.
+  const snapshot = useConnectionStore((state) => state.snapshot);
+  const busy = useConnectionStore((state) => state.busy);
+  const connectError = useConnectionStore((state) => state.error);
+  const connect = useConnectionStore((state) => state.connect);
+  const connectBest = useConnectionStore((state) => state.connectBest);
+
+  const flowStage = useStartFlowStore((state) => state.status?.stage ?? "idle");
+  const flowRunning = useStartFlowStore((state) => state.status?.running ?? false);
+  const flowMessage = useStartFlowStore((state) => state.status?.message ?? "");
+
+  const candidates = useQuickConnectStore((state) => state.candidates);
+  const candidatesLoading = useQuickConnectStore((state) => state.loading);
+  const candidatesLoaded = useQuickConnectStore((state) => state.loaded);
+  const selected = useQuickConnectStore((state) => state.selected);
+  const select = useQuickConnectStore((state) => state.select);
+  const loadCandidates = useQuickConnectStore((state) => state.load);
+
+  // Candidates load once per mount; the backend caches the ranking
+  // pass, so this is a single bounded call — never a poll.
+  useEffect(() => {
+    void loadCandidates();
+  }, [loadCandidates]);
+
+  /**
+   * Hero state: mapped from the real connection state machine first,
+   * then from the start-flow stages (which run while no connection
+   * attempt is in flight yet). Terminal states are honest — the page
+   * never invents progress.
+   */
+  const heroState: QuickHeroState = useMemo(() => {
+    const state = snapshot?.state ?? "disconnected";
+
+    if (state === "connected") return "connected";
+    if (state === "disconnecting") return "disconnecting";
+    if (state === "selecting" || state === "preparing") return "preparing";
+    if (state === "starting_core") return "connecting";
+    if (state === "waiting_for_ready") return "verifying";
+    if (state === "connection_failed") return "failed";
+
+    if (flowRunning && FLOW_PREPARING_STAGES.has(flowStage)) return "preparing";
+
+    if (connectError) return "failed";
+
+    return "ready";
+  }, [snapshot, flowRunning, flowStage, connectError]);
+
+  const inFlight =
+    busy ||
+    heroState === "preparing" ||
+    heroState === "connecting" ||
+    heroState === "verifying" ||
+    heroState === "disconnecting";
+
+  const reducedMotion = useSettingsStore(effectiveReducedMotion);
+
+  /** Detail line under the headline — real backend messages only. */
+  const detail = useMemo(() => {
+    switch (heroState) {
+      case "preparing":
+        return flowMessage || "Selecting best available route…";
+      case "connecting":
+        return "Starting tunnel…";
+      case "verifying":
+        return "Checking connectivity…";
+      case "failed":
+        return "No usable connection was verified.";
+      case "disconnecting":
+        return "Closing the tunnel…";
+      case "connected":
+        return "";
+      default:
+        return "Fastest measured connection, one tap away.";
+    }
+  }, [heroState, flowMessage]);
+
+  const onConnect = useCallback(() => {
+    // §13 — Case A: explicit selection wins.
+    if (selected) {
+      void connect(selected);
+
+      return;
+    }
+
+    // Case B: engine best-candidate selection from real test history.
+    // Case C/D are handled by the state machine itself (connected
+    // short-circuits the UI; recovery/fallback runs in the engine).
+    const qc = useQuickConnectStore.getState();
+
+    if (qc.candidates.length > 0) {
+      void connectBest();
+    } else {
+      // §10 — no candidates: the existing adaptive discovery path
+      // (detect → discover → test → rank → connect → verify).
+      void useStartFlowStore.getState().run();
+    }
+  }, [selected, connect, connectBest]);
+
+  const extras = (snapshot ?? {}) as SnapshotExtras;
+  const connectedName = snapshot?.config_name || snapshot?.config_display || "";
+  const snapshotPing = snapshot?.latency_ms ?? 0;
+  const medianPing = extras.ping_median_ms ?? 0;
+  const connectedPing = snapshotPing > 0 ? snapshotPing : medianPing > 0 ? medianPing : 0;
+  const verified = extras.verification === "usable";
+
+  return (
+    <div>
+      <div className="page-header">
+        <div className="page-heading">
+          <h1 className="page-title">Quick Connect</h1>
+          <div className="page-subtitle">One tap to the fastest measured connection.</div>
+        </div>
+      </div>
+
+      <section
+        className={`qc-hero ${heroState} ${reducedMotion ? "reduced" : ""}`}
+        aria-label="Quick Connect"
+        aria-busy={inFlight}
+      >
+        <QuickOrb state={heroState} />
+
+        <div className="qc-state" aria-live="polite">
+          <div className="qc-headline">{HEADLINES[heroState]}</div>
+          {heroState === "connected" ? (
+            <div className="qc-result">
+              <div className="qc-result-line">
+                {connectedName ? truncate(connectedName, 36) : "Session active"}
+                {connectedPing > 0 && <span className="qc-result-ping"> · {formatLatency(connectedPing)}</span>}
+              </div>
+              <div className="qc-result-sub">
+                {snapshot?.core
+                  ? `${snapshot.core}${snapshot.core_version ? ` · ${snapshot.core_version}` : ""}`
+                  : ""}
+              </div>
+            </div>
+          ) : (
+            <div className="qc-detail">{detail}</div>
+          )}
+          {heroState === "connected" && verified && (
+            <span className="badge success qc-verified">
+              <IconCheck size={11} />
+              Verified
+            </span>
+          )}
+        </div>
+
+        {heroState !== "connected" && (
+          <QuickPicker
+            rows={candidates}
+            loading={candidatesLoading && !candidatesLoaded}
+            loaded={candidatesLoaded}
+            selected={selected}
+            disabled={inFlight}
+            onSelect={select}
+          />
+        )}
+
+        {heroState === "connected" ? (
+          // §4: while connected, CONNECTED is the single primary state
+          // representation — no competing action button lives here.
+          <div className="qc-connect connected" role="status">
+            <span className="qc-btn-slot" aria-hidden>
+              <IconCheck size={15} />
+            </span>
+            CONNECTED
+          </div>
+        ) : (
+          <button
+            type="button"
+            className="btn primary qc-connect"
+            disabled={inFlight}
+            aria-busy={inFlight}
+            onClick={onConnect}
+          >
+            <span className="qc-btn-slot" aria-hidden>
+              {inFlight ? <span className="btn-spinner" /> : <IconZap size={15} />}
+            </span>
+            {BUTTON_LABELS[heroState]}
+          </button>
+        )}
+
+        <div className="qc-links">
+          {heroState === "connected" && (
+            <button type="button" className="linklike" onClick={() => onNavigate("connection")}>
+              Disconnect &amp; advanced controls
+            </button>
+          )}
+          {heroState === "failed" && (
+            <button type="button" className="linklike" onClick={() => onNavigate("connection")}>
+              Connection details &amp; diagnostics
+            </button>
+          )}
+          {heroState === "ready" && candidates.length > 0 && (
+            <span className="qc-hint">Ordered by measured ping · verified connections first</span>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+/** Status orb with a per-state animation (CSS only — no images/GIFs). */
+function QuickOrb({ state }: { state: QuickHeroState }) {
+  return (
+    <div className={`qc-orb-wrap ${state}`} aria-hidden>
+      <div className="qc-orb-ring" />
+      <div className="qc-orb">
+        <span className="qc-orb-icon">
+          <IconZap size={26} />
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/** Option model for the compact picker (index 0 = Auto). */
+interface PickerOption {
+  fingerprint: string | null;
+  name: string;
+  latencyMS: number;
+  statusClass: string | null;
+  statusText: string | null;
+  quality: string | null;
+}
+
+/**
+ * Compact configuration picker (§7-§9): one collapsed control above
+ * the connect button, expanding to a keyboard-usable listbox of the
+ * best candidates. Uses only redacted display data.
+ */
+export function QuickPicker({
+  rows,
+  loading,
+  loaded,
+  selected,
+  disabled,
+  onSelect,
+}: {
+  rows: CandidateView[];
+  loading: boolean;
+  loaded: boolean;
+  selected: string | null;
+  disabled: boolean;
+  onSelect: (fingerprint: string | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  const options: PickerOption[] = useMemo(
+    () => [
+      {
+        fingerprint: null,
+        name: "Auto — fastest measured",
+        latencyMS: 0,
+        statusClass: null,
+        statusText: null,
+        quality: null,
+      },
+      ...rows.map((view) => {
+        const status = candidateStatus(view);
+
+        return {
+          fingerprint: view.fingerprint,
+          name: view.name || view.endpoint || "Unnamed configuration",
+          latencyMS: view.latency_ms > 0 ? view.latency_ms : 0,
+          statusClass: pickerStatusClass(status),
+          statusText: status,
+          quality: view.class,
+        };
+      }),
+    ],
+    [rows],
+  );
+
+  const activeOption = options[active] ?? options[0];
+  const selectedOption = options.find((option) => option.fingerprint === selected) ?? options[0];
+
+  const close = useCallback((focusTrigger: boolean) => {
+    setOpen(false);
+
+    if (focusTrigger) {
+      rootRef.current?.querySelector<HTMLButtonElement>(".qc-picker-trigger")?.focus();
+    }
+  }, []);
+
+  // Keyboard: the listbox owns focus while open (aria-activedescendant
+  // pattern) so Arrow/Enter/Escape work immediately after expanding.
+  useEffect(() => {
+    if (open) listRef.current?.focus();
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+
+    const onPointer = (event: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", onPointer);
+
+    return () => document.removeEventListener("mousedown", onPointer);
+  }, [open]);
+
+  // Keep the active option in view while arrowing through the list.
+  useEffect(() => {
+    if (!open || !listRef.current) return;
+
+    const node = listRef.current.querySelector(`#qc-opt-${active}`);
+
+    // Guarded: the API is missing in some embedded/DOM environments.
+    if (node && typeof node.scrollIntoView === "function") {
+      node.scrollIntoView({ block: "nearest" });
+    }
+  }, [active, open]);
+
+  const commit = (index: number) => {
+    const option = options[index];
+
+    if (!option) return;
+
+    onSelect(option.fingerprint);
+    close(true);
+  };
+
+  const onListKeyDown = (event: React.KeyboardEvent) => {
+    switch (event.key) {
+      case "ArrowDown":
+        event.preventDefault();
+        setActive((index) => Math.min(index + 1, options.length - 1));
+        break;
+      case "ArrowUp":
+        event.preventDefault();
+        setActive((index) => Math.max(index - 1, 0));
+        break;
+      case "Home":
+        event.preventDefault();
+        setActive(0);
+        break;
+      case "End":
+        event.preventDefault();
+        setActive(options.length - 1);
+        break;
+      case "Enter":
+      case " ":
+        event.preventDefault();
+        commit(active);
+        break;
+      case "Escape":
+      case "Tab":
+        close(event.key === "Escape");
+        break;
+    }
+  };
+
+  return (
+    <div className="qc-picker" ref={rootRef}>
+      <button
+        type="button"
+        className="qc-picker-trigger"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={
+          selectedOption.fingerprint
+            ? `Configuration: ${selectedOption.name}. Change configuration`
+            : "Configuration: automatic best selection. Change configuration"
+        }
+        disabled={disabled}
+        onClick={() => {
+          if (rows.length === 0) return;
+          setOpen((value) => !value);
+          setActive(Math.max(0, options.findIndex((option) => option.fingerprint === selected)));
+        }}
+      >
+        <span className="qc-picker-main">
+          <IconZap size={13} aria-hidden />
+          <span className="qc-picker-name">{truncate(selectedOption.name, 30)}</span>
+        </span>
+        <span className="qc-picker-meta">
+          {selectedOption.fingerprint && selectedOption.latencyMS > 0 && (
+            <span className="mono-cell">{pickerLatencyText(selectedOption.latencyMS)}</span>
+          )}
+          <IconChevronDown size={14} aria-hidden />
+        </span>
+      </button>
+
+      {open && rows.length > 0 && (
+        <div
+          className="qc-picker-list"
+          role="listbox"
+          aria-label="Configurations"
+          tabIndex={-1}
+          ref={listRef}
+          aria-activedescendant={`qc-opt-${active}`}
+          onKeyDown={onListKeyDown}
+        >
+          {options.map((option, index) => (
+            <div
+              key={option.fingerprint ?? "auto"}
+              id={`qc-opt-${index}`}
+              role="option"
+              aria-selected={option.fingerprint === selected}
+              aria-label={
+                `${option.fingerprint ? "Configuration" : "Automatic selection"}: ${option.name}` +
+                (option.latencyMS > 0 ? `, ${pickerLatencyText(option.latencyMS)}` : "") +
+                (option.statusText ? `, ${option.statusText}` : "")
+              }
+              className={`qc-picker-row ${index === active ? "active" : ""} ${
+                option.fingerprint === selected ? "selected" : ""
+              }`}
+              onClick={() => commit(index)}
+              onMouseEnter={() => setActive(index)}
+            >
+              <span className="qc-picker-row-main">
+                <IconZap size={12} aria-hidden />
+                <span className="qc-picker-row-name">{truncate(option.name, 32)}</span>
+              </span>
+              <span className="qc-picker-row-meta">
+                <span className="mono-cell qc-ping">{pickerLatencyText(option.latencyMS)}</span>
+                {option.statusText && (
+                  <span className={`qc-dot ${option.statusClass}`} title={option.statusText}>
+                    <span className="sr-only">{option.statusText}</span>
+                  </span>
+                )}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {(loading || (loaded && rows.length === 0)) && (
+        <div className="qc-picker-note" aria-live="polite">
+          {loading
+            ? "Ranking configurations…"
+            : activeOption.fingerprint === null
+              ? "No tested connections available — connect to discover and measure."
+              : ""}
+        </div>
+      )}
+    </div>
+  );
+}
