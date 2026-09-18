@@ -64,15 +64,30 @@ Every tool obeys the same hard rules:
   scheme allowlist per tool family (`http`/`https`, `ws`/`wss`); URLs
   carrying credentials (userinfo) are rejected outright — credentials
   never ride a diagnostic URL; port bounds.
-- **Private / link-local / loopback destinations are blocked** for
-  autonomous targets and allowed only for explicitly local
-  diagnostics (the proxy/endpoint tools, whose defaults are local).
+- **Private / link-local / loopback destinations are blocked by
+  default for every generic diagnostic** (tcp, tls, https, websocket,
+  dns, udp, traceroute, path_mtu). Private-target permission is
+  EXPLICIT and tool-scoped: only the two genuinely local-endpoint
+  tools — `socks5` and `http_connect`, whose defaults are
+  `127.0.0.1` and whose purpose is testing the user's own local
+  proxy — may target private addresses implicitly. Intentional local
+  testing with a generic tool requires the explicit
+  `AllowPrivateTargets` capability. (This is the v0.9.8.1
+  Windows-CI root fix: the earlier policy treated generic tools as
+  implicitly private-target-safe, which bypassed the rebinding
+  guard.)
 - **DNS-rebinding guard for direct probes**: the hostname is
   resolved, every answer is validated against the policy, and the
-  connection is dialed to the validated address
-  (resolve → validate → pin).
-- **Redirects are capped** at `MaxRedirects` (default 3) and each hop
-  is re-validated.
+  connection is dialed to a validated address
+  (resolve → validate → pin). A hostname resolving only to
+  blocked ranges is refused before any connection.
+- **Redirects are capped** at `MaxRedirects` (default 3) and every
+  hop's destination is re-validated against the same no-credentials
+  and private-destination policy as the initial target — on the
+  direct path (where the dialer additionally guards at connection
+  time) AND on the tunneled path (where the proxy resolves
+  remotely, so hop validation is the guard). A redirect chain can
+  never be steered onto a loopback/private endpoint.
 - **Response bodies are capped** at `MaxResponseBytes`
   (default 256 KiB); bytes beyond the cap are neither read nor
   stored.

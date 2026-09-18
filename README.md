@@ -57,8 +57,12 @@ lifecycle as configurations.
   captive_portal; public_ip; tunnel_diagnostics), one structured
   result contract, timeouts clamped [1 s, 60 s], and the
   `toolsafety.go` policy: scheme allowlist, credentials in URLs
-  rejected, private/link-local blocked for autonomous targets,
-  DNS-rebinding guard, redirect cap 3, response cap 256 KiB.
+  rejected, private/link-local destinations blocked for every
+  generic diagnostic (implicit permission only for the genuinely
+  local-endpoint `socks5`/`http_connect` tools; everything else
+  needs the explicit `AllowPrivateTargets` capability), DNS-rebinding
+  guard (resolve → validate → pin), redirect cap 3 with per-hop
+  destination re-validation, response cap 256 KiB.
 - Tools run ONLY on explicit user action — never at startup — with
   bounded concurrency (3 tokens); results run direct or through the
   active tunnel (path `direct|tunneled`). See
@@ -78,16 +82,20 @@ lifecycle as configurations.
   surfaced. Honest limitation: GPG verification of the checksum
   file itself is not performed.
 - Psiphon: official tunnel-core console client channel (default
-  `Psiphon-Labs/psiphon-tunnel-core`; current official releases
-  publish only mobile library archives, so managed install honestly
-  reports unavailability). When the channel
-  exposes no release assets with digests, Resolve reports
-  unavailability and Install REFUSES — binaries are never executed
-  unverified; a user binary path (`psiphon_user_binary`) is
-  validated + smoke-launched before adoption. Readiness is observed
-  from the real runtime (both local proxy ports accepting);
-  capabilities reported ONLY when running; Psiware attribution
-  surfaced; nothing statically embedded.
+  `Psiphon-Labs/psiphon-tunnel-core`; live audit 2026-09-18 — the
+  releases publish only mobile library archives with digests, and
+  the `psiphon-tunnel-core-binaries` location is a moving RC branch
+  with no checksum authority, so managed install honestly reports
+  unavailability and no raw branch binary is ever downloaded or
+  executed). A user binary path (`psiphon_user_binary`) is the
+  supported acquisition: the file is COPIED into managed storage
+  under a content-addressed name (the user's original is never
+  moved, renamed or deleted) and the managed copy is validated +
+  smoke-launched through the system supervision layer before
+  adoption. Readiness is observed from the real runtime (both
+  local proxy ports accepting); capabilities reported ONLY when
+  running; Psiware attribution surfaced; nothing statically
+  embedded.
 
 ### Unified providers, Auto mode and connection integration (§8–§14)
 

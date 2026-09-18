@@ -90,6 +90,30 @@ func (b *BinaryManager) BinDir() string { return filepath.Join(b.Dir(), "bin") }
 // StagingDir holds in-flight transactions.
 func (b *BinaryManager) StagingDir() string { return filepath.Join(b.Dir(), "staging") }
 
+// managedUserBinaryPath derives the content-addressed managed path
+// for an adopted user-provided binary: the executable's platform name
+// plus the first 16 hex chars of the source SHA-256. Same bytes →
+// same path → adoption is idempotent and never renames over an
+// in-use Windows image; different bytes → a different path, so a
+// running older copy is never overwritten either.
+func (b *BinaryManager) managedUserBinaryPath(sourceSHA256 string) string {
+	name := executableFileName(b.ExecutableName)
+
+	short := strings.ToLower(strings.TrimSpace(sourceSHA256))
+	if len(short) > 16 {
+		short = short[:16]
+	}
+
+	if len(short) < 16 { // not a real checksum: fall back to the plain name
+		return filepath.Join(b.BinDir(), name)
+	}
+
+	ext := filepath.Ext(name)
+	stem := strings.TrimSuffix(name, ext)
+
+	return filepath.Join(b.BinDir(), stem+"-"+short+ext)
+}
+
 // ManifestPath persists install state.
 func (b *BinaryManager) ManifestPath() string { return filepath.Join(b.Dir(), "manifest.json") }
 
@@ -447,7 +471,10 @@ func findExecutable(root, name string) (string, error) {
 	return found, nil
 }
 
-// moveFile moves across filesystems with a copy fallback.
+// moveFile moves across filesystems with a copy fallback. RESERVED
+// for managed installation transactions (staging → activation),
+// where FreeIran owns BOTH endpoints and the source is meant to be
+// consumed. NEVER use it on user-provided files — see safeCopyFile.
 func moveFile(src, dst string) error {
 	if err := os.Rename(src, dst); err == nil {
 		return nil
@@ -480,6 +507,88 @@ func moveFile(src, dst string) error {
 	}
 
 	return os.Remove(src)
+}
+
+// safeCopyFile copies src to dst WITHOUT ever moving, renaming or
+// deleting the source — the ownership contract for adopting
+// user-provided binaries: the user's original file is theirs, and it
+// must survive even when Windows temporarily holds it locked (an
+// executable image mapping can outlive process termination, which
+// makes os.Remove fail with "being used by another process").
+//
+// The copy is atomic from the caller's perspective: bytes land in a
+// uniquely-named .part file which is renamed into place, so a partial
+// copy can never be mistaken for a complete managed binary. When dst
+// already exists with the same content it is reused untouched —
+// repeated adoption of the same binary is a no-op that cannot hit
+// Windows in-use overwrite problems on the destination either.
+func safeCopyFile(src, dst, expectedSHA256 string) error {
+	if info, err := os.Stat(src); err != nil || info.IsDir() {
+		return fmt.Errorf("source binary %q is not a readable regular file: %w", src, err)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+		return err
+	}
+
+	// Idempotent reuse: an identical managed copy already exists (same
+	// size AND same checksum) — do not touch it, so a running image is
+	// never renamed over.
+	if existing, err := os.Stat(dst); err == nil && !existing.IsDir() {
+		if expectedSHA256 != "" && existing.Size() > 0 {
+			if sum, sumErr := fileSHA256(dst); sumErr == nil && strings.EqualFold(sum, expectedSHA256) {
+				return nil
+			}
+		}
+	}
+
+	part := fmt.Sprintf("%s.part-%d", dst, os.Getpid())
+
+	_ = os.Remove(part) // stale part from a crashed run (best-effort)
+
+	in, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("open source binary: %w", err)
+	}
+
+	defer in.Close()
+
+	out, err := os.OpenFile(part, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
+	if err != nil {
+		return fmt.Errorf("stage managed copy: %w", err)
+	}
+
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		_ = os.Remove(part)
+
+		return fmt.Errorf("copy managed binary: %w", err)
+	}
+
+	if err := out.Close(); err != nil {
+		_ = os.Remove(part)
+
+		return fmt.Errorf("close staged copy: %w", err)
+	}
+
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(part, 0o755); err != nil {
+			_ = os.Remove(part)
+
+			return err
+		}
+	}
+
+	if err := os.Rename(part, dst); err != nil {
+		_ = os.Remove(part)
+
+		// A same-name destination that is busy (Windows, image still
+		// mapped) is the one in-place conflict we can see here; surface
+		// it honestly instead of deleting anything.
+		return fmt.Errorf("activate managed copy: %w", err)
+	}
+
+	return nil
 }
 
 // unpackTarGz extracts a .tar.gz with tar-slip protection (same

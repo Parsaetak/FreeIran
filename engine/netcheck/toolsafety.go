@@ -14,12 +14,18 @@
 //     dialed to the validated address (the classic resolve-check-pin
 //     pattern). For TUNNELED probes the proxy resolves remotely;
 //     targets are still syntactically validated and private literals
-//     blocked unless the tool explicitly diagnoses local endpoints.
-//   - Local-endpoint tools (socks5 / http_connect / tcp / tls /
-//     websocket against the user's own proxy) MAY target private
-//     addresses: that is their purpose, and they run only on
-//     explicit user action.
-//   - Redirects: capped at MaxRedirects (default 3).
+//     blocked unless the policy explicitly allows local targets.
+//   - Private-target permission is EXPLICIT and tool-scoped: only the
+//     genuinely local-endpoint tools (socks5, http_connect — the
+//     tools whose whole purpose is testing the user's own local
+//     proxy) may target private addresses implicitly. Generic
+//     diagnostics (tcp, tls, https, websocket, dns, udp, traceroute,
+//     path_mtu) block loopback/private/link-local/reserved targets
+//     by default; intentional local testing requires the explicit
+//     AllowPrivateTargets capability.
+//   - Redirects: capped at MaxRedirects (default 3) and every hop's
+//     destination is re-validated against the same URL contract and
+//     private-destination policy as the initial target.
 //   - Response bodies: capped at MaxResponseBytes (default 256 KiB).
 //   - No remote JavaScript is ever executed (plain HTTP clients only,
 //     bodies are discarded after counting).
@@ -65,6 +71,18 @@ func DefaultSafety() Safety {
 		AllowInsecureTLS:    false,
 	}
 }
+
+// targetRejectedError marks a destination refused by the safety
+// policy: a private/reserved literal, or a hostname whose answers all
+// fall in blocked ranges (rebinding guard). The runner classifies it
+// as invalid_target — a policy refusal — wherever it surfaces:
+// validation, dial time, or a redirect hop (errors.As unwraps the
+// url.Error the HTTP client wraps around CheckRedirect failures).
+type targetRejectedError struct {
+	reason string
+}
+
+func (e *targetRejectedError) Error() string { return e.reason }
 
 // Private IP networks blocked for autonomous targets (RFC 1918/4193,
 // loopback, link-local, unspecified, broadcast, carrier-grade NAT,
@@ -144,17 +162,43 @@ func toolSchemes(tool ToolID) []string {
 	}
 }
 
-// localTargetTools may legitimately aim at the user's own private
-// endpoints (their local proxy / core listener / local test server).
-// These run only on explicit user action; tool DEFAULTS always stay
-// public (see defaultToolTarget).
+// localTargetTools are the ONLY tools that may implicitly aim at
+// the user's own private endpoints: socks5 and http_connect exist
+// precisely to test a local proxy listener, and their tool defaults
+// are local (127.0.0.1). Every other tool — including the generic
+// tcp/tls/https/websocket/dns/udp diagnostics — requires the
+// explicit Safety.AllowPrivateTargets capability for intentional
+// local testing (tool DEFAULTS always stay public; see
+// defaultToolTarget).
+//
+// This list was over-broad in v0.9.8.1 (tcp/tls/websocket/dns/https
+// were implicitly private-target-safe), which silently bypassed the
+// DNS-rebinding/private-address guard for generic HTTPS diagnostics
+// — the root cause of the Windows CI failure
+// TestSafeDialerResolveCheckPin: "localhost" resolved to 127.0.0.1
+// and the https dialer connected because the tool was treated as
+// local-endpoint-safe.
 func localTargetTools(tool ToolID) bool {
 	switch tool {
-	case ToolSOCKS5, ToolHTTPConnect, ToolTCP, ToolTLS, ToolWebSocket, ToolDNS, ToolHTTPS:
+	case ToolSOCKS5, ToolHTTPConnect:
 		return true
 	default:
 		return false
 	}
+}
+
+// privateTargetsAllowed reports whether THIS request may aim at
+// loopback/private/link-local destinations: either the policy
+// explicitly opted in (AllowPrivateTargets — the capability the
+// service layer sets when the user intentionally tests a local
+// endpoint with a generic tool), or the tool is one of the two
+// genuinely local-endpoint tools (see localTargetTools).
+//
+// This is the single policy decision shared by target validation,
+// the dialer's rebinding guard and the tool-specific literal checks —
+// one source of truth, no per-site improvisation.
+func (s Safety) privateTargetsAllowed(tool ToolID) bool {
+	return s.AllowPrivateTargets || localTargetTools(tool)
 }
 
 // ValidateToolTarget validates a request's target against the safety
@@ -167,8 +211,8 @@ func (s Safety) ValidateToolTarget(req ToolRequest) error {
 		// Aggregate tools use fixed, curated target sets (or caller
 		// state); custom targets are not accepted.
 		if req.Target != "" && tool == ToolCaptivePortal {
-			_, err := parseURLTarget(req.Target, []string{schemeHTTP, schemeHTTPS})
-			return err
+			return s.validateURLDestination(tool, req.Target,
+				[]string{schemeHTTP, schemeHTTPS})
 		}
 
 		return nil
@@ -193,7 +237,7 @@ func (s Safety) ValidateToolTarget(req ToolRequest) error {
 	}
 
 	// host[:port] targets.
-	if err := validateHostPort(tool, target); err != nil {
+	if err := validateHostPort(s, tool, target); err != nil {
 		return err
 	}
 
@@ -242,9 +286,13 @@ func (s Safety) validateURLDestination(tool ToolID, raw string, allowed []string
 	return s.checkHost(tool, parsed.Hostname())
 }
 
-// validateHostPort validates a host[:port] target string.
-func validateHostPort(tool ToolID, target string) error {
-	_, port, err := splitHostPortLoose(target)
+// validateHostPort validates a host[:port] target string: port
+// bounds, then the destination policy for the host (private IP
+// literals are blocked for generic tools at VALIDATION time — this
+// covers the TUNNELED path, where the proxy resolves remotely and
+// the safeDialer rebinding guard is not in the dial path).
+func validateHostPort(s Safety, tool ToolID, target string) error {
+	host, port, err := splitHostPortLoose(target)
 	if err != nil {
 		return err
 	}
@@ -253,9 +301,7 @@ func validateHostPort(tool ToolID, target string) error {
 		return fmt.Errorf("port %d out of range", port)
 	}
 
-	_ = tool
-
-	return nil
+	return s.checkHost(tool, host)
 }
 
 // splitHostPortLoose splits "host", "host:port" or "[v6]:port".
@@ -286,18 +332,23 @@ func splitHostPortLoose(target string) (string, int, error) {
 }
 
 // checkHost validates a hostname or IP literal against the private-
-// destination policy. IP literals are checked directly; hostnames are
-// resolved and every answer must pass (rebinding guard).
+// destination policy. IP literals are checked directly; hostnames
+// get syntactic validation here — the resolve-and-validate-every-
+// answer step runs at DIAL time in safeDial (the rebinding guard:
+// resolving twice would widen the TOCTOU window instead of closing
+// it).
 func (s Safety) checkHost(tool ToolID, host string) error {
 	if host == "" {
 		return fmt.Errorf("empty host")
 	}
 
-	allowPrivate := s.AllowPrivateTargets || localTargetTools(tool)
+	allowPrivate := s.privateTargetsAllowed(tool)
 
 	if ip := net.ParseIP(host); ip != nil {
 		if !allowPrivate && IsPrivateIP(ip) {
-			return fmt.Errorf("private or reserved destination %s is blocked for this tool", host)
+			return &targetRejectedError{
+				fmt.Sprintf("private or reserved destination %s is blocked for this tool", host),
+			}
 		}
 
 		return nil
@@ -337,12 +388,27 @@ func validHostname(host string) error {
 	return nil
 }
 
+// resolveIPAddrs resolves a hostname to its IP addresses through the
+// system resolver. It is a package-level function variable (not an
+// inline call) so the rebinding guard's every-answer validation can
+// be exercised deterministically in tests with stub answers (mixed
+// public/private, IPv6 loopback, rebinding flips) — the production
+// path is unchanged.
+var resolveIPAddrs = func(ctx context.Context, host string) ([]net.IPAddr, error) {
+	return (&net.Resolver{}).LookupIPAddr(ctx, host)
+}
+
+// netDial performs the raw TCP dial once the destination has been
+// validated and pinned. Package-level function variable for the same
+// reason as resolveIPAddrs: tests observe the PINNED address without
+// a real connection (proving which validated IP the guard chose).
+var netDial = (&net.Dialer{}).DialContext
+
 // safeDial is the DIRECT dial path with the DNS-rebinding guard:
 // resolve the hostname, validate EVERY answer against the private-
 // range policy (unless local endpoints are allowed for this tool),
-// then dial the validated address so the connection cannot be
-// re-pinned between check and connect. IP-literal targets skip
-// resolution.
+// then dial a VALIDATED address so the connection cannot be re-pinned
+// between check and connect. IP-literal targets skip resolution.
 type safeDialer struct {
 	safety Safety
 	tool   ToolID
@@ -360,22 +426,20 @@ func (d *safeDialer) Dial(ctx context.Context, network, addr string) (net.Conn, 
 		return nil, err
 	}
 
-	allowPrivate := d.safety.AllowPrivateTargets || localTargetTools(d.tool)
+	allowPrivate := d.safety.privateTargetsAllowed(d.tool)
 
 	if ip := net.ParseIP(host); ip != nil {
 		if !allowPrivate && IsPrivateIP(ip) {
-			return nil, fmt.Errorf("private destination %s blocked", host)
+			return nil, &targetRejectedError{
+				fmt.Sprintf("private destination %s blocked", host),
+			}
 		}
 
-		var dialer net.Dialer
-
-		return dialer.DialContext(ctx, network, addr)
+		return netDial(ctx, network, addr)
 	}
 
 	// Resolve → validate → pin.
-	resolver := &net.Resolver{}
-
-	addrs, err := resolver.LookupIPAddr(ctx, host)
+	addrs, err := resolveIPAddrs(ctx, host)
 	if err != nil {
 		return nil, fmt.Errorf("resolve %s: %w", host, err)
 	}
@@ -389,12 +453,35 @@ func (d *safeDialer) Dial(ctx context.Context, network, addr string) (net.Conn, 
 	}
 
 	if len(valid) == 0 {
-		return nil, fmt.Errorf("hostname %s resolves only to blocked private addresses", host)
+		return nil, &targetRejectedError{
+			fmt.Sprintf("hostname %s resolves only to blocked private addresses", host),
+		}
 	}
 
 	pinned := net.JoinHostPort(valid[0].String(), strconv.Itoa(port))
 
-	var dialer net.Dialer
+	return netDial(ctx, network, pinned)
+}
 
-	return dialer.DialContext(ctx, network, pinned)
+// validateRedirectTarget applies the destination-safety policy to
+// one redirect hop: the same no-credentials URL contract and the same
+// private-destination policy as the initial target. Redirected HTTPS
+// (and captive-portal) requests therefore CANNOT be steered onto a
+// loopback/private endpoint — including on the TUNNELED path, where
+// the safeDialer rebinding guard is not in the dial path and the
+// proxy resolves remotely.
+func (s Safety) validateRedirectTarget(tool ToolID, u *url.URL) error {
+	if u == nil {
+		return fmt.Errorf("no redirect URL")
+	}
+
+	if u.User != nil {
+		return fmt.Errorf("credentials in redirect URLs are not permitted")
+	}
+
+	if u.Host == "" {
+		return fmt.Errorf("redirect URL has no host")
+	}
+
+	return s.checkHost(tool, u.Hostname())
 }

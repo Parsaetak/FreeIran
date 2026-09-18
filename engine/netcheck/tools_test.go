@@ -2,15 +2,18 @@ package netcheck
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
-	"github.com/Parsaetak/FreeIran/engine/socks5"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Parsaetak/FreeIran/engine/socks5"
 )
 
 // tools_test.go exercises the shared Internet-Tools engine (§16):
@@ -188,13 +191,22 @@ func localDial(proxy string) DialFunc {
 	}
 }
 
+// localEndpointRunner is the sanctioned pattern for running GENERIC
+// tools against local test servers: the explicit AllowPrivateTargets
+// capability (the default policy blocks loopback/private destinations
+// for tcp/tls/https/websocket — only socks5/http_connect have
+// implicit local-endpoint semantics).
+func localEndpointRunner() *ToolRunner {
+	return &ToolRunner{Safety: Safety{AllowPrivateTargets: true}}
+}
+
 // ---- TCP --------------------------------------------------------------
 
 func TestToolTCPSuccess(t *testing.T) {
 	addr, _, closeFn := echoTCPServer(t)
 	defer closeFn()
 
-	runner := NewToolRunner()
+	runner := localEndpointRunner()
 
 	result := runner.Run(context.Background(), ToolRequest{
 		Tool:   ToolTCP,
@@ -226,7 +238,7 @@ func TestToolTCPSubMillisecondRepresentation(t *testing.T) {
 	addr, _, closeFn := echoTCPServer(t)
 	defer closeFn()
 
-	runner := NewToolRunner()
+	runner := localEndpointRunner()
 
 	result := runner.Run(context.Background(), ToolRequest{Tool: ToolTCP, Target: addr})
 
@@ -251,7 +263,7 @@ func TestToolTCPRefused(t *testing.T) {
 	addr := listener.Addr().String()
 	listener.Close()
 
-	runner := NewToolRunner()
+	runner := localEndpointRunner()
 
 	result := runner.Run(context.Background(), ToolRequest{Tool: ToolTCP, Target: addr})
 
@@ -268,11 +280,11 @@ func TestToolTCPCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	runner := NewToolRunner()
+	runner := localEndpointRunner()
 
 	result := runner.Run(ctx, ToolRequest{
 		Tool:    ToolTCP,
-		Target:  "10.255.255.1:65534", // unroutable
+		Target:  "10.255.255.1:65534", // unroutable (allowed: explicit local capability)
 		Timeout: 5 * time.Second,
 	})
 
@@ -343,7 +355,7 @@ func TestToolHTTPSSuccess(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	})
 
-	runner := NewToolRunner()
+	runner := localEndpointRunner()
 
 	result := runner.Run(context.Background(), ToolRequest{
 		Tool:   ToolHTTPS,
@@ -368,7 +380,7 @@ func TestToolHTTPSHTTPErrorStatus(t *testing.T) {
 		http.Error(w, "teapot", http.StatusTeapot)
 	})
 
-	runner := NewToolRunner()
+	runner := localEndpointRunner()
 
 	result := runner.Run(context.Background(), ToolRequest{Tool: ToolHTTPS, Target: server.URL})
 
@@ -387,7 +399,7 @@ func TestToolHTTPSRedirectCap(t *testing.T) {
 		http.Redirect(w, r, "/loop", http.StatusFound)
 	})
 
-	runner := NewToolRunner()
+	runner := localEndpointRunner()
 
 	result := runner.Run(context.Background(), ToolRequest{Tool: ToolHTTPS, Target: server.URL + "/start"})
 
@@ -406,12 +418,16 @@ func TestToolHTTPSResponseSizeCap(t *testing.T) {
 		_, _ = w.Write(make([]byte, 4<<20))
 	})
 
-	runner := NewToolRunner()
+	runner := localEndpointRunner()
 
 	result := runner.Run(context.Background(), ToolRequest{Tool: ToolHTTPS, Target: server.URL})
 
 	if result.Measurement.Bytes > runner.Safety.responseCap() {
 		t.Fatalf("bytes read %d exceeds the safety cap %d", result.Measurement.Bytes, runner.Safety.responseCap())
+	}
+
+	if result.Status != ToolStatusOK {
+		t.Fatalf("size-cap test must reach the real body drain: status = %q (%s)", result.Status, result.Error)
 	}
 }
 
@@ -454,9 +470,9 @@ func TestToolTLSCertificateVerification(t *testing.T) {
 
 	host, port := hostPortOfURL(t, server.URL)
 
-	// Default safety: verification ON — a self-signed certificate
-	// must fail honestly.
-	runner := NewToolRunner()
+	// Default safety plus the explicit local capability: verification
+	// stays ON — a self-signed certificate must fail honestly.
+	runner := localEndpointRunner()
 
 	result := runner.Run(context.Background(), ToolRequest{
 		Tool:   ToolTLS,
@@ -564,7 +580,7 @@ func TestToolWebSocketUpgradeAccepted(t *testing.T) {
 		}
 	})
 
-	runner := NewToolRunner()
+	runner := localEndpointRunner()
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
 
@@ -584,7 +600,7 @@ func TestToolWebSocketRejected(t *testing.T) {
 		http.Error(w, "no upgrade here", http.StatusBadRequest)
 	})
 
-	runner := NewToolRunner()
+	runner := localEndpointRunner()
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
 
@@ -906,4 +922,409 @@ func (d socks5DialerForTest) Dial(ctx context.Context, network, addr string) (ne
 	prod := socks5.Dialer{ProxyAddr: d.proxy, Timeout: 5 * time.Second}
 
 	return prod.Dial(ctx, network, addr)
+}
+
+// ---- private-target policy regression battery (v0.9.8.1 root fix) --------
+//
+// The v0.9.8.1 Windows failure (TestSafeDialerResolveCheckPin) came
+// from localTargetTools() treating generic diagnostics (tcp/tls/
+// websocket/dns/https) as implicitly private-target-safe, which
+// bypassed the DNS-rebinding guard. These tests pin the corrected
+// semantics: private permission is EXPLICIT (AllowPrivateTargets) or
+// genuinely local-endpoint (socks5/http_connect) — nothing else.
+
+// TestToolHTTPSPrivateTargetsBlockedByDefault: generic https/tcp/
+// websocket diagnostics refuse loopback and private literals at
+// validation time — before any bytes leave the machine.
+func TestToolHTTPSPrivateTargetsBlockedByDefault(t *testing.T) {
+	runner := NewToolRunner()
+
+	cases := []struct {
+		name   string
+		tool   ToolID
+		target string
+	}{
+		{"https-localhost", ToolHTTPS, "https://localhost/generate_204"},
+		{"https-loopback-literal", ToolHTTPS, "https://127.0.0.1/generate_204"},
+		{"https-ipv6-loopback-literal", ToolHTTPS, "https://[::1]/generate_204"},
+		{"https-rfc1918", ToolHTTPS, "http://192.168.1.10:8080/"},
+		{"https-cgnat", ToolHTTPS, "http://100.64.0.7/"},
+		{"tcp-loopback", ToolTCP, "127.0.0.1:443"},
+		{"tls-rfc1918", ToolTLS, "10.1.2.3:443"},
+		{"websocket-loopback", ToolWebSocket, "ws://127.0.0.1:1080"},
+		{"udp-private-resolver", ToolUDP, "192.168.0.53:53"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := runner.Run(context.Background(), ToolRequest{
+				Tool:   tc.tool,
+				Target: tc.target,
+			})
+
+			if result.Status != ToolStatusInvalid {
+				t.Fatalf("status = %q, want invalid_target (private destination must be blocked for %s)", result.Status, tc.tool)
+			}
+
+			if !strings.Contains(strings.ToLower(result.Error), "private") {
+				t.Fatalf("error should explain the private-destination policy: %q", result.Error)
+			}
+		})
+	}
+}
+
+// TestToolHTTPSLocalhostBlockedWithLiveServer: a REAL accepting
+// listener on the resolved port proves the guard rejects BEFORE the
+// dial — this is the deterministic form of the Windows-runner
+// condition (port 80 served on both stacks) that made the original
+// failure visible. It cannot pass by connection-refused accident.
+func TestToolHTTPSLocalhostBlockedWithLiveServer(t *testing.T) {
+	v6, err := net.Listen("tcp", "[::1]:0")
+	if err != nil {
+		t.Skipf("no IPv6 loopback listener: %v", err)
+	}
+
+	defer v6.Close()
+
+	port := v6.Addr().(*net.TCPAddr).Port
+
+	v4, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconvItoa(port)))
+	if err != nil {
+		t.Skipf("no IPv4 loopback listener: %v", err)
+	}
+
+	defer v4.Close()
+
+	accept := func(l net.Listener) {
+		go func() {
+			for {
+				c, err := l.Accept()
+				if err != nil {
+					return
+				}
+
+				go func(c net.Conn) {
+					buf := make([]byte, 64)
+					_, _ = c.Read(buf)
+					_, _ = c.Write([]byte("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n"))
+					_ = c.Close()
+				}(c)
+			}
+		}()
+	}
+
+	accept(v6)
+	accept(v4)
+
+	dial := DefaultSafety().dialer(ToolHTTPS)
+
+	if _, err := dial.Dial(context.Background(), "tcp", net.JoinHostPort("localhost", strconvItoa(port))); err == nil {
+		t.Fatal("https dialer must refuse a hostname resolving to loopback even when the port is served")
+	}
+}
+
+// TestSafeDialerResolvingHostnamePrivateBlocked: the rebinding guard
+// validates EVERY resolved answer with stub resolvers — deterministic
+// on every platform, independent of /etc/hosts.
+func TestSafeDialerResolvingHostnamePrivateBlocked(t *testing.T) {
+	original := resolveIPAddrs
+	originalDial := netDial
+	defer func() {
+		resolveIPAddrs = original
+		netDial = originalDial
+	}()
+
+	cases := []struct {
+		name     string
+		answers  []string
+		blocked  bool
+		expected string // the pinned destination when not blocked
+	}{
+		{
+			name:    "private-ipv4-only",
+			answers: []string{"10.0.0.5"},
+			blocked: true,
+		},
+		{
+			name:    "private-ipv6-only",
+			answers: []string{"fd12:3456:789a::1"},
+			blocked: true,
+		},
+		{
+			name:    "ipv6-loopback-only",
+			answers: []string{"::1"},
+			blocked: true,
+		},
+		{
+			name:    "link-local-ipv4",
+			answers: []string{"169.254.10.7"},
+			blocked: true,
+		},
+		{
+			name:     "mixed-public-private-dials-validated",
+			answers:  []string{"93.184.216.34", "127.0.0.1"},
+			blocked:  false,
+			expected: "93.184.216.34:443",
+		},
+		{
+			name:     "public-answers-pin-first-validated",
+			answers:  []string{"2606:4700:4700::1111", "1.1.1.1"},
+			blocked:  false,
+			expected: "[2606:4700:4700::1111]:443",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resolveIPAddrs = func(ctx context.Context, host string) ([]net.IPAddr, error) {
+				addrs := make([]net.IPAddr, 0, len(tc.answers))
+				for _, a := range tc.answers {
+					addrs = append(addrs, net.IPAddr{IP: net.ParseIP(a)})
+				}
+
+				return addrs, nil
+			}
+
+			var dialed string
+
+			netDial = func(ctx context.Context, network, addr string) (net.Conn, error) {
+				dialed = addr
+				return nil, fmt.Errorf("stub dial")
+			}
+
+			dial := DefaultSafety().dialer(ToolHTTPS)
+
+			_, err := dial.Dial(context.Background(), "tcp", "rebinding.test:443")
+			if tc.blocked {
+				if err == nil || !strings.Contains(err.Error(), "blocked private") {
+					t.Fatalf("err = %v, want a blocked-private rejection", err)
+				}
+
+				if dialed != "" {
+					t.Fatalf("nothing may be dialed for a blocked hostname, dialed %q", dialed)
+				}
+
+				return
+			}
+
+			if err == nil || dialed != tc.expected {
+				t.Fatalf("err = %v, dialed = %q, want pin to %q", err, dialed, tc.expected)
+			}
+		})
+	}
+}
+
+// TestToolHTTPSExplicitPrivateCapability: the sanctioned local test —
+// AllowPrivateTargets lets generic tools reach local endpoints (the
+// same capability the TLS tests use).
+func TestToolHTTPSExplicitPrivateCapability(t *testing.T) {
+	server := httpServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	defaultRunner := NewToolRunner()
+
+	if result := defaultRunner.Run(context.Background(), ToolRequest{
+		Tool: ToolHTTPS, Target: server.URL,
+	}); result.Status != ToolStatusInvalid {
+		t.Fatalf("default policy must block the local endpoint, got %q", result.Status)
+	}
+
+	local := localEndpointRunner()
+
+	result := local.Run(context.Background(), ToolRequest{Tool: ToolHTTPS, Target: server.URL})
+	if result.Status != ToolStatusOK {
+		t.Fatalf("explicit capability must allow the local endpoint: %q (%s)", result.Status, result.Error)
+	}
+}
+
+// TestToolSOCKS5HTTPConnectImplicitLocalSemantics: the two genuinely
+// local-endpoint tools keep implicit private-target permission under
+// the DEFAULT policy — testing one's own local proxy is their purpose.
+func TestToolSOCKS5HTTPConnectImplicitLocalSemantics(t *testing.T) {
+	proxy := fakeSOCKSProxy(t)
+
+	runner := NewToolRunner() // default policy — no explicit capability
+
+	if result := runner.Run(context.Background(), ToolRequest{Tool: ToolSOCKS5, Target: proxy}); result.Status != ToolStatusOK {
+		t.Fatalf("socks5 local endpoint under default policy: %q (%s)", result.Status, result.Error)
+	}
+
+	server := httpServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodConnect {
+			w.WriteHeader(http.StatusOK)
+		}
+	})
+
+	host, port := hostPortOfURL(t, server.URL)
+
+	result := runner.Run(context.Background(), ToolRequest{
+		Tool:   ToolHTTPConnect,
+		Target: net.JoinHostPort(host, strconvItoa(port)),
+	})
+
+	if result.Status != ToolStatusOK {
+		t.Fatalf("http_connect local endpoint under default policy: %q (%s)", result.Status, result.Error)
+	}
+}
+
+// TestToolHTTPSRedirectToPrivateBlocked: a redirect chain ending at a
+// private destination is refused mid-chain — redirected HTTPS requests
+// stay under the same destination-safety policy. The public first hop
+// is simulated deterministically (stub resolver + stub dial serving a
+// 302 through a pipe), so the test proves the second hop NEVER
+// connects under the default policy, on any platform, with no network.
+func TestToolHTTPSRedirectToPrivateBlocked(t *testing.T) {
+	originalResolve, originalDial := resolveIPAddrs, netDial
+	defer func() { resolveIPAddrs, netDial = originalResolve, originalDial }()
+
+	resolveIPAddrs = func(ctx context.Context, host string) ([]net.IPAddr, error) {
+		return []net.IPAddr{{IP: net.ParseIP("93.184.216.34")}}, nil
+	}
+
+	dials := 0
+
+	server, client := net.Pipe()
+
+	netDial = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		dials++
+
+		if dials > 1 {
+			t.Errorf("the private redirect hop must never be dialed (attempt %d to %s)", dials, addr)
+		}
+
+		return client, nil
+	}
+
+	// Serve one 302 redirecting to a private literal, then the pipe
+	// closes — any further request would fail loudly.
+	go func() {
+		defer server.Close()
+
+		buf := make([]byte, 1024)
+
+		for {
+			if _, err := server.Read(buf); err != nil {
+				return
+			}
+
+			if !bytes.Contains(buf, []byte("\r\n\r\n")) {
+				continue
+			}
+
+			_, _ = server.Write([]byte("HTTP/1.1 302 Found\r\n" +
+				"Location: http://127.0.0.1:9/landing\r\n" +
+				"Content-Length: 0\r\n\r\n"))
+
+			return
+		}
+	}()
+
+	runner := NewToolRunner() // default policy — no private-target capability
+
+	result := runner.Run(context.Background(), ToolRequest{
+		Tool:   ToolHTTPS,
+		Target: "http://redirect.public.test/start",
+	})
+
+	if result.Status != ToolStatusInvalid {
+		t.Fatalf("status = %q, want invalid_target (private redirect blocked)", result.Status)
+	}
+
+	if !strings.Contains(strings.ToLower(result.Error), "private") {
+		t.Fatalf("error should identify the private-destination policy: %q", result.Error)
+	}
+
+	if dials > 1 {
+		t.Fatalf("redirect followed to a private destination after %d dials", dials)
+	}
+}
+
+// TestValidateRedirectTargetPolicy: the redirect-hop validator itself
+// — credentials are always refused, private literals follow the
+// policy, and the explicit capability permits intentional local hops.
+func TestValidateRedirectTargetPolicy(t *testing.T) {
+	parse := func(raw string) *url.URL {
+		parsed, err := url.Parse(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		return parsed
+	}
+
+	defaults := DefaultSafety()
+
+	if err := defaults.validateRedirectTarget(ToolHTTPS, parse("http://127.0.0.1:9/x")); err == nil {
+		t.Fatal("private redirect destination must be blocked by default")
+	}
+
+	if err := defaults.validateRedirectTarget(ToolHTTPS, parse("http://user:pw@public.test/x")); err == nil {
+		t.Fatal("credentials in redirect URLs must always be refused")
+	}
+
+	local := defaults
+	local.AllowPrivateTargets = true
+
+	if err := local.validateRedirectTarget(ToolHTTPS, parse("http://127.0.0.1:9/x")); err != nil {
+		t.Fatalf("explicit capability must allow the local hop: %v", err)
+	}
+
+	if err := local.validateRedirectTarget(ToolHTTPS, parse("http://user:pw@public.test/x")); err == nil {
+		t.Fatal("credentials stay refused even with the local capability")
+	}
+
+	if err := defaults.validateRedirectTarget(ToolHTTPS, parse("http://public.test/x")); err != nil {
+		t.Fatalf("public redirect destination must pass: %v", err)
+	}
+}
+
+// TestToolHTTPSTunneledPrivateLiteralBlocked: tunneled requests keep
+// the destination policy (the proxy resolves remotely, so the literal
+// check at validation is the guard) — private literals are refused
+// even with a live tunnel dialer.
+func TestToolHTTPSTunneledPrivateLiteralBlocked(t *testing.T) {
+	proxy := fakeSOCKSProxy(t)
+
+	runner := NewToolRunner()
+
+	result := runner.Run(context.Background(), ToolRequest{
+		Tool:     ToolHTTPS,
+		Target:   "http://127.0.0.1:1080/check",
+		Path:     PathTunneled,
+		Dial:     localDial(proxy),
+		Provider: "test-tor",
+	})
+
+	if result.Status != ToolStatusInvalid {
+		t.Fatalf("status = %q, want invalid_target (private literal under tunneled path)", result.Status)
+	}
+}
+
+// TestSafeDialerLocalToolsStillReachPrivateEndpoints: socks5 keeps
+// implicit permission at the DIALER level (the local proxy check).
+func TestSafeDialerLocalToolsStillReachPrivateEndpoints(t *testing.T) {
+	original := resolveIPAddrs
+	originalDial := netDial
+	defer func() {
+		resolveIPAddrs = original
+		netDial = originalDial
+	}()
+
+	resolveIPAddrs = func(ctx context.Context, host string) ([]net.IPAddr, error) {
+		return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
+	}
+
+	var dialed string
+
+	netDial = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		dialed = addr
+		return nil, fmt.Errorf("stub dial")
+	}
+
+	dial := DefaultSafety().dialer(ToolSOCKS5)
+
+	if _, err := dial.Dial(context.Background(), "tcp", "my.local.proxy:1080"); err == nil || dialed != "127.0.0.1:1080" {
+		t.Fatalf("socks5 dialer must pin the loopback answer (err=%v dialed=%q)", err, dialed)
+	}
 }

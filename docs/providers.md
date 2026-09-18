@@ -116,21 +116,39 @@ Workspace layout:
 
 - **Channel policy.** The official tunnel-core console client channel
   (GitHub releases with published asset digests; default repository
-  `Psiphon-Labs/psiphon-tunnel-core`). Channel status as of
-  v0.9.8.1: the official releases currently publish only mobile
-  client-library archives (Android/iOS) — no Windows console-client
-  asset with a digest. The engine reports exactly that (honest
-  unavailability) instead of weakening verification; should the
-  project publish a digest-bearing console-client asset, managed
-  installation starts working with no code change.
+  `Psiphon-Labs/psiphon-tunnel-core`). Channel status — live audit,
+  2026-09-18: upstream documentation identifies
+  `psiphon-tunnel-core` as the source/ConsoleClient repository and
+  `psiphon-tunnel-core-binaries` as the official binary location.
+  The `psiphon-tunnel-core` releases (v2.0.39–v2.0.41 at audit time)
+  publish ONLY mobile client-library archives
+  (Android/Client/iOS) with SHA-256 digests — no console-client
+  binary. The `-binaries` repository commits "release candidate"
+  binaries directly to its moving `master` branch and provides NO
+  releases, tags, digests or signatures — no checksum authority at
+  all (and no Windows x86_64 build at audit time). The engine
+  therefore reports honest unavailability for managed installation
+  and never downloads raw binaries from a moving branch; should the
+  project publish a digest-bearing console-client release asset,
+  managed installation starts working with no code change.
 - **Refusal semantics (honest).** When the channel exposes no release
   assets with digests, `Resolve` reports unavailability and `Install`
   REFUSES — binaries are never executed unverified. No digest, no
   install; verification is never weakened to make installation
   easier.
-- **User-provided binary.** The user can point FreeIran at a console
-  client binary (`psiphon_user_binary`); it is validated and
-  smoke-launched before adoption.
+- **User-provided binary (the supported path).** The user can point
+  FreeIran at a console client binary (`psiphon_user_binary`).
+  Adoption is copy-not-move: the file is SHA-256'd, copied into
+  FreeIran-managed provider storage under a content-addressed name
+  (same bytes → same path, so repeated adoption is idempotent and
+  never renames over an in-use Windows image), the managed copy is
+  verified byte-equivalent, then validated and smoke-launched —
+  both through the `system` supervision layer (no visible console
+  window, job-object/process-tree cleanup, bounded lifetime,
+  cancellation). The user's original file is NEVER moved, renamed or
+  deleted; it survives adoption, the provider lifecycle and even
+  Windows sharing-violation conditions intact, and `Uninstall`
+  removes only FreeIran's managed state.
 - **Runtime configuration.** A config JSON is generated per run:
   `LocalSocksProxyPort` + `LocalHttpProxyPort` on reserved ephemeral
   ports, `DataRootDirectory` inside the provider workspace. The

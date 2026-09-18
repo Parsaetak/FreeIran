@@ -248,7 +248,10 @@ func (a *EnvironmentAnalyzer) Analyze(ctx context.Context) Environment {
 
 		_, err := resolver.LookupHost(dctx, "www.gstatic.com")
 
-		ms := time.Since(start).Milliseconds()
+		// elapsedMS (the classic-probe convention): a successful
+		// sub-millisecond resolution reports 1, never 0 — 0 is reserved
+		// for "not set" in CheckResult, which carries no measured flag.
+		ms := elapsedMS(start)
 
 		ok := err == nil
 
@@ -409,7 +412,9 @@ func (a *EnvironmentAnalyzer) probeHTTPS(ctx context.Context, target string) (bo
 
 	resp, err := client.Do(req)
 
-	ms := time.Since(started).Milliseconds()
+	// Same classic-probe convention as netcheck.go's probeHTTPS:
+	// sub-millisecond successes project to 1 (0 = not set).
+	ms := elapsedMS(started)
 
 	if err != nil {
 		return false, ms, errDetail(err)
@@ -448,7 +453,7 @@ func (a *EnvironmentAnalyzer) probeCaptivePortal(ctx context.Context) (bool, int
 
 	resp, err := client.Do(req)
 
-	ms := time.Since(started).Milliseconds()
+	ms := elapsedMS(started)
 
 	if err != nil {
 		// The plain endpoint being unreachable is not portal

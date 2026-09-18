@@ -234,15 +234,23 @@ user-triggered diagnostic tool shares one hard safety policy:
 - Targets are validated BEFORE any bytes leave the machine: URL
   scheme allowlist per tool family, credentials in URLs rejected
   outright (credentials never ride a diagnostic URL), port bounds.
-- Private / link-local / loopback destinations are blocked for
-  autonomous targets; only the explicitly local diagnostics (proxy /
-  endpoint tools) may target them.
+- Private / link-local / loopback destinations are blocked by default
+  for every generic diagnostic (tcp/tls/https/websocket/dns/udp/
+  traceroute/path_mtu). Private-target permission is explicit and
+  tool-scoped: only the genuinely local-endpoint tools (`socks5`,
+  `http_connect` — testing the user's own local proxy) may target
+  them implicitly; intentional local testing with a generic tool
+  requires the `AllowPrivateTargets` capability. (Windows-CI root
+  fix: the earlier over-broad policy made generic tools implicitly
+  private-target-safe and bypassed the rebinding guard.)
 - DNS-rebinding guard on direct probes: the hostname is resolved,
   every answer must pass the destination policy, and the connection
-  is dialed to the validated address (resolve → validate → pin).
-- Redirects are capped (3, each hop re-validated) and response bodies
-  are capped (256 KiB; bytes beyond the cap are neither read nor
-  stored).
+  is dialed to a validated address (resolve → validate → pin).
+- Redirects are capped (3) and every hop's destination is
+  re-validated against the same no-credentials and
+  private-destination policy — on both the direct and the tunneled
+  path. Response bodies are capped (256 KiB; bytes beyond the cap
+  are neither read nor stored).
 - Tools run ONLY on explicit user action — never automatically at
   startup or in the background; the service layer enforces this, and
   public-IP lookups are never background work. Concurrency is bounded
@@ -250,6 +258,18 @@ user-triggered diagnostic tool shares one hard safety policy:
 - No remote JavaScript is ever executed and no configuration
   credentials are ever transmitted. Events and results carry only the
   validated host:port / URL forms, fixed error kinds and measurements.
+
+**User-binary adoption ownership (`engine/provider/psiphon.go`).**
+Adopting a user-provided Psiphon binary is copy-not-move: the source
+is SHA-256'd and copied into FreeIran-managed storage under a
+content-addressed name, the managed copy is verified
+byte-equivalent, then validated and smoke-launched through the
+`system` supervision layer (no visible console window, job-object /
+process-tree cleanup, bounded lifetime, cancellation — the same
+guarantees as the live provider). The user's original file is never
+moved, renamed or deleted; it survives adoption, provider
+uninstall, and Windows sharing-violation conditions. `Uninstall`
+removes only FreeIran's managed state.
 
 **Provider install integrity (`engine/provider/binary.go`).** The
 managed-binary pipeline for Tor and Psiphon inherits the

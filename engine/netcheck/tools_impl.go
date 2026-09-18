@@ -117,8 +117,21 @@ func measurementFor(d time.Duration) ToolMeasurement {
 }
 
 // setStatusFromError classifies ctx/timeout errors into statuses.
+// Policy rejections (targetRejectedError — from validation, the
+// dial-time rebinding guard, or a redirect hop) classify as
+// invalid_target: the safety layer refused the destination, which is
+// not a network failure.
 func setStatusFromError(result *ToolResult, err error) {
 	if err == nil {
+		return
+	}
+
+	var rejected *targetRejectedError
+
+	if errors.As(err, &rejected) {
+		result.Status = ToolStatusInvalid
+		result.Error = err.Error()
+
 		return
 	}
 
@@ -405,8 +418,6 @@ func (r *ToolRunner) runHTTPS(ctx context.Context, req ToolRequest, result *Tool
 
 	client := r.boundedHTTPClient(req)
 
-	redirections := 0
-
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
 		result.Status = ToolStatusInvalid
@@ -417,6 +428,11 @@ func (r *ToolRunner) runHTTPS(ctx context.Context, req ToolRequest, result *Tool
 
 	request.Header.Set("User-Agent", "FreeIran-Tools/1.0")
 	request.Header.Set("Cache-Control", "no-cache")
+
+	// Hop counting for the redirect detail (cap + destination
+	// re-validation still apply — see redirectPolicy).
+	redirectHops := 0
+	client.CheckRedirect = r.redirectPolicy(req.Tool, &redirectHops)
 
 	started := time.Now()
 
@@ -446,7 +462,7 @@ func (r *ToolRunner) runHTTPS(ctx context.Context, req ToolRequest, result *Tool
 
 	result.Details = map[string]string{
 		"final_url": boundedString(resp.Request.URL.String(), 200),
-		"redirects": strconv.Itoa(redirections),
+		"redirects": strconv.Itoa(redirectHops),
 		"tls":       boolLabel(resp.TLS != nil),
 	}
 }
@@ -486,8 +502,31 @@ func (s Safety) redirectCap() int {
 	return s.MaxRedirects
 }
 
+// redirectPolicy builds the shared CheckRedirect closure: cap the
+// chain, count hops for reporting (when hops != nil), and re-validate
+// every hop's destination against the same policy as the initial
+// target.
+func (r *ToolRunner) redirectPolicy(tool ToolID, hops *int) func(*http.Request, []*http.Request) error {
+	return func(next *http.Request, via []*http.Request) error {
+		if hops != nil {
+			*hops = len(via)
+		}
+
+		if len(via) >= r.Safety.redirectCap() {
+			return fmt.Errorf("too many redirects (>%d)", r.Safety.redirectCap())
+		}
+
+		return r.Safety.validateRedirectTarget(tool, next.URL)
+	}
+}
+
 // boundedHTTPClient builds the disposable, bounded transport for HTTP
 // tools (direct with rebinding guard, or through the tunnel dialer).
+// Redirect policy: chains are capped AND every hop's destination is
+// re-validated against the same no-credentials and private-
+// destination policy as the initial target — a redirect can never
+// steer the request onto a loopback/private endpoint (direct hops
+// are additionally guarded at dial time by the safeDialer).
 func (r *ToolRunner) boundedHTTPClient(req ToolRequest) *http.Client {
 	transport := &http.Transport{
 		DisableKeepAlives:   true,
@@ -501,15 +540,9 @@ func (r *ToolRunner) boundedHTTPClient(req ToolRequest) *http.Client {
 	}
 
 	return &http.Client{
-		Transport: transport,
-		Timeout:   30 * time.Second,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= r.Safety.redirectCap() {
-				return fmt.Errorf("too many redirects (>%d)", r.Safety.redirectCap())
-			}
-
-			return nil
-		},
+		Transport:     transport,
+		Timeout:       30 * time.Second,
+		CheckRedirect: r.redirectPolicy(req.Tool, nil),
 	}
 }
 
@@ -751,7 +784,7 @@ func (r *ToolRunner) runUDP(ctx context.Context, req ToolRequest, result *ToolRe
 	host, port := targetHostPort(req, 53)
 	resolver := net.JoinHostPort(host, strconv.Itoa(port))
 
-	if !r.Safety.AllowPrivateTargets && !localTargetTools(req.Tool) {
+	if !r.Safety.privateTargetsAllowed(req.Tool) {
 		if ip := net.ParseIP(host); ip != nil && IsPrivateIP(ip) {
 			result.Status = ToolStatusInvalid
 			result.Error = "private resolver blocked"

@@ -188,3 +188,45 @@ func restrictedBindErrno() error {
 }
 
 var procGetConsoleProcessList = kernel32.NewProc("GetConsoleProcessList")
+
+// ---- RunProbe platform fixtures (windows) ---------------------------------
+//
+// Compound probe commands for the synchronous helper's tests; the
+// unix counterparts live in process_unix_test.go with identical
+// signatures. Arguments are passed as one command line after /c so
+// cmd's separators (&, 1>&2) are not mangled by exec quoting.
+
+// probeEchoBothSpec writes marker-stdout to stdout and marker-stderr
+// to stderr, then exits 0.
+func probeEchoBothSpec(t *testing.T, marker string) ProcessSpec {
+	t.Helper()
+
+	return ProcessSpec{
+		Name: "probe-echo-both",
+		Path: "cmd.exe",
+		Args: []string{"/c", "echo " + marker + "-stdout& echo " + marker + "-stderr 1>&2"},
+	}
+}
+
+// probeFailSpec writes marker, then exits 7.
+func probeFailSpec(t *testing.T, marker string) ProcessSpec {
+	t.Helper()
+
+	return ProcessSpec{
+		Name: "probe-fail",
+		Path: "cmd.exe",
+		Args: []string{"/c", "echo " + marker + "& exit 7"},
+	}
+}
+
+// probeBigOutputSpec emits more than the probe output cap (64 KiB):
+// 8000 lines of ~72 bytes ≈ 576 KiB.
+func probeBigOutputSpec(t *testing.T) ProcessSpec {
+	t.Helper()
+
+	return ProcessSpec{
+		Name: "probe-big",
+		Path: "cmd.exe",
+		Args: []string{"/c", "for /L %i in (1,1,8000) do @echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+	}
+}

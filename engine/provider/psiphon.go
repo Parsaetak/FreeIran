@@ -10,12 +10,30 @@
 // Two acquisition paths, both integrity-enforced:
 //
 //   - Managed download from a checksum-publishing official release
-//     channel (GitHub releases with asset digests). When the channel
-//     publishes no release assets with digests, Resolve reports the
-//     honest "unavailable" error and Install refuses — binaries are
-//     never executed unverified.
-//   - A user-provided binary path, validated by a real smoke launch
-//     before activation.
+//     channel (GitHub releases with asset digests). Live audit
+//     (2026-09-18) of the official publication architecture:
+//     `Psiphon-Labs/psiphon-tunnel-core` is the source/ConsoleClient
+//     repository and publishes GitHub releases (v2.0.39–v2.0.41 at
+//     audit time) whose assets carry SHA-256 digests — but the assets
+//     are ONLY the mobile/client library archives
+//     (Psiphon-Android-Library.zip, Psiphon-Client-Library.zip,
+//     Psiphon-iOS-Library.zip); no console-client binary is published
+//     there. `Psiphon-Labs/psiphon-tunnel-core-binaries` is the
+//     official binary location per upstream documentation — "release
+//     candidate binaries" committed directly to the moving master
+//     branch, with NO GitHub releases, NO tags, NO published digests
+//     or signatures (and currently no Windows x86_64 build at all).
+//     That channel therefore provides NO checksum authority: Resolve
+//     honestly reports unavailability, Install refuses, and raw
+//     binaries are never downloaded from a moving branch or executed
+//     unverified. Should tunnel-core releases ever publish a
+//     digest-bearing console-client asset, managed installation
+//     starts working with no code change.
+//   - A user-provided binary path — the SUPPORTED acquisition path.
+//     The binary is COPIED into FreeIran-managed provider storage
+//     (the user's original file is never moved, renamed or deleted),
+//     and the managed copy is validated by a real supervised smoke
+//     launch before activation.
 //
 // Licensing/attribution (Psiware license for tunnel-core): recorded
 // in Info.Notice and surfaced in the UI; nothing is statically
@@ -33,7 +51,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -314,38 +331,78 @@ func (e *PsiphonEngine) Install(ctx context.Context) error {
 	return e.binary.Install(ctx, release)
 }
 
-// SetUserBinary adopts a user-provided binary path: validated with a
-// real smoke launch before it becomes the active provider binary.
+// SetUserBinary adopts a user-provided binary path. The ownership
+// contract (v0.9.8.1 Windows root fix): the user's original file is
+// NEVER moved, renamed or deleted — FreeIran copies it into its own
+// managed provider storage and validates THE MANAGED COPY:
+//
+//	user path
+//	→ verify source exists (regular file)
+//	→ SHA-256 of the source (content address)
+//	→ copy into managed provider storage (content-addressed name:
+//	  repeated adoption of the same bytes is idempotent and never
+//	  renames over an in-use Windows image)
+//	→ verify the managed copy is byte-identical (same SHA-256)
+//	→ validate the managed copy (supervised version probe)
+//	→ supervised smoke test of the managed copy
+//	→ activate: manifest points at the managed copy with its checksum
+//	→ the original user file remains untouched
+//
+// This replaces the v0.9.8.1 moveFile() flow, which deleted the
+// user's original after copying — and on Windows, where an executable
+// image mapping can outlive process termination, the delete failed
+// with "being used by another process" and broke adoption (and even
+// when it succeeded it destroyed a file FreeIran did not own).
 func (e *PsiphonEngine) SetUserBinary(ctx context.Context, path string) error {
-	if _, err := os.Stat(path); err != nil {
+	info, err := os.Stat(path)
+	if err != nil {
 		return fmt.Errorf("binary not found: %w", err)
 	}
 
-	version, err := validatePsiphonBinary(ctx, path)
+	if info.IsDir() {
+		return fmt.Errorf("binary path %q is a directory", path)
+	}
+
+	// Content address BEFORE touching anything: the managed filename
+	// derives from the bytes, making adoption deterministic.
+	sourceSum, err := fileSHA256(path)
 	if err != nil {
-		return fmt.Errorf("binary did not pass validation: %w", err)
+		return fmt.Errorf("checksum source binary: %w", err)
 	}
 
-	if err := smokeTestPsiphon(ctx, path); err != nil {
-		return fmt.Errorf("binary did not pass the smoke launch: %w", err)
+	target := e.binary.managedUserBinaryPath(sourceSum)
+
+	if err := safeCopyFile(path, target, sourceSum); err != nil {
+		return fmt.Errorf("copy into managed storage: %w", err)
 	}
 
-	target := filepath.Join(e.binary.BinDir(), filepath.Base(path))
-
-	if err := moveFile(path, target); err != nil {
-		return err
-	}
-
-	sum, err := fileSHA256(target)
+	// The managed copy must be byte-equivalent before anything runs it.
+	managedSum, err := fileSHA256(target)
 	if err != nil {
-		return err
+		return fmt.Errorf("checksum managed copy: %w", err)
+	}
+
+	if !strings.EqualFold(managedSum, sourceSum) {
+		return fmt.Errorf("managed copy is not byte-equivalent to the source (%s vs %s)", managedSum, sourceSum)
+	}
+
+	// Validate and smoke-test THE MANAGED COPY (never the user's file),
+	// through the system supervision layer (no visible console window,
+	// job-object/process-tree cleanup, bounded lifetime, cancellation).
+	version, err := validatePsiphonBinary(ctx, target)
+	if err != nil {
+		return fmt.Errorf("managed copy did not pass validation: %w", err)
+	}
+
+	if err := smokeTestPsiphon(ctx, target); err != nil {
+		return fmt.Errorf("managed copy did not pass the smoke launch: %w", err)
 	}
 
 	manifest := e.binary.LoadManifest()
 	manifest.Name = PsiphonName
 	manifest.BinaryPath = target
 	manifest.Version = version
-	manifest.ChecksumSHA256 = sum
+	manifest.ChecksumSHA256 = managedSum
 	manifest.SourceURL = "user-provided"
 	manifest.InstalledAt = time.Now().UTC()
 	manifest.State = string(StateInstalled)
@@ -777,19 +834,35 @@ func writePsiphonConfig(dir string, socksPort, httpPort int, dataDir, extra stri
 // validatePsiphonBinary probes the staged binary. The console client
 // exposes version via `-version` when supported; a missing flag is
 // not fatal (the smoke launch is the real gate) but the version is
-// then honestly empty.
+// then honestly empty. The probe runs through system.RunProbe — the
+// SAME supervision pipeline as the live provider (no visible console
+// window on Windows, job-object/process-tree cleanup, bounded
+// lifetime, cancellation) — never a raw os/exec command.
 func validatePsiphonBinary(ctx context.Context, path string) (string, error) {
-	runCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
+	res := system.RunProbe(ctx, system.ProcessSpec{
+		Name: "psiphon-version-probe",
+		Path: path,
+		Args: []string{"-version"},
+	}, psiphonVersionProbeTimeout)
 
-	cmd := exec.CommandContext(runCtx, path, "-version")
+	if !res.Launched {
+		return "", fmt.Errorf("version probe did not launch: %w", res.Err)
+	}
 
-	output, _ := cmd.Output() //nolint:errcheck // version flag support varies
+	if res.State == system.StateCancelled {
+		return "", fmt.Errorf("version probe cancelled: %w", res.Err)
+	}
 
-	version := parsePsiphonVersion(string(output))
+	// Non-zero exits and deadline-terminated probes are tolerated: -version
+	// flag support varies across tunnel-core builds, and the output may
+	// still carry the banner (res.Output). The smoke launch is the gate.
+	version := parsePsiphonVersion(res.Output)
 
 	return version, nil
 }
+
+// psiphonVersionProbeTimeout bounds the supervised -version run.
+const psiphonVersionProbeTimeout = 15 * time.Second
 
 // parsePsiphonVersion extracts a "tunnel-core x.y.z" style version.
 func parsePsiphonVersion(output string) string {
@@ -831,7 +904,14 @@ func looksLikeVersion(s string) bool {
 }
 
 // smokeTestPsiphon launches the binary with a throwaway config and
-// verifies it starts and terminates deterministically.
+// verifies it starts and stays alive briefly, then terminates it
+// deterministically — the smoke test never leaves orphans.
+//
+// The launch goes through system.Start — the SAME supervision pipeline
+// as the live provider: CREATE_NO_WINDOW on Windows (no CMD flash),
+// job-object binding or supervised process-tree fallback, and Stop's
+// synchronizing termination. No provider-specific Windows process
+// handling exists here.
 func smokeTestPsiphon(ctx context.Context, path string) error {
 	dir, err := os.MkdirTemp("", "freeiran-psiphon-smoke-*")
 	if err != nil {
@@ -855,40 +935,54 @@ func smokeTestPsiphon(ctx context.Context, path string) error {
 		return err
 	}
 
-	runCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	// Bounded lifetime: the whole smoke run is capped by the parent
+	// context and the alive-observation window below.
+	runCtx, cancel := context.WithTimeout(ctx, psiphonSmokeTimeout)
 	defer cancel()
 
-	// Launch and confirm the process stays alive briefly, then
-	// terminate it — the smoke test never leaves orphans.
-	cmd := exec.CommandContext(runCtx, path, "-config", configPath)
-
-	if err := cmd.Start(); err != nil {
+	proc, err := system.Start(runCtx, system.ProcessSpec{
+		Name: "psiphon-smoke",
+		Path: path,
+		Args: []string{"-config", configPath},
+	})
+	if err != nil {
 		return fmt.Errorf("smoke launch failed: %w", err)
 	}
 
-	done := make(chan error, 1)
+	// Observe the alive window: exit before it elapses means the binary
+	// crashed at startup (unusable); staying alive means healthy enough
+	// for adoption — then Stop terminates it deterministically.
+	watchCtx, watchCancel := context.WithTimeout(runCtx, psiphonSmokeAliveWindow)
+	defer watchCancel()
 
-	go func() { done <- cmd.Wait() }()
+	_ = proc.Wait(watchCtx)
 
-	select {
-	case err := <-done:
-		if err != nil && runCtx.Err() == nil {
-			// Immediate crash: unusable binary.
-			return fmt.Errorf("smoke launch exited immediately: %w", err)
-		}
-	case <-time.After(1500 * time.Millisecond):
-		// Alive after 1.5s: healthy enough for staging. Terminate.
-		if runtime.GOOS == "windows" {
-			_ = cmd.Process.Kill()
-		} else {
-			_ = cmd.Process.Kill()
-		}
+	if err := ctx.Err(); err != nil {
+		_ = proc.Stop(psiphonSmokeStopGrace)
+
+		return fmt.Errorf("smoke launch cancelled: %w", err)
 	}
 
-	<-done // join — no orphan processes
+	if !proc.Running() {
+		_ = proc.Stop(psiphonSmokeStopGrace) // idempotent; joins cleanup
+
+		return fmt.Errorf("smoke launch exited immediately: exit code %d (state %s)",
+			proc.ExitCode(), proc.State())
+	}
+
+	if err := proc.Stop(psiphonSmokeStopGrace); err != nil {
+		return fmt.Errorf("smoke termination: %w", err)
+	}
 
 	return nil
 }
+
+// Smoke-test timing bounds: alive window, total run cap, stop grace.
+const (
+	psiphonSmokeAliveWindow = 1500 * time.Millisecond
+	psiphonSmokeTimeout     = 30 * time.Second
+	psiphonSmokeStopGrace   = 5 * time.Second
+)
 
 func endpointAccepts(ctx context.Context, port int) bool {
 	var dialer net.Dialer

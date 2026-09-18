@@ -968,10 +968,32 @@ func TestPsiphonStartRequiresInstall(t *testing.T) {
 func TestPsiphonUserBinaryPath(t *testing.T) {
 	root := t.TempDir()
 
+	// The user's binary lives OUTSIDE the managed tree, like a real
+	// user-provided file (Downloads, a tools folder, ...).
+	userDir := t.TempDir()
+
+	source := filepath.Join(userDir, filepath.Base(fakePsiphonBin))
+
+	if err := copyTestFile(fakePsiphonBin, source); err != nil {
+		t.Fatal(err)
+	}
+
 	engine := NewPsiphonEngine(root, testHTTPClient("http://127.0.0.1:1"))
 
-	if err := engine.SetUserBinary(context.Background(), fakePsiphonBin); err != nil {
+	if err := engine.SetUserBinary(context.Background(), source); err != nil {
 		t.Fatalf("user binary adoption failed validation: %v", err)
+	}
+
+	// The adoption contract: the user's original is never consumed.
+	if _, err := os.Stat(source); err != nil {
+		t.Fatalf("user's source binary must remain after adoption: %v", err)
+	}
+
+	// The manifest points at the managed copy, not the user's file.
+	manifest := engine.binary.LoadManifest()
+
+	if manifest.BinaryPath == source || manifest.BinaryPath == "" {
+		t.Fatalf("manifest must point at the managed copy, got %q", manifest.BinaryPath)
 	}
 
 	if !engine.Info().Installed {
@@ -992,6 +1014,11 @@ func TestPsiphonUserBinaryPath(t *testing.T) {
 	}
 
 	_ = engine.Stop(context.Background())
+
+	// The source survives the full run lifecycle too.
+	if _, err := os.Stat(source); err != nil {
+		t.Fatalf("user's source binary must survive the provider lifecycle: %v", err)
+	}
 }
 
 func TestPsiphonExtraConfigValidation(t *testing.T) {
@@ -1138,3 +1165,291 @@ func TestExtractHrefDirs(t *testing.T) {
 
 // Silence unused import when io is only used on some platforms.
 var _ = io.Discard
+
+// ---- Psiphon user-binary adoption ownership (v0.9.8.1 root fix) ----------
+//
+// The v0.9.8.1 Windows failure (TestPsiphonUserBinaryPath) came from
+// SetUserBinary() moving (and deleting) the user's executable: a
+// Windows image mapping outliving process termination made the delete
+// fail with "being used by another process". The ownership model is
+// now copy-not-move; these tests pin every clause of the contract.
+
+// TestPsiphonUserBinaryAdoptionPreservesSource: the user's original
+// file survives adoption byte-identically; the manifest points at a
+// managed copy whose checksum matches BOTH files.
+func TestPsiphonUserBinaryAdoptionPreservesSource(t *testing.T) {
+	root := t.TempDir()
+
+	// The user's file lives OUTSIDE FreeIran's managed tree.
+	userDir := t.TempDir()
+	source := filepath.Join(userDir, executableFileName("psiphon-tunnel-core-"+PlatformSuffix(runtime.GOOS, runtime.GOARCH)))
+
+	if err := copyTestFile(fakePsiphonBin, source); err != nil {
+		t.Fatal(err)
+	}
+
+	sourceBefore, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	engine := NewPsiphonEngine(root, testHTTPClient("http://127.0.0.1:1"))
+
+	if err := engine.SetUserBinary(context.Background(), source); err != nil {
+		t.Fatalf("adoption failed: %v", err)
+	}
+
+	// The source file remains — never moved, renamed or deleted.
+	sourceAfter, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatalf("user's source binary must survive adoption: %v", err)
+	}
+
+	if !bytes.Equal(sourceBefore, sourceAfter) {
+		t.Fatal("user's source binary was modified during adoption")
+	}
+
+	if _, err := os.Stat(source); err != nil {
+		t.Fatalf("user's source binary must still exist at its original path: %v", err)
+	}
+
+	manifest := engine.binary.LoadManifest()
+
+	if manifest.BinaryPath == source {
+		t.Fatal("manifest must point at the managed copy, not the user's file")
+	}
+
+	if !strings.HasPrefix(manifest.BinaryPath, filepath.Join(root, "psiphon")) {
+		t.Fatalf("managed copy must live inside provider storage: %q", manifest.BinaryPath)
+	}
+
+	if _, err := os.Stat(manifest.BinaryPath); err != nil {
+		t.Fatalf("managed copy must exist: %v", err)
+	}
+
+	// Checksum corresponds to the MANAGED COPY (and equals the source's).
+	managedSum, err := fileSHA256(manifest.BinaryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.EqualFold(managedSum, manifest.ChecksumSHA256) {
+		t.Fatalf("manifest checksum %s does not match the managed copy %s", manifest.ChecksumSHA256, managedSum)
+	}
+
+	sourceSum := sha256Hex(sourceBefore)
+	if !strings.EqualFold(sourceSum, managedSum) {
+		t.Fatal("managed copy must be byte-equivalent to the source")
+	}
+
+	if engine.Info().Source != "user-provided" {
+		t.Fatalf("source = %q", engine.Info().Source)
+	}
+}
+
+// TestPsiphonUserBinarySourceUndeletable: the Windows sharing-violation
+// condition is simulated deterministically — a source whose directory
+// denies deletion (read+execute only). The v0.9.8.1 moveFile() flow
+// FAILED here (its copy fallback ends with os.Remove(src)); the
+// copy-not-move contract succeeds because the source is never touched.
+func TestPsiphonUserBinarySourceUndeletable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory permission bits are a POSIX simulation of the Windows sharing violation; the real Windows lock is exercised by CI on windows-latest")
+	}
+
+	userDir := t.TempDir()
+
+	defer os.Chmod(userDir, 0o700) // restore for cleanup
+
+	source := filepath.Join(userDir, executableFileName("psiphon-tunnel-core-"+PlatformSuffix(runtime.GOOS, runtime.GOARCH)))
+
+	if err := copyTestFile(fakePsiphonBin, source); err != nil {
+		t.Fatal(err)
+	}
+
+	// r-x for owner: reading/executing the source stays possible, but
+	// rename/remove of files inside the directory is denied — the
+	// deterministic stand-in for "The process cannot access the file
+	// because it is being used by another process".
+	if err := os.Chmod(userDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+
+	engine := NewPsiphonEngine(t.TempDir(), testHTTPClient("http://127.0.0.1:1"))
+
+	if err := engine.SetUserBinary(context.Background(), source); err != nil {
+		t.Fatalf("adoption must succeed with an undeletable source: %v", err)
+	}
+
+	if _, err := os.Stat(source); err != nil {
+		t.Fatalf("source must remain: %v", err)
+	}
+}
+
+// TestPsiphonUserBinaryRepeatedAdoptionDeterministic: adopting the
+// same binary twice resolves to the same content-addressed managed
+// copy, the same checksum, and a still-intact source.
+func TestPsiphonUserBinaryRepeatedAdoptionDeterministic(t *testing.T) {
+	userDir := t.TempDir()
+
+	source := filepath.Join(userDir, executableFileName("psiphon-tunnel-core-"+PlatformSuffix(runtime.GOOS, runtime.GOARCH)))
+
+	if err := copyTestFile(fakePsiphonBin, source); err != nil {
+		t.Fatal(err)
+	}
+
+	engine := NewPsiphonEngine(t.TempDir(), testHTTPClient("http://127.0.0.1:1"))
+
+	if err := engine.SetUserBinary(context.Background(), source); err != nil {
+		t.Fatal(err)
+	}
+
+	first := engine.binary.LoadManifest()
+
+	if err := engine.SetUserBinary(context.Background(), source); err != nil {
+		t.Fatalf("second adoption failed: %v", err)
+	}
+
+	second := engine.binary.LoadManifest()
+
+	if first.BinaryPath != second.BinaryPath {
+		t.Fatalf("managed path must be content-addressed and stable: %q vs %q", first.BinaryPath, second.BinaryPath)
+	}
+
+	if first.ChecksumSHA256 != second.ChecksumSHA256 {
+		t.Fatalf("checksum drift: %q vs %q", first.ChecksumSHA256, second.ChecksumSHA256)
+	}
+
+	if _, err := os.Stat(source); err != nil {
+		t.Fatalf("source must still exist after repeated adoption: %v", err)
+	}
+}
+
+// TestPsiphonUserBinaryManagedLifecycleAfterSourceDisappearance: the
+// provider runs from the MANAGED COPY — the user's file disappearing
+// afterwards changes nothing (start → health → stop still work).
+func TestPsiphonUserBinaryManagedLifecycleAfterSourceDisappearance(t *testing.T) {
+	userDir := t.TempDir()
+
+	source := filepath.Join(userDir, executableFileName("psiphon-tunnel-core-"+PlatformSuffix(runtime.GOOS, runtime.GOARCH)))
+
+	if err := copyTestFile(fakePsiphonBin, source); err != nil {
+		t.Fatal(err)
+	}
+
+	engine := NewPsiphonEngine(t.TempDir(), testHTTPClient("http://127.0.0.1:1"))
+
+	if err := engine.SetUserBinary(context.Background(), source); err != nil {
+		t.Fatal(err)
+	}
+
+	manifest := engine.binary.LoadManifest()
+
+	// The user deletes/moves their file after adoption.
+	if err := os.Remove(source); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := engine.SetOptions(PsiphonOptions{NegotiateTimeout: 30 * time.Second}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := engine.Start(context.Background()); err != nil {
+		t.Fatalf("provider must start from the managed copy after the source disappeared: %v", err)
+	}
+
+	health := engine.Health(context.Background())
+	if !health.OK || !health.Measured {
+		t.Fatalf("health after source disappearance: %+v", health)
+	}
+
+	if err := engine.Stop(context.Background()); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+
+	// Restart from the managed copy works too.
+	if err := engine.Start(context.Background()); err != nil {
+		t.Fatalf("restart from managed copy: %v", err)
+	}
+
+	_ = engine.Stop(context.Background())
+
+	if _, err := os.Stat(manifest.BinaryPath); err != nil {
+		t.Fatalf("managed copy must remain the provider's own asset: %v", err)
+	}
+}
+
+// TestPsiphonUserBinaryUninstallNeverTouchesSource: Uninstall removes
+// FreeIran's managed state only — the user's external binary is not
+// part of it and must survive.
+func TestPsiphonUserBinaryUninstallNeverTouchesSource(t *testing.T) {
+	userDir := t.TempDir()
+
+	source := filepath.Join(userDir, executableFileName("psiphon-tunnel-core-"+PlatformSuffix(runtime.GOOS, runtime.GOARCH)))
+
+	if err := copyTestFile(fakePsiphonBin, source); err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+
+	engine := NewPsiphonEngine(root, testHTTPClient("http://127.0.0.1:1"))
+
+	if err := engine.SetUserBinary(context.Background(), source); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := engine.Uninstall(context.Background()); err != nil {
+		t.Fatalf("uninstall: %v", err)
+	}
+
+	if _, err := os.Stat(source); err != nil {
+		t.Fatalf("uninstall must never delete the user's source binary: %v", err)
+	}
+
+	// Managed state is gone.
+	if _, err := os.Stat(filepath.Join(root, "psiphon")); err == nil {
+		t.Fatal("managed provider slot must be removed by uninstall")
+	}
+
+	if engine.Info().Installed {
+		t.Fatal("provider must report not-installed after uninstall")
+	}
+}
+
+// TestPsiphonUserBinaryRejectsGarbage: a file that cannot run is never
+// adopted (the smoke launch is the gate), and the user's file still
+// survives the failed attempt.
+func TestPsiphonUserBinaryRejectsGarbage(t *testing.T) {
+	userDir := t.TempDir()
+
+	source := filepath.Join(userDir, "not-a-psiphon-binary")
+
+	if err := os.WriteFile(source, []byte("this is not an executable"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	engine := NewPsiphonEngine(t.TempDir(), testHTTPClient("http://127.0.0.1:1"))
+
+	if err := engine.SetUserBinary(context.Background(), source); err == nil {
+		t.Fatal("a non-executable file must fail adoption")
+	}
+
+	if _, err := os.Stat(source); err != nil {
+		t.Fatalf("even a failed adoption must not delete the user's file: %v", err)
+	}
+
+	if engine.Info().Installed {
+		t.Fatal("failed adoption must not activate a binary")
+	}
+}
+
+// copyTestFile is a plain byte copy helper for fixtures.
+func copyTestFile(src, dst string) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(dst, data, 0o755)
+}

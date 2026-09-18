@@ -559,3 +559,174 @@ func lookPathAvailable(bin string) bool {
 
 	return err == nil
 }
+
+// ---- RunProbe: the synchronous supervised child helper ------------------
+//
+// RunProbe is the shared one-shot path for provider binary validation
+// and smoke launches. Its battery mirrors the long-lived lifecycle
+// tests: success, output capture, non-zero exits, bounded lifetime
+// (forced termination at the deadline), parent cancellation and
+// launch failure — all deterministic, no sleeps on the critical path.
+
+// TestRunProbeSuccessAndOutputCapture: a child that prints to both
+// streams and exits 0; the probe returns synchronously with the
+// combined, bounded output.
+func TestRunProbeSuccessAndOutputCapture(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	spec := probeEchoBothSpec(t, "probe-ok")
+
+	res := RunProbe(ctx, spec, 10*time.Second)
+
+	if !res.Launched {
+		t.Fatalf("probe did not launch: %v", res.Err)
+	}
+
+	if res.State != StateExited {
+		t.Fatalf("state = %s, want exited", res.State)
+	}
+
+	if res.ExitCode != 0 {
+		t.Fatalf("exit code = %d, want 0", res.ExitCode)
+	}
+
+	if res.Err != nil {
+		t.Fatalf("err = %v, want nil", res.Err)
+	}
+
+	if !contains(res.Output, "probe-ok-stdout") || !contains(res.Output, "probe-ok-stderr") {
+		t.Fatalf("combined output missing streams: %q", res.Output)
+	}
+}
+
+// TestRunProbeNonZeroExit: the exit status and output of a failing
+// child are surfaced honestly (callers decide whether failure is
+// tolerated, e.g. version probes).
+func TestRunProbeNonZeroExit(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	res := RunProbe(ctx, probeFailSpec(t, "probe-failed-marker"), 10*time.Second)
+
+	if res.State != StateExited {
+		t.Fatalf("state = %s, want exited", res.State)
+	}
+
+	if res.ExitCode != 7 {
+		t.Fatalf("exit code = %d, want 7", res.ExitCode)
+	}
+
+	if res.Err == nil {
+		t.Fatal("non-zero exit must be surfaced as an error")
+	}
+
+	if !contains(res.Output, "probe-failed-marker") {
+		t.Fatalf("output = %q", res.Output)
+	}
+}
+
+// TestRunProbeBoundedLifetime: a child that would run forever is
+// terminated deterministically at the deadline — the probe returns
+// (stopped or cancelled, whichever supervised termination joined
+// first — never a hang, never a clean exit), with the deadline cause
+// surfaced, and nothing survives.
+func TestRunProbeBoundedLifetime(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	res := RunProbe(ctx, longRunSpec(t), 2*time.Second)
+
+	if !res.Launched {
+		t.Fatalf("probe did not launch: %v", res.Err)
+	}
+
+	if res.State != StateStopped && res.State != StateCancelled {
+		t.Fatalf("state = %s, want stopped or cancelled (deadline termination)", res.State)
+	}
+
+	if res.Err == nil {
+		t.Fatal("deadline termination must surface the deadline cause")
+	}
+}
+
+// TestRunProbeParentCancellation: cancelling the parent context kills
+// the child through the supervised path and the probe reports the
+// cancellation.
+func TestRunProbeParentCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	res := make(chan ProbeResult, 1)
+
+	go func() { res <- RunProbe(ctx, longRunSpec(t), 30*time.Second) }()
+
+	cancel()
+
+	select {
+	case r := <-res:
+		if r.State != StateCancelled {
+			t.Fatalf("state = %s, want cancelled", r.State)
+		}
+
+		if r.Err == nil {
+			t.Fatal("cancellation must surface an error")
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("probe did not return after cancellation")
+	}
+}
+
+// TestRunProbeLaunchFailure: a spec pointing at a nonexistent binary
+// fails at launch, is reported as not launched, and creates no
+// process.
+func TestRunProbeLaunchFailure(t *testing.T) {
+	res := RunProbe(context.Background(), ProcessSpec{
+		Name: "probe-missing",
+		Path: "/nonexistent/freeiran-probe-missing-binary",
+	}, 5*time.Second)
+
+	if res.Launched {
+		t.Fatal("launch must fail for a nonexistent path")
+	}
+
+	if res.Err == nil {
+		t.Fatal("launch failure must be reported")
+	}
+
+	if res.State != StateExited {
+		t.Fatalf("state = %s, want exited", res.State)
+	}
+}
+
+// TestRunProbeNoWindow is the probe-flavoured no-visible-console
+// regression: the child runs under the same creation flags as managed
+// cores, so it can never attach a visible console window.
+func TestRunProbeNoWindow(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	spec := echoSpec(t, "probe-no-window-marker", streamStdout)
+
+	res := RunProbe(ctx, spec, 10*time.Second)
+
+	if res.ExitCode != 0 || !contains(res.Output, "probe-no-window-marker") {
+		t.Fatalf("probe outcome = %+v", res)
+	}
+
+	// Behavioural no-console assertion (Windows) / lifecycle (unix)
+	// is covered by TestProcessLaunchNoWindow; the probe shares the
+	// same launch path, verified by construction here.
+}
+
+// TestRunProbeBoundedOutput: a child producing more than the capture
+// cap keeps the probe bounded — output is truncated, never grown.
+func TestRunProbeBoundedOutput(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	res := RunProbe(ctx, probeBigOutputSpec(t), 30*time.Second)
+
+	if len(res.Output) > probeOutputCap {
+		t.Fatalf("captured %d bytes, cap is %d", len(res.Output), probeOutputCap)
+	}
+}

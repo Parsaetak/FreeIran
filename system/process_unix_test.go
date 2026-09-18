@@ -250,3 +250,31 @@ func groupHasLiveMembers(pgid int) bool {
 
 	return false
 }
+
+// ---- RunProbe platform fixtures (unix) -----------------------------------
+//
+// Compound probe commands for the synchronous helper's tests; the
+// Windows counterparts live in process_windows_test.go with identical
+// signatures.
+
+// probeEchoBothSpec writes marker-stdout to stdout and marker-stderr
+// to stderr, then exits 0.
+func probeEchoBothSpec(t *testing.T, marker string) ProcessSpec {
+	t.Helper()
+
+	return shSpec("probe-echo-both", "echo "+marker+"-stdout; echo "+marker+"-stderr >&2")
+}
+
+// probeFailSpec writes marker, then exits 7.
+func probeFailSpec(t *testing.T, marker string) ProcessSpec {
+	t.Helper()
+
+	return shSpec("probe-fail", "echo "+marker+"; exit 7")
+}
+
+// probeBigOutputSpec emits ~4x the probe output cap.
+func probeBigOutputSpec(t *testing.T) ProcessSpec {
+	t.Helper()
+
+	return shSpec("probe-big", "head -c 262144 /dev/zero | tr '\\0' 'x'")
+}

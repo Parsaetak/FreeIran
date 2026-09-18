@@ -7,6 +7,7 @@ package netcheck
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strconv"
@@ -357,7 +358,7 @@ func (r *ToolRunner) runPathMTU(ctx context.Context, req ToolRequest, result *To
 	host, port := targetHostPort(req, 53)
 	resolver := net.JoinHostPort(host, strconv.Itoa(port))
 
-	if ip := net.ParseIP(host); ip != nil && !r.Safety.AllowPrivateTargets && !localTargetTools(req.Tool) && IsPrivateIP(ip) {
+	if ip := net.ParseIP(host); ip != nil && !r.Safety.privateTargetsAllowed(req.Tool) && IsPrivateIP(ip) {
 		result.Status = ToolStatusInvalid
 		result.Error = "private resolver blocked"
 
@@ -668,13 +669,11 @@ func discoverExitIP(ctx context.Context, endpoints []string, dial DialFunc) stri
 		}
 
 		// Cap the body: identity endpoints return well under 1 KiB.
-		body := make([]byte, 2048)
-
-		n, _ := resp.Body.Read(body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		_ = resp.Body.Close()
 		client.CloseIdleConnections()
 
-		if ip := parseExitIP(body[:n]); ip != "" {
+		if ip := parseExitIP(body); ip != "" {
 			return ip
 		}
 	}

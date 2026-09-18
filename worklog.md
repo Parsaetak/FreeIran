@@ -3467,11 +3467,222 @@ Date: 2026-09-18 · Baseline: v0.9.6 (45ff7fc)
 - go vet ./engine/... ./system/... ./internal/...: PASS
 - frontend: vitest 104 tests / 13 files: PASS (was 91; +13
   provider-mode routing, provider store, sub-ms ordering)
-- Honest note: the nine new v0.9.8.1 Go files
-  (engine/app/app.go, engine/app/providerservice.go,
-  engine/netcheck/{tools,tools_impl,tools_path,tools_test,
-  toolsafety}.go, engine/ranking/subms_test.go,
-  engine/tester/latency_test.go) are space-indented and not yet
-  gofmt-normalized — `gofmt -l` flags them, so CI's gofmt gate will
-  fail until the mechanical `gofmt -w` pass is run (documentation
-  only was written in this session; no Go/TS code was modified).
+- Honest note (superseded 2026-09-18, see the repair entry below):
+  the nine new v0.9.8.1 Go files listed in the previous revision of
+  this note were space-indented when the documentation was first
+  written. They ARE gofmt-clean in the committed v0.9.8.1 tree —
+  verified live: `gofmt -l ./engine ./system ./cmd ./internal`
+  returns empty at bf029cd — so the earlier statement that "CI's
+  gofmt gate will fail until the mechanical `gofmt -w` pass is run"
+  no longer matched the repository and is retracted. Documentation
+  must describe implemented/verified behavior only.
+
+## v0.9.8.1 — Windows CI root fix and provider safety repair (2026-09-18)
+
+### Scope
+
+Repair of the two Windows CI failures (run 35302165627, job
+"Windows tests and desktop build", `go test -count=1 ./...`) at
+their root causes, plus the provider-supervision and
+documentation-truthfulness work the failures exposed. Base commit:
+bf029cd4916fbe40e768d6002943543b85035c9b.
+
+### Failure A — engine/netcheck/TestSafeDialerResolveCheckPin
+
+"HTTPS hostname resolving to 127.0.0.1/private address must be
+rejected."
+
+- Root cause: `localTargetTools()` in toolsafety.go listed
+  ToolTCP/ToolTLS/ToolWebSocket/ToolDNS/ToolHTTPS as implicitly
+  private-target-safe, so `AllowPrivateTargets ||
+  localTargetTools(tool)` returned true for generic HTTPS — the
+  DNS-rebinding guard (resolve → validate every answer → pin) was
+  bypassed. On the GitHub Windows runner a service accepts on port
+  80, so the dial to `localhost:80` actually CONNECTED and the test
+  failed honestly. On Linux the same broken code passed only by
+  connection-refused accident (nothing listening) — reproduced
+  deterministically by binding the same port on both loopback
+  families.
+- Fix (policy layer, no test weakening):
+  - `localTargetTools` now covers ONLY the genuinely local-endpoint
+    tools: socks5, http_connect (their defaults are 127.0.0.1; that
+    is their purpose). Generic tcp/tls/https/websocket/dns/udp/
+    traceroute/path_mtu block loopback/private/link-local/reserved
+    destinations by default and require the explicit
+    `AllowPrivateTargets` capability for intentional local testing.
+  - One policy decision, one place: `Safety.privateTargetsAllowed`
+    now feeds target validation, the dialer's rebinding guard and
+    the tool-level literal checks (runUDP/runPathMTU use it instead
+    of ad-hoc conditions).
+  - The DNS-rebinding guard is unchanged in strength: resolve →
+    validate EVERY answer → dial a validated/pinned IP; host:port
+    targets now also pass destination validation at VALIDATION time
+    (closes the tunneled-path gap where the proxy resolves
+    remotely and the dialer guard is not in the path).
+  - Redirect destination safety is now actually implemented (docs
+    already claimed it): CheckRedirect re-validates every hop
+    (no credentials in redirect URLs, private-destination policy)
+    on BOTH direct and tunneled paths.
+  - Policy rejections are typed (`targetRejectedError`) and classify
+    as `invalid_target` wherever they surface (validation, dial
+    time, redirect hops) instead of masquerading as network
+    failures.
+  - Deterministic test seams (package-level function variables
+    `resolveIPAddrs`, `netDial`) let the rebinding guard be tested
+    with stub answers (private IPv4-only, private IPv6-only, IPv6
+    loopback, link-local, mixed public+private → pin to validated)
+    on every platform, independent of /etc/hosts or served ports.
+- Tests added/strengthened: HTTPS→localhost blocked (runner level),
+  literal 127.0.0.1 / [::1] / RFC1918 / CGNAT blocked across tool
+  families, hostname-resolves-to-private (IPv4 + IPv6) blocked,
+  mixed-answer pinning, live-listener localhost refusal (the
+  deterministic Windows-runner condition), redirect chain ending
+  at a private destination never dialed, SOCKS5/HTTP CONNECT
+  implicit local semantics under default policy, explicit
+  AllowPrivateTargets behavior, tunneled private-literal blocked.
+  Existing local-endpoint tests now declare the explicit capability
+  (localEndpointRunner) — the sanctioned local-testing pattern.
+  All existing safety tests still pass.
+
+### Failure B — engine/provider/TestPsiphonUserBinaryPath
+
+"remove ...psiphon-tunnel-core-windows-x86_64.exe: The process
+cannot access the file because it is being used by another
+process."
+
+- Root cause: `SetUserBinary()` validated/smoke-launched the user's
+  executable, then called `moveFile()`, whose copy fallback ends
+  with `os.Remove(src)` — deleting a file FreeIran does not own. On
+  Windows an executable image mapping can outlive process
+  termination, so the delete failed with a sharing violation and
+  broke adoption (and when it succeeded it silently destroyed the
+  user's original file).
+- Fix (ownership model changed, not sleeps or test weakening):
+  - `SetUserBinary` is copy-not-move: stat the source → SHA-256
+    (content address) → copy into FreeIran-managed provider storage
+    under a content-addressed name (`<exe>-<sha16>`) → verify the
+    managed copy is byte-equivalent → validate the MANAGED COPY →
+    supervised smoke test of the MANAGED COPY → manifest points at
+    the managed copy with its checksum → the user's original file
+    is never moved, renamed or deleted.
+  - Content-addressed naming: same bytes → same path, so repeated
+    adoption is idempotent and never renames over an in-use Windows
+    image; different bytes → different path, so a running older
+    copy is never overwritten.
+  - New dedicated helper `safeCopyFile` (binary.go): pure copy with
+    atomic .part staging; `moveFile` semantics are UNCHANGED for
+    the managed-install transactions it exists for.
+- Tests added: source preserved after adoption (bytes equal, path
+  intact), manifest points at managed copy, checksum matches the
+  managed copy and the source, managed lifecycle works after source
+  disappearance (start/health/restart), repeated adoption
+  deterministic, uninstall removes managed state only (source
+  survives), failed adoption of a non-executable never deletes the
+  user's file, and a deterministic Windows sharing-violation
+  simulation (source directory read-only: the v0.9.8.1 moveFile
+  flow FAILS this condition; the copy-not-move flow succeeds).
+  TestPsiphonUserBinaryPath itself now also asserts source
+  preservation and managed-copy activation.
+
+### Psiphon subprocess lifecycle unified with `system`
+
+- New `system.RunProbe(ctx, spec, timeout)`: a synchronous, bounded
+  one-shot child runner through the SAME supervision pipeline as
+  long-lived cores — no visible console window on Windows
+  (CREATE_NO_WINDOW etc. live ONLY in process_windows.go),
+  job-object binding or supervised process-tree fallback, bounded
+  lifetime, cancellation, deterministic synchronizing cleanup,
+  bounded combined output capture (system/probe.go).
+- `validatePsiphonBinary` (-version probe) runs through
+  RunProbe; `smokeTestPsiphon` launches through `system.Start`,
+  observes the alive window, and terminates through `proc.Stop` —
+  no raw `exec.CommandContext`, no provider-local SysProcAttr /
+  CREATE_NO_WINDOW / job / process-tree logic. The normal runtime
+  continues to use `system.Start()`.
+- RunProbe test battery: success + combined output capture,
+  non-zero exits, bounded lifetime (deadline termination), parent
+  cancellation (including cancellation beating the launch), launch
+  failure, no-window construction, bounded output (8x the cap
+  truncated). Platform compound-command fixtures added to both
+  process_unix_test.go and process_windows_test.go.
+
+### Psiphon distribution-source audit (live, 2026-09-18)
+
+- `Psiphon-Labs/psiphon-tunnel-core` (source/ConsoleClient repo):
+  GitHub releases v2.0.39–v2.0.41 carry sha256 digests but ONLY
+  mobile/client library zips (Android/Client/iOS) — no
+  console-client assets.
+- `Psiphon-Labs/psiphon-tunnel-core-binaries` (official binary
+  location per upstream docs): "release candidate binaries"
+  committed to the moving master branch (linux x86_64,
+  windows i686 at audit time — no Windows x86_64); NO releases,
+  NO tags, NO digests or signatures.
+- Verdict: no checksum authority exists for automated managed
+  installation. The chain remains honestly unavailable
+  (Resolve reports unavailability, Install refuses, nothing is
+  downloaded from a moving branch, nothing unverified is
+  executed); the user-provided binary (now copy-not-move) is the
+  supported acquisition path. Recorded in psiphon.go's header,
+  docs/providers.md, docs/security.md, README.
+
+### Latency semantics regression audit
+
+- Canonical representation (engine/tester/latency.go R1–R6,
+  Measured authoritative, 0 ms + Measured = sub-ms, "< 1 ms"
+  rendering, measured-first ranking) — audited, NOT modified.
+- Real inconsistency found and fixed: engine/netcheck/
+  environment.go's DNS and HTTPS probes projected raw
+  `.Milliseconds()` (a successful sub-ms probe stored 0, which the
+  classic CheckResult layer reserves for "not set"); they now use
+  the layer's own documented `elapsedMS` convention (sub-ms
+  success → 1). tools_impl.go's redirect accounting detail was
+  always 0 — now reports real hop count; discoverExitIP's single
+  Read (short-read risk) is now a bounded ReadAll. Everything
+  else inspected (connection, tester, testqueue, core) already
+  implements the canonical rules or is clearly-labelled
+  operational duration telemetry — left untouched.
+
+### Documentation truthfulness
+
+- Retracted the stale v0.9.8.1 note claiming the new Go files are
+  known to fail `gofmt` (verified live: gofmt -l is clean at
+  bf029cd and after this repair).
+- docs/internet-tools.md, docs/security.md, docs/providers.md,
+  README: safety policy and adoption model updated to describe
+  implemented behavior only.
+
+### Verification (this environment; sandbox limitations recorded)
+
+- gofmt -l ./engine ./system ./cmd ./internal: clean
+- go vet ./engine/... ./system/... ./internal/... (linux): clean
+- GOOS=windows GOARCH=amd64 go vet ./engine/... ./system/... ./
+  internal/... ./cmd/...: clean
+- go build ./engine/... ./system/... ./internal/...: PASS
+- GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/freeiran:
+  PASS (desktop build compiles the identical tree)
+- go test -count=1 ./engine/... ./system/... ./internal/... with
+  FREEIRAN_TEST_CORES fixtures: PASS (33 packages; 3 consecutive
+  full runs clean; one engine/app flake observed ONCE under
+  sandbox parallel load — reproduced independently on the
+  PRISTINE bf029cd base under the same load, i.e. pre-existing
+  resource contention, not a regression)
+- go test -race -count=1 ./engine/provider/... ./engine/netcheck/
+  ... ./engine/tester/... ./engine/connection/...: PASS; also
+  -race ./system/... ./engine/app/... ./engine/testqueue/...
+  ./engine/ranking/...: PASS
+- frontend: typecheck PASS; vitest 104 tests / 13 files PASS;
+  production build PASS
+- native: make -C native test PASS; native_accel build +
+  cross-language tests PASS; benchmark smoke PASS
+- real protocol cores (pinned, checksum-verified downloads):
+  TestV2RaySmokeRealBinary PASS, TestXraySmokeRealBinary PASS,
+  TestSingBoxSmokeRealBinary PASS
+- Linux desktop smoke test (`go run ./cmd/freeiran --smoke-test`):
+  cannot run in this environment (no GTK/webkitgtk dev packages —
+  the same recorded limitation as the v0.9.8.1 session; the
+  Windows CI job runs the smoke test and the windows/amd64 build
+  compiles the identical tree)
+- NOT DONE HERE (honest): actual Windows test execution and the
+  Windows Actions re-run — Windows binaries only cross-COMPILED
+  and vetted on this Linux sandbox; the CI job must confirm on
+  windows-latest before "Windows fixed" can be claimed.
