@@ -9,12 +9,79 @@ configurations.
 **Project:** FreeIran — A SHEYTAN Digital System
 **Architect:** Parsa Tak / SHEYTAN
 **Repository:** https://github.com/Parsaetak/FreeIran
-**Current version:** 0.9.8.1 (see `VERSION`)
+**Current version:** 0.9.8.2 (see `VERSION`)
 **Status:** production architecture — multi-core protocol runtime with
 managed installation, multi-level node discovery, Ping/URL test modes
 with measured ranking, verified-connection engine with racing,
 environment intelligence, system proxy and TUN mode, unified adaptive
 memory control and kernel-level process supervision
+
+---
+
+## What's new in v0.9.8.2
+
+v0.9.8.2 is a Windows-CI correctness and process-supervision
+completion release. It closes the two v0.9.8.1 Windows failures at
+their root causes and completes the provider subprocess unification,
+with every claim below backed by an actually-executed verification.
+
+### Windows CI failures — root-cause fixes (verified by run 35308409161)
+
+- **Failure A** (`engine/netcheck/TestSafeDialerResolveCheckPin`):
+  the tool-safety policy listed `tcp/tls/https/websocket/dns` as
+  implicitly private-target-safe, so a generic HTTPS diagnostic could
+  resolve `localhost` → dial `127.0.0.1` and connect (the Windows
+  runner has a live listener on port 80; Linux passed only by
+  connection-refused accident). Fixed with a semantic capability
+  model: only the genuinely local-endpoint tools (`socks5`,
+  `http_connect`) may aim at private endpoints implicitly; every
+  other tool requires the explicit `AllowPrivateTargets` capability.
+  The DNS-rebinding guard (resolve → validate EVERY answer → dial the
+  validated/pinned address) is unchanged in strength and now also
+  covers host:port targets at validation time (the tunneled path).
+  Redirect safety is implemented on both paths: every hop is
+  re-validated (cap, no credentials in redirect URLs, destination
+  policy). Policy refusals are typed and classify as `invalid_target`.
+- **Failure B** (`engine/provider/TestPsiphonUserBinaryPath`,
+  "...being used by another process"): the adoption flow
+  smoke-launched the user's executable and then MOVED (deleted) the
+  original. The ownership model is now copy-not-move: stat → SHA-256
+  → copy into managed storage under a content-addressed name →
+  verify byte-equivalence → validate and smoke-test the MANAGED COPY
+  through the system supervision layer → manifest references the
+  managed copy. The user's original file is never moved, renamed,
+  deleted or modified — after adoption, provider start/stop, or
+  uninstall.
+- Both fixes are verified by the remote Windows job (GitHub Actions
+  run `35308409161`, job "Windows tests and desktop build", attempt
+  1: full `go test -count=1 ./...`, runtime smoke test, desktop
+  build, PE GUI-subsystem verification — all PASS), in addition to
+  the local Linux matrix (tests, race, vet, gofmt, frontend, native).
+
+### Provider subprocess unification completed (Tor)
+
+- Tor's binary validation (`tor --version`) and smoke test
+  (`--verify-config`) now run through `system.RunProbe` — the SAME
+  supervision pipeline as the live providers (no visible console
+  window on Windows, job-object/process-tree cleanup, bounded
+  lifetime, cancellation, deterministic termination). This closes
+  the last provider-local raw `os/exec` path; `engine/provider`
+  contains no Windows process flags of its own.
+
+### Honest verification status
+
+- Verified locally (Linux): gofmt/vet clean; `go test -count=1` and
+  `-race` for engine/system/internal (34 packages) with deterministic
+  fake cores; frontend (typecheck, 104 vitest tests, production
+  build, embed staging); native (unit tests, `native_accel` build,
+  cross-language tests, benchmark smoke); pinned real protocol cores
+  (V2Ray/Xray/sing-box smoke suites).
+- Verified remotely: the Windows job at the fix commit (above).
+- Not verified: the v0.9.8.2 commit itself was not pushed to GitHub
+  (no push credentials in the release environment); its Windows CI
+  run has therefore not executed. The changes since the verified
+  commit are the Tor RunProbe migration, the version bump and
+  documentation.
 
 ---
 
@@ -1229,7 +1296,7 @@ FreeIran/
 ├── internal/version/      Single source of truth for versioning
 ├── .github/workflows/     CI, release and security pipelines
 ├── docs/                  Architecture, storage, performance, CI, security, dev
-├── VERSION                Application version (0.9.8.1)
+├── VERSION                Application version (0.9.8.2)
 └── worklog.md             Engineering worklog
 ```
 

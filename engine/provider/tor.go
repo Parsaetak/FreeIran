@@ -25,7 +25,6 @@ import (
 	"io"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -919,24 +918,42 @@ func buildTorrc(cfg TorrcConfig) (string, error) {
 // ---- validation / smoke -------------------------------------------
 
 // validateTorBinary probes the staged tor executable's version.
+//
+// The probe runs through system.RunProbe — the SAME supervision
+// pipeline as the live provider (no visible console window on
+// Windows, job-object/process-tree cleanup, bounded lifetime,
+// cancellation) — never a raw os/exec command (v0.9.8.2: closes the
+// last provider-local subprocess path; tor --version used to flash
+// a CMD window on Windows and had no supervision guarantees).
 func validateTorBinary(ctx context.Context, path string) (string, error) {
-	runCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
+	res := system.RunProbe(ctx, system.ProcessSpec{
+		Name: "tor-version-probe",
+		Path: path,
+		Args: []string{"--version"},
+	}, torVersionProbeTimeout)
 
-	cmd := exec.CommandContext(runCtx, path, "--version")
-
-	output, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("tor --version failed: %w", err)
+	if !res.Launched {
+		return "", fmt.Errorf("tor --version did not launch: %w (output: %s)", res.Err, lastLines(res.Output, 4))
 	}
 
-	version := parseTorVersion(string(output))
+	if res.State == system.StateCancelled {
+		return "", fmt.Errorf("tor --version cancelled: %w", res.Err)
+	}
+
+	if res.ExitCode != 0 {
+		return "", fmt.Errorf("tor --version failed with exit %d: %s", res.ExitCode, lastLines(res.Output, 4))
+	}
+
+	version := parseTorVersion(res.Output)
 	if version == "" {
 		return "", fmt.Errorf("could not parse tor version from output")
 	}
 
 	return version, nil
 }
+
+// torVersionProbeTimeout bounds the supervised --version run.
+const torVersionProbeTimeout = 15 * time.Second
 
 // parseTorVersion extracts "0.4.8.16" from Tor's banner.
 func parseTorVersion(output string) string {
@@ -976,7 +993,11 @@ func torSupportsWebTunnel(version string) bool {
 }
 
 // smokeTestTor launches the staged binary with a harmless
-// verification config and terminates it.
+// verification config through the system supervision layer
+// (system.RunProbe: no visible console window on Windows,
+// job-object/process-tree cleanup, bounded lifetime, cancellation,
+// deterministic termination — v0.9.8.2, same unification as the
+// Psiphon validation path).
 func smokeTestTor(ctx context.Context, path string) error {
 	dir, err := os.MkdirTemp("", "freeiran-tor-smoke-*")
 	if err != nil {
@@ -993,17 +1014,30 @@ func smokeTestTor(ctx context.Context, path string) error {
 		return err
 	}
 
-	runCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
+	res := system.RunProbe(ctx, system.ProcessSpec{
+		Name:    "tor-smoke-verify",
+		Path:    path,
+		Args:    []string{"-f", configPath, "--verify-config"},
+		WorkDir: dir,
+	}, torSmokeTimeout)
 
-	cmd := exec.CommandContext(runCtx, path, "-f", configPath, "--verify-config")
+	if !res.Launched {
+		return fmt.Errorf("config verification did not launch: %w (output: %s)", res.Err, lastLines(res.Output, 4))
+	}
 
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("config verification failed: %s: %w", lastLines(string(output), 4), err)
+	if res.State == system.StateCancelled {
+		return fmt.Errorf("config verification cancelled: %w", res.Err)
+	}
+
+	if res.ExitCode != 0 {
+		return fmt.Errorf("config verification failed with exit %d: %s", res.ExitCode, lastLines(res.Output, 4))
 	}
 
 	return nil
 }
+
+// torSmokeTimeout bounds the supervised --verify-config run.
+const torSmokeTimeout = 20 * time.Second
 
 // ---- shared process-run helpers ------------------------------------
 

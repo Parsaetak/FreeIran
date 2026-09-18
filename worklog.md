@@ -3686,3 +3686,141 @@ process."
   Windows Actions re-run — Windows binaries only cross-COMPILED
   and vetted on this Linux sandbox; the CI job must confirm on
   windows-latest before "Windows fixed" can be claimed.
+
+## v0.9.8.2 — provider subprocess completion, clean-room release engineering (2026-09-18)
+
+### Scope
+
+Version release on top of the Windows-CI repair commit (7a9c72c):
+the two v0.9.8.1 Windows root fixes were already implemented there
+and are now CONFIRMED by the remote Windows job; this session
+completed the remaining provider-subprocess unification (Tor),
+removed stale embedded artifacts found by a true clean-room cycle,
+and produced the v0.9.8.2 release ZIP.
+
+### Remote CI verification (evidence, not assumption)
+
+- CI run 35308409161 (push of 7a9c72c, 2026-09-18T04:49Z): all 5
+  jobs PASS on attempt 1 — Go tests, C++ native layer, TypeScript
+  frontend, Protocol cores (real binaries), and "Windows tests and
+  desktop build" (full `go test -count=1 ./...` on windows-latest,
+  runtime smoke test, desktop build, PE GUI-subsystem verification,
+  artifact upload). The previously failing run 35302165627 (bf029cd)
+  failed in exactly the "Run Go tests" step of the Windows job.
+- Security run 35308409133 (same push): PASS.
+- The v0.9.8.2 commit itself (7873dbc) was NOT pushed: this release
+  environment has no GitHub push credentials. Its remote Windows CI
+  run has therefore NOT executed — recorded as NOT VERIFIED, and
+  the only code change it carries beyond 7a9c72c is the Tor RunProbe
+  migration below (exercised by the same provider test suite that
+  passed the Windows job, plus the local Linux race matrix).
+
+### Tor provider subprocess unification (§5 completion)
+
+- `validateTorBinary` (tor --version) and `smokeTestTor`
+  (tor -f <cfg> --verify-config) migrated from raw
+  `exec.CommandContext` (which flashed a visible CMD window on
+  Windows and had no supervision, cancellation or cleanup
+  guarantees) to `system.RunProbe` — the same supervision pipeline
+  as the live providers, exactly like the Psiphon validation path
+  from the previous session.
+- `engine/provider` now contains zero `os/exec` usage and zero
+  Windows process flags; every provider child (validation, smoke
+  test, runtime) goes through `system`.
+- Pre-existing parallel implementations OUTSIDE the provider
+  package were audited and left alone (documented, not regressed):
+  `engine/coremgr` (own hidden-console + graceful-stop machinery
+  for the three protocol cores, flags mirroring system), and
+  `engine/tunnel/tun_windows.go` (inline hidden-window flags for
+  `net session` / curl / PowerShell; its wintun download has NO
+  checksum verification — pre-existing honest limitation, recorded
+  here, unchanged in this release).
+
+### Clean-room reproducibility (§9)
+
+- Fresh local clone of the final tree (tracked content only):
+  no `frontend/dist`, no `node_modules`, no `native/build`, no
+  test-fixture binaries in source directories.
+- FINDING: the committed `cmd/freeiran/frontend/dist/` carried SIX
+  stale, unreferenced assets from pre-v0.9.8 builds
+  (index-BDGOI7Da.js, index-BqHaPutu.css, index-CaCCSg0p.css,
+  index-DtyLwPLO.js, index-W5aerzbr.css, index-iDhy5sa1.js) beside
+  the five current outputs. Removed.
+- REPRODUCIBILITY: `npm ci` + `npm run build:embed` in the clean
+  room regenerate the five current outputs BYTE-IDENTICAL to the
+  committed ones (verified per-file with cmp; no other tree drift).
+- Clean-room validation from scratch: gofmt clean; vet clean; build
+  clean; full engine/system/internal test matrix PASS (33 packages);
+  race PASS for provider/netcheck/tester/connection/system; native
+  unit tests PASS; windows/amd64 cross-compile PASS.
+
+### Version
+
+- 0.9.8.2 consistently in VERSION, internal/version,
+  frontend/package.json + package-lock.json, build/winres.json
+  (file/product/manifest versions), scripts/freeiran.iss, README
+  current-version line and repo tree listing. Historical v0.9.8.1
+  changelog entries preserved untouched. README gained a factual
+  v0.9.8.2 section describing only verified changes, including the
+  honest remote-verification status.
+
+### Local verification (this Linux sandbox)
+
+- gofmt -l ./engine ./system ./cmd ./internal: clean
+- go vet (linux) + GOOS=windows vet (engine, system, internal,
+  cmd): clean
+- go test -count=1 ./engine/... ./system/... ./internal/... with
+  FREEIRAN_TEST_CORES fixtures: PASS (33 packages); full ./... run:
+  only cmd/freeiran fails to BUILD on Linux (missing GTK4/
+  WebKitGTK dev packages — the documented sandbox limitation; CI
+  compiles that package for windows/amd64, where no GTK is needed)
+- go test -race (provider, netcheck, tester, connection, system,
+  plus full engine/system/internal earlier): PASS
+- frontend: npm ci; typecheck PASS; vitest 104 tests / 13 files
+  PASS; production build PASS; build:embed PASS (byte-identical)
+- native: make -C native test PASS; make -C native PASS;
+  native_accel build + cross-language tests + benchmark smoke PASS
+- real protocol cores (pinned, SHA-256-verified): v2ray v5.53.0,
+  Xray v26.3.27, sing-box v1.14.0 — version banners verified;
+  TestV2RaySmokeRealBinary / TestXraySmokeRealBinary /
+  TestSingBoxSmokeRealBinary PASS
+- windows/amd64 cross-compile with the CI's exact ldflags: 14.7 MB
+  PE, machine 0x8664, subsystem 2 (WINDOWS_GUI) — verified by
+  direct header inspection (TestWindowsGUISubsystem cannot run on
+  Linux: the package does not build without GTK dev packages)
+
+### Official Psiphon distribution sources (re-verified live 2026-09-18)
+
+- Psiphon-Labs/psiphon-tunnel-core: latest release v2.0.41 (then
+  v2.0.40, v2.0.39) — exactly three assets each
+  (Psiphon-Android-Library.zip, Psiphon-Client-Library.zip,
+  Psiphon-iOS-Library.zip). No console-client binary.
+- Psiphon-Labs/psiphon-tunnel-core-binaries: "release candidate
+  binaries" committed to the moving master branch (windows/ carries
+  psiphon-tunnel-core-i686.exe — 32-bit only at audit time; linux/,
+  android/, ios/, psiphond/). NO releases, NO tags, NO digest or
+  signature files.
+- Consequence (unchanged, honest): no checksum authority exists
+  for automated managed installation of a Windows x86_64 console
+  client, so managed install stays honestly UNAVAILABLE (Resolve
+  only accepts digest-carrying release assets; Install refuses;
+  nothing is downloaded from a moving branch); the user-provided
+  binary path (copy-not-move adoption) is the supported channel.
+
+### Environment limitation noted during this session
+
+- One display-side artifact of the release toolchain itself was
+  diagnosed and dismissed as non-issue: literal two-character
+  sequences like `[m` are stripped from TOOL OUTPUT text (not from
+  files), which made repository YAML temporarily APPEAR corrupted
+  (`[main]` looked like `ain]`, `[math]::Round` like `ath]::Round`).
+  Byte-level verification (od/cmp) confirmed the files were always
+  correct and nothing was modified. Recorded so future sessions do
+  not "fix" this phantom.
+
+### Release artifact
+
+- `FreeIran-v0.9.8.2.zip` produced from the committed tree (git
+  archive — tracked content only, guaranteed free of generated
+  files, secrets and test outputs); extraction + sanity build/test
+  from the ZIP itself performed successfully.
