@@ -105,18 +105,22 @@ type Candidate struct {
 
 // Score is the ranking outcome for one candidate.
 type Score struct {
-	Fingerprint string   `json:"fingerprint"`
-	Name        string   `json:"name"`
-	Protocol    string   `json:"protocol"`
-	Class       Class    `json:"class"`
-	Score       float64  `json:"score"`
-	LatencyMS   int64    `json:"latency_ms"`
-	SuccessRate float64  `json:"success_rate"`
-	Samples     int      `json:"samples"`
-	TimeoutRate float64  `json:"timeout_rate"`
-	TestedAt    int64    `json:"tested_at,omitempty"`
-	Connectable bool     `json:"connectable"`
-	Explanation []string `json:"explanation,omitempty"`
+	Fingerprint string  `json:"fingerprint"`
+	Name        string  `json:"name"`
+	Protocol    string  `json:"protocol"`
+	Class       Class   `json:"class"`
+	Score       float64 `json:"score"`
+	LatencyMS   int64   `json:"latency_ms"`
+	// LatencyMSMeasured reports whether LatencyMS is a real measurement
+	// (v0.9.8.1): LatencyMS == 0 with this flag true means a measured
+	// sub-millisecond median — the FASTEST band — never "unmeasured".
+	LatencyMSMeasured bool     `json:"latency_ms_measured"`
+	SuccessRate       float64  `json:"success_rate"`
+	Samples           int      `json:"samples"`
+	TimeoutRate       float64  `json:"timeout_rate"`
+	TestedAt          int64    `json:"tested_at,omitempty"`
+	Connectable       bool     `json:"connectable"`
+	Explanation       []string `json:"explanation,omitempty"`
 }
 
 // Evaluate scores one candidate from its actual observations.
@@ -181,16 +185,22 @@ func Evaluate(c Candidate, now time.Time) Score {
 	score.SuccessRate = successRate
 
 	// --- latency + stability (working observations only) -----------
+	// v0.9.8.1: a WORKING observation always carries a measurement
+	// (engine/tester/latency.go rule R5); LatencyMS == 0 means a
+	// measured sub-millisecond round trip. Including these samples is
+	// what makes sub-ms candidates score — and sort — as the fastest
+	// instead of being silently dropped as "unmeasured".
 	var working []int64
 
 	for _, obs := range window {
-		if obs.Working && obs.LatencyMS > 0 {
+		if obs.Working {
 			working = append(working, obs.LatencyMS)
 		}
 	}
 
 	latencyFactor, median := latencyScore(working)
 	score.LatencyMS = median
+	score.LatencyMSMeasured = len(working) > 0
 
 	stability := stabilityScore(working, window)
 
@@ -351,6 +361,10 @@ func lastObservation(history []config.TestObservation) *config.TestObservation {
 // latencyScore maps the median recent latency onto [0,1] using the
 // same quality bands the tester reports (excellent ≤ 150 ms, good
 // ≤ 400 ms, acceptable ≤ 800 ms, slow ≤ 2000 ms).
+//
+// v0.9.8.1: a median of 0 from a non-empty working set is a measured
+// sub-millisecond latency — the excellent band — not a missing value
+// (rule R4/R6, engine/tester/latency.go).
 func latencyScore(working []int64) (factor float64, medianMS int64) {
 	if len(working) == 0 {
 		return 0, 0
@@ -449,6 +463,10 @@ func explain(
 
 	if medianMS > 0 {
 		reasons = append(reasons, fmt.Sprintf("%d ms median", medianMS))
+	} else if workingSamples > 0 {
+		// Measured sub-millisecond median: projected as 0 ms, the
+		// fastest possible outcome (v0.9.8.1).
+		reasons = append(reasons, "< 1 ms median")
 	}
 
 	reasons = append(reasons, fmt.Sprintf("%.0f%% recent success",

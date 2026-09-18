@@ -19,6 +19,11 @@ import * as testQueueService from "../../bindings/github.com/Parsaetak/FreeIran/
 import * as tunnelService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/tunnelservice.js";
 import * as networkService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/networkservice.js";
 import * as discoveryService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/discoveryservice.js";
+// v0.9.8.1: first-class provider surface (§12/§13) + Internet-Tools
+// engine (§6). Hand-maintained ByName bindings (same pattern the
+// v0.9.3 methods used until the next generator run).
+import * as providerService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/providerservice.js";
+import * as toolsService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/internettoolsservice.js";
 import * as loggingModels from "../../bindings/github.com/Parsaetak/FreeIran/internal/logging/models.js";
 
 export {
@@ -35,6 +40,8 @@ export {
   tunnelService,
   networkService,
   discoveryService,
+  providerService,
+  toolsService,
   loggingModels,
 };
 
@@ -362,11 +369,146 @@ export interface CandidateView {
   class: string;
   score: number;
   latency_ms: number;
+  /**
+   * v0.9.8.1 measurement flag: latency_ms is a REAL measurement.
+   * latency_ms == 0 with this flag true means a measured
+   * sub-millisecond median — the fastest band — never "unmeasured".
+   */
+  latency_ms_measured?: boolean;
   success_rate: number;
   samples: number;
   tested_at?: number;
   connectable: boolean;
   explanation?: string[];
+}
+
+// ---- v0.9.8.1 provider surface (§12/§13) ----------------------------
+
+/** One provider choice row (auto mode). */
+export interface ProviderChoiceView {
+  kind: string;
+  name: string;
+  score: number;
+  reasons?: string[];
+}
+
+/** One provider mode option. */
+export interface ProviderModeView {
+  mode: string;
+  label: string;
+}
+
+/** Local proxy endpoint discovered from the real runtime. */
+export interface ProviderEndpointView {
+  network: string;
+  host: string;
+  port: number;
+  verified?: boolean;
+}
+
+/** Live bootstrap progress from the provider's ACTUAL state. */
+export interface ProviderBootstrapView {
+  active?: boolean;
+  progress?: number;
+  tag?: string;
+  complete?: boolean;
+  updated_at?: string;
+}
+
+/** Provider Info (credential-free, §13). */
+export interface ProviderInfoView {
+  name: string;
+  kind: string;
+  installed: boolean;
+  version?: string;
+  state: string;
+  runtime_state?: string;
+  source?: string;
+  license?: string;
+  notice?: string;
+  last_check?: string;
+  endpoints?: ProviderEndpointView[];
+  capabilities?: string[];
+  failure_reason?: string;
+  bootstrap?: ProviderBootstrapView;
+}
+
+/** Measured provider health. */
+export interface ProviderHealthView {
+  ok: boolean;
+  process_alive: boolean;
+  listener_ready: boolean;
+  latency_ms?: number;
+  measured?: boolean;
+  details?: string;
+  checked_at: string;
+}
+
+// ---- v0.9.8.1 Internet-Tools surface (§6) ---------------------------
+
+/** One catalogue entry. */
+export interface ToolInfoView {
+  id: string;
+  label: string;
+  group: string;
+  takes_target: boolean;
+  timeout_ms: number;
+}
+
+/** Structured tool measurement (v0.9.8.1 latency semantics). */
+export interface ToolMeasurementView {
+  latency_ms?: number;
+  measured?: boolean;
+  sub_ms?: boolean;
+  status?: number;
+  bytes?: number;
+  addresses?: string[];
+  address_count?: number;
+  tls_version?: string;
+  cipher?: string;
+  hop_count?: number;
+  hops?: string[];
+  mtu_bytes?: number;
+  exit_ip_direct?: string;
+  exit_ip_tunnel?: string;
+  exit_ip_match?: boolean;
+  captive_detected?: boolean;
+  captive_redirect?: string;
+  probes?: number;
+}
+
+/** Live tunnel truth (never fabricated). */
+export interface TunnelSnapshotView {
+  active: boolean;
+  provider?: string;
+  endpoint?: string;
+  healthy?: boolean;
+  latency_ms?: number;
+  details?: string;
+}
+
+/** The structured outcome of one tool run. */
+export interface ToolResultView {
+  tool_id: string;
+  target?: string;
+  started_at: string;
+  finished_at: string;
+  duration_ms: number;
+  status: string;
+  transport?: string;
+  path?: string;
+  provider?: string;
+  measurement?: ToolMeasurementView;
+  error?: string;
+  details?: Record<string, string>;
+}
+
+/** One tool run request (user-triggered only). */
+export interface ToolRunRequest {
+  tool: string;
+  target?: string;
+  timeout_ms?: number;
+  tunneled?: boolean;
 }
 
 /** ConnectBest outcome (app.ConnectBestResult). */

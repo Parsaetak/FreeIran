@@ -22,6 +22,8 @@ import (
 	"github.com/Parsaetak/FreeIran/engine/native"
 	"github.com/Parsaetak/FreeIran/internal/logging"
 	"github.com/Parsaetak/FreeIran/system"
+
+	"github.com/Parsaetak/FreeIran/engine/provider"
 )
 
 // Settings is the persisted user preference set.
@@ -30,6 +32,28 @@ type Settings struct {
 	// ("" / "xray" / "v2ray" / "sing-box"). It only influences
 	// selection when the backend is compatible and available.
 	PreferredBackend string `json:"preferred_backend,omitempty"`
+
+	// --- v0.9.8.1 provider settings (§8/§9/§12) ---------------------
+
+	// ProviderMode is the Quick Connect provider choice:
+	// "" / "auto" (evidence-based) / "configs" / "tor" / "psiphon".
+	ProviderMode string `json:"provider_mode,omitempty"`
+
+	// TorBridgeLines are user-provided bridge lines (validated before
+	// launch; never logged — bridge material is private).
+	TorBridgeLines []string `json:"tor_bridge_lines,omitempty"`
+
+	// TorTransportPlugins maps transport names (obfs4, snowflake) to
+	// user-provided client plugin executables.
+	TorTransportPlugins map[string]string `json:"tor_transport_plugins,omitempty"`
+
+	// PsiphonExtraConfig is advanced user-provided JSON merged into
+	// the generated Psiphon client config (validated as JSON).
+	PsiphonExtraConfig string `json:"psiphon_extra_config,omitempty"`
+
+	// PsiphonUserBinary is an optional user-provided console-client
+	// path adopted after validation.
+	PsiphonUserBinary string `json:"psiphon_user_binary,omitempty"`
 
 	// RefreshIntervalMinutes is the source refresh cadence
 	// (0 = engine default).
@@ -161,6 +185,22 @@ func (a *App) applySettings(settings Settings) {
 
 	if settings.LogMaxBytesMB > 0 && a.logger != nil {
 		a.logger.SetLimits(int64(settings.LogMaxBytesMB)<<20, settings.LogMaxBackups)
+	}
+
+	// v0.9.8.1: apply the user's provider configuration (validated;
+	// invalid bridge lines are skipped with the error surfaced
+	// through the settings event, never silently accepted).
+	if a.torEngine != nil {
+		_ = a.torEngine.SetOptions(provider.TorOptions{
+			BridgeLines:      settings.TorBridgeLines,
+			TransportPlugins: settings.TorTransportPlugins,
+		})
+	}
+
+	if a.psiphonEngine != nil {
+		_ = a.psiphonEngine.SetOptions(provider.PsiphonOptions{
+			ExtraConfig: settings.PsiphonExtraConfig,
+		})
 	}
 
 	// Developer: fixed test-queue worker override (v0.9.1). The

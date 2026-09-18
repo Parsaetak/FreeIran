@@ -184,10 +184,12 @@ func pingProvenance(c RichCandidate, now time.Time) (Provenance, *config.PingMet
 	}
 
 	// A working tunnel probe implies an end-to-end latency — an
-	// ESTIMATE, never displayed as a ping.
+	// ESTIMATE, never displayed as a ping. v0.9.8.1: Working implies a
+	// measurement exists (rule R5); a sub-ms observation (LatencyMS
+	// == 0) is just as valid an estimate basis as a positive one.
 	if len(c.History) > 0 {
 		last := c.History[len(c.History)-1]
-		if last.Working && last.LatencyMS > 0 {
+		if last.Working {
 			return ProvenanceEstimated, nil
 		}
 	}
@@ -280,10 +282,12 @@ func EvaluateMetrics(c RichCandidate, now time.Time) MetricScores {
 	}
 
 	// --- Stability dimension ---
+	// v0.9.8.1: working observations always carry a measurement; a
+	// sub-ms (0 ms) sample is included, not dropped.
 	var working []int64
 
 	for _, obs := range window {
-		if obs.Working && obs.LatencyMS > 0 {
+		if obs.Working {
 			working = append(working, obs.LatencyMS)
 		}
 	}
@@ -349,12 +353,16 @@ func EvaluateMetrics(c RichCandidate, now time.Time) MetricScores {
 	return m
 }
 
-// latencyFactorOf maps a latency in ms onto [0,1] (lower is better).
-// The bands mirror tester.QualityFor so the score matches the labels
-// the UI already shows.
+// latencyFactorOf maps a MEASURED latency in ms onto [0,1] (lower is
+// better). The bands mirror tester.QualityFor so the score matches the
+// labels the UI already shows.
+//
+// v0.9.8.1: every caller passes a measured value — 0 ms means a
+// measured sub-millisecond round trip (the best band, rule R4), not
+// "unmeasured". Negative input (invalid) scores 0.
 func latencyFactorOf(ms int64) float64 {
 	switch {
-	case ms <= 0:
+	case ms < 0:
 		return 0
 	case ms <= 150:
 		return 1
@@ -399,7 +407,12 @@ func explainMetrics(m MetricScores, c RichCandidate, pingProv, urlProv Provenanc
 
 	switch pingProv {
 	case ProvenanceMeasured:
-		out = append(out, "median ping "+itoa(m.MeasuredMedianPingMS)+" ms ("+itoa(int64(ping.Samples))+" samples)")
+		if m.MeasuredMedianPingMS > 0 {
+			out = append(out, "median ping "+itoa(m.MeasuredMedianPingMS)+" ms ("+itoa(int64(ping.Samples))+" samples)")
+		} else {
+			// v0.9.8.1: measured sub-millisecond median — honest display.
+			out = append(out, "median ping < 1 ms ("+itoa(int64(ping.Samples))+" samples)")
+		}
 	case ProvenanceEstimated:
 		out = append(out, "latency estimated from tunnel probe")
 	case ProvenanceStale:

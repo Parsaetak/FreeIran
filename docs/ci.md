@@ -267,3 +267,20 @@ scores, connection verification/racing, netcheck environment) run in
 the existing `go` job (linux) and Windows matrix unchanged: they are
 pure-Go, network-free under tests (httptest + fake getters + the
 fake core's SOCKS-relay mode), so no workflow changes were required.
+
+## v0.9.8.1 — provider fixtures and the latency representation fix
+
+- `engine/provider` tests build their own fixtures: `TestMain`
+  compiles `testdata/faketor` and `testdata/fakepsiphon` with the
+  running toolchain into a temp directory before the package runs.
+  No environment variable, no pre-build step and no workflow change
+  were needed — the `go` and `windows` jobs pick the package up
+  unchanged, and a missing fixture fails the package outright.
+- The Windows job also covers the latency representation fix that
+  motivated it: `engine/tester/TestTCPProbeReachable` (the failure of
+  run 35287863799, "latency should be measured") now passes BY
+  CONSTRUCTION — a successful probe always yields a positive measured
+  Latency under the canonical semantics of `engine/tester/latency.go`
+  (rules R1–R6), regardless of Windows monotonic-clock granularity.
+  The fix is in the representation, not in relaxed test expectations;
+  the full matrix keeps proving it on every push.

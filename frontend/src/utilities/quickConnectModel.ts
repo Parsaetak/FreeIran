@@ -8,10 +8,14 @@ import type { CandidateView } from "../services";
  * derived ONLY from recorded test history) into the compact, honestly
  * labelled list the Quick Connect picker renders.
  *
- * Ordering contract (§7 of the v0.9.8 spec):
+ * Ordering contract (§7 of the v0.9.8 spec, refined v0.9.8.1):
  *   1. verified usable candidates first;
  *   2. then by MEASURED ping (never source-provided, never estimated —
- *      CandidateView.latency_ms is the median of real observations);
+ *      CandidateView.latency_ms is the median of real observations).
+ *      v0.9.8.1: a measured latency of 0 ms is a REAL sub-millisecond
+ *      measurement (latency_ms_measured === true) — the FASTEST band,
+ *      never "unmeasured"; such candidates sort FIRST among measured
+ *      ones;
  *   3. tie-breaks fall back to the ranking engine's own aggregates:
  *      recent success → sample count (stability) → freshness → score;
  *   4. untested (class "unknown") candidates come after every verified
@@ -50,6 +54,17 @@ export function candidateStatus(
   return now - view.tested_at > FRESH_WINDOW_MS ? "stale" : "verified";
 }
 
+/**
+ * v0.9.8.1: whether a candidate carries a REAL latency measurement.
+ * The backend flag wins; 0 ms WITH the flag is a measured
+ * sub-millisecond round trip.
+ */
+export function isMeasured(view: Pick<CandidateView, "latency_ms" | "latency_ms_measured">): boolean {
+  if (view.latency_ms_measured === true) return true;
+
+  return view.latency_ms > 0;
+}
+
 /** True when Quick Connect may offer this candidate at all. */
 export function isUsableCandidate(
   view: Pick<CandidateView, "connectable" | "class">,
@@ -75,8 +90,10 @@ export function orderForQuickConnect(
     a < b ? -1 : a > b ? 1 : 0;
 
   verified.sort((a, b) => {
-    const aMeasured = a.latency_ms > 0;
-    const bMeasured = b.latency_ms > 0;
+    // v0.9.8.1: the backend's measured flag is authoritative —
+    // 0 ms + measured = sub-millisecond (fastest), NOT "unmeasured".
+    const aMeasured = isMeasured(a);
+    const bMeasured = isMeasured(b);
 
     // 2. measured ping, fastest first (missing ping after measured).
     if (aMeasured && bMeasured && a.latency_ms !== b.latency_ms) {
@@ -110,8 +127,10 @@ export interface QuickCandidateRow {
   name: string;
   /** Protocol identifier, lower-cased ("vless", "trojan", …). */
   protocol: string;
-  /** Measured ping in ms, or 0 when never measured. */
+  /** Measured ping in ms; 0 when never measured OR sub-ms (see measured). */
   latencyMS: number;
+  /** v0.9.8.1: latencyMS is a real measurement (0 = sub-millisecond). */
+  measured: boolean;
   status: CandidateStatus;
   /** Ranking-engine class ("best" | "good" | "unstable" | "unknown"). */
   quality: string;
@@ -130,13 +149,19 @@ export function quickPickerRows(
     name: view.name || view.endpoint || "Unnamed configuration",
     protocol: (view.protocol || "unknown").toLowerCase(),
     latencyMS: view.latency_ms > 0 ? view.latency_ms : 0,
+    measured: isMeasured(view),
     status: candidateStatus(view, now),
     quality: view.class,
   }));
 }
 
-/** Latency cell text: "82 ms" or an honest "—" for the unmeasured. */
-export function pickerLatencyText(latencyMS: number): string {
+/**
+ * Latency cell text (v0.9.8.1 semantics): "82 ms", an honest "< 1 ms"
+ * for MEASURED sub-millisecond results, or "—" for the unmeasured.
+ */
+export function pickerLatencyText(latencyMS: number, measured?: boolean): string {
+  if (measured === true && latencyMS <= 0) return "< 1 ms";
+
   return latencyMS > 0 ? `${Math.round(latencyMS)} ms` : "—";
 }
 

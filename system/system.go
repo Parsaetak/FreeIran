@@ -50,18 +50,23 @@ type DirNames struct {
 	Cores   string
 	Config  string
 	Runtime string
+
+	// Providers (v0.9.8.1) holds the first-class provider engines'
+	// managed binaries and runtime data (tor, psiphon).
+	Providers string
 }
 
 // Layout resolves the application directories under base.
 func Layout(base string) DirNames {
 	return DirNames{
-		Root:    base,
-		Data:    filepath.Join(base, "data"),
-		Cache:   filepath.Join(base, "cache"),
-		Logs:    filepath.Join(base, "logs"),
-		Cores:   filepath.Join(base, "cores"),
-		Config:  filepath.Join(base, "config"),
-		Runtime: filepath.Join(base, "runtime"),
+		Root:      base,
+		Data:      filepath.Join(base, "data"),
+		Cache:     filepath.Join(base, "cache"),
+		Logs:      filepath.Join(base, "logs"),
+		Cores:     filepath.Join(base, "cores"),
+		Config:    filepath.Join(base, "config"),
+		Runtime:   filepath.Join(base, "runtime"),
+		Providers: filepath.Join(base, "providers"),
 	}
 }
 
@@ -77,6 +82,7 @@ func EnsureLayout(base string) (DirNames, error) {
 	for _, dir := range []string{
 		layout.Root, layout.Data, layout.Cache,
 		layout.Logs, layout.Cores, layout.Config, layout.Runtime,
+		layout.Providers,
 	} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return layout, firerrors.Wrap(err, firerrors.KindEnvironment,

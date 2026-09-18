@@ -113,6 +113,64 @@ usability is never blocked.
 | **Connection** | advanced · diagnostic · controllable. Manual selection, attempt history, recovery details, tunnel/system integration, core inventory. |
 | **Dashboard** | overview. Summarized connection state, onboarding, metrics. Its connect action stays functional and shares the visual language. |
 
+## Quick Connect provider modes (v0.9.8.1)
+
+- A compact provider-mode selector (a `radiogroup` with `Auto /
+  Configurations / Tor / Psiphon`) sits directly ABOVE the
+  configuration picker (§12). Uninstalled providers remain visible
+  but are honestly marked unavailable — the choice is never silently
+  removed; the backend's evidence-based Auto mode (see
+  docs/providers.md) decides when selection is left to Auto.
+- **Configurations** mode renders the classic picker and the v0.9.8
+  decision tree unchanged. **Tor** / **Psiphon** modes route the
+  single CONNECT action through the provider session lifecycle
+  (`providerService.ConnectProvider`) — the SAME one primary action,
+  the same state visuals, the same verification gate; no second
+  connect-family control is ever added. **Auto** delegates to the
+  backend's explainable evidence scoring.
+- Picker rows now carry the protocol label, and the measured-ping
+  ordering contract gains the v0.9.8.1 sub-millisecond rule: a
+  measured `latency_ms` of 0 with `latency_ms_measured === true`
+  renders **"< 1 ms"** and sorts FIRST among measured candidates
+  (never as "0 ms", never as unmeasured — see docs/latency.md).
+  Unmeasured rows keep the dash and sort last.
+- The picker model and the provider-mode routing are unit-tested
+  (`frontend/src/utilities/quickConnectModel-subms.test.ts`, the
+  Quick Connect page suite).
+
+## Cores page providers (v0.9.8.1)
+
+- A **Providers** section below the managed-cores grid (§13) renders
+  one card per Tor/Psiphon provider from
+  `frontend/src/state/providerStore.ts` (backend `Info` views — no
+  synthesized state). Each card reports the honest runtime facts:
+  version, lifecycle state, runtime source, license + attribution
+  notice, last check, local endpoints, measured health latency
+  (sub-ms shown "< 1 ms") and capabilities — capabilities are shown
+  only when the provider reports them from its real runtime.
+- Card actions map one-to-one to the provider lifecycle —
+  Install / Verify / Start / Stop / Uninstall — each a real backend
+  call with loading state; nothing runs automatically. Core-kind
+  providers (xray/v2ray/sing-box) keep their existing managed-core
+  cards; the adapter exposes no provider-level Start for cores
+  (they run per node-configuration through the connection engine).
+
+## Network tools (v0.9.8.1)
+
+- The Network page gains the **Internet tools** section (§6): the
+  grouped tool grid from the backend catalogue (connectivity /
+  protocol / path / identity / tunnel), a per-tool target input for
+  tools that accept one (validated server-side before any bytes
+  leave the machine), and structured results — status, measured
+  duration/latency (sub-ms as "< 1 ms"), transport, error kind.
+- The via-tunnel toggle is rendered ONLY while a tunnel is active;
+  it routes the tool through the session's local SOCKS endpoint and
+  the result names the provider (path `direct|tunneled`).
+- Nothing runs automatically: every tool execution is an explicit
+  user action (the backend enforces user-triggered-only); honestly
+  unsupported tools (QUIC) and privilege-gated ones (traceroute)
+  render their honest statuses rather than fake results.
+
 ## Design-system contract
 
 - **Tokens only**: spacing (`--space-1…8`), radii, text sizes,

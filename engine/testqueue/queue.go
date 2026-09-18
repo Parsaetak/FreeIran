@@ -193,8 +193,12 @@ type Task struct {
 
 // Result is the outcome of one test.
 type Result struct {
-	Working         bool            `json:"working"`
-	Latency         time.Duration   `json:"latency"`
+	Working bool          `json:"working"`
+	Latency time.Duration `json:"latency"`
+	// Measured is the authoritative measurement flag (v0.9.8.1,
+	// engine/tester/latency.go rule R3): Latency/PingMS == 0 with
+	// Measured == true is a measured sub-millisecond round trip.
+	Measured        bool            `json:"measured,omitempty"`
 	Backend         string          `json:"backend,omitempty"`
 	TestedAt        time.Time       `json:"tested_at"`
 	LastError       string          `json:"last_error,omitempty"`
@@ -1022,10 +1026,21 @@ func (q *Queue) finishTaskLocked(task *Task, state TaskState, result Result) boo
 	}
 
 	// Latency bookkeeping for the §5 live progress block.
-	if result.Working && result.PingMS > 0 {
-		q.recordLatency(result.PingMS)
-	} else if result.Working && result.Latency > 0 {
-		q.recordLatency(result.Latency.Milliseconds())
+	// v0.9.8.1: Measured is the authority (not ms > 0). Sub-ms
+	// measurements are quantized to 1 ms for these coarse whole-ms
+	// aggregates — 0 is the "no data yet" sentinel in the stats —
+	// and ranking is fed from TestHistory, which keeps the honest 0.
+	if result.Working && result.Measured {
+		ms := result.PingMS
+		if ms <= 0 {
+			ms = result.Latency.Milliseconds()
+		}
+
+		if ms <= 0 {
+			ms = 1 // measured sub-millisecond: safe quantization
+		}
+
+		q.recordLatency(ms)
 	}
 
 	return true

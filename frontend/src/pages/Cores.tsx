@@ -1,10 +1,19 @@
 import { useCallback, useEffect, useState } from "react";
 import { Events as $events } from "@wailsio/runtime";
-import { call, coreService } from "../services";
-import type { CoreInstallProgress, CoreLifecycleView, CoreManifest } from "../services";
+import { call, coreService, providerService } from "../services";
+import type {
+  CoreInstallProgress,
+  CoreLifecycleView,
+  CoreManifest,
+  ProviderEndpointView,
+  ProviderHealthView,
+  ProviderInfoView,
+} from "../services";
 import { describeError, toast } from "../state/toastStore";
+import { useProviderStore } from "../state/providerStore";
 import { EmptyState, SkeletonPage } from "../components/common";
-import { IconDownload, IconRefresh, IconShield } from "../components/Icons";
+import { IconDownload, IconPlay, IconRefresh, IconShield, IconStop } from "../components/Icons";
+import { truncate } from "../utilities/format";
 
 /**
  * CoresPage — the dedicated core-management tab (v0.9.0 §7): install,
@@ -122,6 +131,9 @@ export function CoresPage() {
           ))}
         </div>
       )}
+
+      {/* v0.9.8.1 (§12/§13): Tor and Psiphon are first-class providers */}
+      <ProvidersSection />
     </div>
   );
 }
@@ -266,7 +278,7 @@ function CoreCard({
           </button>
         )}
 
-        {(m.state === "disabled" || m.state === "broken") && m.binary_path && m.state !== "broken" && (
+        {m.state === "disabled" && m.binary_path && (
           <button
             type="button"
             className="btn ghost"
@@ -346,6 +358,304 @@ function RecoveryActions({
       </button>
     </>
   );
+}
+
+// ---------------------------------------------------------------------------
+// v0.9.8.1 Providers section (§12/§13): Tor and Psiphon — first-class
+// providers with their own managed lifecycle (install → start →
+// bootstrap → ready → stop), rendered below the protocol-core cards.
+// ---------------------------------------------------------------------------
+
+/** Provider poll cadence — live runtime state (bootstrap, endpoints). */
+const PROVIDER_POLL_MS = 5000;
+
+function ProvidersSection() {
+  const providers = useProviderStore((state) => state.providers);
+  const loaded = useProviderStore((state) => state.loaded);
+  const load = useProviderStore((state) => state.load);
+  const refresh = useProviderStore((state) => state.refresh);
+
+  useEffect(() => {
+    void load();
+
+    // Providers carry live runtime state (bootstrap progress, real
+    // endpoints) — one cheap list refresh every 5s keeps the cards
+    // honest without hammering the backend.
+    const timer = window.setInterval(() => void refresh(), PROVIDER_POLL_MS);
+
+    return () => window.clearInterval(timer);
+  }, [load, refresh]);
+
+  // kind "core" providers (xray / v2ray / sing-box) are the managed
+  // core cards above — only the first-class engines render here.
+  const managed = providers.filter((info) => info.kind === "tor" || info.kind === "psiphon");
+
+  return (
+    <section aria-label="Providers">
+      <div className="page-header">
+        <div className="page-heading">
+          <h2 className="page-title">Providers</h2>
+          <div className="page-subtitle">
+            Tor · Psiphon — first-class providers with managed, checksum-verified installation.
+          </div>
+        </div>
+      </div>
+
+      {managed.length === 0 ? (
+        loaded ? (
+          <EmptyState
+            title="No providers reported"
+            hint="Tor and Psiphon appear here once the provider engine lists them."
+          />
+        ) : null
+      ) : (
+        <div className="card-grid">
+          {managed.map((info) => (
+            <ProviderCard key={info.name} info={info} onRefresh={() => void refresh()} />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ProviderCard({ info, onRefresh }: { info: ProviderInfoView; onRefresh: () => void }) {
+  const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [health, setHealth] = useState<ProviderHealthView | null>(null);
+
+  const isReady = info.state === "ready";
+  const endpoints = info.endpoints ?? [];
+  const capabilities = info.capabilities ?? [];
+
+  // ONE bounded health measurement when the card mounts in the
+  // running state and whenever it (re)enters it — a passive reading,
+  // never a poll. Failures surface as an honest "—".
+  useEffect(() => {
+    if (!isReady) return;
+
+    let cancelled = false;
+
+    void call(() => providerService.Health(info.name))
+      .then((view) => {
+        if (!cancelled && view) setHealth(view);
+      })
+      .catch(() => {
+        /* passive measurement — displayed as "—" */
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [info.name, isReady]);
+
+  const run = async (action: string, fn: () => Promise<unknown>) => {
+    setBusyAction(action);
+
+    try {
+      await fn();
+    } catch (error) {
+      toast("error", "Provider action failed", describeError(error));
+    } finally {
+      setBusyAction(null);
+      onRefresh();
+    }
+  };
+
+  const busy = busyAction !== null;
+
+  return (
+    <section className="card provider-card" data-state={info.state}>
+      <header className="card-head">
+        <div>
+          <h3>{providerDisplayName(info.name)}</h3>
+          <div className="core-meta muted">
+            {info.version ? `v${stripV(info.version)}` : "not installed"}
+          </div>
+        </div>
+        <div>
+          {info.bootstrap?.active && (
+            <span className="chip">bootstrap {providerBootstrapPercent(info.bootstrap.progress)}%</span>
+          )}{" "}
+          <ProviderStateBadge state={info.state} />
+        </div>
+      </header>
+
+      {info.failure_reason && <div className="callout error">{info.failure_reason}</div>}
+
+      <dl className="kv">
+        <dt>State</dt>
+        <dd>{STATE_LABELS[info.state] ?? info.state}</dd>
+        <dt>Runtime</dt>
+        <dd>{info.runtime_state || "—"}</dd>
+        <dt>Source</dt>
+        <dd className="mono ellipsis" title={info.source || undefined}>
+          {truncate(info.source || "—", 40)}
+        </dd>
+        <dt>License</dt>
+        <dd>{info.license || "—"}</dd>
+        <dt>Last check</dt>
+        <dd>{providerLastCheckText(info.last_check)}</dd>
+      </dl>
+
+      {isReady && (
+        <div>
+          {endpoints.length > 0 && (
+            <div className="provider-endpoint-list">
+              {endpoints.map((endpoint) => (
+                <div
+                  className="provider-endpoint"
+                  key={`${endpoint.network}-${endpoint.host}:${endpoint.port}`}
+                >
+                  {providerEndpointLabel(endpoint)}
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="provider-endpoint">endpoint latency: {providerHealthLatencyText(health)}</div>
+          {capabilities.length > 0 && (
+            <div>
+              {capabilities.map((capability) => (
+                <span className="provider-cap" key={capability}>
+                  {capability}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {info.notice && <p className="provider-notice">{info.notice}</p>}
+
+      <footer className="card-actions">
+        {!info.installed && (
+          <button
+            type="button"
+            className="btn sm primary"
+            disabled={busy}
+            onClick={() => void run("install", () => call(() => providerService.Install(info.name)))}
+          >
+            {busyAction === "install" ? <span className="btn-spinner" /> : <IconDownload size={14} />} Install
+          </button>
+        )}
+
+        {info.installed && (
+          <>
+            <button
+              type="button"
+              className="btn sm ghost"
+              disabled={busy}
+              onClick={() =>
+                void run("verify", async () => {
+                  // Verify re-measures and refreshes the card's latency row.
+                  const view = await call(() => providerService.Health(info.name));
+                  setHealth(view ?? null);
+                })
+              }
+            >
+              {busyAction === "verify" ? <span className="btn-spinner" /> : <IconShield size={14} />} Verify
+            </button>
+
+            {info.state !== "ready" && (
+              <button
+                type="button"
+                className="btn sm"
+                disabled={busy}
+                onClick={() => void run("start", () => call(() => providerService.Start(info.name)))}
+              >
+                {busyAction === "start" ? <span className="btn-spinner" /> : <IconPlay size={14} />} Start
+              </button>
+            )}
+
+            {info.state === "ready" && (
+              <button
+                type="button"
+                className="btn sm ghost"
+                disabled={busy}
+                onClick={() => void run("stop", () => call(() => providerService.Stop(info.name)))}
+              >
+                {busyAction === "stop" ? <span className="btn-spinner" /> : <IconStop size={14} />} Stop
+              </button>
+            )}
+
+            <button
+              type="button"
+              className="btn sm danger ghost"
+              disabled={busy}
+              onClick={() => void run("uninstall", () => call(() => providerService.Uninstall(info.name)))}
+            >
+              Uninstall
+            </button>
+          </>
+        )}
+      </footer>
+    </section>
+  );
+}
+
+/** Provider lifecycle badge — mirrors the core StateBadge contract. */
+function ProviderStateBadge({ state }: { state: string }) {
+  return <span className={`badge ${providerStateVariant(state)}`}>{STATE_LABELS[state] ?? state}</span>;
+}
+
+function providerStateVariant(state: string): string {
+  switch (state) {
+    case "ready":
+    case "running":
+      return "success";
+    case "starting":
+    case "installing":
+    case "stopping":
+      return "info";
+    case "failed":
+      return "error";
+    case "installed":
+      return "success-dim";
+    default:
+      // not_installed / disabled / unknown stay neutral.
+      return "neutral";
+  }
+}
+
+function providerDisplayName(name: string): string {
+  switch (name) {
+    case "tor":
+      return "Tor";
+    case "psiphon":
+      return "Psiphon";
+    default:
+      return name.charAt(0).toUpperCase() + name.slice(1);
+  }
+}
+
+/** Endpoints are discovered from the REAL runtime (§13), never invented. */
+function providerEndpointLabel(endpoint: ProviderEndpointView): string {
+  const address = `${endpoint.host}:${endpoint.port}`;
+  const label =
+    endpoint.network.toLowerCase() === "http" ? `HTTP proxy ${address}` : `SOCKS5 ${address}`;
+
+  return endpoint.verified ? `${label} · verified` : label;
+}
+
+/** v0.9.8.1 latency semantics: measured 0 ms is sub-millisecond, not "unmeasured". */
+function providerHealthLatencyText(health: ProviderHealthView | null): string {
+  if (!health || health.measured !== true) return "—";
+
+  return health.latency_ms && health.latency_ms > 0 ? `${Math.round(health.latency_ms)} ms` : "< 1 ms";
+}
+
+function providerBootstrapPercent(progress: number | undefined): number {
+  return Math.max(0, Math.min(100, Math.round(progress ?? 0)));
+}
+
+/** Zero times (Go's time.Time{}) render as an honest "—". */
+function providerLastCheckText(lastCheck: string | undefined): string {
+  if (!lastCheck) return "—";
+
+  const date = new Date(lastCheck);
+
+  if (Number.isNaN(date.getTime()) || date.getFullYear() <= 1) return "—";
+
+  return date.toLocaleString();
 }
 
 const STATE_LABELS: Record<string, string> = {

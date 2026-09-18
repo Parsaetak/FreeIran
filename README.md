@@ -9,12 +9,125 @@ configurations.
 **Project:** FreeIran — A SHEYTAN Digital System
 **Architect:** Parsa Tak / SHEYTAN
 **Repository:** https://github.com/Parsaetak/FreeIran
-**Current version:** 0.9.8 (see `VERSION`)
+**Current version:** 0.9.8.1 (see `VERSION`)
 **Status:** production architecture — multi-core protocol runtime with
 managed installation, multi-level node discovery, Ping/URL test modes
 with measured ranking, verified-connection engine with racing,
 environment intelligence, system proxy and TUN mode, unified adaptive
 memory control and kernel-level process supervision
+
+---
+
+## What's new in v0.9.8.1
+
+v0.9.8.1 is a correctness-and-capability release: the latency
+measurement representation is fixed at its root (the Windows CI
+failure), Tor and Psiphon become first-class providers on one shared
+managed-binary pipeline, a user-triggered Internet-tools engine is
+added, and provider routes run through the SAME verified connection
+lifecycle as configurations.
+
+### Latency measurement semantics — the Windows CI root fix (§2)
+
+- The Windows CI failure (run 35287863799,
+  `engine/tester/TestTCPProbeReachable`, "latency should be
+  measured") is fixed by changing the REPRESENTATION, not test
+  expectations: coarse Windows monotonic clocks can measure a
+  successful loopback dial as exactly 0, and ANY real
+  sub-millisecond measurement truncated to 0 ms was read as "not
+  measured" by quality classification, ranking and the UI.
+- `engine/tester/latency.go` defines canonical rules R1–R6: the true
+  `time.Duration` is preserved; successful raw ≤ 0 readings quantize
+  to `ClockFloor` (1 ns — no artificial sleeps); `Result.Measured`
+  is the authoritative flag; 0 ms + measured means "measured,
+  sub-millisecond", rendered **"< 1 ms"**; sub-ms sorts FIRST among
+  measured. All consumers were migrated — ranking
+  (`Score.LatencyMSMeasured`), ping metrics (`SubMS`), connection
+  modes, testqueue stats, core health (≥ 1 ms when ready), netcheck
+  probes, the Quick Connect picker (`latency_ms_measured`). See
+  [docs/latency.md](docs/latency.md).
+
+### Internet tools (§5/§7)
+
+- New shared tools engine in `engine/netcheck`: fifteen tools
+  (internet, dns, tcp, tls, https, http_connect, socks5, websocket,
+  udp, quic — honestly unsupported: no QUIC stack is compiled;
+  traceroute — raw ICMP TTL walk, privilege-gated; path_mtu —
+  bounded DNS payload ladder, ~300 B cap, honestly labelled;
+  captive_portal; public_ip; tunnel_diagnostics), one structured
+  result contract, timeouts clamped [1 s, 60 s], and the
+  `toolsafety.go` policy: scheme allowlist, credentials in URLs
+  rejected, private/link-local blocked for autonomous targets,
+  DNS-rebinding guard, redirect cap 3, response cap 256 KiB.
+- Tools run ONLY on explicit user action — never at startup — with
+  bounded concurrency (3 tokens); results run direct or through the
+  active tunnel (path `direct|tunneled`). See
+  [docs/internet-tools.md](docs/internet-tools.md).
+
+### Tor and Psiphon — first-class providers (§8/§9)
+
+- Tor: official `dist.torproject.org` expert bundles (verified
+  layout: `torbrowser/<ver>/tor-expert-bundle-<platform>-<ver>.tar.gz`
+  with `sha256sums-signed-build.txt` as checksum authority, fetched
+  over TLS from the same host; pinned channel 15.0.20, "latest" via
+  directory listing with alpha skipping). Bootstrap parsed from REAL
+  `Bootstrapped X% (Tag)` lines — never timers; readiness also
+  observed via the SOCKS endpoint. Bridges user-provided ONLY;
+  pluggable transports via user plugin paths; WebTunnel reported
+  from the installed version only. BSD-3-Clause attribution
+  surfaced. Honest limitation: GPG verification of the checksum
+  file itself is not performed.
+- Psiphon: official tunnel-core console client channel (default
+  `Psiphon-Labs/psiphon-tunnel-core`; current official releases
+  publish only mobile library archives, so managed install honestly
+  reports unavailability). When the channel
+  exposes no release assets with digests, Resolve reports
+  unavailability and Install REFUSES — binaries are never executed
+  unverified; a user binary path (`psiphon_user_binary`) is
+  validated + smoke-launched before adoption. Readiness is observed
+  from the real runtime (both local proxy ports accepting);
+  capabilities reported ONLY when running; Psiware attribution
+  surfaced; nothing statically embedded.
+
+### Unified providers, Auto mode and connection integration (§8–§14)
+
+- One Provider contract (Name/Kind/Resolve/Install/Uninstall/Start/
+  Stop/State/Info/Endpoints/Health/Cleanup) + Manager; kinds core
+  (xray/v2ray/sing-box via a thin adapter over the SAME coremgr
+  pipeline — no duplicate install machinery), tor, psiphon; one
+  managed-binary pipeline (`.part` download → MANDATORY SHA-256
+  verify → tar.gz unpack, tar-slip guarded → validate → smoke launch
+  → atomic activate with rollback → manifest) under
+  `<workspace>/providers/<name>/`. Safety: one managed instance per
+  provider, Windows job objects (no orphans), deterministic stop on
+  failed starts, log pruning (7 d / 16 files).
+- `Manager.ConnectProvider` runs the SAME lifecycle for provider
+  routes: select → start → route via local SOCKS → VerifyTunnel (no
+  bypassing) → connected → the SAME monitor loop; Reconnect remembers
+  the route. Auto mode (`engine/app/providerservice.go`) scores
+  evidence (installed availability, live health, verified-success
+  freshness, latency, failure-streak stability, ranking composite)
+  with NO hardcoded priority; choices are explainable like ranking.
+  See [docs/providers.md](docs/providers.md).
+
+### UI, tests and version
+
+- Quick Connect gains the provider mode selector (Auto /
+  Configurations / Tor / Psiphon) above the picker — the single
+  primary action is preserved; uninstalled providers visibly marked;
+  measured sub-ms shows "< 1 ms". Cores gains the Providers section
+  (Tor/Psiphon cards: version/state/source/license/notice/endpoints/
+  health/capabilities + lifecycle actions); Network gains the
+  Internet tools grid (per-tool target, via-tunnel toggle when a
+  tunnel is active — nothing runs automatically).
+- Tests: `engine/provider/testdata/{faketor,fakepsiphon}`
+  deterministic stand-ins (built by the harness; missing fixture =
+  hard failure); full lifecycle coverage incl. HTTP-through-provider
+  via a real SOCKS relay; connection provider-session tests;
+  `engine/tester/latency_test.go` + `engine/ranking/subms_test.go`;
+  frontend vitest 91 → 104 tests (sub-ms ordering, provider mode
+  routing, provider store). Version 0.9.8.1 everywhere (VERSION,
+  internal/version, frontend/package.json, winres, installer).
 
 ---
 
@@ -1092,12 +1205,14 @@ FreeIran/
 │   ├── errors/            Structured, classified errors
 │   ├── metrics/           Local performance counters
 │   ├── native/            Go↔C++ bridge (pure-Go fallbacks)
+│   ├── netcheck/          Connectivity diagnostics + [v0.9.8.1] Internet tools engine
 │   ├── parser/            Multi-format configuration parser
 │   ├── pipeline/          Streaming ingestion pipeline (worker pools)
+│   ├── provider/          [v0.9.8.1] Provider architecture: Tor, Psiphon, cores
 │   ├── scheduler/         Interval scheduler (skip-if-busy, jitter)
 │   ├── source/            Source model + HTTP fetcher + collector
 │   ├── store/             Chunked persistence: WAL, memtables, compaction
-│   ├── tester/            Probe interface + TCP / core probes
+│   ├── tester/            Probe interface + TCP / core probes + [v0.9.8.1] latency semantics
 │   ├── testqueue/         [v0.6] Bounded-worker test queue (priority, retry, cancel)
 │   └── tunnel/            [v0.6] System Proxy (WinINet) + TUN (Wintun)
 ├── frontend/              TypeScript UI (Vite + React + zustand)
@@ -1106,7 +1221,7 @@ FreeIran/
 ├── internal/version/      Single source of truth for versioning
 ├── .github/workflows/     CI, release and security pipelines
 ├── docs/                  Architecture, storage, performance, CI, security, dev
-├── VERSION                Application version (0.6.0)
+├── VERSION                Application version (0.9.8.1)
 └── worklog.md             Engineering worklog
 ```
 

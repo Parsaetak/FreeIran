@@ -355,6 +355,7 @@ func (a *testerAdapter) Test(ctx context.Context, fingerprint string, backends [
 	qr := testqueue.Result{
 		Working:   result.Working,
 		Latency:   result.Latency,
+		Measured:  result.Measured,
 		Backend:   result.Backend,
 		TestedAt:  result.TestedAt,
 		LastError: result.LastError,

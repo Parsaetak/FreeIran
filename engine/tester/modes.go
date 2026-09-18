@@ -12,11 +12,11 @@ import (
 
 // modes.go implements the user-selectable test modes (v0.9.6 §9):
 //
-//	Ping               — repeated TCP samples against the endpoint
-//	URL                — real HTTP request through the tunnel
-//	Ping + URL         — both, aggregated
-//	Protocol Handshake — core spawn → listener-ready timing
-//	Full Connectivity  — handshake + ping + URL (verify usable)
+//      Ping               — repeated TCP samples against the endpoint
+//      URL                — real HTTP request through the tunnel
+//      Ping + URL         — both, aggregated
+//      Protocol Handshake — core spawn → listener-ready timing
+//      Full Connectivity  — handshake + ping + URL (verify usable)
 //
 // Every mode measures its own facet and records it into the canonical
 // Config metrics fields; nothing is inferred from a mode that did not
@@ -262,8 +262,13 @@ func (t *ModeTester) runTunnelFacets(
 
 	readyErr := instance.WaitReady(ctx)
 
+	// v0.9.8.1: capture the true spawn-to-ready duration once — the
+	// old code re-projected it through ReadyMS (milliseconds), which
+	// truncated sub-millisecond startups to a zero duration.
+	readyDur := MeasuredLatency(time.Since(spawnStart))
+
 	handshake := config.HandshakeMetrics{
-		ReadyMS: time.Since(spawnStart).Milliseconds(),
+		ReadyMS: readyDur.Milliseconds(),
 		OK:      readyErr == nil,
 		At:      time.Now().UTC().UnixMilli(),
 	}
@@ -280,8 +285,10 @@ func (t *ModeTester) runTunnelFacets(
 	}
 
 	if !runURL {
-		// Handshake-only: the verdict is readiness.
-		out.Latency = time.Duration(handshake.ReadyMS) * time.Millisecond
+		// Handshake-only: the verdict is readiness. v0.9.8.1: use the
+		// captured true duration (sub-ms startups no longer collapse
+		// to zero through the ReadyMS projection).
+		out.Latency = readyDur
 
 		return true
 	}
@@ -309,6 +316,9 @@ func (t *ModeTester) runTunnelFacets(
 	}
 
 	if dialErr == nil {
+		// v0.9.8.1: a successful tunnel probe is a real measurement;
+		// quantize coarse-clock zeros before the ms projection.
+		probeRTT = MeasuredLatency(probeRTT)
 		handshake.ProbeMS = probeRTT.Milliseconds()
 
 		if out.Handshake != nil {
@@ -322,13 +332,16 @@ func (t *ModeTester) runTunnelFacets(
 
 	if metrics.OK {
 		// The tunnel forwards usable traffic: record the freshest
-		// honest latency from the facets that actually ran.
+		// honest latency from the facets that actually ran. All
+		// branches keep the canonical v0.9.8.1 representation:
+		// strictly positive for a measured success (sub-ms projected
+		// values are carried by Working + a zero LatencyMS).
 		if out.Ping != nil && out.Ping.Samples > 0 {
-			out.Latency = time.Duration(out.Ping.MedianMS) * time.Millisecond
+			out.Latency = MeasuredLatency(time.Duration(out.Ping.MedianMS) * time.Millisecond)
 		} else if dialErr == nil {
 			out.Latency = probeRTT
 		} else {
-			out.Latency = time.Duration(metrics.TotalMS) * time.Millisecond
+			out.Latency = MeasuredLatency(time.Duration(metrics.TotalMS) * time.Millisecond)
 		}
 
 		return true

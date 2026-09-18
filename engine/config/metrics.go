@@ -17,11 +17,19 @@ import "time"
 //
 // Every field is derived from the recorded samples; there is no
 // interpolation and no invented value. Zero PingMetrics (Samples=0)
-// means "not measured".
+// means "not measured". A nonzero Samples with MinMS/MedianMS == 0
+// means "measured, sub-millisecond" (v0.9.8.1): millisecond fields
+// are projections, and SubMS flags the sub-millisecond case
+// explicitly for display ("< 1 ms").
 type PingMetrics struct {
 	// Min/Max are the fastest and slowest successful samples.
 	MinMS int64 `json:"min_ms"`
 	MaxMS int64 `json:"max_ms"`
+
+	// SubMS reports that the median sample was faster than one
+	// millisecond (the projected fields read 0). It is the explicit
+	// measured-sub-millisecond marker (rule R4, engine/tester/latency.go).
+	SubMS bool `json:"sub_ms,omitempty"`
 
 	// Median is the 50th percentile of the successful samples
 	// (resistant to outliers, the number the "Lowest Median Ping"

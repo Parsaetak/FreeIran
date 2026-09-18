@@ -52,6 +52,9 @@ func (p *TCPProbe) Test(ctx context.Context, cfg config.Config) (Result, error) 
 	conn, err := dialer.DialContext(ctx, "tcp",
 		net.JoinHostPort(cfg.Address, strconv.Itoa(cfg.Port)))
 	if err != nil {
+		// A failed dial carries no latency measurement (Measured
+		// stays false); DurationMS reports the failed attempt's wall
+		// time as operational telemetry.
 		return Result{
 			Working:    false,
 			TestedAt:   time.Now().UTC(),
@@ -66,17 +69,25 @@ func (p *TCPProbe) Test(ctx context.Context, cfg config.Config) (Result, error) 
 
 	_ = conn.Close()
 
-	latency := time.Since(started)
+	// v0.9.8.1 (§2): MeasuredLatency guarantees a strictly positive
+	// duration for this successful dial. On platforms with coarse
+	// monotonic clocks (Windows CI runners) a fast loopback connect
+	// can complete within one clock tick, making the raw reading
+	// exactly 0 — a successful dial proves time passed, so the reading
+	// is quantized up to ClockFloor instead of being stored as an
+	// ambiguous zero. No artificial sleep is inserted.
+	latency := MeasuredLatency(time.Since(started))
 
 	return Result{
 		Working:    true,
 		Latency:    latency,
+		Measured:   true,
 		TestedAt:   time.Now().UTC(),
 		Backend:    "tcp",
 		Protocol:   string(cfg.Type),
 		Endpoint:   net.JoinHostPort(cfg.Address, strconv.Itoa(cfg.Port)),
-		PingMS:     latency.Milliseconds(),
-		DurationMS: latency.Milliseconds(),
-		Quality:    QualityFor(latency.Milliseconds()),
+		PingMS:     MSOf(latency),
+		DurationMS: MSOf(latency),
+		Quality:    QualityForDuration(latency),
 	}, nil
 }

@@ -217,10 +217,14 @@ func (p *CoreProbe) testOne(
 
 	// Without EndToEnd, keep the historical semantic: latency =
 	// spawn-to-listener-ready (the local protocol path only).
+	// v0.9.8.1: the local startup measurement is a real measurement —
+	// quantized positive, Measured=true, sub-ms startup classified
+	// excellent rather than failed.
 	if !p.EndToEnd {
-		base.Latency = time.Since(testStart)
-		base.PingMS = base.Latency.Milliseconds()
-		base.Quality = QualityFor(base.PingMS)
+		base.Latency = MeasuredLatency(time.Since(testStart))
+		base.Measured = true
+		base.PingMS = MSOf(base.Latency)
+		base.Quality = QualityForDuration(base.Latency)
 
 		return base, nil
 	}
@@ -239,9 +243,10 @@ func (p *CoreProbe) testOne(
 		}, nil
 	}
 
-	base.Latency = ping
-	base.PingMS = ping.Milliseconds()
-	base.Quality = QualityFor(base.PingMS)
+	base.Latency = MeasuredLatency(ping)
+	base.Measured = true
+	base.PingMS = MSOf(base.Latency)
+	base.Quality = QualityForDuration(base.Latency)
 	base.DurationMS = time.Since(testStart).Milliseconds()
 
 	return base, nil

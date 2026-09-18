@@ -62,18 +62,21 @@ type rankSnapshot struct {
 // CandidateView is the credential-free ranking outcome surfaced to
 // the UI: class, score and the explanation that produced it.
 type CandidateView struct {
-	Fingerprint string   `json:"fingerprint"`
-	Name        string   `json:"name"`
-	Protocol    string   `json:"protocol"`
-	Endpoint    string   `json:"endpoint"`
-	Class       string   `json:"class"`
-	Score       float64  `json:"score"`
-	LatencyMS   int64    `json:"latency_ms"`
-	SuccessRate float64  `json:"success_rate"`
-	Samples     int      `json:"samples"`
-	TestedAt    int64    `json:"tested_at,omitempty"`
-	Connectable bool     `json:"connectable"`
-	Explanation []string `json:"explanation,omitempty"`
+	Fingerprint string  `json:"fingerprint"`
+	Name        string  `json:"name"`
+	Protocol    string  `json:"protocol"`
+	Endpoint    string  `json:"endpoint"`
+	Class       string  `json:"class"`
+	Score       float64 `json:"score"`
+	LatencyMS   int64   `json:"latency_ms"`
+	// LatencyMSMeasured (v0.9.8.1): LatencyMS is a real measurement.
+	// 0 ms + measured = sub-millisecond (render "< 1 ms", sort FIRST).
+	LatencyMSMeasured bool     `json:"latency_ms_measured"`
+	SuccessRate       float64  `json:"success_rate"`
+	Samples           int      `json:"samples"`
+	TestedAt          int64    `json:"tested_at,omitempty"`
+	Connectable       bool     `json:"connectable"`
+	Explanation       []string `json:"explanation,omitempty"`
 }
 
 // ConnectBestResult is the outcome of an automatic connection.
@@ -230,18 +233,19 @@ func (a *App) rankedViews() []CandidateView {
 		cand := byFingerprint[score.Fingerprint]
 
 		views = append(views, CandidateView{
-			Fingerprint: score.Fingerprint,
-			Name:        cand.Name,
-			Protocol:    cand.Protocol,
-			Endpoint:    cand.Endpoint,
-			Class:       string(score.Class),
-			Score:       score.Score,
-			LatencyMS:   score.LatencyMS,
-			SuccessRate: score.SuccessRate,
-			Samples:     score.Samples,
-			TestedAt:    score.TestedAt,
-			Connectable: score.Connectable,
-			Explanation: score.Explanation,
+			Fingerprint:       score.Fingerprint,
+			Name:              cand.Name,
+			Protocol:          cand.Protocol,
+			Endpoint:          cand.Endpoint,
+			Class:             string(score.Class),
+			Score:             score.Score,
+			LatencyMS:         score.LatencyMS,
+			LatencyMSMeasured: score.LatencyMSMeasured,
+			SuccessRate:       score.SuccessRate,
+			Samples:           score.Samples,
+			TestedAt:          score.TestedAt,
+			Connectable:       score.Connectable,
+			Explanation:       score.Explanation,
 		})
 	}
 
@@ -326,18 +330,19 @@ func (s *ConnectionService) ConnectBest(exclude []string) (ConnectBestResult, er
 // candidateView renders one candidate + its score for the result.
 func candidateView(c ranking.Candidate, score ranking.Score) CandidateView {
 	return CandidateView{
-		Fingerprint: c.Fingerprint,
-		Name:        c.Name,
-		Protocol:    c.Protocol,
-		Endpoint:    c.Endpoint,
-		Class:       string(score.Class),
-		Score:       score.Score,
-		LatencyMS:   score.LatencyMS,
-		SuccessRate: score.SuccessRate,
-		Samples:     score.Samples,
-		TestedAt:    score.TestedAt,
-		Connectable: score.Connectable,
-		Explanation: score.Explanation,
+		Fingerprint:       c.Fingerprint,
+		Name:              c.Name,
+		Protocol:          c.Protocol,
+		Endpoint:          c.Endpoint,
+		Class:             string(score.Class),
+		Score:             score.Score,
+		LatencyMS:         score.LatencyMS,
+		LatencyMSMeasured: score.LatencyMSMeasured,
+		SuccessRate:       score.SuccessRate,
+		Samples:           score.Samples,
+		TestedAt:          score.TestedAt,
+		Connectable:       score.Connectable,
+		Explanation:       score.Explanation,
 	}
 }
 

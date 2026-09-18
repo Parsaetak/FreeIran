@@ -134,7 +134,11 @@ func (p *PingProbe) Ping(ctx context.Context, address string, port int) (config.
 		}
 
 		if err == nil {
-			rtts = append(rtts, elapsed.Milliseconds())
+			// v0.9.8.1: a successful sample is a real measurement; the
+			// raw reading is quantized positive (coarse-clock zeros are
+			// artifacts) before the millisecond projection. Sub-ms
+			// samples project to 0 — carried by Samples>0 + SubMS.
+			rtts = append(rtts, MSOf(MeasuredLatency(elapsed)))
 
 			continue
 		}
@@ -157,6 +161,8 @@ func (p *PingProbe) Ping(ctx context.Context, address string, port int) (config.
 
 // finishPing derives the aggregate statistics from the successful
 // samples. With zero samples the metrics honestly report 100% loss.
+// With samples but all-sub-millisecond RTTs the projected fields
+// read 0 and SubMS marks the measured-sub-ms case (v0.9.8.1).
 func finishPing(m config.PingMetrics, rtts []int64) config.PingMetrics {
 	m.Samples = len(rtts)
 
@@ -176,6 +182,10 @@ func finishPing(m config.PingMetrics, rtts []int64) config.PingMetrics {
 	m.MinMS = sorted[0]
 	m.MaxMS = sorted[len(sorted)-1]
 	m.MedianMS = sorted[len(sorted)/2]
+
+	// Measured sub-millisecond median: projected 0 is a real (and
+	// excellent) measurement, never "unmeasured".
+	m.SubMS = m.MedianMS <= 0
 
 	var sum int64
 

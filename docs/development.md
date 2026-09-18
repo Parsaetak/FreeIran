@@ -313,3 +313,44 @@ Frontend: the DiscoveryService bindings are hand-written
 pattern documented in networkservice.js); their wire shapes live in
 `frontend/src/types/discovery.ts`, and the start-flow store tests
 mock only `Events.On` via a partial module mock.
+
+## v0.9.8.1 — provider test fixtures
+
+The provider suite (`engine/provider`) is hermetic: no test touches
+the live Tor network or Psiphon servers. Everything runs against
+deterministic stand-ins built by the test harness itself:
+
+```text
+engine/provider/testdata/faketor      (Go source, single binary)
+engine/provider/testdata/fakepsiphon  (Go source, single binary)
+        ↓ go build in TestMain with the SAME toolchain running the tests
+        ↓ staged as tor / psiphon-tunnel-core-<platform> executables
+        ↓ full lifecycle matrix (resolve → … → uninstall)
+```
+
+- `TestMain` (engine/provider/provider_test.go) compiles both fakes
+  with `go build -o` into a temp directory before any test runs. A
+  missing or broken fixture is a HARD failure that aborts the whole
+  package (the same discipline as the fakecore harness) — never a
+  silent skip, and never a fallback to whatever happens to be in
+  `PATH`. No environment variable is needed; CI runs the package
+  unchanged.
+- **faketor** parses the generated torrc (`-f`), answers
+  `--version` / `--verify-config`, emits REAL `Bootstrapped X% (Tag)`
+  notice lines on stdout, and serves a minimal SOCKS5 endpoint on the
+  configured `SocksPort` that actually relays CONNECT traffic —
+  proving bootstrap observation, health probing and
+  HTTP-through-provider end-to-end (via a real SOCKS relay) without
+  any live Tor dependency.
+- **fakepsiphon** parses the generated config JSON (`-config`), opens
+  the configured local SOCKS and HTTP proxy ports, emits tunnel-up
+  style output and relays traffic — proving negotiation observation,
+  proxy readiness, health and HTTP-through-Psiphon.
+- Download/install stages run against local `httptest` servers
+  serving packed `tar.gz` archives with computed SHA-256 checksums,
+  so digest verification (and refusal on mismatch / missing digest)
+  is exercised for real.
+- The connection provider-session tests (`engine/connection/provider_test.go`)
+  drive `ConnectProvider` end-to-end against the same fixtures; the
+  frontend provider store and mode routing are covered by vitest
+  (`frontend/src/state/providerStore.test.ts`, 104 tests total).

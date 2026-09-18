@@ -21,6 +21,7 @@ Go application orchestration (engine/app)
         ├── engine/coremgr       [v0.6] managed core install/update/rollback
         ├── engine/testqueue     [v0.6] bounded-worker test queue
         ├── engine/tunnel        [v0.6] system proxy (WinINet) + TUN (Wintun)
+        ├── engine/provider      [v0.9.8.1] Tor/Psiphon/core provider lifecycle
         ├── engine/scheduler     interval scheduling
         ├── engine/native        optional C++ acceleration bridge
         └── system               filesystem, processes, network, platform
@@ -758,3 +759,58 @@ result summary (discovered/valid/duplicates/tested/verified/duration).
 Manual selection always overrides automatic selection. The service
 also exposes `DiscoverNow` (manual discovery pass), `SourceHealthList`
 (source intelligence for the UI) and the environment analysis.
+
+## Providers and Internet tools (v0.9.8.1)
+
+### engine/provider — the unified provider architecture
+
+ONE lifecycle contract (`Provider`: Name/Kind/Resolve/Install/
+Uninstall/Start/Stop/State/Info/Endpoints/Health/Cleanup) + a
+`Manager` for every executable that can provide connectivity. Kinds:
+`core` (xray/v2ray/sing-box via a thin `CoreProviderAdapter` over the
+SAME `engine/coremgr` pipeline — no duplicate install machinery;
+provider-level Start is honestly unsupported for cores, which run per
+node-configuration through the connection engine), `tor` and
+`psiphon`. Tor and Psiphon share one managed-binary pipeline
+(`binary.go`: resumable `.part` download via `internal/httpx` →
+MANDATORY SHA-256 verification → tar-slip-guarded unpack → version
+validation → supervised smoke launch → atomic activate with rollback
+→ manifest) under `<workspace>/providers/<name>/`, with runtime
+data/logs confined to the workspace and log pruning by `Cleanup`.
+One managed instance per provider; every process runs under
+`system.ManagedProcess` (job objects — no orphans).
+
+Provider routes run through the SAME connection lifecycle
+(`engine/connection/provider.go`, `Manager.ConnectProvider`): select →
+start → route via the local SOCKS endpoint → `VerifyTunnel` (no
+bypassing) → connected → the SAME monitor loop. Auto mode
+(`engine/app/providerservice.go`) chooses between configurations and
+providers on measured evidence (installed availability, live health,
+verified-success freshness, latency, failure stability, ranking
+composite) with no hardcoded priority; choices are explainable.
+
+### engine/netcheck — the Internet-tools engine
+
+The diagnostics package gains the shared user-triggered tools engine
+(§5): fifteen tools (internet, dns, tcp, tls, https, http_connect,
+socks5, websocket, udp, quic — honestly unsupported, traceroute —
+privilege-gated, path_mtu — DNS-ladder capped ~300 B, captive_portal,
+public_ip, tunnel_diagnostics) with one structured result contract,
+timeouts clamped [1 s, 60 s], and the `toolsafety.go` policy (scheme
+allowlist, no credentials in URLs, private-range blocking,
+DNS-rebinding guard, redirect cap 3, response cap 256 KiB,
+user-triggered ONLY, bounded concurrency of 3 in the app service).
+
+### Latency measurement semantics
+
+`engine/tester/latency.go` defines the canonical representation
+(rules R1–R6) that fixed the Windows CI failure (run 35287863799):
+the true duration is preserved; successful raw ≤ 0 readings quantize
+to `ClockFloor`; `Result.Measured` is the authoritative flag; 0 ms +
+measured = sub-millisecond, rendered "< 1 ms"; sub-ms sorts first
+among measured. Ranking, scores, ping metrics, connection modes,
+testqueue statistics, core health, netcheck probes and the Quick
+Connect picker all honour the contract.
+
+Full details: docs/providers.md, docs/internet-tools.md and
+docs/latency.md.

@@ -225,3 +225,58 @@ location — a hijacked COMSPEC cannot smuggle an arbitrary binary.
 - **SHEYTAN identity is metadata only.** The digital-system identity
   is a display string in the About surface, version resources and
   installer metadata; it changes no code path and collects nothing.
+
+## v0.9.8.1 — network-tool safety and provider install integrity
+
+**Internet-tools safety (`engine/netcheck/toolsafety.go`, §7).** Every
+user-triggered diagnostic tool shares one hard safety policy:
+
+- Targets are validated BEFORE any bytes leave the machine: URL
+  scheme allowlist per tool family, credentials in URLs rejected
+  outright (credentials never ride a diagnostic URL), port bounds.
+- Private / link-local / loopback destinations are blocked for
+  autonomous targets; only the explicitly local diagnostics (proxy /
+  endpoint tools) may target them.
+- DNS-rebinding guard on direct probes: the hostname is resolved,
+  every answer must pass the destination policy, and the connection
+  is dialed to the validated address (resolve → validate → pin).
+- Redirects are capped (3, each hop re-validated) and response bodies
+  are capped (256 KiB; bytes beyond the cap are neither read nor
+  stored).
+- Tools run ONLY on explicit user action — never automatically at
+  startup or in the background; the service layer enforces this, and
+  public-IP lookups are never background work. Concurrency is bounded
+  (3 tokens in the app service).
+- No remote JavaScript is ever executed and no configuration
+  credentials are ever transmitted. Events and results carry only the
+  validated host:port / URL forms, fixed error kinds and measurements.
+
+**Provider install integrity (`engine/provider/binary.go`).** The
+managed-binary pipeline for Tor and Psiphon inherits the
+protocol-core ordering rule — an unverified binary is never started,
+not even once — and makes the checksum MANDATORY:
+
+- SHA-256 verification against the published checksum authority
+  happens after the resumable `.part` download and before unpack;
+  verification failure aborts with rollback — nothing is weakened to
+  make installation easier.
+- Releases without published checksums are REFUSED: when the Psiphon
+  channel exposes no release assets with digests, `Resolve` reports
+  unavailability and `Install` refuses. A user-provided binary
+  (`psiphon_user_binary`) is validated and smoke-launched before
+  adoption.
+- Tor verifies against the Tor Project's own
+  `sha256sums-signed-build.txt`, fetched over TLS from the same
+  official host (`dist.torproject.org`); the archive unpack is
+  tar-slip guarded; activation is atomic with the previous binary
+  retained for rollback. Honest limitation, documented in
+  docs/providers.md: GPG verification of the checksum file itself is
+  not performed (TLS from the official host — the same authority
+  model as the Tor Browser updater's initial bootstrap).
+- Provider processes run under `system.ManagedProcess` supervision
+  (job objects — no orphans); runtime data, caches and logs are
+  confined to `<workspace>/providers/<name>/` and logs are pruned
+  (7 days / 16 files). No secrets are logged: provider settings carry
+  only user-provided, non-secret inputs (bridge lines, plugin paths,
+  extra config JSON), and the existing entry-level redaction applies
+  to every log line.

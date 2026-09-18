@@ -16,6 +16,7 @@ import { useConnectionStore } from "../state/connectionStore";
 import { useQuickConnectStore } from "../state/quickConnectStore";
 import { useStartFlowStore } from "../state/startflowStore";
 import { useSettingsStore } from "../state/settingsStore";
+import { useProviderStore, type ProviderMode } from "../state/providerStore";
 import type { CandidateView } from "../services";
 
 const mocks = vi.hoisted(() => ({
@@ -23,10 +24,18 @@ const mocks = vi.hoisted(() => ({
   Connect: vi.fn(),
   ConnectBest: vi.fn(),
   RunStartFlow: vi.fn(),
+  ProviderMode: vi.fn(),
+  ProviderList: vi.fn(),
+  ProviderSetMode: vi.fn(),
+  ProviderConnect: vi.fn(),
+  ProviderConnectAuto: vi.fn(),
+  Tools: vi.fn(),
+  RunTool: vi.fn(),
+  LiveTunnel: vi.fn(),
 }));
 
 vi.mock("../services", () => ({
-  call: (operation: () => Promise<unknown>) => operation(),
+  call: async (operation: () => Promise<unknown>) => operation(),
   connectionService: {
     BestCandidates: mocks.BestCandidates,
     Connect: mocks.Connect,
@@ -52,6 +61,21 @@ vi.mock("../services", () => ({
   settingsService: {
     Get: vi.fn(async () => ({ reduced_motion: false })),
     Save: vi.fn(),
+  },
+  // v0.9.8.1 (§12/§6): provider surface (mode / list / sessions) and
+  // the Internet-Tools engine, consumed by the page and the REAL
+  // provider store (which runs through this same mocked module).
+  providerService: {
+    Mode: mocks.ProviderMode,
+    List: mocks.ProviderList,
+    SetMode: mocks.ProviderSetMode,
+    Connect: mocks.ProviderConnect,
+    ConnectAuto: mocks.ProviderConnectAuto,
+  },
+  toolsService: {
+    Tools: mocks.Tools,
+    RunTool: mocks.RunTool,
+    LiveTunnel: mocks.LiveTunnel,
   },
 }));
 
@@ -85,6 +109,26 @@ function snap(partial: Record<string, unknown>) {
   return partial as never;
 }
 
+/**
+ * v0.9.8.1 provider-mode plumbing: the REAL useProviderStore is used
+ * (the same real-store-through-mocked-services pattern the quick-connect
+ * store already follows above) — it loads via the mocked providerService,
+ * so no store-module mock is needed and store transitions stay observable
+ * through useProviderStore.setState/getState. SetMode echoes its argument
+ * back by default: the real backend normalizes, persists and returns the
+ * effective mode, which keeps radio → store → action transitions
+ * deterministic for every mode-switching test below.
+ */
+type User = ReturnType<typeof userEvent.setup>;
+
+async function selectProviderMode(user: User, mode: ProviderMode, radio: RegExp): Promise<void> {
+  await waitFor(() => expect(useProviderStore.getState().loaded).toBe(true));
+
+  await user.click(screen.getByRole("radio", { name: radio }));
+
+  await waitFor(() => expect(useProviderStore.getState().mode).toBe(mode));
+}
+
 function resetStores() {
   act(() => {
     useConnectionStore.setState({
@@ -115,6 +159,13 @@ function resetStores() {
       lastError: null,
       motionOverride: null,
     });
+    useProviderStore.setState({
+      mode: "auto",
+      providers: [],
+      loaded: false,
+      loading: false,
+      error: null,
+    });
   });
 }
 
@@ -129,6 +180,11 @@ beforeEach(() => {
     verified: false,
     duration_ms: 0,
   });
+  mocks.ProviderMode.mockResolvedValue("auto");
+  mocks.ProviderList.mockResolvedValue([]);
+  mocks.ProviderSetMode.mockImplementation(async (mode: string) => mode);
+  mocks.Tools.mockResolvedValue([]);
+  mocks.LiveTunnel.mockResolvedValue({ active: false });
 });
 
 afterEach(() => {
@@ -171,6 +227,9 @@ describe("Quick Connect page", () => {
 
     await waitFor(() => expect(useQuickConnectStore.getState().loaded).toBe(true));
 
+    // v0.9.8.1: the classic picker lives in Configurations mode.
+    await selectProviderMode(user, "configs", /^Configurations/);
+
     const trigger = screen.getByRole("button", { name: /automatic best selection/i });
 
     await user.click(trigger);
@@ -180,7 +239,7 @@ describe("Quick Connect page", () => {
     expect(listbox).toBeTruthy();
     expect(screen.getAllByRole("option")).toHaveLength(3); // Auto + 2 candidates
 
-    await user.click(screen.getByRole("option", { name: /cfg-de, 91 ms/ }));
+    await user.click(screen.getByRole("option", { name: /cfg-de.*91 ms/ }));
 
     await user.click(screen.getByRole("button", { name: /CONNECT/ }));
 
@@ -201,6 +260,10 @@ describe("Quick Connect page", () => {
 
     await waitFor(() => expect(useQuickConnectStore.getState().loaded).toBe(true));
 
+    // The picker's "Auto — fastest measured" option (no explicit
+    // selection) in Configurations mode → engine best-candidate flow.
+    await selectProviderMode(user, "configs", /^Configurations/);
+
     await user.click(screen.getByRole("button", { name: /CONNECT/ }));
 
     await waitFor(() => expect(mocks.ConnectBest).toHaveBeenCalledWith([]));
@@ -214,6 +277,9 @@ describe("Quick Connect page", () => {
     render(<QuickConnectPage onNavigate={vi.fn()} />);
 
     await waitFor(() => expect(useQuickConnectStore.getState().loaded).toBe(true));
+
+    // The classic empty-state note only renders in Configurations mode.
+    await selectProviderMode(user, "configs", /^Configurations/);
 
     expect(screen.getByText(/No tested connections available/i)).toBeTruthy();
 
@@ -316,6 +382,9 @@ describe("Quick Connect page", () => {
 
     await waitFor(() => expect(useQuickConnectStore.getState().loaded).toBe(true));
 
+    // The keyboard-driven listbox lives in Configurations mode.
+    await selectProviderMode(user, "configs", /^Configurations/);
+
     await user.click(screen.getByRole("button", { name: /automatic best selection/i }));
 
     const listbox = screen.getByRole("listbox");
@@ -371,5 +440,66 @@ describe("Quick Connect page", () => {
     await user.click(screen.getByRole("button", { name: /Disconnect & advanced controls/i }));
 
     expect(onNavigate).toHaveBeenCalledWith("connection");
+  });
+
+  // ---- v0.9.8.1 provider mode selector (§12) --------------------------
+
+  it("renders the provider mode selector with all four modes", async () => {
+    render(<QuickConnectPage onNavigate={vi.fn()} />);
+
+    await waitFor(() => expect(useProviderStore.getState().loaded).toBe(true));
+
+    expect(screen.getByRole("radiogroup", { name: "Connection provider" })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: /^Auto/ })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: /^Configurations/ })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: /^Tor/ })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: /^Psiphon/ })).toBeTruthy();
+  });
+
+  it("auto mode routes the primary action through ConnectAuto", async () => {
+    const user = userEvent.setup();
+    mocks.BestCandidates.mockResolvedValue([candidate("pl", 82)]);
+
+    render(<QuickConnectPage onNavigate={vi.fn()} />);
+
+    await waitFor(() => expect(useProviderStore.getState().loaded).toBe(true));
+
+    await user.click(screen.getByRole("button", { name: /CONNECT/ }));
+
+    await waitFor(() => expect(mocks.ProviderConnectAuto).toHaveBeenCalledTimes(1));
+    expect(mocks.ConnectBest).not.toHaveBeenCalled();
+  });
+
+  it("tor mode routes through provider Connect", async () => {
+    const user = userEvent.setup();
+
+    render(<QuickConnectPage onNavigate={vi.fn()} />);
+
+    await selectProviderMode(user, "tor", /^Tor/);
+
+    await user.click(screen.getByRole("button", { name: /CONNECT/ }));
+
+    await waitFor(() => expect(mocks.ProviderConnect).toHaveBeenCalledWith("tor"));
+    expect(mocks.ProviderConnectAuto).not.toHaveBeenCalled();
+  });
+
+  it("configurations mode keeps the classic engine flow", async () => {
+    const user = userEvent.setup();
+    mocks.BestCandidates.mockResolvedValue([candidate("pl", 82)]);
+    mocks.ConnectBest.mockResolvedValue({
+      snapshot: { state: "connected" },
+      chosen: candidate("pl", 82),
+      candidates: 1,
+    });
+
+    render(<QuickConnectPage onNavigate={vi.fn()} />);
+
+    await selectProviderMode(user, "configs", /^Configurations/);
+
+    await user.click(screen.getByRole("button", { name: /CONNECT/ }));
+
+    await waitFor(() => expect(mocks.ConnectBest).toHaveBeenCalledWith([]));
+    expect(mocks.ProviderConnect).not.toHaveBeenCalled();
+    expect(mocks.ProviderConnectAuto).not.toHaveBeenCalled();
   });
 });

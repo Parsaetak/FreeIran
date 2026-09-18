@@ -3963,3 +3963,182 @@ html.reduced-motion .qc-picker-list {
     margin-top: var(--space-4);
   }
 }
+
+/* ---- v0.9.8.1 Quick Connect provider selector (§12) ---------------- */
+.qc-provider-mode {
+  display: flex;
+  gap: var(--space-1, 4px);
+  justify-content: center;
+  margin-bottom: var(--space-2, 8px);
+  flex-wrap: wrap;
+}
+
+.qc-mode-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full, 999px);
+  background: var(--surface-sunken, transparent);
+  color: var(--text-secondary);
+  font-size: var(--text-xs, 11px);
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: color var(--motion-fast, 120ms) var(--ease-out, ease-out),
+    border-color var(--motion-fast, 120ms) var(--ease-out, ease-out),
+    background var(--motion-fast, 120ms) var(--ease-out, ease-out);
+}
+
+.qc-mode-chip:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.qc-mode-chip.active {
+  color: var(--accent);
+  border-color: var(--accent-border, var(--accent));
+  background: var(--accent-dim, transparent);
+}
+
+.qc-mode-chip:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.qc-mode-unavailable {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warn);
+}
+
+.qc-picker-row-proto {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+  background: var(--surface-sunken, transparent);
+  border-radius: var(--radius-sm, 5px);
+  padding: 1px 5px;
+}
+
+html.reduced-motion .qc-mode-chip {
+  transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .qc-mode-chip {
+    transition: none;
+  }
+}
+
+/* ---- v0.9.8.1 Internet Tools (§6) ----------------------------------- */
+.tools-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: var(--space-2, 8px);
+  margin-bottom: var(--space-3, 12px);
+}
+
+.tool-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 8px);
+  background: var(--surface);
+  padding: var(--space-2, 8px) var(--space-3, 12px);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tool-card .tool-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.tool-card .tool-card-title {
+  font-weight: 600;
+  font-size: var(--text-sm, 13px);
+}
+
+.tool-card .tool-card-group {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+}
+
+.tool-card .tool-target {
+  width: 100%;
+}
+
+.tool-result-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2, 8px);
+}
+
+.tool-result {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius, 8px);
+  background: var(--surface-sunken, transparent);
+  padding: var(--space-2, 8px) var(--space-3, 12px);
+}
+
+.tool-result .tool-result-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2, 8px);
+  flex-wrap: wrap;
+}
+
+.tool-result .tool-result-title {
+  font-weight: 600;
+}
+
+.tool-result .tool-result-meta {
+  font-size: var(--text-xs, 11px);
+  color: var(--text-secondary);
+}
+
+.tool-result .tool-result-detail {
+  font-size: var(--text-xs, 11px);
+  color: var(--text-secondary);
+  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  word-break: break-word;
+}
+
+/* ---- v0.9.8.1 provider cards (§13) ---------------------------------- */
+.provider-notice {
+  font-size: var(--text-xs, 11px);
+  color: var(--text-faint);
+  line-height: 1.5;
+}
+
+.provider-endpoint-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.provider-endpoint {
+  font-family: var(--mono, monospace);
+  font-size: var(--text-xs, 11px);
+  color: var(--text-secondary);
+}
+
+.provider-cap {
+  display: inline-block;
+  font-size: 10px;
+  border-radius: var(--radius-sm, 5px);
+  border: 1px solid var(--border-subtle);
+  padding: 1px 6px;
+  color: var(--text-secondary);
+  margin: 1px 2px 1px 0;
+}

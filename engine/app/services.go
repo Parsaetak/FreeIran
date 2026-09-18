@@ -485,7 +485,22 @@ func sortConfigs(list []config.Config, filter ConfigFilter) {
 
 	switch filter.SortBy {
 	case "latency":
-		less = func(i, j int) bool { return list[i].LatencyMS < list[j].LatencyMS }
+		// v0.9.8.1: a WORKING config always carries a measurement, and
+		// LatencyMS == 0 on a working config is a measured sub-milli-
+		// second round trip — the fastest, not "unmeasured". Sort
+		// measured-first, then ascending ms, then deterministically.
+		less = func(i, j int) bool {
+			a, b := list[i], list[j]
+			am := a.Working && a.TestedAt > 0
+			bm := b.Working && b.TestedAt > 0
+			if am != bm {
+				return am
+			}
+			if am && a.LatencyMS != b.LatencyMS {
+				return a.LatencyMS < b.LatencyMS
+			}
+			return a.ID < b.ID
+		}
 	case "tested_at":
 		less = func(i, j int) bool { return list[i].TestedAt < list[j].TestedAt }
 	case "protocol":

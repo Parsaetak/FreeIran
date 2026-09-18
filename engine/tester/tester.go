@@ -19,9 +19,18 @@ type Probe interface {
 }
 
 // Result contains the outcome of a configuration test.
+//
+// v0.9.8.1 measurement contract (see latency.go): Latency is the
+// true measurement with full precision and is STRICTLY POSITIVE
+// whenever Measured is true (successful probes quantize raw zero
+// clock readings up to ClockFloor). Measured — not any millisecond
+// projection — is the authoritative "was this measured" signal:
+// PingMS/DurationMS == 0 with Measured == true means "measured,
+// below one millisecond".
 type Result struct {
 	Working   bool
 	Latency   time.Duration
+	Measured  bool
 	TestedAt  time.Time
 	LastError string
 
@@ -40,10 +49,13 @@ type Result struct {
 
 	// PingMS is the measured round-trip time through the tunnel
 	// (end-to-end probes only; TCP probe reports its dial RTT).
+	// Millisecond projection of Latency: 0 = measured sub-ms
+	// (check Measured), never "unmeasured".
 	PingMS int64
 
 	// DurationMS is the total wall time of the test (spawn + ready +
-	// probe for core tests; dial time for TCP probes).
+	// probe for core tests; dial time for TCP probes). Sub-ms tests
+	// project to 0 — a fast result, not a missing one.
 	DurationMS int64
 
 	// Quality classifies the measured latency: excellent / good /
@@ -64,6 +76,12 @@ const (
 )
 
 // QualityFor classifies a measured latency in milliseconds.
+//
+// v0.9.8.1: this legacy entry point receives ONLY values known to be
+// measured-and-positive. Callers holding a measured flag must use
+// QualityForMeasured (a measured sub-millisecond latency is
+// excellent, not failed); callers holding a duration use
+// QualityForDuration.
 func QualityFor(ms int64) string {
 	switch {
 	case ms <= 0:
@@ -166,7 +184,10 @@ func ApplyResult(cfg *config.Config, result Result) {
 	}
 
 	cfg.Working = result.Working
-	cfg.LatencyMS = result.Latency.Milliseconds()
+	// v0.9.8.1: LatencyMS is a millisecond projection — 0 means
+	// measured sub-millisecond when Working is true (rule R5 in
+	// latency.go), never "unmeasured".
+	cfg.LatencyMS = MSOf(result.Latency)
 	cfg.TestedAt = result.TestedAt.UnixMilli()
 
 	// v0.9.0 test metadata (§4).

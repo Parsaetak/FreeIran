@@ -115,6 +115,10 @@ func main() {
 			// v0.9.6: discovery engine, environment intelligence and
 			// the adaptive start flow (§5/§15).
 			application.NewService(app.NewDiscoveryService(applicationInstance)),
+			// v0.9.8.1: first-class provider surface (§12/§13) and the
+			// shared Internet-Tools engine (§6).
+			application.NewService(app.NewProviderService(applicationInstance)),
+			application.NewService(app.NewInternetToolsService(applicationInstance)),
 		},
 		Assets: application.AssetOptions{
 			Handler: application.BundledAssetFileServer(assets),

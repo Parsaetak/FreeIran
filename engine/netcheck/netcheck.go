@@ -567,7 +567,11 @@ func probeThroughProxy(ctx context.Context, proxyAddr string, urls []string) (bo
 		started := time.Now()
 
 		resp, err := client.Do(req)
-		latency := time.Since(started).Milliseconds()
+
+		// v0.9.8.1: elapsedMS quantizes a successful sub-millisecond
+		// probe up to 1 ms — 0 stays reserved for "not set" in this
+		// report's fields, matching probeHTTPS/probeTCP/probeDNS.
+		latency := elapsedMS(started)
 
 		if err != nil {
 			lastErr = err.Error()

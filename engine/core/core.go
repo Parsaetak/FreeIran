@@ -388,7 +388,17 @@ func (i *Instance) Health(ctx context.Context) HealthReport {
 	if i.listen != "" {
 		ready, latency, err := probeListener(ctx, i.listen)
 		report.ListenerReady = ready
-		report.LatencyMS = latency.Milliseconds()
+
+		// v0.9.8.1: a ready listener probe IS a measurement. The local
+		// loopback probe is usually sub-millisecond, which projects to
+		// 0 ms; the coarse display stat is quantized to 1 ms so a working
+		// listener never reports an ambiguous zero (rule R4).
+		if ready {
+			report.LatencyMS = 1
+			if ms := latency.Milliseconds(); ms > 0 {
+				report.LatencyMS = ms
+			}
+		}
 
 		if err != nil {
 			report.Details = err.Error()

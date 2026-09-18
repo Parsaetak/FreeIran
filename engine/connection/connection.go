@@ -24,6 +24,8 @@ import (
 	"github.com/Parsaetak/FreeIran/engine/core"
 	firerrors "github.com/Parsaetak/FreeIran/engine/errors"
 	"github.com/Parsaetak/FreeIran/engine/metrics"
+
+	"github.com/Parsaetak/FreeIran/engine/provider"
 )
 
 // Subsystem identifies the connection layer in structured errors.
@@ -137,17 +139,26 @@ type Options struct {
 type Manager struct {
 	opts Options
 
-	mu          sync.Mutex
-	state       State
-	instance    *core.Instance
-	cfg         *config.Config
-	coreName    string
-	coreVersion string
-	lastError   string
-	attempts    []Attempt
-	startedAt   time.Time
-	latencyMS   int64
-	port        int
+	mu       sync.Mutex
+	state    State
+	instance *core.Instance
+	// provider holds the first-class provider session (Tor/Psiphon)
+	// when the active route is provider-based (§11). Exactly one of
+	// instance/provider is non-nil while connected.
+	provider *providerSession
+
+	// lastProvider remembers the provider of the last provider-based
+	// session so Reconnect can re-establish it (mirrors m.cfg, which
+	// persists across Disconnect for the same purpose).
+	lastProvider provider.Provider
+	cfg          *config.Config
+	coreName     string
+	coreVersion  string
+	lastError    string
+	attempts     []Attempt
+	startedAt    time.Time
+	latencyMS    int64
+	port         int
 
 	// coreReadyMS is the LOCAL core startup→ready duration of the
 	// active session (v0.9.7: never reported as network latency).
@@ -411,6 +422,8 @@ func (m *Manager) attempt(
 
 // Disconnect tears the session down: stop the core first (Windows
 // file-lock discipline), then release resources, then clear state.
+// Provider sessions (§11) stop through their own deterministic
+// lifecycle — no orphan processes either way.
 func (m *Manager) Disconnect() Snapshot {
 	if m == nil {
 		return Snapshot{}
@@ -425,6 +438,9 @@ func (m *Manager) Disconnect() Snapshot {
 	m.state = StateDisconnecting
 
 	m.mu.Unlock()
+
+	// Provider sessions stop through the provider lifecycle.
+	m.stopProviderSession()
 
 	if instance != nil {
 		if err := instance.Close(); err != nil {
@@ -441,7 +457,8 @@ func (m *Manager) Disconnect() Snapshot {
 	return m.Snapshot()
 }
 
-// Reconnect re-establishes the last configuration.
+// Reconnect re-establishes the last configuration — or the last
+// provider session when the previous route was provider-based (§11).
 func (m *Manager) Reconnect(ctx context.Context) (Snapshot, error) {
 	if m == nil {
 		return Snapshot{}, firerrors.New(firerrors.KindFatal,
@@ -450,7 +467,32 @@ func (m *Manager) Reconnect(ctx context.Context) (Snapshot, error) {
 
 	m.mu.Lock()
 	cfg := m.cfg
+	provSession := m.provider
 	m.mu.Unlock()
+
+	if provSession != nil && cfg == nil {
+		// Provider session: reconnect through the same provider.
+		prov := provSession.prov
+
+		m.Disconnect()
+
+		return m.ConnectProvider(ctx, prov, VerifyOptions{})
+	}
+
+	if provSession == nil && cfg == nil {
+		// After a Disconnect the active-session fields are cleared;
+		// the last ROUTE is remembered for reconnect (config or
+		// provider).
+		m.mu.Lock()
+		lastProv := m.lastProvider
+		m.mu.Unlock()
+
+		if lastProv != nil {
+			m.Disconnect()
+
+			return m.ConnectProvider(ctx, lastProv, VerifyOptions{})
+		}
+	}
 
 	if cfg == nil {
 		return m.Snapshot(), firerrors.New(firerrors.KindConfiguration,
@@ -488,6 +530,32 @@ func (m *Manager) snapshotLocked() Snapshot {
 		snapshot.ConfigID = m.cfg.ID
 		snapshot.ConfigName = m.cfg.Name
 		snapshot.ConfigDisplay = m.cfg.DisplayURL()
+	}
+
+	if m.provider != nil {
+		// Provider-backed session (§11): the same verification
+		// semantics, reported through the same Snapshot surface.
+		snapshot.Endpoint = m.provider.endpoint
+		snapshot.CoreReadyMS = m.coreReadyMS
+
+		if m.verifiedAt.IsZero() {
+			snapshot.Verification = "none"
+		} else if m.lastVerify.OK {
+			snapshot.Verification = "usable"
+			snapshot.LatencyMS = m.lastVerify.TunnelProbeMS
+			snapshot.PingMedianMS = m.lastVerify.TunnelProbeMS
+			snapshot.URLTotalMS = m.lastVerify.Metrics.TotalMS
+		} else {
+			snapshot.Verification = "failed"
+		}
+
+		if !m.startedAt.IsZero() {
+			snapshot.StartedAt = m.startedAt.UnixMilli()
+		}
+
+		if m.cfg == nil {
+			snapshot.ConfigDisplay = m.coreName + " (provider session)"
+		}
 	}
 
 	if m.instance != nil {
@@ -640,11 +708,38 @@ func (m *Manager) startMonitor() {
 			case <-ticker.C:
 				m.mu.Lock()
 				instance := m.instance
+				provSession := m.provider
 				state := m.state
 				m.mu.Unlock()
 
-				if instance == nil || state != StateConnected {
+				if (instance == nil && provSession == nil) || state != StateConnected {
 					return
+				}
+
+				// Provider sessions (§11): the provider's own health
+				// (process alive + measured endpoint) drives the crash
+				// transition — same failure semantics as cores.
+				if provSession != nil {
+					health := provSession.prov.Health(ctx)
+					if !health.ProcessAlive {
+						if m.opts.Metrics != nil {
+							m.opts.Metrics.AddCoreCrash()
+						}
+
+						m.mu.Lock()
+
+						if m.state == StateConnected {
+							m.state = StateConnectionFailed
+							m.lastError = "provider process exited unexpectedly"
+							m.provider = nil
+						}
+
+						m.mu.Unlock()
+
+						return
+					}
+
+					continue
 				}
 
 				report := instance.Health(ctx)

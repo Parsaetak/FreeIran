@@ -3316,3 +3316,162 @@ Date: 2026-09-18 · Baseline: v0.9.6 (45ff7fc)
   (IMAGE_SUBSYSTEM_WINDOWS_GUI) — equivalent of
   TestWindowsGUISubsystem, whose Go form requires a Windows runner.
 - Benchmark smoke (chunks/store/pipeline/core/v2ray/logging): PASS
+
+## v0.9.8.1 — latency semantics root fix, Tor/Psiphon providers, Internet tools (2026-09-18)
+
+### Scope
+
+- Latency measurement semantics (§2), the root fix of the Windows CI
+  failure (run 35287863799, engine/tester/TestTCPProbeReachable
+  "latency should be measured"): coarse Windows monotonic clocks can
+  measure a successful loopback dial as exactly 0, and ANY real
+  sub-millisecond measurement truncated via
+  time.Duration.Milliseconds() to 0, which consumers read as "not
+  measured" (QualityFor(0)="failed"; ranking dropped
+  Working && LatencyMS>0; UI gated on latency_ms>0). Fixed in the
+  REPRESENTATION, not the test expectations:
+  engine/tester/latency.go defines canonical rules R1–R6 — true
+  Duration preserved; MeasuredLatency() quantizes successful raw<=0
+  readings to ClockFloor (1 ns, no artificial sleeps);
+  Result.Measured is the authoritative flag; 0 ms with Measured=true
+  means "measured, sub-millisecond", rendered "< 1 ms"; Working
+  implies a measurement; sub-ms sorts FIRST among measured.
+  Consumers migrated: engine/ranking/ranking.go + scores.go (sub-ms
+  working observations included; Score.LatencyMSMeasured),
+  engine/tester/ping.go (PingMetrics.SubMS), engine/tester/modes.go
+  (true spawn-to-ready duration), engine/testqueue/queue.go
+  (Measured + 1 ms-quantized stats), engine/core/core.go
+  (Instance.Health >= 1 ms when ready), engine/netcheck probes,
+  sortConfigs measured-first partition, CandidateView
+  latency_ms_measured → frontend ordering/display.
+- Internet-Tools engine (§5/§7), engine/netcheck: shared ToolRunner
+  contract (tool_id/target/started_at/finished_at/duration_ms/
+  status/transport/path direct|tunneled/provider/measurement/error/
+  details), timeouts clamped [1 s, 60 s], statuses
+  ok/failed/timeout/cancelled/invalid_target/unsupported. Tools
+  (tools.go/tools_impl.go/tools_path.go): internet, dns, tcp, tls,
+  https, http_connect, socks5, websocket, udp, quic (honestly
+  unsupported — no QUIC stack compiled), traceroute (raw ICMP TTL
+  walk, privilege-gated → honest "requires administrator
+  privileges"), path_mtu (bounded DNS payload ladder, ~300 B cap,
+  honestly labelled), captive_portal, public_ip (direct vs tunnel),
+  tunnel_diagnostics (live measured truth). Safety
+  (toolsafety.go): scheme allowlist, credentials in URLs rejected,
+  private/link-local blocked for autonomous targets, DNS-rebinding
+  guard (resolve → validate → pin), redirect cap 3, response cap
+  256 KiB, user-triggered ONLY, bounded concurrency (3 tokens,
+  engine/app/internettools.go). Events network_tool_start/complete/
+  failed with tool/status/duration_ms/target/error_kind.
+- Provider architecture (§8–§14), engine/provider: unified Provider
+  contract (Name/Kind/Resolve/Install/Uninstall/Start/Stop/State/
+  Info/Endpoints/Health/Cleanup) + Manager; kinds core
+  (xray/v2ray/sing-box via thin CoreProviderAdapter over the SAME
+  coremgr pipeline — provider-level Start honestly unsupported for
+  cores), tor, psiphon. Shared managed-binary pipeline (binary.go):
+  resolve → resumable .part download (internal/httpx, stall-watched)
+  → MANDATORY SHA-256 verify (releases without published checksums
+  refused) → tar.gz unpack (tar-slip guarded, archive.go) → version
+  validation → supervised smoke launch → atomic activate with
+  rollback → manifest; workspace
+  <workspace>/providers/<name>/{bin,staging,manifest.json,data,
+  cache,logs}.
+- Tor (tor.go): official dist.torproject.org expert bundles (URL
+  layout verified live:
+  torbrowser/<ver>/tor-expert-bundle-<platform>-<ver>.tar.gz with
+  sha256sums-signed-build.txt fetched over TLS from the same host;
+  pinned channel 15.0.20, "latest" via directory listing with alpha
+  skipping). torrc per run (SocksPort on reserved ephemeral,
+  DataDirectory/CacheDirectory inside workspace, Log notice stdout);
+  bootstrap parsed from REAL "Bootstrapped X% (Tag)" lines — never
+  timers; readiness also observed via the SOCKS endpoint. Bridges
+  user-provided ONLY (validated transport + host:port + optional
+  40-hex fingerprint); pluggable transports via user plugin paths;
+  WebTunnel reported from the installed version (tor >= 0.4.8).
+  Health = process alive + measured SOCKS handshake. BSD-3-Clause
+  attribution surfaced. Honest limitation: GPG verification of the
+  checksum file itself is not performed (TLS from the official host
+  — same authority model as the Tor Browser updater's initial
+  bootstrap).
+- Psiphon (psiphon.go): official tunnel-core console client channel
+  (GitHub releases with asset digests, default repo
+  Psiphon-Labs/psiphon-tunnel-core). Honest refusal: when the
+  channel exposes no release assets with digests, Resolve reports
+  unavailability and Install REFUSES (binaries never executed
+  unverified); user binary path supported (validated +
+  smoke-launched, Settings.psiphon_user_binary). Config JSON per run
+  (LocalSocksProxyPort + LocalHttpProxyPort + DataRootDirectory in
+  workspace; user extra config validated as JSON, engine-owned
+  fields not overridable). Readiness observed from the real runtime
+  (both local proxy ports accepting); capabilities reported ONLY
+  when running. Psiware attribution surfaced; nothing statically
+  embedded.
+- Connection integration (§11), engine/connection/provider.go:
+  Manager.ConnectProvider — the SAME lifecycle (select → start
+  provider → route via local SOCKS → VerifyTunnel, no bypassing →
+  Connected → the SAME monitor loop; provider health drives crash
+  transitions) → Disconnect stops deterministically; Reconnect
+  remembers the provider route (connection.go). Auto mode (§12,
+  engine/app/providerservice.go + persist_settings.go): evidence
+  scoring (installed availability gate, live health, last-verified
+  freshness, latency, failure-streak stability, config-side ranking
+  composite) — NO hardcoded priority; choices explainable like
+  ranking. Settings: provider_mode/tor_bridge_lines/
+  tor_transport_plugins/psiphon_extra_config/psiphon_user_binary
+  (loggingservice.go).
+- Safety: one managed instance per provider (Manager + engines
+  serialize); system.ManagedProcess supervision (Windows job objects
+  — no orphans); failed starts stop the provider deterministically;
+  log pruning (Cleanup, 7 d / 16 files); bounded tool concurrency.
+- UI: Quick Connect provider mode selector (Auto/Configurations/
+  Tor/Psiphon radiogroup above the picker; uninstalled providers
+  visibly marked; picker renders in Configurations mode; provider
+  routes use the same single primary action; measured sub-ms shows
+  "< 1 ms"; picker rows carry protocol); Cores page Providers
+  section (Tor/Psiphon cards: version/state/runtime/source/license/
+  notice/last check/endpoints/health latency/capabilities +
+  Install/Verify/Start/Stop/Uninstall); Network page Internet tools
+  section (grouped tool grid, per-tool target input, via-tunnel
+  toggle only when a tunnel is active, structured results, nothing
+  automatic). Frontend: frontend/src/pages/{QuickConnect,Cores,
+  Network}.tsx, frontend/src/state/providerStore.ts(+test),
+  quickConnectModel.ts, services/index.ts, styles/index.css;
+  bindings internettoolsservice.js + providerservice.js.
+- Tests: engine/provider/testdata/{faketor,fakepsiphon}
+  deterministic stand-ins (built by TestMain with the running
+  toolchain — missing fixture is a hard failure); full lifecycle
+  coverage incl. HTTP-through-provider via a real SOCKS relay
+  (provider_test.go); connection provider-session tests
+  (engine/connection/provider_test.go); engine/tester/
+  latency_test.go (0/500 µs/999 µs/1 ms/1.5 ms/10 ms/600 ms/3 s/
+  timeout/failure/cancellation + live loopback representation);
+  engine/ranking/subms_test.go; frontend vitest 104 tests (was 91)
+  incl. sub-ms ordering, provider mode routing, provider store.
+- Version 0.9.8.1 everywhere: VERSION, internal/version/version.go,
+  frontend/package.json, build/winres.json, scripts/freeiran.iss.
+- Documentation: new docs/latency.md, docs/providers.md,
+  docs/internet-tools.md; updated README ("What's new in
+  v0.9.8.1" + repository structure), docs/architecture.md (layer
+  tree + Providers and Internet tools section), docs/security.md
+  (tool safety + install integrity), docs/ui.md (provider modes,
+  Cores providers, Network tools), docs/development.md (provider
+  fixtures), docs/ci.md (fixtures + latency-fix coverage).
+
+### Verification
+
+- go build ./engine/... ./system/... ./internal/... (go1.26.8,
+  GOTOOLCHAIN=local): PASS
+- go test -count=1 ./engine/... ./system/... ./internal/...: PASS
+  (32 packages)
+- go test -race -count=1 ./engine/provider/... ./engine/tester/...
+  ./engine/netcheck/... ./engine/connection/...: PASS
+- go vet ./engine/... ./system/... ./internal/...: PASS
+- frontend: vitest 104 tests / 13 files: PASS (was 91; +13
+  provider-mode routing, provider store, sub-ms ordering)
+- Honest note: the nine new v0.9.8.1 Go files
+  (engine/app/app.go, engine/app/providerservice.go,
+  engine/netcheck/{tools,tools_impl,tools_path,tools_test,
+  toolsafety}.go, engine/ranking/subms_test.go,
+  engine/tester/latency_test.go) are space-indented and not yet
+  gofmt-normalized — `gofmt -l` flags them, so CI's gofmt gate will
+  fail until the mechanical `gofmt -w` pass is run (documentation
+  only was written in this session; no Go/TS code was modified).

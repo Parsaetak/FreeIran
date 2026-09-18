@@ -3,13 +3,15 @@ import { useConnectionStore } from "../state/connectionStore";
 import { useQuickConnectStore } from "../state/quickConnectStore";
 import { useStartFlowStore } from "../state/startflowStore";
 import { useSettingsStore, effectiveReducedMotion } from "../state/settingsStore";
-import type { CandidateView } from "../services";
+import { useProviderStore, PROVIDER_MODE_LABELS, type ProviderMode } from "../state/providerStore";
+import { call, providerService } from "../services";
 import type { Page } from "../types/ui";
 import { formatLatency, truncate } from "../utilities/format";
 import {
-  candidateStatus,
+  quickPickerRows,
   pickerLatencyText,
   pickerStatusClass,
+  type QuickCandidateRow,
 } from "../utilities/quickConnectModel";
 import { IconCheck, IconChevronDown, IconZap } from "../components/Icons";
 
@@ -90,11 +92,33 @@ export function QuickConnectPage({ onNavigate }: { onNavigate: (page: Page) => v
   const select = useQuickConnectStore((state) => state.select);
   const loadCandidates = useQuickConnectStore((state) => state.load);
 
-  // Candidates load once per mount; the backend caches the ranking
-  // pass, so this is a single bounded call — never a poll.
+  // v0.9.8.1 (§12): the provider choice (Auto / Configurations /
+  // Tor / Psiphon) + live availability. Loaded once per mount.
+  const providerMode = useProviderStore((state) => state.mode);
+  const providerProviders = useProviderStore((state) => state.providers);
+  const providerLoaded = useProviderStore((state) => state.loaded);
+  const providerLoading = useProviderStore((state) => state.loading);
+  const setProviderMode = useProviderStore((state) => state.setMode);
+  const loadProviders = useProviderStore((state) => state.load);
+
+  // Candidates + provider state load once per mount; the backend
+  // caches the ranking pass, so these are bounded calls — never
+  // polls.
   useEffect(() => {
     void loadCandidates();
-  }, [loadCandidates]);
+    void loadProviders();
+  }, [loadCandidates, loadProviders]);
+
+  /** Installed availability per provider mode (honest: only what the runtime reports). */
+  const providerAvailability = useMemo(() => {
+    const map = new Map<string, boolean>();
+
+    for (const info of providerProviders) {
+      map.set(info.name, info.installed);
+    }
+
+    return map;
+  }, [providerProviders]);
 
   /**
    * Hero state: mapped from the real connection state machine first,
@@ -149,6 +173,24 @@ export function QuickConnectPage({ onNavigate }: { onNavigate: (page: Page) => v
   }, [heroState, flowMessage]);
 
   const onConnect = useCallback(() => {
+    // v0.9.8.1 (§12): provider sessions (Tor / Psiphon) and the Auto
+    // mode run through the SAME high-level lifecycle in the backend
+    // (select → start provider/core → wait ready → verify actual
+    // Internet → connected → monitor → recover).
+    if (providerMode === "tor" || providerMode === "psiphon") {
+      void runProviderRoute(() => providerService.Connect(providerMode));
+
+      return;
+    }
+
+    if (providerMode === "auto") {
+      void runProviderRoute(() => providerService.ConnectAuto());
+
+      return;
+    }
+
+    // Configurations mode — the classic engine flow.
+
     // §13 — Case A: explicit selection wins.
     if (selected) {
       void connect(selected);
@@ -168,7 +210,7 @@ export function QuickConnectPage({ onNavigate }: { onNavigate: (page: Page) => v
       // (detect → discover → test → rank → connect → verify).
       void useStartFlowStore.getState().run();
     }
-  }, [selected, connect, connectBest]);
+  }, [providerMode, selected, connect, connectBest]);
 
   const extras = (snapshot ?? {}) as SnapshotExtras;
   const connectedName = snapshot?.config_name || snapshot?.config_display || "";
@@ -176,6 +218,10 @@ export function QuickConnectPage({ onNavigate }: { onNavigate: (page: Page) => v
   const medianPing = extras.ping_median_ms ?? 0;
   const connectedPing = snapshotPing > 0 ? snapshotPing : medianPing > 0 ? medianPing : 0;
   const verified = extras.verification === "usable";
+  // v0.9.8.1: a verified session with a 0 ms reading is a MEASURED
+  // sub-millisecond round trip — displayed honestly, never hidden.
+  const connectedPingMeasured =
+    verified && (snapshotPing > 0 || medianPing > 0 || snapshotPing === 0);
 
   return (
     <div>
@@ -199,7 +245,11 @@ export function QuickConnectPage({ onNavigate }: { onNavigate: (page: Page) => v
             <div className="qc-result">
               <div className="qc-result-line">
                 {connectedName ? truncate(connectedName, 36) : "Session active"}
-                {connectedPing > 0 && <span className="qc-result-ping"> · {formatLatency(connectedPing)}</span>}
+                {connectedPing > 0 ? (
+                  <span className="qc-result-ping"> · {formatLatency(connectedPing)}</span>
+                ) : (
+                  connectedPingMeasured && <span className="qc-result-ping"> · &lt; 1 ms</span>
+                )}
               </div>
               <div className="qc-result-sub">
                 {snapshot?.core
@@ -219,14 +269,29 @@ export function QuickConnectPage({ onNavigate }: { onNavigate: (page: Page) => v
         </div>
 
         {heroState !== "connected" && (
+          <ProviderModeSelector
+            mode={providerMode}
+            onModeChange={(mode) => void setProviderMode(mode)}
+            availability={providerAvailability}
+            disabled={inFlight}
+            loaded={providerLoaded}
+            loading={providerLoading}
+          />
+        )}
+
+        {heroState !== "connected" && providerMode === "configs" && (
           <QuickPicker
-            rows={candidates}
+            rows={quickPickerRows(candidates)}
             loading={candidatesLoading && !candidatesLoaded}
             loaded={candidatesLoaded}
             selected={selected}
             disabled={inFlight}
             onSelect={select}
           />
+        )}
+
+        {heroState !== "connected" && providerMode !== "configs" && (
+          <ProviderModeNote mode={providerMode} availability={providerAvailability} />
         )}
 
         {heroState === "connected" ? (
@@ -273,6 +338,90 @@ export function QuickConnectPage({ onNavigate }: { onNavigate: (page: Page) => v
   );
 }
 
+/**
+ * v0.9.8.1: fire-and-forget provider route with a final, safe state
+ * refresh. The refresh itself is swallowed: the authoritative
+ * connection state also arrives via the freeiran:connection events,
+ * and an unhandled rejection here must never escape (the connection
+ * store surfaces failures through its own error path).
+ */
+async function runProviderRoute(operation: () => Promise<unknown>): Promise<void> {
+  await call(operation).catch(() => undefined);
+
+  void useConnectionStore.getState().refresh().catch(() => undefined);
+}
+
+/**
+ * v0.9.8.1 provider selector (§12): a compact segmented control above
+ * the configuration picker. Auto selection is evidence-based in the
+ * backend; uninstalled providers are visibly unavailable but still
+ * selectable (installing happens on the Cores page — explicit user
+ * action only).
+ */
+function ProviderModeSelector({
+  mode,
+  onModeChange,
+  availability,
+  disabled,
+  loaded,
+  loading,
+}: {
+  mode: ProviderMode;
+  onModeChange: (mode: ProviderMode) => void;
+  availability: Map<string, boolean>;
+  disabled: boolean;
+  loaded: boolean;
+  loading: boolean;
+}) {
+  const modes: ProviderMode[] = ["auto", "configs", "tor", "psiphon"];
+
+  return (
+    <div className="qc-provider-mode" role="radiogroup" aria-label="Connection provider" data-loading={loading ? "true" : undefined}>
+      {modes.map((candidate) => {
+        const active = candidate === mode;
+        const installed = candidate === "auto" || candidate === "configs" || availability.get(candidate) === true;
+
+        return (
+          <button
+            key={candidate}
+            type="button"
+            role="radio"
+            aria-checked={active}
+            aria-label={`${PROVIDER_MODE_LABELS[candidate]}${installed ? "" : " (not installed)"}`}
+            className={`qc-mode-chip ${active ? "active" : ""}`}
+            disabled={disabled}
+            onClick={() => onModeChange(candidate)}
+          >
+            {PROVIDER_MODE_LABELS[candidate]}
+            {loaded && !installed && <span className="qc-mode-unavailable" title="Not installed — see Cores page" />}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Honest note under the selector when a provider route is chosen. */
+function ProviderModeNote({
+  mode,
+  availability,
+}: {
+  mode: ProviderMode;
+  availability: Map<string, boolean>;
+}) {
+  if (mode !== "tor" && mode !== "psiphon") return null;
+
+  const installed = availability.get(mode) === true;
+
+  return (
+    <div className="qc-picker-note" aria-live="polite">
+      {installed
+        ? `${PROVIDER_MODE_LABELS[mode]} route · connect runs the full verify-Internet lifecycle`
+        : `${PROVIDER_MODE_LABELS[mode]} is not installed yet — install it on the Cores page (explicit action, checksum-verified download).`}
+    </div>
+  );
+}
+
 /** Status orb with a per-state animation (CSS only — no images/GIFs). */
 function QuickOrb({ state }: { state: QuickHeroState }) {
   return (
@@ -292,6 +441,8 @@ interface PickerOption {
   fingerprint: string | null;
   name: string;
   latencyMS: number;
+  measured: boolean;
+  protocol: string | null;
   statusClass: string | null;
   statusText: string | null;
   quality: string | null;
@@ -310,7 +461,7 @@ export function QuickPicker({
   disabled,
   onSelect,
 }: {
-  rows: CandidateView[];
+  rows: QuickCandidateRow[];
   loading: boolean;
   loaded: boolean;
   selected: string | null;
@@ -328,22 +479,22 @@ export function QuickPicker({
         fingerprint: null,
         name: "Auto — fastest measured",
         latencyMS: 0,
+        measured: false,
+        protocol: null,
         statusClass: null,
         statusText: null,
         quality: null,
       },
-      ...rows.map((view) => {
-        const status = candidateStatus(view);
-
-        return {
-          fingerprint: view.fingerprint,
-          name: view.name || view.endpoint || "Unnamed configuration",
-          latencyMS: view.latency_ms > 0 ? view.latency_ms : 0,
-          statusClass: pickerStatusClass(status),
-          statusText: status,
-          quality: view.class,
-        };
-      }),
+      ...rows.map((row) => ({
+        fingerprint: row.fingerprint,
+        name: row.name,
+        latencyMS: row.latencyMS,
+        measured: row.measured,
+        protocol: row.protocol,
+        statusClass: pickerStatusClass(row.status),
+        statusText: row.status,
+        quality: row.quality,
+      })),
     ],
     [rows],
   );
@@ -454,8 +605,8 @@ export function QuickPicker({
           <span className="qc-picker-name">{truncate(selectedOption.name, 30)}</span>
         </span>
         <span className="qc-picker-meta">
-          {selectedOption.fingerprint && selectedOption.latencyMS > 0 && (
-            <span className="mono-cell">{pickerLatencyText(selectedOption.latencyMS)}</span>
+          {selectedOption.fingerprint && (selectedOption.measured || selectedOption.latencyMS > 0) && (
+            <span className="mono-cell">{pickerLatencyText(selectedOption.latencyMS, selectedOption.measured)}</span>
           )}
           <IconChevronDown size={14} aria-hidden />
         </span>
@@ -479,7 +630,8 @@ export function QuickPicker({
               aria-selected={option.fingerprint === selected}
               aria-label={
                 `${option.fingerprint ? "Configuration" : "Automatic selection"}: ${option.name}` +
-                (option.latencyMS > 0 ? `, ${pickerLatencyText(option.latencyMS)}` : "") +
+                (option.protocol ? `, ${option.protocol}` : "") +
+                (option.measured || option.latencyMS > 0 ? `, ${pickerLatencyText(option.latencyMS, option.measured)}` : "") +
                 (option.statusText ? `, ${option.statusText}` : "")
               }
               className={`qc-picker-row ${index === active ? "active" : ""} ${
@@ -491,9 +643,10 @@ export function QuickPicker({
               <span className="qc-picker-row-main">
                 <IconZap size={12} aria-hidden />
                 <span className="qc-picker-row-name">{truncate(option.name, 32)}</span>
+                {option.protocol && <span className="qc-picker-row-proto">{option.protocol}</span>}
               </span>
               <span className="qc-picker-row-meta">
-                <span className="mono-cell qc-ping">{pickerLatencyText(option.latencyMS)}</span>
+                <span className="mono-cell qc-ping">{pickerLatencyText(option.latencyMS, option.measured)}</span>
                 {option.statusText && (
                   <span className={`qc-dot ${option.statusClass}`} title={option.statusText}>
                     <span className="sr-only">{option.statusText}</span>
