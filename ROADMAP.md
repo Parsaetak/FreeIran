@@ -1,38 +1,5 @@
 # FreeIran Roadmap
 
-## v0.9.8.3 — Delivered (this release)
-
-The v0.9.8.3 P0 set landed as one coherent pass:
-
-- **Quick Connect** is a real fresh-selection loop (merge recent
-  verified successes + top ranked → bounded shortlist → fresh-test
-  stale evidence → re-rank → connect with an Internet-verification
-  gate → verified-only success), shared verbatim by recovery.
-- **Connection states** distinguish `connected` (local route
-  established) from `connected_verified` (end-to-end verification
-  passed); `connection_success` is only emitted after verification.
-- **Tor acquisition** resolves the live official listing with a
-  pinned fallback, tolerates the real checksum file shape, preserves
-  the whole bundle payload on activation, and is idempotent by
-  published checksum.
-- **Psiphon** keeps the honest trust-boundary behavior (no fake
-  auto-install; the user-binary flow is the supported path).
-- **Configuration reorder** operates on stable IDs over the complete
-  collection with atomic persistence, restart safety and regression
-  tests (filtering never corrupts the underlying order).
-- **Local proxy ports** are user-selectable (SOCKS5, optional HTTP),
-  validated and bind-checked before launch; conflicts fail loudly.
-- **Workspace**: the application folder is the single workspace root
-  for every deployment; `%AppData%\FreeIran` is legacy and migrated
-  once; the installer defaults to a per-user writable directory and
-  the uninstaller stops managed processes and asks before deleting
-  user data.
-- **Logging**: compact records (no per-record session/event ids),
-  level-filtered before formatting, single JSON marshal, bounded
-  age/size/count retention.
-- **Memory booster**: queue-depth growth is evidence-gated with
-  cooldowns and hysteresis; idle operation produces no policy logs.
-
 ## FreeIran — Autonomous Local Connectivity Engine
 
 FreeIran is a local Windows connectivity engine that discovers, tests, ranks, connects, monitors and recovers proxy/VPN connectivity through managed protocol cores and first-class providers.
@@ -49,7 +16,7 @@ The application should feel like a mature desktop connectivity client rather tha
 
 Current main:
 
-* Version: `0.9.8.3`
+* Version: `0.9.8.2`
 * Commit: `628b06a7b44f57b373d55703f0fc4d76c68511ca`
 * Platform focus: Windows x64
 * Runtime: Go + Wails + React/TypeScript
