@@ -9,7 +9,7 @@ configurations.
 **Project:** FreeIran — A SHEYTAN Digital System
 **Architect:** Parsa Tak / SHEYTAN
 **Repository:** https://github.com/Parsaetak/FreeIran
-**Current version:** 0.9.8.2 (see `VERSION`)
+**Current version:** 0.9.8.3 (see `VERSION`)
 **Status:** production architecture — multi-core protocol runtime with
 managed installation, multi-level node discovery, Ping/URL test modes
 with measured ranking, verified-connection engine with racing,
@@ -18,9 +18,9 @@ memory control and kernel-level process supervision
 
 ---
 
-## What's new in v0.9.8.2
+## What's new in v0.9.8.3
 
-v0.9.8.2 is a Windows-CI correctness and process-supervision
+v0.9.8.3 is a Windows-CI correctness and process-supervision
 completion release. It closes the two v0.9.8.1 Windows failures at
 their root causes and completes the provider subprocess unification,
 with every claim below backed by an actually-executed verification.
@@ -77,7 +77,7 @@ with every claim below backed by an actually-executed verification.
   cross-language tests, benchmark smoke); pinned real protocol cores
   (V2Ray/Xray/sing-box smoke suites).
 - Verified remotely: the Windows job at the fix commit (above).
-- Not verified: the v0.9.8.2 commit itself was not pushed to GitHub
+- Not verified: the v0.9.8.3 commit itself was not pushed to GitHub
   (no push credentials in the release environment); its Windows CI
   run has therefore not executed. The changes since the verified
   commit are the Tor RunProbe migration, the version bump and
@@ -1296,7 +1296,7 @@ FreeIran/
 ├── internal/version/      Single source of truth for versioning
 ├── .github/workflows/     CI, release and security pipelines
 ├── docs/                  Architecture, storage, performance, CI, security, dev
-├── VERSION                Application version (0.9.8.2)
+├── VERSION                Application version (0.9.8.3)
 └── worklog.md             Engineering worklog
 ```
 

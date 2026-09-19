@@ -148,8 +148,15 @@ func (s *ConnectionService) Connect(configID string) (connection.Snapshot, error
 	ctx, cancel := context.WithTimeout(s.app.ctx, 60*time.Second)
 	defer cancel()
 
-	s.app.logger.Info("connection", "connection_start",
-		"connecting configuration %s via %s", cfg.ID, cfg.DisplayURL())
+	s.app.logger.Log(logging.Record{
+		Level:     logging.LevelInfo,
+		Subsystem: "connection",
+		Event:     "connection_start",
+		Correlate: true,
+		ConfigID:  cfg.ID,
+		Message: fmt.Sprintf("connecting configuration %s via %s",
+			cfg.ID, cfg.DisplayURL()),
+	})
 
 	preference := s.app.currentSettings().PreferredBackend
 
@@ -158,15 +165,42 @@ func (s *ConnectionService) Connect(configID string) (connection.Snapshot, error
 		PreferredBackend: preference,
 	})
 	if err != nil {
-		s.app.logger.Error("connection", "connection_failure", "connect", "backend",
-			"connection failed (state %s): %v", snapshot.State, err)
+		s.app.logger.Log(logging.Record{
+			Level:     logging.LevelError,
+			Subsystem: "connection",
+			Event:     "connection_failure",
+			Operation: "connect",
+			Correlate: true,
+			ConfigID:  snapshot.ConfigID,
+			Core:      snapshot.Core,
+			Status:    string(snapshot.State),
+			Message:   fmt.Sprintf("connection failed (state %s): %v", snapshot.State, err),
+		})
 
 		return snapshot, humanizeWithDetails(err, humanSubject(snapshot.Core))
 	}
 
 	s.app.metricsR.AddCoreSelection()
 
-	s.logConnectionSuccess("connection_success", "connected", snapshot)
+	// v0.9.8.3: final success is only logged/announced after the
+	// manager's verification gate passed (state connected_verified).
+	if snapshot.State == connection.StateConnectedVerified {
+		s.logConnectionSuccess("connection_success", "connected", snapshot)
+	} else {
+		s.app.logger.Log(logging.Record{
+			Level:      logging.LevelInfo,
+			Subsystem:  "connection",
+			Event:      "core_ready_unverified",
+			Correlate:  true,
+			ConfigID:   snapshot.ConfigID,
+			Core:       snapshot.Core,
+			Listener:   snapshot.Endpoint,
+			DurationMS: snapshot.CoreReadyMS,
+			Status:     snapshot.Verification,
+			Message: fmt.Sprintf("route established via %s on %s (core ready in %d ms); "+
+				"awaiting verification", snapshot.Core, snapshot.Endpoint, snapshot.CoreReadyMS),
+		})
+	}
 
 	return snapshot, nil
 }

@@ -103,6 +103,7 @@ export function StatTile({
 export type ConnectionUiState =
   | "disconnected"
   | "connecting"
+  | "verifying"
   | "connected"
   | "disconnecting"
   | "failed";
@@ -110,8 +111,12 @@ export type ConnectionUiState =
 /** Maps the backend state machine string onto a UI orb variant. */
 export function connectionUiState(state: string): ConnectionUiState {
   switch (state) {
+    case "connected_verified":
+      return "connected";
     case "connected":
       return "connected";
+    case "verifying":
+      return "verifying";
     case "selecting":
     case "preparing":
     case "starting_core":
@@ -132,7 +137,9 @@ export const CONNECTION_STATE_LABELS: Record<string, string> = {
   preparing: "Preparing config",
   starting_core: "Starting core",
   waiting_for_ready: "Waiting for core",
-  connected: "Connected",
+  connected: "Route established",
+  verifying: "Verifying Internet",
+  connected_verified: "Connected (verified)",
   disconnecting: "Disconnecting",
   connection_failed: "Connection failed",
 };

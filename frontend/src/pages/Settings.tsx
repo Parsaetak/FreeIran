@@ -37,6 +37,9 @@ function normalize(settings: Settings): Settings {
     refresh_interval_minutes: settings.refresh_interval_minutes || REFRESH_MIN,
     log_max_bytes_mb: settings.log_max_bytes_mb || 5,
     log_max_backups: settings.log_max_backups || 4,
+    log_retention_days: settings.log_retention_days || 7,
+    local_socks_port: settings.local_socks_port || 0,
+    local_http_port: settings.local_http_port || 0,
   };
 }
 
@@ -48,6 +51,9 @@ function sameSettings(a: Settings, b: Settings): boolean {
     a.log_level === b.log_level &&
     a.log_max_bytes_mb === b.log_max_bytes_mb &&
     a.log_max_backups === b.log_max_backups &&
+    a.log_retention_days === b.log_retention_days &&
+    a.local_socks_port === b.local_socks_port &&
+    a.local_http_port === b.local_http_port &&
     a.reduced_motion === b.reduced_motion &&
     a.dev_verbose_diagnostics === b.dev_verbose_diagnostics &&
     a.dev_queue_workers === b.dev_queue_workers &&
@@ -683,6 +689,59 @@ export function SettingsPage() {
 
               {fieldError(errors, "log_backups") && (
                 <span className="field-error">{fieldError(errors, "log_backups")}</span>
+              )}
+            </div>
+          </div>
+        </ActionRow>
+
+        <ActionRow
+          label="Local proxy ports"
+          hint="SOCKS5 inbound used by protocol-core sessions (1024-65535, 0 = automatic). The optional HTTP inbound can be enabled with its own port. Conflicts are detected before launch and reported; the actual port is never changed silently."
+        >
+          <div className="field-grid two">
+            <div className={`field ${fieldError(errors, "socks_port") ? "invalid" : ""}`}>
+              <label className="field-label" htmlFor="local-socks-port">
+                SOCKS5 port (0 = automatic)
+              </label>
+
+              <input
+                id="local-socks-port"
+                className="input"
+                type="number"
+                min={0}
+                max={65535}
+                placeholder="10808"
+                value={draft.local_socks_port || 0}
+                onChange={(event) =>
+                  update({ local_socks_port: Number(event.target.value) })
+                }
+              />
+
+              {fieldError(errors, "socks_port") && (
+                <span className="field-error">{fieldError(errors, "socks_port")}</span>
+              )}
+            </div>
+
+            <div className={`field ${fieldError(errors, "http_port") ? "invalid" : ""}`}>
+              <label className="field-label" htmlFor="local-http-port">
+                HTTP port (0 = disabled)
+              </label>
+
+              <input
+                id="local-http-port"
+                className="input"
+                type="number"
+                min={0}
+                max={65535}
+                placeholder="10809"
+                value={draft.local_http_port || 0}
+                onChange={(event) =>
+                  update({ local_http_port: Number(event.target.value) })
+                }
+              />
+
+              {fieldError(errors, "http_port") && (
+                <span className="field-error">{fieldError(errors, "http_port")}</span>
               )}
             </div>
           </div>

@@ -270,61 +270,16 @@ func (a *App) InvalidateRankingSnapshot() {
 	a.rankMu.Unlock()
 }
 
-// ConnectBest implements the automatic connection path: rank every
-// stored configuration from its real test history, choose the best
-// viable candidate (excluding anything the caller asks to avoid —
-// used by recovery and by "find a better connection"), and connect
-// through the standard state machine.
-//
-// A candidate that fails validation or connection still fails the
-// call honestly; recovery layers its own bounded retry policy on top.
+// ConnectBest implements the automatic connection path: rank every// ConnectBest implements the automatic connection path (v0.9.8.3):
+// the fresh-selection loop merges recent verified successes with the
+// top ranked candidates, fresh-tests stale evidence, re-ranks and
+// connects with an Internet-verification gate — the exact same loop
+// recovery uses. A candidate that fails start/readiness/verification
+// is cooled down and the next freshly-ranked candidate runs; the call
+// finishes with a verified connection, an explicit failure reason or
+// a bounded exhaustion — never a mere "core ready".
 func (s *ConnectionService) ConnectBest(exclude []string) (ConnectBestResult, error) {
-	ctx, cancel := context.WithTimeout(s.app.ctx, 30*time.Second)
-	defer cancel()
-
-	candidates := s.app.collectCandidates(ctx)
-
-	// Normalise the exclusion set.
-	excluded := make(map[string]struct{}, len(exclude))
-	for _, fp := range exclude {
-		if fp != "" {
-			excluded[fp] = struct{}{}
-		}
-	}
-
-	viable := make([]ranking.Candidate, 0, len(candidates))
-
-	for _, c := range candidates {
-		if _, skip := excluded[c.Fingerprint]; skip {
-			continue
-		}
-
-		viable = append(viable, c)
-	}
-
-	chosen, score, ok := ranking.SelectBest(viable, time.Now().UTC())
-	if !ok {
-		return ConnectBestResult{
-				Candidates: len(candidates),
-			}, errors.New(
-				"no viable connection candidate: run \"Test connections\" to " +
-					"measure the available configurations first")
-	}
-
-	snapshot, err := s.Connect(chosen.Fingerprint)
-	if err != nil {
-		return ConnectBestResult{
-			Snapshot:   snapshot,
-			Chosen:     candidateView(chosen, score),
-			Candidates: len(candidates),
-		}, err
-	}
-
-	return ConnectBestResult{
-		Snapshot:   snapshot,
-		Chosen:     candidateView(chosen, score),
-		Candidates: len(candidates),
-	}, nil
+	return s.app.quickConnectLoop(s.app.ctx, exclude, 0)
 }
 
 // candidateView renders one candidate + its score for the result.

@@ -244,3 +244,27 @@ are values the user themselves provided and are never logged.
 - Frontend: the provider store and provider-mode routing are covered
   by vitest (`frontend/src/state/providerStore.test.ts`,
   Quick Connect page tests).
+
+
+## v0.9.8.3 acquisition notes
+
+**Tor** — the resolver re-queries the current official distribution
+listing (`https://dist.torproject.org/torbrowser/`, stable channel) at
+install time and falls back to the deterministic pinned release when
+the listing is unreachable. The expert-bundle asset is verified
+against the official `sha256sums-signed-build.txt` (SHA-256; the
+parser tolerates the GNU binary-mode marker). Activation moves the
+WHOLE bundle payload (DLLs, geoip data, plugins) into the managed
+directory so the validated copy is the activated copy. Idempotency
+compares the installed manifest checksum with the freshly resolved
+official checksum — no redundant re-downloads.
+
+**Psiphon** — the audit of the official channels still finds no
+deterministic, trusted Windows x64 automatic acquisition route for
+tunnel-core (no releases with published digests on the official
+repositories). The managed auto-install therefore fails honestly at
+the trust boundary instead of executing unverified moving-branch
+binaries. The supported path is the user-binary flow: select →
+SHA-256 → validate → supervised smoke test → managed copy verified
+byte-identical → activate. The UI distinguishes auto-available,
+manual-required, installed, failed and unavailable states.

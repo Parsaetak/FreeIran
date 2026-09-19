@@ -99,8 +99,13 @@ type Entry struct {
 	// application launch; Seq is monotonic within the session and
 	// EventID is unique per entry. Restarts are distinguishable by
 	// session_id alone — no message parsing required.
+	// v0.9.8.3: identity is emitted ONLY on correlated records.
 	SessionID string `json:"session_id,omitempty"`
 	EventID   string `json:"event_id,omitempty"`
+
+	// Correlated marks a record as correlation-opt-in (not
+	// serialized; drives identity assignment in emit).
+	Correlated bool `json:"-"`
 
 	// Correlation (v0.9.7): parent_event_id links an event to the
 	// event that caused it; batch_id groups a bulk test run;
@@ -120,8 +125,10 @@ type Entry struct {
 }
 
 // Record is the structured-input twin of Entry (v0.9.7). Callers fill
-// what they know; Log assigns session/sequence/event identity and
-// redacts message text and string field values before storage.
+// what they know; Log redacts message text and string field values
+// before storage. v0.9.8.3: session/event identity is assigned ONLY
+// when Correlate is set (or the record already carries correlation
+// ids) — ordinary records stay compact.
 type Record struct {
 	Level      Level
 	Subsystem  string
@@ -139,6 +146,12 @@ type Record struct {
 	DurationMS int64
 	Status     string
 	Fields     map[string]any
+
+	// Correlate stamps the record with session + event identity for
+	// multi-event investigations (connection/recovery episodes,
+	// startup session, explicit debug). Records that already carry
+	// ParentID/BatchID/TestID are always correlated.
+	Correlate bool
 }
 
 // newSessionID returns a random 16-hex-char session identifier.
@@ -168,6 +181,11 @@ type Options struct {
 
 	// MaxBackups bounds kept rotated files (default 4).
 	MaxBackups int
+
+	// MaxAgeDays bounds retained log files by age: backups older
+	// than this are deleted on open and after each rotation
+	// (default 7; 0 = default). Debug deployments may raise it.
+	MaxAgeDays int
 
 	// MinLevel filters entries below the level (default info).
 	MinLevel Level
@@ -216,6 +234,10 @@ func Open(opts Options) (*Logger, error) {
 		opts.MaxBackups = 4
 	}
 
+	if opts.MaxAgeDays <= 0 {
+		opts.MaxAgeDays = 7
+	}
+
 	if opts.MinLevel == "" {
 		opts.MinLevel = LevelInfo
 	}
@@ -238,6 +260,9 @@ func Open(opts Options) (*Logger, error) {
 	if err := l.openFile(); err != nil {
 		return nil, err
 	}
+
+	// Age-based retention sweep at startup (bounded disk usage).
+	l.pruneRetention()
 
 	return l, nil
 }
@@ -360,6 +385,44 @@ func (l *Logger) SetLimits(maxBytes int64, maxBackups int) {
 	l.mu.Unlock()
 }
 
+// SetMaxAgeDays adjusts the age-based retention bound at runtime
+// (settings UI). Values below 1 keep the previous default.
+func (l *Logger) SetMaxAgeDays(days int) {
+	if days < 1 {
+		days = 7
+	}
+
+	l.mu.Lock()
+	l.opts.MaxAgeDays = days
+	l.mu.Unlock()
+}
+
+// pruneRetention deletes rotated backups older than MaxAgeDays
+// (bounded disk activity: age, count and size are all bounded).
+func (l *Logger) pruneRetention() {
+	dir, name := l.opts.Dir, l.opts.Name
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+
+	cutoff := time.Now().Add(-time.Duration(l.opts.MaxAgeDays) * 24 * time.Hour)
+
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), name+".") || entry.IsDir() {
+			continue
+		}
+
+		info, err := entry.Info()
+		if err != nil || info.ModTime().After(cutoff) {
+			continue
+		}
+
+		_ = os.Remove(filepath.Join(dir, entry.Name()))
+	}
+}
+
 // Info logs an informational lifecycle event.
 func (l *Logger) Info(subsystem, event, format string, args ...any) {
 	l.write(LevelInfo, subsystem, event, "", "", format, args...)
@@ -402,12 +465,21 @@ func looksSecretKey(key string) bool {
 // SessionID returns the unique identifier of this application launch.
 func (l *Logger) SessionID() string { return l.session }
 
-// Log writes one structured record (v0.9.7): identity fields are
-// assigned here, message and string field values are redacted, and
-// the entry flows through the same ring/file/broadcast path as the
-// classic helpers. When rec.Message is empty the Event name is used
-// so records never lose their human summary line.
+// Log writes one structured record (v0.9.8.3): the level filter runs
+// FIRST (suppressed records pay no formatting/redaction cost),
+// message and string field values are redacted, and identity fields
+// are assigned ONLY to correlation-opt-in records (connection and
+// recovery episodes, startup session, explicit debug). When
+// rec.Message is empty the Event name is used so records never lose
+// their human summary line.
 func (l *Logger) Log(rec Record) {
+	// Fast path (v0.9.8.3): a suppressed record must not build an
+	// Entry, redact strings or copy field maps — idle logging
+	// overhead stays near zero.
+	if severity(rec.Level) < severity(l.opts.MinLevel) {
+		return
+	}
+
 	message := rec.Message
 	if message == "" {
 		message = rec.Event
@@ -429,6 +501,7 @@ func (l *Logger) Log(rec Record) {
 		Listener:      rec.Listener,
 		DurationMS:    rec.DurationMS,
 		Status:        rec.Status,
+		Correlated:    rec.Correlate || rec.ParentID != "" || rec.BatchID != "" || rec.TestID != "",
 	}
 
 	if len(rec.Fields) > 0 {
@@ -452,11 +525,16 @@ func (l *Logger) Log(rec Record) {
 	l.emit(entry)
 }
 
-// write builds, redacts, stores and broadcasts one entry.
+// write builds, redacts, stores and broadcasts one entry (level
+// filtered first — suppressed records cost nothing).
 func (l *Logger) write(
 	level Level,
 	subsystem, event, operation, errKind, format string, args ...any,
 ) {
+	if severity(level) < severity(l.opts.MinLevel) {
+		return
+	}
+
 	message := format
 	if len(args) > 0 {
 		message = fmt.Sprintf(format, args...)
@@ -472,19 +550,31 @@ func (l *Logger) write(
 	})
 }
 
-// emit finalizes one entry (identity assignment, level filter, ring,
-// file write with rotation, stderr mirror, subscriber broadcast).
+// emit finalizes one entry (identity assignment for correlated
+// records only, level filter, ring, file write with rotation,
+// stderr mirror, subscriber broadcast).
 func (l *Logger) emit(entry Entry) {
+	// v0.9.8.3: session_id / event_id exist ONLY on correlated
+	// records (connection/recovery episodes, startup session,
+	// explicit debug investigations). Ordinary records stay
+	// compact — no per-record identity allocations.
+	// Seq stays on every record (the UI reads incrementally by
+	// sequence); only the session/event identity is correlation-gated.
 	entry.Seq = l.seq.Add(1)
+
+	if entry.Correlated {
+		entry.SessionID = l.session
+		entry.EventID = fmt.Sprintf("%s-%04x", l.session[:8], entry.Seq)
+	}
+
 	entry.Time = time.Now().UTC().Format(time.RFC3339Nano)
-	entry.SessionID = l.session
-	entry.EventID = fmt.Sprintf("%s-%04x", l.session[:8], entry.Seq)
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	// Level filter is checked under the lock so SetLevel races are
-	// serialized with writes.
+	// serialized with writes (the Log/write fast path already
+	// dropped most suppressed records before this point).
 	if severity(entry.Level) < severity(l.opts.MinLevel) {
 		return
 	}
@@ -495,7 +585,7 @@ func (l *Logger) emit(entry Entry) {
 		l.ring = append([]Entry(nil), l.ring[ringCapacity/2:]...)
 	}
 
-	// File write + rotation.
+	// File write + rotation (single marshal reused for the mirror).
 	if l.file != nil {
 		if raw, err := json.Marshal(entry); err == nil {
 			raw = append(raw, '\n')
@@ -503,6 +593,7 @@ func (l *Logger) emit(entry Entry) {
 			if l.written+int64(len(raw)) > l.opts.MaxBytes {
 				if rotateErr := l.rotate(); rotateErr == nil {
 					l.writeRotationNote()
+					l.pruneRetention()
 				}
 			}
 
@@ -511,13 +602,10 @@ func (l *Logger) emit(entry Entry) {
 					l.written += int64(n)
 				}
 			}
-		}
-	}
 
-	if l.opts.MirrorStderr {
-		raw, err := json.Marshal(entry)
-		if err == nil {
-			_, _ = os.Stderr.WriteString(string(raw) + "\n")
+			if l.opts.MirrorStderr {
+				_, _ = os.Stderr.Write(raw)
+			}
 		}
 	}
 

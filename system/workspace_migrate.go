@@ -142,7 +142,7 @@ func hasAuthoritativeData(root string) bool {
 // MigrateLegacyWorkspace copies a legacy root into the workspace and
 // verifies the result. The source is never modified or removed.
 //
-// Copied trees: config, data, cores, cache. Runtime and logs are NOT
+// Copied trees: config, data, cores, cache, providers. Runtime and logs are NOT
 // copied — they are reconstructable by definition, and importing old
 // logs into the new workspace would blur the log surface. The copy is
 // verified per file (byte count) before the status record is written.
@@ -180,7 +180,7 @@ func MigrateLegacyWorkspace(source string, log func(format string, args ...any))
 		bytes int64
 	)
 
-	for _, tree := range []string{"config", "data", "cores", "cache"} {
+	for _, tree := range []string{"config", "data", "cores", "cache", "providers"} {
 		src := filepath.Join(source, tree)
 		dst := filepath.Join(workspace, tree)
 

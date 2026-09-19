@@ -150,3 +150,52 @@ func TestInputsAccessors(t *testing.T) {
 		t.Errorf("CPUPressureF = %f, want ~0.5", got)
 	}
 }
+
+// v0.9.8.3: queue depth is evidence-gated — no unconditional per-tick
+// growth during idle, growth only with sustained backlog + saturated
+// workers, and cooldown steps in between.
+func TestQueueDepthEvidenceGated(t *testing.T) {
+	limits := DefaultLimits()
+	c := New(limits, nil)
+
+	base := c.Settings().QueueDepth
+
+	// Idle: no backlog, no growth — ever.
+	for i := 0; i < 200; i++ {
+		c.Tick()
+	}
+
+	if got := c.Settings().QueueDepth; got != base {
+		t.Fatalf("idle depth drifted: %d → %d", base, got)
+	}
+
+	// Deep backlog but idle workers: still no growth (no evidence
+	// that more capacity helps — workers are the constraint).
+	c.Inputs().QueueBacklog.Store(int64(base))
+	for i := 0; i < 50; i++ {
+		c.Tick()
+	}
+
+	if got := c.Settings().QueueDepth; got != base {
+		t.Fatalf("depth grew without saturated workers: %d → %d", base, got)
+	}
+
+	// Deep backlog AND saturated workers AND low CPU: growth.
+	c.Inputs().ActiveWorkers.Store(int64(c.Settings().QueueConcurrency))
+	for i := 0; i < 1; i++ {
+		c.Tick()
+	}
+
+	if got := c.Settings().QueueDepth; got <= base {
+		t.Fatalf("depth did not grow under evidence: %d → %d", base, got)
+	}
+
+	// Cooldown: the immediately following tick does not grow again
+	// unless two quiet ticks passed.
+	before := c.Settings().QueueDepth
+	c.Tick()
+
+	if after := c.Settings().QueueDepth; after != before {
+		t.Fatalf("cooldown violated: %d → %d in consecutive ticks", before, after)
+	}
+}

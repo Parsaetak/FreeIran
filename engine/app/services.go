@@ -420,6 +420,13 @@ func (s *DataService) ListConfigsFiltered(filter ConfigFilter, offset, limit int
 		return nil, err
 	}
 
+	// Manual ordering (v0.9.8.3) applies unless the caller asked for
+	// an explicit sort — explicit sorts are view-local, the stored
+	// order stays intact underneath.
+	if filter.SortBy == "" {
+		matches = s.app.applyConfigOrder(matches)
+	}
+
 	sortConfigs(matches, filter)
 
 	total := len(matches)

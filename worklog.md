@@ -3824,3 +3824,88 @@ and produced the v0.9.8.2 release ZIP.
   archive — tracked content only, guaranteed free of generated
   files, secrets and test outputs); extraction + sanity build/test
   from the ZIP itself performed successfully.
+
+---
+
+## v0.9.8.3 — Full connectivity, providers, performance & installation upgrade
+
+Baseline: `a2989e590164d0cb7855338704dfe4071b64a182` (v0.9.8.2).
+
+### Implemented (one coherent pass, no duplicate subsystems)
+
+- **Quick Connect fresh-selection loop** (`engine/app/quickconnect.go`):
+  merge recent verified successes + top ranked candidates → bounded
+  shortlist (8) → fresh-test stale evidence (same ModeTester the
+  discovery flow uses; 90 s budget) → re-rank → connect → verified-only
+  success. Failure per candidate is recorded (exact reason), cooled down
+  (5 min, decaying) and never retried inside one loop; the loop ends in
+  a verified connection, an explicit failure or bounded exhaustion.
+- **Connection state correctness** (`engine/connection/connection.go`):
+  new states `verifying` and `connected_verified` (plus `ConnectedLike`);
+  connect attempts verify end-to-end (`VerifyTunnel`) after readiness and
+  fail the attempt on verification failure, moving to the next candidate.
+  `connection_success` is emitted only post-verification; readiness alone
+  logs `core_ready_unverified`. Provider sessions keep their existing
+  verified flow; the monitor and `VerifyConnected` accept all
+  connected-like states. `Reconnect` preserves the preferred backend.
+- **Recovery** (`engine/app/recoveryservice.go`): the same fresh-selection
+  loop (with its failure memory as exclusions); success requires
+  `ConnectedLike` + usable verification.
+- **Ranking/evidence**: failure-streak evidence already persisted
+  (`LastSuccessAt`, `FailureStreak`, `TestHistory`) is now consumed by the
+  fresh loop; evidence classes `fresh/recent/stale/unknown` gate re-testing
+  so stale success cannot dominate fresh failures.
+- **Tor acquisition** (`engine/provider/tor.go`, `binary.go`): live
+  resolution of the official distribution listing with deterministic
+  pinned fallback (production now `latest=true`); checksum parser
+  tolerates the real GNU sha256sum shape; activation moves the WHOLE
+  bundle payload (DLLs, geoip, plugins) into the managed dir; idempotency
+  compares installed manifest checksum with the freshly resolved official
+  checksum (the old runtime-vs-bundle version compare never matched).
+- **Psiphon**: official channels re-checked; still no digest-bearing
+  trusted Windows x64 auto route — the honest trust-boundary failure and
+  the user-binary flow remain the supported paths (documented).
+- **Configuration reorder** (`engine/app/configorderservice.go` + UI):
+  order by stable config IDs over the complete collection, atomic
+  persistence (`config/order.json`), restart-safe, filter-proof,
+  regression-tested (first↔last, middle moves, repeats, pruning).
+- **Local proxy ports** (`Settings.LocalSocksPort/LocalHTTPPort` +
+  `connection.Manager.SetLocalPorts`): validated (0 auto / 1024-65535),
+  bind-checked before launch, conflicts reported naming the port; the
+  requested port is honored or the attempt fails — never silently swapped.
+- **Workspace** (`system/workspace.go` + `workspace_migrate.go`): the
+  application folder is ALWAYS the workspace root (installed marker no
+  longer relocates state); `providers/` included in ensure + migration;
+  legacy `%AppData%\FreeIran` is migrated once (copy, verify, preserve
+  source).
+- **Installer/uninstaller** (`scripts/freeiran.iss`): per-user default dir
+  (`%LOCALAPPDATA%\Programs\FreeIran`), writable-directory validation,
+  no marker writing, uninstall stops the app + managed children, cleans
+  app-owned dirs, asks before deleting user data and any legacy tree.
+- **Logging** (`internal/logging/logging.go`): records are compact —
+  session/event identity is correlation-opt-in (connection/recovery
+  episodes, correlated call sites); level filter runs BEFORE formatting;
+  single JSON marshal for file+stderr; age-based retention
+  (`MaxAgeDays`, default 7) on top of size/count bounds.
+- **Memory booster** (`engine/booster/booster.go`): the unconditional
+  +1000/tick queue-depth ratchet is gone — growth requires deep backlog +
+  saturated workers + acceptable CPU, with cooldowns and hysteresis; idle
+  is a no-op; `memory_policy_changed` fires only on material changes
+  (fixed the override-vs-proposal scale mismatch in the predicate).
+- **Version**: `0.9.8.3` everywhere (VERSION, version.go, winres.json +
+  regenerated PE resources, package.json/lock, installer fallback,
+  README/ROADMAP).
+
+### Verification (actual results)
+
+- `gofmt -l`: clean. `go vet ./engine/... ./internal/... ./system/...`: clean.
+- `go test -count=1 ./engine/... ./internal/... ./system/...`: all pass
+  (incl. new regression tests for reorder, quick-connect evidence/cooldowns,
+  booster gating, Tor checksum parsing, updated logging identity tests).
+- `go test -race` (logging, booster, connection): pass.
+- Frontend: `tsc --noEmit` clean; production build + embed OK
+  (content-hashed assets reproducible from the clean tree).
+- Windows cross-compile (CGO_ENABLED=0, windowsgui): PE machine 0x8664,
+  subsystem 0x0002 (GUI), 0.9.8.3 resource strings present.
+- Clean-room (fresh clone → tests → builds → package → extract → build):
+  pass. Windows runtime execution: NOT VERIFIED (no Windows host).

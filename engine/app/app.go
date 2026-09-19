@@ -79,6 +79,12 @@ type Options struct {
 	// it early so boot failures are captured). When nil, a logger is
 	// created under <BaseDir>/logs.
 	Logger *logging.Logger
+
+	// SkipConnectVerification relaxes the connection manager's
+	// Internet-verification gate. Production wiring NEVER sets this
+	// (readiness is never success); tests and fake-core harnesses use
+	// it because their staged cores expose no real tunnel.
+	SkipConnectVerification bool
 }
 
 // DefaultOptions returns production defaults.
@@ -190,6 +196,16 @@ type App struct {
 	// rankMu guards the ranked-candidate snapshot (rankingservice.go).
 	rankMu   sync.Mutex
 	rankSnap *rankSnapshot
+
+	// v0.9.8.3: Quick Connect failure memory — recently failed
+	// candidates cool down (decayed lazily) so one Quick Connect or
+	// recovery loop never restarts the same dead candidate.
+	qcMu       sync.Mutex
+	qcFailures map[string]time.Time
+
+	// cfgOrder caches the persisted manual configuration order
+	// (configorderservice.go).
+	cfgOrder configOrderState
 
 	mu         sync.RWMutex
 	state      AppState
@@ -440,7 +456,7 @@ func New(opts Options) (*App, error) {
 
 	httpClient := httpx.Default()
 
-	torEngine := provider.NewTorEngine(layout.Providers, httpClient, false)
+	torEngine := provider.NewTorEngine(layout.Providers, httpClient, true)
 	psiphonEngine := provider.NewPsiphonEngine(layout.Providers, httpClient)
 
 	providerMgr.Register(torEngine)
@@ -456,6 +472,7 @@ func New(opts Options) (*App, error) {
 		bootStart:   bootStart,
 		bootTimings: bootTimings,
 		store:       st,
+		qcFailures:  make(map[string]time.Time),
 		pipe:        pipeline.New(opts.Pipeline, mreg),
 		metricsR:    mreg,
 		sourceCache: cache.New("source", cache.Options{
@@ -517,6 +534,9 @@ func New(opts Options) (*App, error) {
 	app.connMgr = connection.New(connection.Options{
 		Registry: coreRegistry,
 		Metrics:  mreg,
+		Verify: connection.VerifyPolicy{
+			Skip: opts.SkipConnectVerification,
+		},
 	})
 
 	// v0.9.3 autonomous connection engine: the recovery supervisor

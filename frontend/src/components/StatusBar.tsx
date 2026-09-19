@@ -27,7 +27,8 @@ export function StatusBar({ version }: { version?: string }) {
         ? "busy"
         : "bad";
 
-  const connected = snapshot?.state === "connected";
+  const connected =
+    snapshot?.state === "connected" || snapshot?.state === "connected_verified";
 
   return (
     <footer className="status-bar">

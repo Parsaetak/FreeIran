@@ -1453,3 +1453,33 @@ func copyTestFile(src, dst string) error {
 
 	return os.WriteFile(dst, data, 0o755)
 }
+
+// v0.9.8.3: the Tor checksum parser tolerates the real official file
+// shape (GNU sha256sum format, binary-mode marker, extra whitespace)
+// while still refusing lines that do not name the asset or do not
+// carry a 64-hex digest.
+func TestFindChecksumLineTolerant(t *testing.T) {
+	body := "ed4bc23065ee10f68efcdae63ea318ffa4b02b04ba00f13a3f59f8e3832fdfad  tor-expert-bundle-android-aarch64-15.0.23.tar.gz\n" +
+		"af684a8839d61778b5722938e43cc0c1cc9886f8fd8b7fb33d056077363edfba  tor-expert-bundle-linux-i686-15.0.23.tar.gz\n" +
+		"2bf7d66307db90fc3f76ca0d412723de9e37755454cbeb22d806a3b4c9c22595 *tor-expert-bundle-windows-x86_64-15.0.23.tar.gz\n" +
+		"not-a-hash  tor-expert-bundle-windows-x86_64-15.0.99.tar.gz\n"
+
+	want := "2bf7d66307db90fc3f76ca0d412723de9e37755454cbeb22d806a3b4c9c22595"
+
+	if got := findChecksumLine(body, "tor-expert-bundle-windows-x86_64-15.0.23.tar.gz"); got != want {
+		t.Fatalf("binary-mode line: got %q", got)
+	}
+
+	simple := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  tor-expert-bundle-windows-x86_64-15.0.20.tar.gz\n"
+	if got := findChecksumLine(simple, "tor-expert-bundle-windows-x86_64-15.0.20.tar.gz"); got != "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" {
+		t.Fatalf("two-space line: got %q", got)
+	}
+
+	if got := findChecksumLine(body, "tor-expert-bundle-windows-x86_64-15.0.99.tar.gz"); got != "" {
+		t.Fatalf("invalid digest line accepted: %q", got)
+	}
+
+	if got := findChecksumLine(body, "missing-asset.tar.gz"); got != "" {
+		t.Fatalf("missing asset matched: %q", got)
+	}
+}

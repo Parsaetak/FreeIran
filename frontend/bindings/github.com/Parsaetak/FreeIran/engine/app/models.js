@@ -673,6 +673,27 @@ export class Settings {
              */
             this["log_max_backups"] = 0;
         }
+        if (!("log_retention_days" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["log_retention_days"] = 0;
+        }
+        if (!("local_socks_port" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["local_socks_port"] = 0;
+        }
+        if (!("local_http_port" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["local_http_port"] = 0;
+        }
         if (!("reduced_motion" in $$source)) {
             /**
              * @member

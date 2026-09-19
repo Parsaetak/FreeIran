@@ -1,4 +1,4 @@
-# The FreeIran Workspace (v0.9.3)
+# The FreeIran Workspace (v0.9.8.3)
 
 FreeIran has **one** Workspace Root. Everything the application creates
 or needs lives below that root; no runtime state is ever silently split
@@ -32,12 +32,15 @@ FreeIran/                  ← workspace root (default: directory of FreeIran.ex
    deployments (absolute path; the whole tree relocates there).
 2. **The directory containing the FreeIran executable** — the default
    for portable deployments *and* regular installs. One model.
-3. **Installed deployments (v0.9.4)** — when the executable's
-   directory carries `installed.marker` (written by the Windows
-   installer), the workspace relocates to the per-user
-   application-data directory (`%AppData%\FreeIran` on Windows,
-   `XDG_CONFIG_HOME`/`~/.config` on Unix), because the installed
-   executable lives in a read-only, system-managed location. The
+3. **Nothing else.** v0.9.8.3: the application folder is the
+   workspace root for EVERY deployment — installed and portable share
+   one model. The installer defaults to a per-user writable directory
+   (`%LOCALAPPDATA%\Programs\FreeIran`) and validates writability,
+   because the running application must be able to write its state
+   next to the executable. A stale `installed.marker` from a
+   pre-0.9.8.3 install is inert for path resolution; it only tells
+   diagnostics and the one-time migration (below) that this
+   deployment used to keep its data in the per-user directory. The
    decision is folded into `WorkspaceRoot()` itself — one authority,
    two deployment styles; `InstalledMode()`/`PortableMode()` only
    label the style for diagnostics.

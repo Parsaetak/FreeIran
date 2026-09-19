@@ -639,3 +639,81 @@ func PlatformSuffix(goos, goarch string) string {
 
 	return osToken + "-" + archToken
 }
+
+// moveTreePayload moves the unpacked payload into the bin directory,
+// preserving every archive sibling (DLLs, data files, plugins). It
+// merges entry-by-entry so a previous install's directory layout is
+// refreshed in place; a move failure falls back to a copy so
+// cross-device staging still activates.
+func moveTreePayload(fromDir, toDir string) error {
+	if err := os.MkdirAll(toDir, 0o700); err != nil {
+		return err
+	}
+
+	entries, err := os.ReadDir(fromDir)
+	if err != nil {
+		return err
+	}
+
+	for _, entry := range entries {
+		src := filepath.Join(fromDir, entry.Name())
+		dst := filepath.Join(toDir, entry.Name())
+
+		// Refresh in place: remove a stale destination entry of
+		// the same name (never the retained .previous binary).
+		if _, err := os.Stat(dst); err == nil {
+			if strings.HasSuffix(dst, ".previous") {
+				continue
+			}
+
+			if err := os.RemoveAll(dst); err != nil {
+				return err
+			}
+		}
+
+		if err := os.Rename(src, dst); err != nil {
+			if err := copyTreeEntry(src, dst); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// copyTreeEntry copies one file or directory recursively (move
+// fallback for cross-device staging).
+func copyTreeEntry(src, dst string) error {
+	info, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+
+	if !info.IsDir() {
+		data, err := os.ReadFile(src)
+		if err != nil {
+			return err
+		}
+
+		return os.WriteFile(dst, data, info.Mode().Perm())
+	}
+
+	if err := os.MkdirAll(dst, info.Mode().Perm()); err != nil {
+		return err
+	}
+
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+
+	for _, entry := range entries {
+		if err := copyTreeEntry(
+			filepath.Join(src, entry.Name()),
+			filepath.Join(dst, entry.Name())); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}

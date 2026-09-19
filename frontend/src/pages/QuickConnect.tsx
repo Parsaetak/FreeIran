@@ -129,11 +129,13 @@ export function QuickConnectPage({ onNavigate }: { onNavigate: (page: Page) => v
   const heroState: QuickHeroState = useMemo(() => {
     const state = snapshot?.state ?? "disconnected";
 
-    if (state === "connected") return "connected";
+    if (state === "connected_verified") return "connected";
+    if (state === "connected") return "verifying"; // route up, verification pending
     if (state === "disconnecting") return "disconnecting";
     if (state === "selecting" || state === "preparing") return "preparing";
     if (state === "starting_core") return "connecting";
     if (state === "waiting_for_ready") return "verifying";
+    if (state === "verifying") return "verifying";
     if (state === "connection_failed") return "failed";
 
     if (flowRunning && FLOW_PREPARING_STAGES.has(flowStage)) return "preparing";

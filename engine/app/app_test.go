@@ -22,10 +22,11 @@ func newTestApp(t *testing.T) *App {
 	t.Helper()
 
 	application, err := New(Options{
-		BaseDir:             filepath.Join(t.TempDir(), "freeiran"),
-		RefreshInterval:     time.Hour,
-		RunIngestionOnStart: false,
-		SkipDefaultSources:  true,
+		BaseDir:                 filepath.Join(t.TempDir(), "freeiran"),
+		RefreshInterval:         time.Hour,
+		RunIngestionOnStart:     false,
+		SkipDefaultSources:      true,
+		SkipConnectVerification: true,
 	})
 	if err != nil {
 		t.Fatalf("new app: %v", err)
@@ -284,10 +285,11 @@ func TestAppSchedulerRunsIngestion(t *testing.T) {
 	defer server.Close()
 
 	application, err := New(Options{
-		BaseDir:             filepath.Join(t.TempDir(), "freeiran"),
-		RefreshInterval:     50 * time.Millisecond,
-		RefreshJitter:       10 * time.Millisecond,
-		RunIngestionOnStart: true,
+		SkipConnectVerification: true,
+		BaseDir:                 filepath.Join(t.TempDir(), "freeiran"),
+		RefreshInterval:         50 * time.Millisecond,
+		RefreshJitter:           10 * time.Millisecond,
+		RunIngestionOnStart:     true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -315,7 +317,8 @@ func TestAppSchedulerRunsIngestion(t *testing.T) {
 
 func TestAppShutdownIsClean(t *testing.T) {
 	application, err := New(Options{
-		BaseDir: filepath.Join(t.TempDir(), "freeiran"),
+		SkipConnectVerification: true,
+		BaseDir:                 filepath.Join(t.TempDir(), "freeiran"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -391,7 +394,8 @@ func TestSourceServiceValidation(t *testing.T) {
 // manager and logger must each observe exactly one close.
 func TestAppShutdownIsIdempotent(t *testing.T) {
 	application, err := New(Options{
-		BaseDir: filepath.Join(t.TempDir(), "freeiran"),
+		SkipConnectVerification: true,
+		BaseDir:                 filepath.Join(t.TempDir(), "freeiran"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -457,8 +461,9 @@ func TestAppNewFailureClosesLogger(t *testing.T) {
 	}
 
 	_, err = New(Options{
-		BaseDir: dir,
-		Logger:  logger,
+		SkipConnectVerification: true,
+		BaseDir:                 dir,
+		Logger:                  logger,
 	})
 	if err == nil {
 		t.Fatal("New must fail when the store path is not a directory")
@@ -488,9 +493,10 @@ func TestAppShutdownReleasesAllHandles(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "freeiran")
 
 	application, err := New(Options{
-		BaseDir:             dir,
-		RunIngestionOnStart: false,
-		SkipDefaultSources:  true,
+		SkipConnectVerification: true,
+		BaseDir:                 dir,
+		RunIngestionOnStart:     false,
+		SkipDefaultSources:      true,
 	})
 	if err != nil {
 		t.Fatal(err)

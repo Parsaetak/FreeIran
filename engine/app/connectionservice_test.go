@@ -19,10 +19,11 @@ func newConnectionTestApp(t *testing.T) *App {
 	t.Helper()
 
 	application, err := New(Options{
-		BaseDir:             filepath.Join(t.TempDir(), "freeiran"),
-		RefreshInterval:     time.Hour,
-		RunIngestionOnStart: false,
-		SkipDefaultSources:  true,
+		SkipConnectVerification: true,
+		BaseDir:                 filepath.Join(t.TempDir(), "freeiran"),
+		RefreshInterval:         time.Hour,
+		RunIngestionOnStart:     false,
+		SkipDefaultSources:      true,
 	})
 	if err != nil {
 		t.Fatalf("app.New() = %v", err)
@@ -298,10 +299,11 @@ func TestAppShutdownDisconnectsSession(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "freeiran")
 
 	application, err := New(Options{
-		BaseDir:             base,
-		RefreshInterval:     time.Hour,
-		RunIngestionOnStart: false,
-		SkipDefaultSources:  true,
+		SkipConnectVerification: true,
+		BaseDir:                 base,
+		RefreshInterval:         time.Hour,
+		RunIngestionOnStart:     false,
+		SkipDefaultSources:      true,
 	})
 	if err != nil {
 		t.Fatalf("app.New() = %v", err)

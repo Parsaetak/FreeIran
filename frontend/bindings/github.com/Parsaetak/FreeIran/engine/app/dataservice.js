@@ -86,3 +86,35 @@ const $$createType4 = $Create.Array($$createType0);
 export function ListConfigsFiltered(filter, offset, limit) {
     return $Call.ByName("github.com/Parsaetak/FreeIran/engine/app.DataService.ListConfigsFiltered", filter, offset, limit);
 }
+
+/**
+ * GetConfigOrder returns the persisted manual configuration order
+ * (stable config IDs; empty when none). v0.9.8.3. Hand-appended
+ * ByName binding.
+ * @returns {$CancellablePromise<Array<string>>}
+ */
+export function GetConfigOrder() {
+    return $Call.ByName("github.com/Parsaetak/FreeIran/engine/app.DataService.GetConfigOrder");
+}
+
+/**
+ * SetConfigOrder persists the COMPLETE ordered collection of stable
+ * configuration IDs. v0.9.8.3. Hand-appended ByName binding.
+ * @param {Array<string>} ids
+ * @returns {$CancellablePromise<void>}
+ */
+export function SetConfigOrder(ids) {
+    return $Call.ByName("github.com/Parsaetak/FreeIran/engine/app.DataService.SetConfigOrder", ids);
+}
+
+/**
+ * MoveConfig moves one configuration (by stable ID) to a zero-based
+ * index within the complete ordered collection. v0.9.8.3.
+ * Hand-appended ByName binding.
+ * @param {string} id
+ * @param {number} toIndex
+ * @returns {$CancellablePromise<void>}
+ */
+export function MoveConfig(id, toIndex) {
+    return $Call.ByName("github.com/Parsaetak/FreeIran/engine/app.DataService.MoveConfig", id, toIndex);
+}

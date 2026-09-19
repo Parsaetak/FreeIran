@@ -59,14 +59,31 @@ type MemoryService struct {
 // boosterPolicyChanged reports whether a booster proposal materially
 // differs from the previously applied settings (v0.9.7: the trigger
 // for one "memory_policy_changed" record; stable operation logs
-// nothing).
+// nothing). v0.9.8.3: the override-vs-proposal scale mismatch is gone
+// and a queue-depth drift is only "material" when it moves by a
+// quarter of the previous depth (min 2000) — idle adaptive drift no
+// longer produces per-tick records.
 func boosterPolicyChanged(previous, next booster.Settings, effective int) bool {
-	return previous.QueueConcurrency != next.QueueConcurrency ||
-		previous.QueueDepth != next.QueueDepth ||
+	_ = effective
+
+	if previous.QueueConcurrency != next.QueueConcurrency ||
 		previous.CacheEntries != next.CacheEntries ||
 		previous.BatchSize != next.BatchSize ||
-		previous.ChunkFlushBytes != next.ChunkFlushBytes ||
-		previous.QueueConcurrency != effective
+		previous.ChunkFlushBytes != next.ChunkFlushBytes {
+		return true
+	}
+
+	depthDelta := next.QueueDepth - previous.QueueDepth
+	if depthDelta < 0 {
+		depthDelta = -depthDelta
+	}
+
+	materialDepth := previous.QueueDepth / 4
+	if materialDepth < 2000 {
+		materialDepth = 2000
+	}
+
+	return depthDelta >= materialDepth
 }
 
 // severityRank ranks mempressure states for recovery detection.

@@ -168,11 +168,12 @@ func TestRoutineMemoryAdjustLoggingSuppressed(t *testing.T) {
 	t.Cleanup(stop)
 
 	app, err := New(Options{
-		BaseDir:             filepath.Join(t.TempDir(), "freeiran"),
-		Logger:              lg,
-		RefreshInterval:     time.Hour,
-		RunIngestionOnStart: false,
-		SkipDefaultSources:  true,
+		SkipConnectVerification: true,
+		BaseDir:                 filepath.Join(t.TempDir(), "freeiran"),
+		Logger:                  lg,
+		RefreshInterval:         time.Hour,
+		RunIngestionOnStart:     false,
+		SkipDefaultSources:      true,
 	})
 	if err != nil {
 		t.Fatalf("new app: %v", err)

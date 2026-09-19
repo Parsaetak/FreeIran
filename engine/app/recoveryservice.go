@@ -176,7 +176,8 @@ func (r *RecoveryService) tick(now time.Time) {
 	snapshot := r.app.connMgr.Snapshot()
 
 	switch snapshot.State {
-	case connection.StateConnected, connection.StateDisconnected:
+	case connection.StateConnected, connection.StateConnectedVerified,
+		connection.StateDisconnected:
 		// Healthy (or idle by user choice): clear any episode.
 		if r.episode != nil {
 			r.app.logger.Info("recovery", "episode_cleared",
@@ -191,8 +192,8 @@ func (r *RecoveryService) tick(now time.Time) {
 		// The recovery path acts on explicit failure only.
 
 	default:
-		// Selecting/Preparing/Starting/Waiting/Disconnecting: in
-		// progress — do not interfere.
+		// Selecting/Preparing/Starting/Waiting/Verifying/
+		// Disconnecting: in progress — do not interfere.
 		r.mu.Unlock()
 		return
 	}
@@ -251,9 +252,11 @@ func (r *RecoveryService) tick(now time.Time) {
 
 	r.mu.Unlock()
 
-	// SELECT + CONNECT: the standard auto-connect path with the
-	// failure memory applied as exclusions.
-	result, err := NewConnectionService(r.app).ConnectBest(excluded)
+	// SELECT + CONNECT: the shared fresh-selection loop (v0.9.8.3)
+	// — recovery re-tests stale candidates, re-ranks, connects and
+	// verifies through the exact same path as Quick Connect. The
+	// failure memory applies as exclusions.
+	result, err := r.app.quickConnectLoop(r.app.ctx, excluded, 0)
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -271,9 +274,14 @@ func (r *RecoveryService) tick(now time.Time) {
 		return
 	}
 
-	// CONNECTED: verify the state machine agrees before declaring
-	// success (the connect call returns a snapshot).
-	if result.Snapshot.State == connection.StateConnected {
+	// CONNECTED: final success requires a VERIFIED session
+	// (v0.9.8.3: the loop already gates on Internet verification;
+	// the state must agree). Verification-disabled harnesses
+	// (tests) report the skip-mode state honestly.
+	verified := result.Snapshot.Verification == "usable" ||
+		r.app.opts.SkipConnectVerification
+
+	if result.Snapshot.State.ConnectedLike() && verified {
 		r.episodes = 0
 		r.episode = nil
 
@@ -308,6 +316,18 @@ func (r *RecoveryService) tick(now time.Time) {
 
 	r.episode.nextAttempt = now.Add(
 		recoveryBackoff * time.Duration(1<<uint(attempt-1)))
+}
+
+// noteExternalFailure records a candidate failure reported by another
+// subsystem (Quick Connect) so recovery's exclusion set stays in sync.
+func (r *RecoveryService) noteExternalFailure(fingerprint string) {
+	if fingerprint == "" {
+		return
+	}
+
+	r.mu.Lock()
+	r.failures[fingerprint] = time.Now().UTC()
+	r.mu.Unlock()
 }
 
 // excludedLocked renders the current failure memory as an exclusion

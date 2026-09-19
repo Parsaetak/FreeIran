@@ -43,6 +43,7 @@ func testEnv(t *testing.T) (*connection.Manager, *core.Registry) {
 		Registry:        registry,
 		StartupTimeout:  10 * time.Second,
 		MonitorInterval: 200 * time.Millisecond,
+		Verify:          connection.VerifyPolicy{Skip: true},
 	})
 
 	return manager, registry
@@ -172,7 +173,7 @@ func TestConnectNoBackend(t *testing.T) {
 		t.Fatalf("register: %v", err)
 	}
 
-	manager := connection.New(connection.Options{Registry: registry})
+	manager := connection.New(connection.Options{Registry: registry, Verify: connection.VerifyPolicy{Skip: true}})
 
 	snapshot, err := manager.Connect(context.Background(), vlessTestConfig(), core.Preferences{})
 	if err == nil {
@@ -281,6 +282,7 @@ func TestAttemptHistory(t *testing.T) {
 	// Launch failure: a failing fake core produces an attempt record
 	// carrying the backend name and failure reason.
 	failing := connection.New(connection.Options{
+		Verify:          connection.VerifyPolicy{Skip: true},
 		Registry:        testRegistry(t),
 		StartupTimeout:  10 * time.Second,
 		MonitorInterval: 200 * time.Millisecond,

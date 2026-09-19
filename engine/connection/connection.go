@@ -8,14 +8,24 @@
 // other:
 //
 //	Disconnected → Selecting → Preparing → StartingCore →
-//	WaitingForReady → Connected → Disconnecting → Disconnected
+//	WaitingForReady → Connected → Verifying → ConnectedVerified →
+//	Disconnecting → Disconnected
 //
 //	Failure from any state → ConnectionFailed
+//
+// v0.9.8.3: "connected" means the local route is established (the
+// proxy listener accepts connections) — it is NOT Internet
+// connectivity. Final success requires an end-to-end verification
+// through the tunnel; only then does the session reach
+// ConnectedVerified. A configured user port preference is respected
+// for every attempt.
 package connection
 
 import (
 	"context"
 	"fmt"
+	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -50,8 +60,18 @@ const (
 	// StateWaitingForReady: polling the local listener.
 	StateWaitingForReady State = "waiting_for_ready"
 
-	// StateConnected: tunnel established (listener verified).
+	// StateConnected: the local route is established — the core
+	// process runs and its proxy listener accepts connections. This is
+	// readiness evidence, not Internet connectivity (v0.9.8.3).
 	StateConnected State = "connected"
+
+	// StateVerifying: an end-to-end Internet verification is running
+	// through the established route (v0.9.8.3).
+	StateVerifying State = "verifying"
+
+	// StateConnectedVerified: the route carried real traffic to the
+	// verification target — usable Internet connectivity (v0.9.8.3).
+	StateConnectedVerified State = "connected_verified"
 
 	// StateDisconnecting: stopping the core and cleaning up.
 	StateDisconnecting State = "disconnecting"
@@ -69,7 +89,15 @@ func (s State) Terminal() bool {
 func (s State) Active() bool {
 	return s == StateSelecting || s == StatePreparing ||
 		s == StateStartingCore || s == StateWaitingForReady ||
-		s == StateConnected
+		s == StateConnected || s == StateVerifying ||
+		s == StateConnectedVerified
+}
+
+// ConnectedLike reports whether the state describes an established
+// local route (with or without completed Internet verification).
+func (s State) ConnectedLike() bool {
+	return s == StateConnected || s == StateVerifying ||
+		s == StateConnectedVerified
 }
 
 // Attempt records one backend attempt for observability (§41).
@@ -112,6 +140,34 @@ type Snapshot struct {
 	Verification string `json:"verification,omitempty"` // none|usable|failed
 }
 
+// VerifyPolicy controls the mandatory end-to-end verification that
+// gates final connection success (v0.9.8.3). The zero value means
+// "verification required with default timeout/target" — readiness is
+// never success; only Skip disables verification (tests).
+type VerifyPolicy struct {
+	// Skip disables the end-to-end verification gate. Production
+	// wiring never sets this; it exists for tests with no network.
+	Skip bool
+
+	// Timeout bounds one verification round-trip (default 12s).
+	Timeout time.Duration
+
+	// Target overrides the verification URL (default: the standard
+	// 204 endpoint).
+	Target string
+}
+
+// WithDefaults applies the verification defaults.
+func (p VerifyPolicy) WithDefaults() VerifyPolicy {
+	resolved := p
+
+	if resolved.Timeout <= 0 {
+		resolved.Timeout = DefaultVerifyTimeout
+	}
+
+	return resolved
+}
+
 // Options configure the connection manager.
 type Options struct {
 	// Registry resolves backends.
@@ -119,6 +175,11 @@ type Options struct {
 
 	// Metrics receives protocol-core counters (nil = uncounted).
 	Metrics *metrics.Registry
+
+	// Verify gates final success on a real Internet verification
+	// through the established route. Zero value = required with
+	// defaults (v0.9.8.3: readiness is never success).
+	Verify VerifyPolicy
 
 	// StartupTimeout bounds core startup (default: core default).
 	StartupTimeout time.Duration
@@ -142,6 +203,15 @@ type Manager struct {
 	mu       sync.Mutex
 	state    State
 	instance *core.Instance
+
+	// v0.9.8.3: user-selected local inbound ports (0 = automatic).
+	socksPortPref int
+	httpPortPref  int
+
+	// lastPref remembers the selection preferences of the last Connect
+	// so Reconnect keeps the user's preferred backend (v0.9.8.3 fix).
+	lastPref core.Preferences
+
 	// provider holds the first-class provider session (Tor/Psiphon)
 	// when the active route is provider-based (§11). Exactly one of
 	// instance/provider is non-nil while connected.
@@ -182,7 +252,36 @@ func New(opts Options) *Manager {
 		opts.MonitorInterval = 10 * time.Second
 	}
 
+	opts.Verify = opts.Verify.WithDefaults()
+
 	return &Manager{opts: opts, state: StateDisconnected}
+}
+
+// SetLocalPorts stores the user-selected local inbound ports for
+// subsequent connections (0 = automatic allocation). The values are
+// validated by the caller (SettingsService) and re-checked before
+// every launch.
+func (m *Manager) SetLocalPorts(socks, http int) {
+	if m == nil {
+		return
+	}
+
+	m.mu.Lock()
+	m.socksPortPref = socks
+	m.httpPortPref = http
+	m.mu.Unlock()
+}
+
+// LocalPorts returns the active port preference.
+func (m *Manager) LocalPorts() (socks int, http int) {
+	if m == nil {
+		return 0, 0
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.socksPortPref, m.httpPortPref
 }
 
 // Connect establishes the tunnel for one configuration.
@@ -230,6 +329,7 @@ func (m *Manager) Connect(
 	m.attempts = nil
 	m.lastError = ""
 	m.coreReadyMS = 0
+	m.lastPref = pref
 
 	m.mu.Unlock()
 
@@ -336,7 +436,10 @@ func (m *Manager) attempt(
 
 	if err := backend.Validate(ctx, cfg); err != nil {
 		m.recordAttempt(backend.Name(), false, err, started)
-		m.opts.Metrics.AddCoreStart(false)
+
+		if m.opts.Metrics != nil {
+			m.opts.Metrics.AddCoreStart(false)
+		}
 
 		return Snapshot{}, firerrors.Wrap(err, firerrors.KindInvalidInput,
 			Subsystem, "connect", "%s validation failed", backend.Name())
@@ -350,8 +453,29 @@ func (m *Manager) attempt(
 	}
 
 	// Port stability across reconnects: reuse the session port when
-	// it was released cleanly; otherwise allocate fresh.
+	// it was released cleanly; otherwise allocate fresh. A user-selected
+	// port (v0.9.8.3) overrides both.
 	opts.LocalPort = m.nextPort()
+
+	socks, http := m.userPorts()
+
+	if socks > 0 {
+		opts.LocalPort = socks
+	}
+
+	if http > 0 {
+		opts.HTTPPort = http
+	}
+
+	// Bindability pre-check for user-selected ports: fail fast with a
+	// useful error instead of a core-level bind crash. The core's own
+	// bind remains the final authority (check-then-use races resolve
+	// as a normal failed attempt).
+	if err := m.checkPortBindability(opts.LocalPort, opts.HTTPPort); err != nil {
+		m.recordAttempt(backend.Name(), false, err, started)
+
+		return Snapshot{}, err
+	}
 
 	// --- StartingCore ----------------------------------------------
 	m.mu.Lock()
@@ -361,7 +485,10 @@ func (m *Manager) attempt(
 	instance, err := backend.Start(ctx, cfg, opts)
 	if err != nil {
 		m.recordAttempt(backend.Name(), false, err, started)
-		m.opts.Metrics.AddCoreStart(false)
+
+		if m.opts.Metrics != nil {
+			m.opts.Metrics.AddCoreStart(false)
+		}
 
 		return Snapshot{}, firerrors.Wrap(err, firerrors.KindDependencyUnavailable,
 			Subsystem, "connect", "%s failed to start", backend.Name())
@@ -375,7 +502,10 @@ func (m *Manager) attempt(
 
 	if err := instance.WaitReady(ctx); err != nil {
 		m.recordAttempt(backend.Name(), false, err, started)
-		m.opts.Metrics.AddCoreStart(false)
+
+		if m.opts.Metrics != nil {
+			m.opts.Metrics.AddCoreStart(false)
+		}
 
 		// Deterministic cleanup of the failed attempt.
 		_ = instance.Close()
@@ -413,11 +543,111 @@ func (m *Manager) attempt(
 	m.port = opts.LocalPort
 	m.mu.Unlock()
 
+	// --- Verifying (v0.9.8.3): readiness is NOT success -------------
+	// The listener accepting loopback connections proves the core
+	// runs; only an end-to-end request through the tunnel proves
+	// usable Internet. A failed verification fails the attempt and
+	// lets the next candidate run.
+	if !m.opts.Verify.Skip {
+		m.mu.Lock()
+		m.state = StateVerifying
+		m.mu.Unlock()
+
+		verifyOpts := VerifyOptions{Timeout: m.opts.Verify.Timeout}
+
+		if m.opts.Verify.Target != "" {
+			verifyOpts.URL = m.opts.Verify.Target
+		}
+
+		result := VerifyTunnel(ctx, instance.Endpoint(), verifyOpts)
+
+		m.mu.Lock()
+		m.lastVerify = result
+
+		if result.OK {
+			m.verifiedAt = time.Now().UTC()
+		}
+
+		m.mu.Unlock()
+
+		if !result.OK {
+			// Deterministic cleanup of the unusable route.
+			_ = instance.Close()
+
+			m.mu.Lock()
+			m.instance = nil
+			m.state = StateSelecting // the next candidate may run
+			m.mu.Unlock()
+
+			err := firerrors.New(firerrors.KindDependencyUnavailable,
+				Subsystem, "connect", "%s started but Internet verification "+
+					"failed (%s); route not usable", backend.Name(), result.Describe())
+
+			m.recordAttempt(backend.Name(), false, err, started)
+
+			return Snapshot{}, err
+		}
+	}
+
+	// --- Verified (or tests-only skip) ------------------------------
+	if m.opts.Metrics != nil {
+		m.opts.Metrics.AddCoreStart(true)
+		m.opts.Metrics.ObserveCoreStartup(time.Since(started))
+	}
+
+	m.mu.Lock()
+
+	if m.opts.Verify.Skip {
+		m.state = StateConnected
+	} else {
+		m.state = StateConnectedVerified
+	}
+
+	m.mu.Unlock()
+
 	m.recordAttempt(backend.Name(), true, nil, started)
 
 	m.startMonitor()
 
 	return m.Snapshot(), nil
+}
+
+// userPorts returns the user-selected local inbound preferences
+// (0 = automatic for each).
+func (m *Manager) userPorts() (socks, http int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.socksPortPref, m.httpPortPref
+}
+
+// checkPortBindability probes whether the requested local inbound
+// ports can actually be bound on the IPv4 loopback before a core
+// launch consumes them. A port the caller explicitly asked for must
+// fail loudly (naming the port and the conflict) instead of surfacing
+// later as a cryptic core bind error.
+func (m *Manager) checkPortBindability(socks, http int) error {
+	for _, port := range []int{socks, http} {
+		if port <= 0 {
+			continue // 0 = automatic ephemeral allocation
+		}
+
+		if port < 1024 || port > 65535 {
+			return firerrors.New(firerrors.KindInvalidInput,
+				Subsystem, "connect", "local proxy port %d out of range (1024-65535)", port)
+		}
+
+		ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+		if err != nil {
+			return firerrors.New(firerrors.KindDependencyUnavailable,
+				Subsystem, "connect", "local proxy port %d is already in use; "+
+					"choose another port or free it (bind check: %v)", port, err)
+		}
+
+		_ = ln.Close()
+	}
+
+	return nil
 }
 
 // Disconnect tears the session down: stop the core first (Windows
@@ -501,7 +731,11 @@ func (m *Manager) Reconnect(ctx context.Context) (Snapshot, error) {
 
 	m.Disconnect()
 
-	return m.Connect(ctx, *cfg, core.Preferences{AllowFallback: true})
+	// v0.9.8.3: keep the user's preferred backend across reconnects.
+	pref := m.lastPref
+	pref.AllowFallback = true
+
+	return m.Connect(ctx, *cfg, pref)
 }
 
 // Snapshot returns the credential-free state view.
@@ -600,7 +834,7 @@ func (m *Manager) VerifyConnected(ctx context.Context, opts VerifyOptions) (Veri
 	state := m.state
 	m.mu.Unlock()
 
-	if instance == nil || state != StateConnected {
+	if instance == nil || !state.ConnectedLike() {
 		return VerifyResult{}, firerrors.New(firerrors.KindConfiguration,
 			Subsystem, "verify",
 			"no active session to verify (state %s)", state)
@@ -712,7 +946,7 @@ func (m *Manager) startMonitor() {
 				state := m.state
 				m.mu.Unlock()
 
-				if (instance == nil && provSession == nil) || state != StateConnected {
+				if (instance == nil && provSession == nil) || !state.ConnectedLike() {
 					return
 				}
 
@@ -728,7 +962,7 @@ func (m *Manager) startMonitor() {
 
 						m.mu.Lock()
 
-						if m.state == StateConnected {
+						if m.state.ConnectedLike() {
 							m.state = StateConnectionFailed
 							m.lastError = "provider process exited unexpectedly"
 							m.provider = nil
@@ -751,7 +985,7 @@ func (m *Manager) startMonitor() {
 
 					m.mu.Lock()
 
-					if m.state == StateConnected {
+					if m.state.ConnectedLike() {
 						m.state = StateConnectionFailed
 						m.lastError = "core process exited unexpectedly"
 						m.instance = nil
@@ -833,7 +1067,14 @@ func (m *Manager) secrets() []string {
 func (m *Manager) nextPort() int {
 	m.mu.Lock()
 	port := m.port
+	socks := m.socksPortPref
 	m.mu.Unlock()
+
+	// A user-selected port wins on every attempt (the bindability
+	// check surfaces conflicts as a clear per-attempt failure).
+	if socks > 0 {
+		return socks
+	}
 
 	if port > 0 {
 		return port

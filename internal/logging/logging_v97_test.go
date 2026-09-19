@@ -27,8 +27,10 @@ func newTestLogger(t *testing.T) *Logger {
 	return logger
 }
 
-// TestSessionIdentityAndEventIDs verifies every entry carries the
-// session id, a unique event id and a strictly monotonic sequence.
+// TestSessionIdentityAndEventIDs verifies the v0.9.8.3 identity
+// contract: ordinary records are COMPACT (no session_id/event_id) but
+// keep a strictly monotonic sequence; correlation-opt-in records
+// carry the session id, a unique event id and stay monotonic.
 func TestSessionIdentityAndEventIDs(t *testing.T) {
 	logger := newTestLogger(t)
 
@@ -41,31 +43,70 @@ func TestSessionIdentityAndEventIDs(t *testing.T) {
 		t.Fatalf("entries = %d, want 25", len(entries))
 	}
 
-	seenIDs := make(map[string]bool, len(entries))
-
 	for i, entry := range entries {
-		if entry.SessionID == "" {
-			t.Fatalf("entry %d: empty session_id", i)
+		// v0.9.8.3: ordinary records carry NO session/event identity.
+		if entry.SessionID != "" {
+			t.Fatalf("entry %d: ordinary record carries session_id %q", i, entry.SessionID)
 		}
 
-		if entry.SessionID != logger.SessionID() {
-			t.Fatalf("entry %d: session mismatch", i)
+		if entry.EventID != "" {
+			t.Fatalf("entry %d: ordinary record carries event_id %q", i, entry.EventID)
 		}
-
-		if entry.EventID == "" {
-			t.Fatalf("entry %d: empty event_id", i)
-		}
-
-		if seenIDs[entry.EventID] {
-			t.Fatalf("entry %d: duplicate event_id %s", i, entry.EventID)
-		}
-
-		seenIDs[entry.EventID] = true
 
 		if i > 0 && entry.Seq <= entries[i-1].Seq {
 			t.Fatalf("entry %d: sequence not monotonic (%d <= %d)",
 				i, entry.Seq, entries[i-1].Seq)
 		}
+	}
+
+	// Correlation-opt-in records keep full identity.
+	for i := 0; i < 5; i++ {
+		logger.Log(Record{
+			Level:     LevelInfo,
+			Subsystem: "connection",
+			Event:     "episode_event",
+			Correlate: true,
+			Message:   fmt.Sprintf("episode %d", i),
+		})
+	}
+
+	entries = logger.Recent(0, 100, "", "")
+	if len(entries) != 30 {
+		t.Fatalf("entries after correlated records = %d, want 30", len(entries))
+	}
+
+	seenIDs := make(map[string]bool, 5)
+
+	correlated := 0
+
+	for _, entry := range entries {
+		if !entry.Correlated {
+			continue
+		}
+
+		correlated++
+
+		if entry.SessionID == "" {
+			t.Fatalf("correlated entry: empty session_id")
+		}
+
+		if entry.SessionID != logger.SessionID() {
+			t.Fatalf("correlated entry: session mismatch")
+		}
+
+		if entry.EventID == "" {
+			t.Fatalf("correlated entry: empty event_id")
+		}
+
+		if seenIDs[entry.EventID] {
+			t.Fatalf("duplicate event_id %s", entry.EventID)
+		}
+
+		seenIDs[entry.EventID] = true
+	}
+
+	if correlated != 5 {
+		t.Fatalf("correlated entries = %d, want 5", correlated)
 	}
 
 	// A second launch gets a different session id.
@@ -96,6 +137,7 @@ func TestStructuredRecordFields(t *testing.T) {
 		Level:      LevelInfo,
 		Subsystem:  "connection",
 		Event:      "verified",
+		Correlate:  true,
 		ConfigID:   "cfg-123",
 		Core:       "xray",
 		Listener:   "127.0.0.1:12386",
@@ -278,11 +320,15 @@ func TestConcurrentStructuredLogging(t *testing.T) {
 	seen := make(map[string]bool, len(entries))
 
 	for i, entry := range entries {
-		if seen[entry.EventID] {
-			t.Fatalf("entry %d: duplicate event_id", i)
-		}
+		// v0.9.8.3: only correlated records carry event ids; ordinary
+		// records stay compact. Event ids must still be unique.
+		if entry.EventID != "" {
+			if seen[entry.EventID] {
+				t.Fatalf("entry %d: duplicate event_id", i)
+			}
 
-		seen[entry.EventID] = true
+			seen[entry.EventID] = true
+		}
 	}
 }
 
@@ -384,7 +430,17 @@ func TestEntryShapeStillJSONL(t *testing.T) {
 		t.Fatalf("line is not JSON: %v", err)
 	}
 
-	if _, ok := entry["session_id"]; !ok {
-		t.Fatal("session_id missing on disk")
+	// v0.9.8.3: ordinary on-disk records are COMPACT — no session or
+	// event identity, no correlation ids.
+	for _, banned := range []string{"session_id", "event_id"} {
+		if _, ok := entry[banned]; ok {
+			t.Fatalf("ordinary record carries %q on disk", banned)
+		}
+	}
+
+	for _, required := range []string{"seq", "ts", "level", "subsystem", "event"} {
+		if _, ok := entry[required]; !ok {
+			t.Fatalf("compact record missing %q", required)
+		}
 	}
 }

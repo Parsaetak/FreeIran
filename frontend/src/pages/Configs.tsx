@@ -265,6 +265,30 @@ export function ConfigsPage() {
     });
   };
 
+
+  /**
+   * v0.9.8.3 manual ordering: move a configuration by STABLE ID within
+   * the complete ordered collection. Only offered on the unfiltered,
+   * unsorted view (the stored order is one authority — filtered views
+   * must never corrupt it). After the move the list reloads from the
+   * backend, so persistence and restart behavior stay observable.
+   */
+  const moveConfig = async (config: Config, direction: -1 | 1) => {
+    const id = String(config["id"]);
+    const index = visibleItems.findIndex((item) => String(item["id"]) === id);
+    if (index < 0) return;
+
+    const target = index + direction;
+    if (target < 0 || target >= visibleItems.length) return;
+
+    try {
+      await call(() => dataService.MoveConfig(id, target));
+      await useConfigsStore.getState().runSearch();
+    } catch (error) {
+      toast("error", "Reorder failed", describeError(error));
+    }
+  };
+
   const testConfig = async (config: Config) => {
     const id = String(config["id"]);
 
@@ -702,6 +726,36 @@ export function ConfigsPage() {
                        * visible regardless of content length.
                        */}
                       <span className="actions">
+                        {statusFilter === "" && sortBy === "" && !searchQuery && (
+                          <>
+                            <button
+                              type="button"
+                              className="btn sm"
+                              aria-label={`Move ${String(config["name"] || "configuration")} up`}
+                              title="Move up"
+                              disabled={virtualRow.index === 0}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void moveConfig(config, -1);
+                              }}
+                            >
+                              ↑
+                            </button>
+                            <button
+                              type="button"
+                              className="btn sm"
+                              aria-label={`Move ${String(config["name"] || "configuration")} down`}
+                              title="Move down"
+                              disabled={virtualRow.index >= visibleItems.length - 1}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void moveConfig(config, 1);
+                              }}
+                            >
+                              ↓
+                            </button>
+                          </>
+                        )}
                         {queuedIds.has(String(config["id"])) && testingId !== String(config["id"]) && (
                           <span className="test-state queued" title="Waiting in the test queue">Queued</span>
                         )}

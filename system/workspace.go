@@ -19,7 +19,13 @@
 // %LOCALAPPDATA%, XDG data/cache or the system temp directory. A
 // developer/operator override (FREEIRAN_HOME) relocates the root
 // explicitly; data from pre-0.9.2 installs is migrated once by
-// workspace_migrate.go — never abandoned and never silently duplicated.
+// workspace_migrate.go — never abandoned and never silently
+// duplicated.
+//
+// v0.9.8.3: installed deployments no longer relocate the workspace to
+// %AppData%\FreeIran. The application folder is the one workspace for
+// every deployment; a legacy per-user tree is migrated once (copy,
+// verify, then reclaim is a user decision) and never re-created.
 package system
 
 import (

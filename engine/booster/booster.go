@@ -127,6 +127,11 @@ type Controller struct {
 	pressure  *mempressure.Controller
 	listeners []func(Settings)
 
+	// depthCooldown counts ticks since the last queue-depth change
+	// (v0.9.8.3): depth adjustments require two quiet ticks between
+	// steps — hysteresis against oscillation and log spam.
+	depthCooldown int
+
 	// inputs holds the atomic workload signal store. Accessed via
 	// Inputs(); the field is an embedded value (not a pointer) so the
 	// Controller owns it and callers get a stable pointer.
@@ -265,9 +270,44 @@ func (c *Controller) Tick() Settings {
 		adj.QueueDepth = limits.QueueDepthMin
 	}
 
-	// On recovery from critical/high, gradually restore queue depth.
-	if state == mempressure.StateNormal && s.QueueDepth < limits.QueueDepthMax {
-		adj.QueueDepth = clamp(adj.QueueDepth+1000, limits.QueueDepthMin, limits.QueueDepthMax)
+	// v0.9.8.3: queue depth grows ONLY with evidence that additional
+	// capacity is useful (sustained deep backlog with saturated workers
+	// under acceptable CPU), shrinks only on sustained idleness, and
+	// always with a cooldown between steps. Stable operation produces
+	// NO depth changes and therefore no repetitive policy logs.
+	if state == mempressure.StateNormal {
+		if c.depthCooldown > 0 {
+			c.depthCooldown--
+		} else {
+			depth := adj.QueueDepth
+
+			workersSaturated := int64(adj.QueueConcurrency) > 0 &&
+				activeWorkers >= int64(adj.QueueConcurrency)*3/4
+
+			grow := backlog > int64(depth)*3/4 && workersSaturated && cpuPressure < 0.7
+
+			// No idle shrink in the Normal state: the depth bound is a
+			// capacity ceiling, not allocated memory, and idle
+			// oscillation would only burn ticks. Pressure states own
+			// the shrinking side.
+			if grow && depth < limits.QueueDepthMax {
+				step := int(backlog / 8)
+				if step < 1000 {
+					step = 1000
+				}
+
+				if step > 4000 {
+					step = 4000
+				}
+
+				adj.QueueDepth = clamp(depth+step, limits.QueueDepthMin, limits.QueueDepthMax)
+				c.depthCooldown = 2
+			}
+		}
+	} else {
+		// Under pressure: reset the cooldown so post-recovery growth
+		// starts from clean evidence, never automatically.
+		c.depthCooldown = 0
 	}
 
 	// Only fire listeners if something actually changed.

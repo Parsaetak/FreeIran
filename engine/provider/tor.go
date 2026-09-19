@@ -115,13 +115,19 @@ func NewTorSource(httpClient httpx.Interface, latest bool) *TorSource {
 func (s *TorSource) Resolve(ctx context.Context) (Release, error) {
 	version := s.PinnedVersion
 
+	// v0.9.8.3: the production default re-queries the CURRENT official
+	// distribution listing (stable channel) so a stale pin can never
+	// be the only install path; the pinned version is the
+	// deterministic fallback when the listing is unreachable.
 	if s.Latest {
 		v, err := s.latestStableVersion(ctx)
-		if err != nil {
+		if err == nil && v != "" {
+			version = v
+		} else if s.PinnedVersion != "" {
+			version = s.PinnedVersion
+		} else {
 			return Release{}, fmt.Errorf("resolve latest tor version: %w", err)
 		}
-
-		version = v
 	}
 
 	platform := PlatformSuffix(runtimeGOOS(), runtimeGOARCH())
@@ -190,7 +196,18 @@ func (s *TorSource) latestStableVersion(ctx context.Context) (string, error) {
 func findChecksumLine(body, name string) string {
 	for _, line := range strings.Split(body, "\n") {
 		fields := strings.Fields(line)
-		if len(fields) == 2 && fields[1] == name {
+		if len(fields) < 2 {
+			continue
+		}
+
+		// GNU sha256sum format: "<hash> [ *]<name>". The Tor Project
+		// publishes "<hash>  <name>" (two spaces). Tolerate the
+		// binary-mode asterisk marker and extra whitespace instead of
+		// rejecting the official file shape, but still require a
+		// 64-hex digest in the first field.
+		candidate := strings.TrimPrefix(fields[len(fields)-1], "*")
+
+		if candidate == name && len(fields[0]) == 64 {
 			return strings.ToLower(fields[0])
 		}
 	}
@@ -433,10 +450,17 @@ func (e *TorEngine) Install(ctx context.Context) error {
 		return err
 	}
 
+	// v0.9.8.3 idempotency: the manifest records the downloaded
+	// asset's SHA-256, which IS the official published checksum of the
+	// target release. Matching checksums mean the exact same verified
+	// bundle is already installed — no re-download. (The old
+	// runtime-version-vs-bundle-version comparison could never match:
+	// tor reports 0.4.8.x while the bundle is 15.0.x.)
 	manifest := e.binary.LoadManifest()
-	if manifest.BinaryPath != "" && manifest.Version != "" &&
-		torRuntimeVersion(manifest.Version) == torRuntimeVersion(release.Version) {
-		// Same runtime already installed and verified.
+	if manifest.BinaryPath != "" && manifest.ChecksumSHA256 != "" &&
+		release.SHA256 != "" &&
+		strings.EqualFold(manifest.ChecksumSHA256, release.SHA256) {
+		// Same verified bundle already installed and activated.
 		return nil
 	}
 
