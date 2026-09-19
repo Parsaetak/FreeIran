@@ -184,6 +184,7 @@ func (a *App) logCleanupResult(trigger string, result *cleanup.Result) {
 		} else {
 			a.logger.Log(logging.Record{
 				Level:      logging.LevelDebug,
+				Lifecycle:  true, // v0.9.8.4: visible in the Detailed profile
 				Subsystem:  "cleanup",
 				Event:      "cleanup_task",
 				Message:    fmt.Sprintf("cleanup task %s: %d bytes, %d items (%d ms)", task.Name, task.Bytes, task.Items, task.DurationMS),

@@ -21,6 +21,33 @@ const BACKEND_OPTIONS = ["xray", "v2ray", "sing-box"] as const;
 const TESTING_POLICIES = ["off", "on_add", "periodic"] as const;
 const LOG_LEVELS = ["debug", "info", "warn", "error"] as const;
 
+/**
+ * v0.9.8.4 logging profiles (roadmap P1 §15): ONE authoritative
+ * policy lives in the logger (internal/logging); this control just
+ * selects it. Explanations are concrete — no vague wording.
+ */
+const LOGGING_PROFILES: Array<{
+  value: string;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: "normal",
+    label: "Normal",
+    description: "Recommended for everyday use. Compact operational records: connections, verification, failures, recovery. Routine diagnostics are suppressed.",
+  },
+  {
+    value: "detailed",
+    label: "Detailed",
+    description: "More lifecycle information for troubleshooting: core and provider start/stop detail plus per-record identity. No high-frequency spam.",
+  },
+  {
+    value: "debug",
+    label: "Debug",
+    description: "Verbose diagnostics and correlation information: detailed subsystem fields and identifiers that tie connection and recovery episodes together. Produces more logs (still rotated and bounded).",
+  },
+];
+
 const REFRESH_MIN = 5;
 const REFRESH_MAX = 1440;
 const LOG_MB_MIN = 1;
@@ -38,6 +65,7 @@ function normalize(settings: Settings): Settings {
     log_max_bytes_mb: settings.log_max_bytes_mb || 5,
     log_max_backups: settings.log_max_backups || 4,
     log_retention_days: settings.log_retention_days || 7,
+    logging_profile: settings.logging_profile || "normal",
     local_socks_port: settings.local_socks_port || 0,
     local_http_port: settings.local_http_port || 0,
   };
@@ -49,6 +77,7 @@ function sameSettings(a: Settings, b: Settings): boolean {
     a.refresh_interval_minutes === b.refresh_interval_minutes &&
     a.testing_policy === b.testing_policy &&
     a.log_level === b.log_level &&
+    a.logging_profile === b.logging_profile &&
     a.log_max_bytes_mb === b.log_max_bytes_mb &&
     a.log_max_backups === b.log_max_backups &&
     a.log_retention_days === b.log_retention_days &&
@@ -621,6 +650,42 @@ export function SettingsPage() {
           <button type="button" className="btn ghost" disabled={reportLoading} onClick={() => void exportReport()}>
             Export report
           </button>
+        </ActionRow>
+
+        <ActionRow
+          label="Logging"
+          hint="How much the persistent runtime log records. The change applies immediately — no restart. Secrets are never logged in any profile."
+        >
+          <div className="field">
+            <div
+              className="segmented"
+              role="radiogroup"
+              aria-label="Logging profile"
+            >
+              {LOGGING_PROFILES.map((profile) => (
+                <button
+                  key={profile.value}
+                  type="button"
+                  role="radio"
+                  aria-checked={draft.logging_profile === profile.value}
+                  className={`segmented-item ${
+                    draft.logging_profile === profile.value ? "active" : ""
+                  }`}
+                  onClick={() => update({ logging_profile: profile.value })}
+                >
+                  {profile.label}
+                </button>
+              ))}
+            </div>
+
+            <span className="field-hint" aria-live="polite">
+              {
+                LOGGING_PROFILES.find(
+                  (profile) => profile.value === (draft.logging_profile || "normal"),
+                )?.description
+              }
+            </span>
+          </div>
         </ActionRow>
 
         <ActionRow

@@ -659,6 +659,17 @@ export class Settings {
              */
             this["log_level"] = "";
         }
+        // v0.9.8.4 hand-maintained addition (the generated class lags
+        // the Go Settings struct; same pattern as the v0.9.8.1
+        // provider fields): the logging profile
+        // ("" / "normal" / "detailed" / "debug").
+        if (!("logging_profile" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["logging_profile"] = "";
+        }
         if (!("log_max_bytes_mb" in $$source)) {
             /**
              * @member

@@ -9,12 +9,103 @@ configurations.
 **Project:** FreeIran — A SHEYTAN Digital System
 **Architect:** Parsa Tak / SHEYTAN
 **Repository:** https://github.com/Parsaetak/FreeIran
-**Current version:** 0.9.8.3 (see `VERSION`)
+**Current version:** 0.9.8.4 (see `VERSION`)
 **Status:** production architecture — multi-core protocol runtime with
 managed installation, multi-level node discovery, Ping/URL test modes
 with measured ranking, verified-connection engine with racing,
 environment intelligence, system proxy and TUN mode, unified adaptive
 memory control and kernel-level process supervision
+
+---
+
+## What's new in v0.9.8.4
+
+v0.9.8.4 is a connection-state integrity release plus the roadmap's
+P1 Logging Profiles feature. It resolves the v0.9.8.3 frontend CI
+failure at its root (a stale connection-state contract in the tests,
+not a product bug), makes one asynchronous-operation policy protect
+the connection store, and completes one logging policy across the
+application.
+
+### Frontend CI failure — root-cause fix (run 35452888940)
+
+- The two failing Quick Connect tests encoded the OBSOLETE contract
+  (`state: "connected"` = verified Internet). The v0.9.8.3 engine
+  introduced the verification boundary: `connected` means the local
+  route is established while Internet verification is still pending;
+  `connected_verified` is the only final success. The page mapped
+  this correctly and rendered the transitional "Verifying" hero —
+  the tests, not the product, were stale. The connected-state tests
+  now assert the real contract (`connected_verified` +
+  `verification: "usable"`), and new explicit tests pin the
+  transitional rendering of `connected` (no "Verified" badge — core
+  readiness is never Internet verification), `verifying`,
+  `waiting_for_ready` and the full state list.
+
+### Stale-operation protection (connection store)
+
+- `useConnectionStore` operations now capture a generation token when
+  they start and apply their result only while that generation is
+  current: a late-resolving `connect()` / `connectBest()` /
+  `refresh()` can no longer overwrite a newer state, a stale error
+  can never replace the current one, disconnect/reconnect invalidate
+  previous operations, authoritative events outrank unresolved
+  promises, and teardown (or a test reset) can drop every pending
+  operation deterministically — no arbitrary sleeps. Regression
+  matrix: `frontend/src/state/connectionStore.test.ts` (13 tests,
+  one per required scenario).
+
+### One authoritative connection state machine (frontend + backend)
+
+- The frontend store type now carries the complete engine state list
+  (`verifying`, `connected_verified` included), and the Quick
+  Connect/Connection surfaces share it. A genuine backend defect was
+  found and fixed during the audit: provider sessions (Tor/Psiphon)
+  stayed on `connected` after their Internet verification PASSED,
+  which under the verified contract left verified provider sessions
+  looking unverified — they now reach `connected_verified` exactly
+  like core-based sessions (`engine/connection/provider.go`).
+- Recovery no longer treats `connected` as healthy: only
+  `connected_verified` (or idle) clears a recovery episode, so the
+  verification gate — not local readiness — decides
+  (`engine/app/recoveryservice.go`, per-state decision table pinned
+  by `recoveryservice_state_test.go`, plus an end-to-end test that
+  recovers through a REAL tunnel verification via the SOCKS-relay
+  fake core).
+
+### P1 — Logging Profiles (Normal / Detailed / Debug)
+
+- ONE policy in the logger (`internal/logging`): admission =
+  severity × profile × lifecycle tier, checked before any formatting
+  cost. Normal (default) stays compact — routine verbose diagnostics
+  suppressed, no per-record session/event identity. Detailed adds
+  lifecycle-tagged diagnostics and full record identity. Debug adds
+  verbose diagnostics and correlation identifiers on every record
+  (still bounded by rotation + retention). Redaction is unchanged in
+  every profile.
+- Settings: a `Logging` control (Normal | Detailed | Debug) persists
+  `logging_profile` with the existing settings system and switches
+  the live logger immediately — no restart. The control explains
+  each profile concretely; no vague wording.
+- Regression matrix: `internal/logging/logging_profile_test.go`
+  (per-profile admission, compact on-disk records, identity
+  uniqueness, redaction, runtime switching Normal → Detailed →
+  Debug → Normal, rotation/retention bounds) and
+  `engine/app/loggingservice_profile_test.go` (validation,
+  persistence, live switch).
+
+### Housekeeping
+
+- Version 0.9.8.4 everywhere (VERSION, internal/version,
+  frontend/package.json + lock, Windows resources incl. regenerated
+  PE `.syso`, installer, README, ROADMAP).
+- ROADMAP baseline corrected to `0.9.8.4`: v0.9.8.3 work recorded as
+  completed historical implementation (fresh-selection loop, verified
+  state, recovery re-ranking, reorder, ports, workspace, installer,
+  compact logging, adaptive memory, Tor/Psiphon), P1 Logging Profiles
+  marked completed.
+- Embed assets regenerated; stale unreferenced `dist` bundles from
+  earlier builds removed (`cmd/freeiran/frontend/dist`).
 
 ---
 
@@ -1296,7 +1387,7 @@ FreeIran/
 ├── internal/version/      Single source of truth for versioning
 ├── .github/workflows/     CI, release and security pipelines
 ├── docs/                  Architecture, storage, performance, CI, security, dev
-├── VERSION                Application version (0.9.8.3)
+├── VERSION                Application version (0.9.8.4)
 └── worklog.md             Engineering worklog
 ```
 

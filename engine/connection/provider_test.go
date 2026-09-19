@@ -277,8 +277,11 @@ func TestConnectProviderFullLifecycle(t *testing.T) {
 		t.Fatalf("ConnectProvider: %v", err)
 	}
 
-	if snapshot.State != StateConnected {
-		t.Fatalf("state = %q, want connected", snapshot.State)
+	// v0.9.8.4: successful verification means the final success state,
+	// identical to core-based sessions (not the transitional
+	// StateConnected).
+	if snapshot.State != StateConnectedVerified {
+		t.Fatalf("state = %q, want connected_verified", snapshot.State)
 	}
 
 	if snapshot.Core != "tor" {
@@ -389,8 +392,10 @@ func TestReconnectProviderSession(t *testing.T) {
 		t.Fatalf("reconnect: %v", err)
 	}
 
-	if snapshot.State != StateConnected {
-		t.Fatalf("state = %q, want connected", snapshot.State)
+	// v0.9.8.4: a re-established verified provider session is
+	// connected_verified too.
+	if snapshot.State != StateConnectedVerified {
+		t.Fatalf("state = %q, want connected_verified", snapshot.State)
 	}
 
 	if snapshot.Core != "tor" {

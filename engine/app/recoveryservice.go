@@ -151,8 +151,18 @@ func (r *RecoveryService) loop(stop <-chan struct{}) {
 	}
 }
 
-// tick runs one recovery decision.
+// tick runs one recovery decision against the live connection
+// snapshot.
 func (r *RecoveryService) tick(now time.Time) {
+	r.decide(now, r.app.connMgr.Snapshot())
+}
+
+// decide is the recovery decision for one observed snapshot. It is
+// split from tick so the per-state policy table (v0.9.8.4 §6) is
+// regression-testable deterministically for every connection state —
+// including the transient ones (verifying, disconnecting) that a live
+// watch can only race past.
+func (r *RecoveryService) decide(now time.Time, snapshot connection.Snapshot) {
 	if !r.Enabled() {
 		return
 	}
@@ -173,12 +183,18 @@ func (r *RecoveryService) tick(now time.Time) {
 		r.lastEpisode = time.Time{}
 	}
 
-	snapshot := r.app.connMgr.Snapshot()
-
 	switch snapshot.State {
-	case connection.StateConnected, connection.StateConnectedVerified,
-		connection.StateDisconnected:
+	case connection.StateConnectedVerified, connection.StateDisconnected:
 		// Healthy (or idle by user choice): clear any episode.
+		//
+		// v0.9.8.4: only connected_verified counts as healthy here.
+		// The plain connected state means the route is established
+		// while verification is still pending — treating it as
+		// healthy falsely presented readiness as verified Internet
+		// and cleared a recovery episode before the verification
+		// gate had spoken. It now falls through to the in-progress
+		// branch below (recovery never acts on it; it interferes
+		// only with explicit failures).
 		if r.episode != nil {
 			r.app.logger.Info("recovery", "episode_cleared",
 				"connection is %s; recovery episode cleared", snapshot.State)
@@ -192,8 +208,16 @@ func (r *RecoveryService) tick(now time.Time) {
 		// The recovery path acts on explicit failure only.
 
 	default:
-		// Selecting/Preparing/Starting/Waiting/Verifying/
-		// Disconnecting: in progress — do not interfere.
+		// Selecting/Preparing/StartingCore/WaitingForReady/Connected/
+		// Verifying/Disconnecting: in progress — do not interfere.
+		//
+		// v0.9.8.4: `connected` deliberately sits here (not in the
+		// healthy branch): the route is established but the
+		// verification gate has not spoken yet, so an episode must
+		// neither be cleared nor advanced on its account. If the
+		// verification succeeds, the state becomes connected_verified
+		// (episode cleared); if it fails, the machine reports
+		// connection_failed and the bounded episode continues.
 		r.mu.Unlock()
 		return
 	}

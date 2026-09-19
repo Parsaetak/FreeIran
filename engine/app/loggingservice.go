@@ -62,9 +62,18 @@ type Settings struct {
 	// TestingPolicy is one of "off", "on_add", "periodic".
 	TestingPolicy string `json:"testing_policy,omitempty"`
 
-	// LogLevel is the runtime log minimum level
-	// ("debug"/"info"/"warn"/"error").
+	// LogLevel is the runtime log minimum severity floor
+	// ("debug"/"info"/"warn"/"error"). It gates info/warn/error
+	// records; debug-severity verbosity is governed by the logging
+	// profile (v0.9.8.4).
 	LogLevel string `json:"log_level,omitempty"`
+
+	// LoggingProfile is the v0.9.8.4 logging profile:
+	// "" / "normal" (default end-user mode) / "detailed" (adds
+	// lifecycle diagnostics + full record identity) / "debug"
+	// (verbose diagnostics + correlation identifiers). Applied to the
+	// live logger immediately on save — no restart.
+	LoggingProfile string `json:"logging_profile,omitempty"`
 
 	// LogMaxBytesMB bounds the primary runtime log file before
 	// rotation (0 = default 5 MiB).
@@ -181,6 +190,12 @@ func (a *App) currentSettings() Settings {
 func (a *App) applySettings(settings Settings) {
 	if settings.LogLevel != "" && a.logger != nil {
 		a.logger.SetLevel(logging.Level(settings.LogLevel))
+	}
+
+	// v0.9.8.4: the logging profile switches at runtime — the logger
+	// owns the whole admission policy, no restart required.
+	if a.logger != nil {
+		a.logger.SetProfile(logging.ParseProfile(settings.LoggingProfile))
 	}
 
 	if settings.LogMaxBytesMB > 0 && a.logger != nil {
@@ -301,6 +316,12 @@ func validateSettings(settings Settings) error {
 	case "", "debug", "info", "warn", "error":
 	default:
 		return fmt.Errorf("app: unknown log level %q", settings.LogLevel)
+	}
+
+	switch settings.LoggingProfile {
+	case "", "normal", "detailed", "debug":
+	default:
+		return fmt.Errorf("app: unknown logging profile %q", settings.LoggingProfile)
 	}
 
 	// Developer option ranges (v0.9.1).

@@ -493,6 +493,7 @@ func (i *Instance) Close() error {
 		Level:      logging.LevelDebug,
 		Subsystem:  "core",
 		Event:      "core_exit",
+		Lifecycle:  true, // v0.9.8.4: visible in the Detailed profile
 		Message:    fmt.Sprintf("core %s (pid %d) stopped cleanly", name, pid),
 		Core:       name,
 		PID:        pid,
@@ -595,6 +596,7 @@ func Launch(
 		Level:     logging.LevelDebug,
 		Subsystem: "core",
 		Event:     "core_start",
+		Lifecycle: true, // v0.9.8.4: visible in the Detailed profile
 		Message:   fmt.Sprintf("core %s starting (pid %d, listener %s)", backend.Name(), proc.PID(), listen),
 		Core:      backend.Name(),
 		PID:       proc.PID(),

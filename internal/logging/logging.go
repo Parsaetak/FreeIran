@@ -83,6 +83,87 @@ func severity(l Level) int {
 	return 1
 }
 
+// Profile is the logging-profile policy (v0.9.8.4, roadmap P1 §15):
+// ONE authoritative classification of how much the runtime log
+// carries. The profile — not scattered `if debug` checks in the
+// subsystems — decides which semantic records the logger admits:
+//
+//	Normal    default end-user mode: important startup/shutdown,
+//	          connection lifecycle, verification, provider/core
+//	          lifecycle, failures, recovery, meaningful memory and
+//	          installation events. Routine verbose diagnostics are
+//	          suppressed; records stay compact; no unnecessary
+//	          correlation identifiers.
+//	Detailed  everything Normal keeps, plus lifecycle-tagged
+//	          diagnostic records and session/event identity on every
+//	          emitted record (full lifecycle traceability). No
+//	          uncontrolled high-frequency spam: the dedupe and
+//	          admission gates still apply.
+//	Debug     verbose diagnostic records, detailed subsystem fields,
+//	          correlation IDs on every record (connection/recovery
+//	          episode identifiers become universally available). More
+//	          logs by design — still bounded by rotation and
+//	          retention.
+type Profile string
+
+const (
+	ProfileNormal   Profile = "normal"
+	ProfileDetailed Profile = "detailed"
+	ProfileDebug    Profile = "debug"
+)
+
+// ParseProfile maps a settings string onto a logging profile (""
+// and unknown values fall back to Normal — the safe default).
+func ParseProfile(raw string) Profile {
+	switch Profile(raw) {
+	case ProfileDetailed:
+		return ProfileDetailed
+	case ProfileDebug:
+		return ProfileDebug
+	default:
+		return ProfileNormal
+	}
+}
+
+// Valid reports whether raw names a real profile (settings
+// validation).
+func (p Profile) Valid() bool {
+	return p == ProfileNormal || p == ProfileDetailed || p == ProfileDebug
+}
+
+// profileAdmits is the profile half of the admission policy: the
+// severity half (the user's minimum level) is applied separately.
+func profileAdmits(profile Profile, level Level, lifecycle bool) bool {
+	if level != LevelDebug {
+		return true
+	}
+
+	switch profile {
+	case ProfileDebug:
+		return true
+	case ProfileDetailed:
+		// Only records the subsystems marked as lifecycle-relevant
+		// (connection/provider/core lifecycle detail) — routine
+		// verbose diagnostics stay suppressed.
+		return lifecycle
+	default:
+		return false
+	}
+}
+
+// admitsPolicy is the complete admission policy in ONE place
+// (v0.9.8.4): debug-severity verbosity is governed ENTIRELY by the
+// profile (the severity floor governs info/warn/error records), so
+// Normal stays compact regardless of a legacy debug floor, Detailed
+// adds exactly its lifecycle tier and Debug unlocks everything.
+func admitsPolicy(profile Profile, minLevel Level, level Level, lifecycle bool) bool {
+	if level == LevelDebug {
+		return profileAdmits(profile, level, lifecycle)
+	}
+
+	return severity(level) >= severity(minLevel)
+}
+
 // Entry is one structured runtime log record (§17 + v0.9.7 session
 // identity and correlation fields).
 type Entry struct {
@@ -106,6 +187,11 @@ type Entry struct {
 	// Correlated marks a record as correlation-opt-in (not
 	// serialized; drives identity assignment in emit).
 	Correlated bool `json:"-"`
+
+	// Lifecycle marks a debug-severity record as lifecycle-relevant
+	// (not serialized; admitted by the Detailed profile, which
+	// suppresses routine verbose diagnostics).
+	Lifecycle bool `json:"-"`
 
 	// Correlation (v0.9.7): parent_event_id links an event to the
 	// event that caused it; batch_id groups a bulk test run;
@@ -152,6 +238,11 @@ type Record struct {
 	// startup session, explicit debug). Records that already carry
 	// ParentID/BatchID/TestID are always correlated.
 	Correlate bool
+
+	// Lifecycle marks a debug-severity record as lifecycle-relevant
+	// (connection/provider/core lifecycle detail): admitted by the
+	// Detailed profile, suppressed by Normal, universal in Debug.
+	Lifecycle bool
 }
 
 // newSessionID returns a random 16-hex-char session identifier.
@@ -188,7 +279,12 @@ type Options struct {
 	MaxAgeDays int
 
 	// MinLevel filters entries below the level (default info).
+	// Debug-severity verbosity is governed by Profile, not by this
+	// floor (v0.9.8.4).
 	MinLevel Level
+
+	// Profile is the logging-profile policy (default Normal).
+	Profile Profile
 
 	// MirrorStderr additionally writes entries to stderr (dev mode).
 	MirrorStderr bool
@@ -240,6 +336,10 @@ func Open(opts Options) (*Logger, error) {
 
 	if opts.MinLevel == "" {
 		opts.MinLevel = LevelInfo
+	}
+
+	if opts.Profile == "" {
+		opts.Profile = ProfileNormal
 	}
 
 	if err := os.MkdirAll(opts.Dir, 0o700); err != nil {
@@ -372,6 +472,27 @@ func (l *Logger) SetLevel(level Level) {
 	l.mu.Unlock()
 }
 
+// SetProfile switches the logging-profile policy at runtime (settings
+// UI). The switch takes effect immediately — no restart. Unknown
+// profiles are ignored (the previous policy stays authoritative).
+func (l *Logger) SetProfile(profile Profile) {
+	if !profile.Valid() {
+		return
+	}
+
+	l.mu.Lock()
+	l.opts.Profile = profile
+	l.mu.Unlock()
+}
+
+// Profile returns the active logging-profile policy.
+func (l *Logger) Profile() Profile {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	return l.opts.Profile
+}
+
 // SetLimits adjusts rotation limits at runtime (settings UI). The
 // next write applies them.
 func (l *Logger) SetLimits(maxBytes int64, maxBackups int) {
@@ -473,10 +594,15 @@ func (l *Logger) SessionID() string { return l.session }
 // rec.Message is empty the Event name is used so records never lose
 // their human summary line.
 func (l *Logger) Log(rec Record) {
-	// Fast path (v0.9.8.3): a suppressed record must not build an
-	// Entry, redact strings or copy field maps — idle logging
-	// overhead stays near zero.
-	if severity(rec.Level) < severity(l.opts.MinLevel) {
+	// Fast path (v0.9.8.3/v0.9.8.4): a suppressed record must not
+	// build an Entry, redact strings or copy field maps — idle
+	// logging overhead stays near zero. The severity floor and the
+	// profile policy are checked BEFORE any formatting cost.
+	l.mu.Lock()
+	profile, minLevel := l.opts.Profile, l.opts.MinLevel
+	l.mu.Unlock()
+
+	if !admitsPolicy(profile, minLevel, rec.Level, rec.Lifecycle) {
 		return
 	}
 
@@ -502,6 +628,7 @@ func (l *Logger) Log(rec Record) {
 		DurationMS:    rec.DurationMS,
 		Status:        rec.Status,
 		Correlated:    rec.Correlate || rec.ParentID != "" || rec.BatchID != "" || rec.TestID != "",
+		Lifecycle:     rec.Lifecycle,
 	}
 
 	if len(rec.Fields) > 0 {
@@ -531,7 +658,11 @@ func (l *Logger) write(
 	level Level,
 	subsystem, event, operation, errKind, format string, args ...any,
 ) {
-	if severity(level) < severity(l.opts.MinLevel) {
+	l.mu.Lock()
+	profile, minLevel := l.opts.Profile, l.opts.MinLevel
+	l.mu.Unlock()
+
+	if !admitsPolicy(profile, minLevel, level, false) {
 		return
 	}
 
@@ -550,6 +681,41 @@ func (l *Logger) write(
 	})
 }
 
+// DebugLifecycle logs a lifecycle-relevant diagnostic record
+// (v0.9.8.4): suppressed by Normal, admitted by Detailed and Debug.
+// Subsystems use it for connection/provider/core lifecycle detail —
+// never for high-frequency routine diagnostics.
+func (l *Logger) DebugLifecycle(subsystem, event, format string, args ...any) {
+	l.mu.Lock()
+	profile, minLevel := l.opts.Profile, l.opts.MinLevel
+	l.mu.Unlock()
+
+	if !admitsPolicy(profile, minLevel, LevelDebug, true) {
+		return
+	}
+
+	message := format
+	if len(args) > 0 {
+		message = fmt.Sprintf(format, args...)
+	}
+
+	l.emit(Entry{
+		Level:     LevelDebug,
+		Subsystem: subsystem,
+		Event:     event,
+		Message:   Redact(message),
+		Lifecycle: true,
+	})
+}
+
+// DL logs one lifecycle-relevant diagnostic record through the global
+// logger (no-op when unset).
+func DL(subsystem, event, format string, args ...any) {
+	if l := global.Load(); l != nil {
+		l.DebugLifecycle(subsystem, event, format, args...)
+	}
+}
+
 // emit finalizes one entry (identity assignment for correlated
 // records only, level filter, ring, file write with rotation,
 // stderr mirror, subscriber broadcast).
@@ -562,20 +728,27 @@ func (l *Logger) emit(entry Entry) {
 	// sequence); only the session/event identity is correlation-gated.
 	entry.Seq = l.seq.Add(1)
 
-	if entry.Correlated {
+	l.mu.Lock()
+
+	// v0.9.8.4: identity stamping follows the profile policy.
+	// Normal — correlation-opt-in records only (compact, no
+	// per-record session/event identity). Detailed and Debug — every
+	// emitted record carries session/event identity (lifecycle
+	// traceability; correlation IDs universally available).
+	if entry.Correlated || l.opts.Profile == ProfileDetailed || l.opts.Profile == ProfileDebug {
 		entry.SessionID = l.session
 		entry.EventID = fmt.Sprintf("%s-%04x", l.session[:8], entry.Seq)
 	}
 
 	entry.Time = time.Now().UTC().Format(time.RFC3339Nano)
 
-	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	// Level filter is checked under the lock so SetLevel races are
-	// serialized with writes (the Log/write fast path already
-	// dropped most suppressed records before this point).
-	if severity(entry.Level) < severity(l.opts.MinLevel) {
+	// Level AND profile filters are re-checked under the lock so
+	// SetLevel/SetProfile races are serialized with writes (the
+	// Log/write fast paths already dropped most suppressed records
+	// before this point).
+	if !admitsPolicy(l.opts.Profile, l.opts.MinLevel, entry.Level, entry.Lifecycle) {
 		return
 	}
 

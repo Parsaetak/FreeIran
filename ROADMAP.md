@@ -16,33 +16,64 @@ The application should feel like a mature desktop connectivity client rather tha
 
 Current main:
 
-* Version: `0.9.8.2`
-* Commit: `628b06a7b44f57b373d55703f0fc4d76c68511ca`
+* Version: `0.9.8.4`
 * Platform focus: Windows x64
 * Runtime: Go + Wails + React/TypeScript
 * Core families: Xray, V2Ray, sing-box
 * First-class providers: Tor, Psiphon
-* Quick Connect: enabled
-* Adaptive memory controller: enabled
-* Managed workspace: enabled
+* Quick Connect: enabled (fresh-selection loop, verification-gated)
+* Adaptive memory controller: enabled (evidence-gated growth)
+* Managed workspace: enabled (application-folder-only)
 * Managed provider/core installation: enabled
+* Logging profiles: enabled (Normal / Detailed / Debug)
 
-### Current runtime findings
+> Note: this section previously reported `0.9.8.2` with runtime
+> findings from that era (unbounded queue-depth growth, readiness
+> presented as success). Those findings described real defects that
+> the v0.9.8.3 implementation already fixed; the baseline text lagged
+> the repository and is corrected as of v0.9.8.4.
 
-The latest runtime logs prove:
+### v0.9.8.3 — completed historical work
 
-1. Application startup is fast and functional.
-2. Workspace, store and core discovery initialize correctly.
-3. Xray can start successfully.
-4. Core readiness is being distinguished from Internet verification.
-5. Recovery can switch to another configuration.
-6. DNS and Internet diagnostic tools work.
-7. The adaptive memory controller continuously increases queue depth every five seconds.
-8. Connections are being marked successful at core readiness before Internet verification has completed.
-9. Quick Connect can therefore present a successful-looking core session without having established verified Internet connectivity.
-10. Tor/Psiphon acquisition and usability are not currently sufficient for normal end-user operation.
+The v0.9.8.3 implementation (shipped on `main` before this baseline
+correction) completed the following roadmap items, verified against
+the actual code rather than the stale notes above:
 
-The roadmap below addresses these issues as product-level work, not isolated patches.
+* Quick Connect fresh-selection loop — recent verified successes
+  merged with the ranked set, deduplicated, shortlisted, fresh-tested
+  within a bounded budget, re-ranked from fresh evidence, connected
+  and verified (`engine/app/quickconnect.go`).
+* Verified connection state — `connected_verified` is the only final
+  success; the connection engine gates every attempt on an end-to-end
+  Internet verification (`engine/connection/connection.go`,
+  `verify.go`).
+* Recovery re-ranking — automatic recovery reuses the exact
+  fresh-selection loop, with its own exclusions and cooldowns
+  (`engine/app/recoveryservice.go`).
+* Configuration reorder — stable IDs and persisted user ordering
+  (`engine/app/configorderservice.go`).
+* Local proxy ports — user-selected SOCKS5/HTTP inbounds with
+  preflight bind checks and honest conflict reporting.
+* Application-folder workspace — everything lives in the application
+  folder; migration from legacy trees (`docs/workspace.md`).
+* Installer/uninstaller improvements — desktop shortcut, complete
+  application-owned cleanup, bounded questions (`scripts/freeiran.iss`).
+* Compact logging — level filter before formatting, one JSON
+  serialization per emitted record, session/event identity only on
+  correlated records (`internal/logging`).
+* Adaptive memory improvements — queue-depth growth is evidence-gated
+  with cooldowns and hysteresis; idle is a no-op (`engine/booster`).
+* Tor installation improvements — first-class managed acquisition
+  with checksum verification.
+* Psiphon trust-boundary handling — honest acquisition state, explicit
+  user action only.
+
+The runtime findings listed in earlier revisions of this section
+(items 7–10: unconditional queue-depth growth, readiness marked as
+success, Quick Connect presenting unverified sessions) no longer hold
+against the current implementation; the regression suites in
+`engine/app`, `engine/connection`, `engine/booster` and the frontend
+store contract tests pin this behaviour.
 
 ---
 
@@ -898,7 +929,7 @@ Routine cleanup must never delete durable user configuration without explicit us
 
 ---
 
-# 15. P1 — Logging Profiles
+# 15. P1 — Logging Profiles — COMPLETED in v0.9.8.4
 
 Support three logging levels:
 
@@ -917,6 +948,36 @@ Verbose tracing, correlation IDs and detailed subsystem fields.
 Normal mode must be the default.
 
 Debug identifiers must not consume normal runtime storage.
+
+### Implementation (v0.9.8.4)
+
+ONE authoritative policy lives in the logger
+(`internal/logging/logging.go`) — no scattered `if debug` checks:
+
+* `Profile` (normal / detailed / debug) + `Record.Lifecycle` tier;
+  admission = severity floor × profile × lifecycle tier
+  (`admitsPolicy`), checked BEFORE any formatting cost.
+* Normal (default): routine verbose diagnostics suppressed; records
+  stay compact — session/event identity only on correlation-opt-in
+  records (v0.9.8.3 contract preserved).
+* Detailed: adds lifecycle-tagged diagnostics (core start/stop,
+  cleanup reclamation) and full identity on every emitted record;
+  the dedupe gate still collapses repetitive ticks.
+* Debug: verbose diagnostics plus correlation identifiers on every
+  record — connection/recovery episode identifiers universally
+  available; still bounded by rotation and age retention.
+* Settings: `logging_profile` persisted with the existing settings
+  system, validated, and applied to the live logger immediately on
+  save (`engine/app/loggingservice.go`); Settings UI segmented
+  control with concrete per-profile explanations.
+* Safety and performance unchanged: redaction applies to every
+  record in every profile; no per-record identity allocations in
+  Normal; rotation/retention bounds apply to all profiles.
+* Regression matrix: `internal/logging/logging_profile_test.go`
+  (per-profile admission, runtime switching Normal → Detailed →
+  Debug → Normal without restart, redaction, rotation/retention) and
+  `engine/app/loggingservice_profile_test.go` (validation,
+  persistence, live switch).
 
 ---
 

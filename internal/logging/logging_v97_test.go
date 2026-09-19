@@ -279,9 +279,13 @@ func TestRelatedCausality(t *testing.T) {
 }
 
 // TestConcurrentStructuredLogging verifies concurrent Log/Info calls
-// keep unique event ids and an unbroken sequence.
+// keep unique event ids and an unbroken sequence. The stress runs
+// under the Debug profile (v0.9.8.4): every record carries identity,
+// so the uniqueness/monotonicity checks exercise the busiest path.
 func TestConcurrentStructuredLogging(t *testing.T) {
 	logger := newTestLogger(t)
+
+	logger.SetProfile(ProfileDebug)
 
 	const goroutines, perG = 16, 40
 

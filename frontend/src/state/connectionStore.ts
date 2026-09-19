@@ -14,7 +14,25 @@ import {
  * (engine/connection) through the "freeiran:connection" event plus
  * explicit service calls. The state string is the single source of
  * truth — no ambiguous booleans.
+ *
+ * v0.9.8.4 — connection-state integrity: the backend machine exposes
+ * the full v0.9.8.3 lifecycle, including the verification boundary:
+ *
+ *      connected          route established — NOT verified Internet
+ *      verifying          end-to-end verification running
+ *      connected_verified final success — real traffic crossed the tunnel
+ *
+ * v0.9.8.4 — stale-operation protection: every asynchronous store
+ * operation captures a generation token when it STARTS and applies
+ * its result ONLY while that generation is still current. A newer
+ * operation (or an authoritative event, or an explicit invalidation)
+ * bumps the generation, so a late-resolving connect/connectBest/
+ * refresh can never overwrite newer state, a stale error can never
+ * replace the current one, and disconnect/reconnect/unmount
+ * invalidate everything still in flight. The busy flag follows the
+ * same ownership rule: only the newest operation may clear it.
  */
+
 export type ConnectionState =
   | "disconnected"
   | "selecting"
@@ -22,8 +40,24 @@ export type ConnectionState =
   | "starting_core"
   | "waiting_for_ready"
   | "connected"
+  | "verifying"
+  | "connected_verified"
   | "disconnecting"
   | "connection_failed";
+
+/**
+ * Monotonic operation generation (module scope, shared by every
+ * store instance — there is exactly one connection store). Bumped
+ * by every state-mutating operation start, by authoritative event
+ * ingestion and by explicit invalidation.
+ */
+let operationGeneration = 0;
+
+function nextGeneration(): number {
+  operationGeneration += 1;
+
+  return operationGeneration;
+}
 
 interface ConnectionStore {
   snapshot: ConnectionSnapshot | null;
@@ -39,6 +73,12 @@ interface ConnectionStore {
   connectBest: (exclude?: string[]) => Promise<ConnectBestResultView | null>;
   disconnect: () => Promise<void>;
   reconnect: () => Promise<void>;
+  /**
+   * v0.9.8.4: marks every in-flight operation stale so a late
+   * resolution can never mutate the store (called on teardown and
+   * by tests between cases — deterministic without arbitrary sleeps).
+   */
+  invalidatePendingOperations: () => void;
 }
 
 export const useConnectionStore = create<ConnectionStore>((set, get) => ({
@@ -49,10 +89,19 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
   error: null,
 
   refresh: async () => {
+    const generation = nextGeneration();
+
     try {
       const snapshot = await call(() => connectionService.ConnectionState());
-      set({ snapshot, error: null });
+
+      // Stale read: a newer operation or event already changed the
+      // state — applying this result would regress the machine.
+      if (generation !== operationGeneration) return;
+
+      set({ snapshot: snapshot ?? null, error: null });
     } catch (error) {
+      if (generation !== operationGeneration) return;
+
       set({
         error: error instanceof Error ? error.message : String(error),
       });
@@ -60,30 +109,67 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
   },
 
   refreshBackends: async () => {
+    const generation = nextGeneration();
+
     try {
       const backends = await call(() => connectionService.RefreshBackends());
-      set({ backends });
+
+      if (generation !== operationGeneration) return;
+
+      set({ backends: backends ?? [] });
     } catch (error) {
+      if (generation !== operationGeneration) return;
+
       set({
         error: error instanceof Error ? error.message : String(error),
       });
     }
   },
 
-  ingestEvent: (snapshot) => set({ snapshot }),
+  /**
+   * Authoritative state-machine broadcast: always applied, and it
+   * invalidates every outstanding operation result — the event is
+   * newer evidence than any promise that has not resolved yet.
+   */
+  ingestEvent: (snapshot) => {
+    operationGeneration = nextGeneration();
+
+    set({ snapshot });
+  },
 
   connect: async (configID) => {
     if (get().busy) return;
+
+    const generation = nextGeneration();
+
     set({ busy: true, error: null });
 
     try {
       const snapshot = await call(() => connectionService.Connect(configID));
+
+      // A newer operation/event owns the store now; this late result
+      // (and its busy ownership) is dropped entirely.
+      if (generation !== operationGeneration) return;
+
       set({ snapshot, busy: false });
     } catch (error) {
       // The backend already transitioned to connection_failed; pull
       // the authoritative snapshot rather than synthesizing state.
-      await get().refresh();
+      // This read deliberately does NOT start a new generation: the
+      // failed operation stays current (unless a NEWER operation
+      // started during the await), so its error is still its own.
+      let failed: ConnectionSnapshot | null = null;
+
+      try {
+        failed = (await connectionService.ConnectionState()) ?? null;
+      } catch {
+        failed = null; // keep the local state; the error still applies
+      }
+
+      if (generation !== operationGeneration) return;
+
       set({
+        snapshot: failed ?? get().snapshot,
         busy: false,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -92,15 +178,32 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
 
   connectBest: async (exclude = []) => {
     if (get().busy) return null;
+
+    const generation = nextGeneration();
+
     set({ busy: true, error: null });
 
     try {
       const result = await call(() => connectionService.ConnectBest(exclude));
+
+      if (generation !== operationGeneration) return null;
+
       set({ snapshot: result.snapshot, busy: false });
+
       return result;
     } catch (error) {
-      await get().refresh();
+      let failed: ConnectionSnapshot | null = null;
+
+      try {
+        failed = (await connectionService.ConnectionState()) ?? null;
+      } catch {
+        failed = null;
+      }
+
+      if (generation !== operationGeneration) return null;
+
       set({
+        snapshot: failed ?? get().snapshot,
         busy: false,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -111,12 +214,22 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
 
   disconnect: async () => {
     if (get().busy) return;
+
+    // Starting the disconnect invalidates every previous operation:
+    // their results can no longer overwrite the teardown.
+    const generation = nextGeneration();
+
     set({ busy: true, error: null });
 
     try {
       const snapshot = await call(() => connectionService.Disconnect());
+
+      if (generation !== operationGeneration) return;
+
       set({ snapshot, busy: false, health: null });
     } catch (error) {
+      if (generation !== operationGeneration) return;
+
       set({
         busy: false,
         error: error instanceof Error ? error.message : String(error),
@@ -126,18 +239,38 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
 
   reconnect: async () => {
     if (get().busy) return;
+
+    const generation = nextGeneration();
+
     set({ busy: true, error: null });
 
     try {
       const snapshot = await call(() => connectionService.Reconnect());
+
+      if (generation !== operationGeneration) return;
+
       set({ snapshot, busy: false });
     } catch (error) {
-      await get().refresh();
+      let failed: ConnectionSnapshot | null = null;
+
+      try {
+        failed = (await connectionService.ConnectionState()) ?? null;
+      } catch {
+        failed = null;
+      }
+
+      if (generation !== operationGeneration) return;
+
       set({
+        snapshot: failed ?? get().snapshot,
         busy: false,
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  },
+
+  invalidatePendingOperations: () => {
+    operationGeneration = nextGeneration();
   },
 }));
 
@@ -156,5 +289,10 @@ export function connectConnectionStore(): () => void {
 
   return () => {
     if (typeof off === "function") off();
+
+    // Teardown must not leave dangerous pending mutations armed: any
+    // operation still in flight becomes stale the moment the store
+    // wiring goes away.
+    useConnectionStore.getState().invalidatePendingOperations();
   };
 }

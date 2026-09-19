@@ -4,8 +4,10 @@
  * Quick Connect page integration tests (§30): the page must render,
  * expose exactly ONE primary connect action, drive the EXISTING
  * connection store (connect / connectBest) and the adaptive start
- * flow, and reflect real backend states (connecting / connected /
- * failed) — plus keyboard operation and reduced motion.
+ * flow, and reflect the real backend state machine — including the
+ * v0.9.8.3/v0.9.8.4 verification boundary (connected = route
+ * established and verification PENDING; connected_verified = the
+ * only final success) — plus keyboard operation and reduced motion.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -131,6 +133,9 @@ async function selectProviderMode(user: User, mode: ProviderMode, radio: RegExp)
 
 function resetStores() {
   act(() => {
+    // v0.9.8.4: drop every in-flight operation from previous cases
+    // first — a late async result must never leak into this test.
+    useConnectionStore.getState().invalidatePendingOperations();
     useConnectionStore.setState({
       snapshot: null,
       backends: [],
@@ -315,13 +320,16 @@ describe("Quick Connect page", () => {
     expect(screen.getByText("Checking connectivity…")).toBeTruthy();
   });
 
-  it("renders the connected state as a status representation — not a second button", () => {
+  // v0.9.8.4 contract: the final successful state is
+  // connected_verified — the CONNECTED hero (with the Verified badge)
+  // appears ONLY for a session whose Internet verification succeeded.
+  it("renders the connected_verified state as a status representation — not a second button", () => {
     const { container } = render(<QuickConnectPage onNavigate={vi.fn()} />);
 
     act(() => {
       useConnectionStore.setState({
         snapshot: snap({
-          state: "connected",
+          state: "connected_verified",
           config_name: "Warsaw edge",
           config_id: "pl",
           core: "xray",
@@ -338,6 +346,9 @@ describe("Quick Connect page", () => {
     expect(screen.getByText(/xray · 26.3.27/)).toBeTruthy();
     expect(screen.getByText("Verified")).toBeTruthy();
 
+    // The hero is not busy: a verified session is a terminal state.
+    expect(container.querySelector('.qc-hero[aria-busy="true"]')).toBeNull();
+
     // The primary element exists exactly once and is NOT a button:
     // no competing action lives next to CONNECTED.
     const primary = container.querySelector(".qc-connect");
@@ -345,6 +356,46 @@ describe("Quick Connect page", () => {
     expect(primary).toBeTruthy();
     expect(primary?.tagName).not.toBe("BUTTON");
     expect(screen.queryByRole("button", { name: /CONNECT/ })).toBeNull();
+  });
+
+  // v0.9.8.4 invariant: core readiness ≠ Internet verification. The
+  // old `connected` state means the route is established while
+  // verification is still pending — a TRANSITIONAL rendering, never
+  // the verified success representation.
+  it("shows route-established (connected) as transitional — verification pending", () => {
+    const { container } = render(<QuickConnectPage onNavigate={vi.fn()} />);
+
+    act(() => {
+      useConnectionStore.setState({
+        snapshot: snap({
+          state: "connected",
+          config_name: "Warsaw edge",
+          config_id: "pl",
+          core: "xray",
+          latency_ms: 84,
+        }),
+      });
+    });
+
+    // Transitional: the route is up, connectivity is being checked.
+    expect(screen.getByText("Verifying")).toBeTruthy();
+    expect(screen.getByText("Checking connectivity…")).toBeTruthy();
+    expect(container.querySelector('.qc-hero[aria-busy="true"]')).toBeTruthy();
+
+    // The verified badge must NOT appear: readiness is not proof.
+    expect(screen.queryByText("Verified")).toBeNull();
+    expect(screen.queryByText("Connected")).toBeNull();
+  });
+
+  it("shows the verifying state from the machine's verification stage", () => {
+    act(() => {
+      useConnectionStore.setState({ snapshot: snap({ state: "verifying" }) });
+    });
+
+    render(<QuickConnectPage onNavigate={vi.fn()} />);
+
+    expect(screen.getByText("Verifying")).toBeTruthy();
+    expect(screen.getByText("Checking connectivity…")).toBeTruthy();
   });
 
   it("shows the failed state with an honest message and a retry action", () => {
@@ -433,7 +484,12 @@ describe("Quick Connect page", () => {
 
     act(() => {
       useConnectionStore.setState({
-        snapshot: snap({ state: "connected", config_name: "x", latency_ms: 10, verification: "usable" }),
+        snapshot: snap({
+          state: "connected_verified",
+          config_name: "x",
+          latency_ms: 10,
+          verification: "usable",
+        }),
       });
     });
 

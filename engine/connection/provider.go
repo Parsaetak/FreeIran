@@ -158,9 +158,15 @@ func (m *Manager) ConnectProvider(
 			prov.Name(), result.Describe()))
 	}
 
-	// --- CONNECTED + MONITOR -------------------------------------------
+	// --- CONNECTED_VERIFIED + MONITOR -----------------------------------
+	// v0.9.8.4 contract fix: the verification gate above just proved
+	// real Internet through the provider's route, so the session
+	// reaches the SAME final success state as a core-based connection
+	// (StateConnectedVerified). Reporting the plain StateConnected here
+	// left verified Tor/Psiphon sessions looking unverified to the UI
+	// (stuck on the "verifying" transitional surface).
 	m.mu.Lock()
-	m.state = StateConnected
+	m.state = StateConnectedVerified
 	m.lastError = ""
 	m.mu.Unlock()
 

@@ -85,6 +85,14 @@ type Options struct {
 	// (readiness is never success); tests and fake-core harnesses use
 	// it because their staged cores expose no real tunnel.
 	SkipConnectVerification bool
+
+	// VerifyTarget overrides the tunnel-verification URL for the
+	// connection manager (default: the standard 204 endpoint).
+	// v0.9.8.4: test harnesses with a SOCKS-relay fake core point
+	// this at a local HTTP target so the FULL verified path — real
+	// request through the tunnel, state connected_verified — runs
+	// without any public network.
+	VerifyTarget string
 }
 
 // DefaultOptions returns production defaults.
@@ -535,7 +543,8 @@ func New(opts Options) (*App, error) {
 		Registry: coreRegistry,
 		Metrics:  mreg,
 		Verify: connection.VerifyPolicy{
-			Skip: opts.SkipConnectVerification,
+			Skip:   opts.SkipConnectVerification,
+			Target: opts.VerifyTarget,
 		},
 	})
 

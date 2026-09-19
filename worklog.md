@@ -3909,3 +3909,87 @@ Baseline: `a2989e590164d0cb7855338704dfe4071b64a182` (v0.9.8.2).
   subsystem 0x0002 (GUI), 0.9.8.3 resource strings present.
 - Clean-room (fresh clone → tests → builds → package → extract → build):
   pass. Windows runtime execution: NOT VERIFIED (no Windows host).
+
+
+---
+
+## v0.9.8.4 — CI repair, connection-state integrity, logging profiles
+
+### Root causes (CI run 35452888940)
+
+- The frontend job failed on exactly two Quick Connect tests
+  (`QuickConnect.test.tsx`): both encoded the OBSOLETE contract
+  (`state: "connected"` treated as verified Internet). The v0.9.8.3
+  engine treats `connected` as route-established/verification-pending
+  and `connected_verified` as the only final success; the page mapped
+  this correctly, so the DOM stayed on the transitional "Verifying"
+  hero with `aria-busy=true` while the tests waited for "Connected".
+  Reproduced locally before any change (2 failed / 16 passed in that
+  file; 102/104 overall). NOT fixed by weakening tests: the tests now
+  express the real contract (`connected_verified` + `verification:
+  "usable"`), and new explicit cases pin `connected` as TRANSITIONAL
+  (no "Verified" badge), `verifying`, `waiting_for_ready` and the
+  full ten-state list.
+
+### Implemented
+
+- **Stale-operation protection** (`frontend/src/state/
+  connectionStore.ts`): operation generation token captured at every
+  async start; results apply only while the generation is current.
+  Covers connect/connectBest/refresh/refreshBackends/disconnect/
+  reconnect, authoritative event ingestion (bumps the generation),
+  disconnect/reconnect invalidation, teardown invalidation
+  (`connectConnectionStore` disposer + `invalidatePendingOperations`)
+  and busy-flag ownership (only the newest operation may clear it).
+  The error path pulls the authoritative failed snapshot WITHOUT
+  starting a new generation so an in-generation failure still applies
+  state+error. Regression matrix in `connectionStore.test.ts`
+  (13 tests: A/B ordering for connect, connectBest, refresh, error
+  result, busy ownership, disconnect invalidation, unmount
+  invalidation).
+- **State contract** (`connectionStore.ts` type + tests): `verifying`
+  and `connected_verified` added to the frontend `ConnectionState`
+  union — frontend and backend share one machine.
+- **Provider verified state** (`engine/connection/provider.go`): a
+  provider session (Tor/Psiphon) whose Internet verification PASSED
+  now reaches `connected_verified` (was `connected`) — same final
+  success contract as core sessions; provider tests updated.
+- **Recovery healthy-set** (`engine/app/recoveryservice.go`): only
+  `connected_verified`/`disconnected` clear an episode; `connected`,
+  `verifying`, `disconnecting` are in-progress; `connection_failed`
+  still triggers the bounded episode. `tick` split into
+  `tick/decide(snapshot)` so the per-state decision table is
+  deterministically testable. New tests
+  (`recoveryservice_state_test.go`): nine-state decision table,
+  bounded-episode trigger, and an end-to-end VERIFIED recovery
+  through a real SOCKS-relay fake-core tunnel (state
+  `connected_verified`, verification `usable`).
+- **P1 Logging Profiles** (`internal/logging/logging.go` +
+  `engine/app/loggingservice.go` + Settings UI): `Profile`
+  (normal/detailed/debug) + `Record.Lifecycle` tier; ONE admission
+  policy (`admitsPolicy`) = severity × profile × lifecycle, checked
+  before formatting cost; identity stamping per profile (Normal =
+  correlation-opt-in only; Detailed/Debug = every emitted record);
+  `SetProfile` switches at runtime; `logging_profile` setting
+  validated, persisted, applied live (no restart); Settings page
+  segmented control with concrete per-profile explanations;
+  `core_start`/`core_exit`/cleanup-reclamation debug records tagged
+  lifecycle. Regression matrices:
+  `internal/logging/logging_profile_test.go` (Normal compact +
+  suppressive, Detailed lifecycle + identity + dedupe, Debug verbose
+  + unique ids + redaction, runtime switch cycle, rotation/retention
+  bounds) and `engine/app/loggingservice_profile_test.go`
+  (validation, persistence, live switch cycle).
+
+### Version
+
+- `0.9.8.4` everywhere: VERSION, internal/version, frontend
+  package.json + package-lock.json, build/winres.json (fixed +
+  string + manifest identity), regenerated PE `.syso` resources
+  (go-winres), installer fallback, README, ROADMAP.
+
+### Roadmap
+
+- Baseline corrected to `0.9.8.4`; v0.9.8.3 work recorded as
+  completed historical implementation; P1 Logging Profiles marked
+  COMPLETED with implementation references.
