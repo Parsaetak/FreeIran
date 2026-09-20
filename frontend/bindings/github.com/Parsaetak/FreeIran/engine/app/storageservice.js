@@ -20,6 +20,18 @@ import * as store$0 from "../store/models.js";
 import * as $models from "./models.js";
 
 /**
+ * CleanupNow runs one immediate, bounded cleanup pass and returns the
+ * result. Safe (non-destructive): only reconstructable/replaceable
+ * data classes are eligible.
+ * @returns {$CancellablePromise<$models.CleanupResult>}
+ */
+export function CleanupNow() {
+    return $Call.ByID(1961850274).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType0($result);
+    }));
+}
+
+/**
  * Compact reclaims dead records.
  * @returns {$CancellablePromise<void>}
  */
@@ -28,14 +40,70 @@ export function Compact() {
 }
 
 /**
+ * DataDir returns the resolved data directory (v0.9.1, Developer
+ * settings: "open data directory" shows the path next to the action).
+ * @returns {$CancellablePromise<string>}
+ */
+export function DataDir() {
+    return $Call.ByID(701114913);
+}
+
+/**
  * MigrateLegacy imports a legacy JSON database file into the store.
+ * The full migration lifecycle is written to the runtime log: start,
+ * success (with counts) and failure (with the storage error).
  * @param {string} path
  * @returns {$CancellablePromise<store$0.MigrationResult>}
  */
 export function MigrateLegacy(path) {
     return $Call.ByID(1433223692, path).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType0($result);
+        return $$createType1($result);
     }));
+}
+
+/**
+ * OpenDataDir opens the platform file manager at the data directory
+ * (v0.9.1 Developer settings action).
+ * @returns {$CancellablePromise<void>}
+ */
+export function OpenDataDir() {
+    return $Call.ByID(184566921);
+}
+
+/**
+ * OpenWorkspace opens the workspace root in the platform file manager.
+ * @returns {$CancellablePromise<void>}
+ */
+export function OpenWorkspace() {
+    return $Call.ByID(581723443);
+}
+
+/**
+ * Overview assembles the report. Every walk is entry-bounded.
+ * @returns {$CancellablePromise<$models.StorageOverview>}
+ */
+export function Overview() {
+    return $Call.ByID(4062578985).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType2($result);
+    }));
+}
+
+/**
+ * RebuildIndex rebuilds the fingerprint index from the chunk files
+ * and persists it (developer maintenance; derived state only).
+ * @returns {$CancellablePromise<void>}
+ */
+export function RebuildIndex() {
+    return $Call.ByID(2141516675);
+}
+
+/**
+ * RemoveStaleRuntime deletes leftover runtime-config directories now
+ * (developer action), bypassing the coordinator's rate limit.
+ * @returns {$CancellablePromise<number>}
+ */
+export function RemoveStaleRuntime() {
+    return $Call.ByID(1607933117);
 }
 
 /**
@@ -44,7 +112,7 @@ export function MigrateLegacy(path) {
  */
 export function Stats() {
     return $Call.ByID(3282658569).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType1($result);
+        return $$createType3($result);
     }));
 }
 
@@ -55,85 +123,21 @@ export function Stats() {
  */
 export function Verify() {
     return $Call.ByID(2736124579).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType2($result);
+        return $$createType4($result);
     }));
 }
 
 /**
- * DataDir returns the resolved data directory. (v0.9.1 addition:
- * ByName path until the wails3 generator is rerun on a GUI toolchain
- * host — mirrors the Memory/BuildDiagnosticReport additions.)
- * @returns {$CancellablePromise<string>}
- */
-export function DataDir() {
-    return $Call.ByName("github.com/Parsaetak/FreeIran/engine/app.StorageService.DataDir");
-}
-
-/**
- * OpenDataDir opens the platform file manager at the data directory.
- * (v0.9.1 addition — ByName path, see DataDir.)
- * @returns {$CancellablePromise<void>}
- */
-export function OpenDataDir() {
-    return $Call.ByName("github.com/Parsaetak/FreeIran/engine/app.StorageService.OpenDataDir");
-}
-
-/**
- * Overview returns the storage & workspace report (sizes per
- * subsystem, memory picture, cleanup state, migration status).
- * (v0.9.2 addition — ByName path until the generator is rerun.)
- * @returns {$CancellablePromise<any>}
- */
-export function Overview() {
-    return $Call.ByName("github.com/Parsaetak/FreeIran/engine/app.StorageService.Overview");
-}
-
-/**
- * CleanupNow runs one immediate bounded cleanup pass (safe classes
- * only). (v0.9.2 addition — ByName path.)
- * @returns {$CancellablePromise<any>}
- */
-export function CleanupNow() {
-    return $Call.ByName("github.com/Parsaetak/FreeIran/engine/app.StorageService.CleanupNow");
-}
-
-/**
- * RemoveStaleRuntime deletes leftover runtime-config directories now.
- * (v0.9.2 addition — ByName path.)
- * @returns {$CancellablePromise<BigInt>}
- */
-export function RemoveStaleRuntime() {
-    return $Call.ByName("github.com/Parsaetak/FreeIran/engine/app.StorageService.RemoveStaleRuntime");
-}
-
-/**
- * RebuildIndex rebuilds the fingerprint index from chunk files.
- * (v0.9.2 addition — ByName path.)
- * @returns {$CancellablePromise<void>}
- */
-export function RebuildIndex() {
-    return $Call.ByName("github.com/Parsaetak/FreeIran/engine/app.StorageService.RebuildIndex");
-}
-
-/**
  * WorkspacePath returns the workspace root path.
- * (v0.9.2 addition — ByName path.)
  * @returns {$CancellablePromise<string>}
  */
 export function WorkspacePath() {
-    return $Call.ByName("github.com/Parsaetak/FreeIran/engine/app.StorageService.WorkspacePath");
-}
-
-/**
- * OpenWorkspace opens the workspace root in the platform file manager.
- * (v0.9.2 addition — ByName path.)
- * @returns {$CancellablePromise<void>}
- */
-export function OpenWorkspace() {
-    return $Call.ByName("github.com/Parsaetak/FreeIran/engine/app.StorageService.OpenWorkspace");
+    return $Call.ByID(2066534828);
 }
 
 // Private type creation functions
-const $$createType0 = store$0.MigrationResult.createFrom;
-const $$createType1 = store$0.Stats.createFrom;
-const $$createType2 = $models.VerifyResult.createFrom;
+const $$createType0 = $models.CleanupResult.createFrom;
+const $$createType1 = store$0.MigrationResult.createFrom;
+const $$createType2 = $models.StorageOverview.createFrom;
+const $$createType3 = store$0.Stats.createFrom;
+const $$createType4 = $models.VerifyResult.createFrom;

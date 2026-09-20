@@ -413,9 +413,16 @@ func verifyAssetIdentity(src Source, p Platform, info UpdateInfo) error {
 			Subsystem, "select_asset", "asset URL is malformed: %s", info.AssetURL)
 	}
 
-	if u.Scheme != "https" && u.Scheme != "http" {
+	// v0.9.8.7: HTTPS is MANDATORY, exactly as docs/security.md
+	// documents. Plain http:// would let a downgraded asset URL bypass
+	// the transport security the trust anchor (GitHub over TLS) is
+	// built on; the only exception is a loopback authority (local test
+	// harnesses / pinned local mirrors), which previously existed as
+	// the dead helper isLoopbackHost without ever being enforced.
+	if u.Scheme != "https" && !isLoopbackHost(u.Host) {
 		return firerrors.New(firerrors.KindInvalidInput,
-			Subsystem, "select_asset", "asset URL scheme %q is not usable", u.Scheme)
+			Subsystem, "select_asset",
+			"asset URL scheme %q is not usable: only https (or a loopback test authority) is permitted", u.Scheme)
 	}
 
 	// Host trust: the asset must be served by the source's own release

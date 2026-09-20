@@ -374,7 +374,9 @@ function TunnelModeCard({ connected, endpoint }: { connected: boolean; endpoint:
 
     try {
       if (action === "proxy") {
-        await call(() => tunnelService.EnableSystemProxy(host, port, false, null));
+        // v0.9.8.7: truthful bindings type bypass as string[] (the Go
+        // side treats an empty list as "no bypass entries").
+        await call(() => tunnelService.EnableSystemProxy(host, port, false, []));
         setMode("system_proxy");
       } else {
         await call(() => tunnelService.Disable());

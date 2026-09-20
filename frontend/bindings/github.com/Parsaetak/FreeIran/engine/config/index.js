@@ -4,5 +4,9 @@
 
 export {
     Config,
-    Type
+    HandshakeMetrics,
+    PingMetrics,
+    TestObservation,
+    Type,
+    URLTestMetrics
 } from "./models.js";

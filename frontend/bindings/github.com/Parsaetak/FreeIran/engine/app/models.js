@@ -8,16 +8,43 @@ import { Create as $Create } from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as booster$0 from "../booster/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as config$0 from "../config/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as connection$0 from "../connection/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as coremgr$0 from "../coremgr/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as discovery$0 from "../discovery/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as mempressure$0 from "../mempressure/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as netcheck$0 from "../netcheck/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as pipeline$0 from "../pipeline/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as source$0 from "../source/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as store$0 from "../store/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as logging$0 from "../../internal/logging/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as system$0 from "../../system/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as time$0 from "../../../../../time/models.js";
 
 /**
  * AppState is the application state surfaced to the UI.
@@ -44,8 +71,8 @@ export class AppState {
         }
         if (!("identity" in $$source)) {
             /**
-             * Product identity line ("FreeIran — A SHEYTAN Digital
-             * System", v0.9.6 §19).
+             * Identity is the product identity line
+             * ("FreeIran — A SHEYTAN Digital System", v0.9.6 §19).
              * @member
              * @type {string}
              */
@@ -93,6 +120,24 @@ export class AppState {
              */
             this["last_ingestion"] = undefined;
         }
+        if (!("boot_phase" in $$source)) {
+            /**
+             * BootPhase is the unified startup phase (bootphase.go):
+             * boot → workspace_ready → store_metadata_ready → services_ready →
+             * ui_runtime_ready → ui_ready → background_warmup → ready.
+             * @member
+             * @type {string}
+             */
+            this["boot_phase"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * BootTimings is the phase → elapsed-ms startup telemetry table.
+             * @member
+             * @type {{ [_ in string]?: number } | undefined}
+             */
+            this["boot_timings"] = undefined;
+        }
 
         Object.assign(this, $$source);
     }
@@ -103,251 +148,26 @@ export class AppState {
      * @returns {AppState}
      */
     static createFrom($$source = {}) {
-        const $$createField6_0 = $$createType0;
-        const $$createField7_0 = $$createType2;
+        const $$createField7_0 = $$createType0;
+        const $$createField8_0 = $$createType2;
+        const $$createField10_0 = $$createType3;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("storage" in $$parsedSource) {
-            $$parsedSource["storage"] = $$createField6_0($$parsedSource["storage"]);
+            $$parsedSource["storage"] = $$createField7_0($$parsedSource["storage"]);
         }
         if ("last_ingestion" in $$parsedSource) {
-            $$parsedSource["last_ingestion"] = $$createField7_0($$parsedSource["last_ingestion"]);
+            $$parsedSource["last_ingestion"] = $$createField8_0($$parsedSource["last_ingestion"]);
+        }
+        if ("boot_timings" in $$parsedSource) {
+            $$parsedSource["boot_timings"] = $$createField10_0($$parsedSource["boot_timings"]);
         }
         return new AppState(/** @type {Partial<AppState>} */($$parsedSource));
     }
 }
 
 /**
- * CacheStats summarizes the cache layers.
- */
-export class CacheStats {
-    /**
-     * Creates a new CacheStats instance.
-     * @param {Partial<CacheStats>} [$$source = {}] - The source object to create the CacheStats.
-     */
-    constructor($$source = {}) {
-        if (!("hot_config_entries" in $$source)) {
-            /**
-             * @member
-             * @type {number}
-             */
-            this["hot_config_entries"] = 0;
-        }
-        if (!("hot_config_hits" in $$source)) {
-            /**
-             * @member
-             * @type {number}
-             */
-            this["hot_config_hits"] = 0;
-        }
-        if (!("hot_config_misses" in $$source)) {
-            /**
-             * @member
-             * @type {number}
-             */
-            this["hot_config_misses"] = 0;
-        }
-        if (!("hot_config_hit_rate" in $$source)) {
-            /**
-             * @member
-             * @type {number}
-             */
-            this["hot_config_hit_rate"] = 0;
-        }
-        if (!("source_entries" in $$source)) {
-            /**
-             * @member
-             * @type {number}
-             */
-            this["source_entries"] = 0;
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new CacheStats instance from a string or object.
-     * @param {any} [$$source = {}]
-     * @returns {CacheStats}
-     */
-    static createFrom($$source = {}) {
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new CacheStats(/** @type {Partial<CacheStats>} */($$parsedSource));
-    }
-}
-
-/**
- * ConfigPage is one page of configurations for virtualized lists.
- */
-export class ConfigPage {
-    /**
-     * Creates a new ConfigPage instance.
-     * @param {Partial<ConfigPage>} [$$source = {}] - The source object to create the ConfigPage.
-     */
-    constructor($$source = {}) {
-        if (!("items" in $$source)) {
-            /**
-             * @member
-             * @type {config$0.Config[]}
-             */
-            this["items"] = [];
-        }
-        if (!("total" in $$source)) {
-            /**
-             * @member
-             * @type {number}
-             */
-            this["total"] = 0;
-        }
-        if (!("offset" in $$source)) {
-            /**
-             * @member
-             * @type {number}
-             */
-            this["offset"] = 0;
-        }
-        if (!("has_more" in $$source)) {
-            /**
-             * @member
-             * @type {boolean}
-             */
-            this["has_more"] = false;
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new ConfigPage instance from a string or object.
-     * @param {any} [$$source = {}]
-     * @returns {ConfigPage}
-     */
-    static createFrom($$source = {}) {
-        const $$createField0_0 = $$createType4;
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        if ("items" in $$parsedSource) {
-            $$parsedSource["items"] = $$createField0_0($$parsedSource["items"]);
-        }
-        return new ConfigPage(/** @type {Partial<ConfigPage>} */($$parsedSource));
-    }
-}
-
-/**
- * SourceView is the UI projection of a source.
- */
-export class SourceView {
-    /**
-     * Creates a new SourceView instance.
-     * @param {Partial<SourceView>} [$$source = {}] - The source object to create the SourceView.
-     */
-    constructor($$source = {}) {
-        if (!("id" in $$source)) {
-            /**
-             * @member
-             * @type {string}
-             */
-            this["id"] = "";
-        }
-        if (!("name" in $$source)) {
-            /**
-             * @member
-             * @type {string}
-             */
-            this["name"] = "";
-        }
-        if (!("url" in $$source)) {
-            /**
-             * @member
-             * @type {string}
-             */
-            this["url"] = "";
-        }
-        if (!("enabled" in $$source)) {
-            /**
-             * @member
-             * @type {boolean}
-             */
-            this["enabled"] = false;
-        }
-        if (!("trust" in $$source)) {
-            /**
-             * Route-trust band of the source (v0.9.8.6):
-             * "official" | "user" | "public". Public sources are
-             * untrusted routes; the Quick Connect policy excludes them
-             * unless the user opts in.
-             * @member
-             * @type {string}
-             */
-            this["trust"] = "";
-        }
-        if (/** @type {any} */(false)) {
-            /**
-             * @member
-             * @type {string | undefined}
-             */
-            this["last_hash"] = undefined;
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new SourceView instance from a string or object.
-     * @param {any} [$$source = {}]
-     * @returns {SourceView}
-     */
-    static createFrom($$source = {}) {
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new SourceView(/** @type {Partial<SourceView>} */($$parsedSource));
-    }
-}
-
-/**
- * VerifyResult reports the outcome of a storage verification.
- */
-export class VerifyResult {
-    /**
-     * Creates a new VerifyResult instance.
-     * @param {Partial<VerifyResult>} [$$source = {}] - The source object to create the VerifyResult.
-     */
-    constructor($$source = {}) {
-        if (!("chunks_checked" in $$source)) {
-            /**
-             * @member
-             * @type {number}
-             */
-            this["chunks_checked"] = 0;
-        }
-        if (!("ok" in $$source)) {
-            /**
-             * @member
-             * @type {boolean}
-             */
-            this["ok"] = false;
-        }
-        if (/** @type {any} */(false)) {
-            /**
-             * @member
-             * @type {string | undefined}
-             */
-            this["error"] = undefined;
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new VerifyResult instance from a string or object.
-     * @param {any} [$$source = {}]
-     * @returns {VerifyResult}
-     */
-    static createFrom($$source = {}) {
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new VerifyResult(/** @type {Partial<VerifyResult>} */($$parsedSource));
-    }
-}
-
-/**
- * BackendView is the UI projection of one protocol-core backend.
+ * BackendView is the UI projection of one protocol-core backend
+ * (registry metadata; no secrets are involved).
  */
 export class BackendView {
     /**
@@ -442,14 +262,275 @@ export class BackendView {
      * @returns {BackendView}
      */
     static createFrom($$source = {}) {
+        const $$createField6_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("notes" in $$parsedSource) {
+            $$parsedSource["notes"] = $$createField6_0($$parsedSource["notes"]);
+        }
         return new BackendView(/** @type {Partial<BackendView>} */($$parsedSource));
     }
 }
 
 /**
- * ConfigDetail is the configuration details view: credential fields
- * are redacted by default.
+ * CacheStats summarizes the cache layers.
+ */
+export class CacheStats {
+    /**
+     * Creates a new CacheStats instance.
+     * @param {Partial<CacheStats>} [$$source = {}] - The source object to create the CacheStats.
+     */
+    constructor($$source = {}) {
+        if (!("hot_config_entries" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["hot_config_entries"] = 0;
+        }
+        if (!("hot_config_hits" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["hot_config_hits"] = 0;
+        }
+        if (!("hot_config_misses" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["hot_config_misses"] = 0;
+        }
+        if (!("hot_config_hit_rate" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["hot_config_hit_rate"] = 0;
+        }
+        if (!("source_entries" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["source_entries"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CacheStats instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {CacheStats}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new CacheStats(/** @type {Partial<CacheStats>} */($$parsedSource));
+    }
+}
+
+/**
+ * CandidateView is the credential-free ranking outcome surfaced to
+ * the UI: class, score and the explanation that produced it.
+ */
+export class CandidateView {
+    /**
+     * Creates a new CandidateView instance.
+     * @param {Partial<CandidateView>} [$$source = {}] - The source object to create the CandidateView.
+     */
+    constructor($$source = {}) {
+        if (!("fingerprint" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["fingerprint"] = "";
+        }
+        if (!("name" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["name"] = "";
+        }
+        if (!("protocol" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["protocol"] = "";
+        }
+        if (!("endpoint" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["endpoint"] = "";
+        }
+        if (!("class" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["class"] = "";
+        }
+        if (!("score" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["score"] = 0;
+        }
+        if (!("latency_ms" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["latency_ms"] = 0;
+        }
+        if (!("latency_ms_measured" in $$source)) {
+            /**
+             * LatencyMSMeasured (v0.9.8.1): LatencyMS is a real measurement.
+             * 0 ms + measured = sub-millisecond (render "< 1 ms", sort FIRST).
+             * @member
+             * @type {boolean}
+             */
+            this["latency_ms_measured"] = false;
+        }
+        if (!("success_rate" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["success_rate"] = 0;
+        }
+        if (!("samples" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["samples"] = 0;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {number | undefined}
+             */
+            this["tested_at"] = undefined;
+        }
+        if (!("connectable" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["connectable"] = false;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * SourceTrust is the ROUTE-trust band of the candidate's source
+             * (v0.9.8.6): "official" | "user" | "public" ("" = legacy record,
+             * treated as public). Surfaced so the UI can label untrusted
+             * public routes explicitly.
+             * @member
+             * @type {string | undefined}
+             */
+            this["source_trust"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string[] | undefined}
+             */
+            this["explanation"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CandidateView instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {CandidateView}
+     */
+    static createFrom($$source = {}) {
+        const $$createField13_0 = $$createType4;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("explanation" in $$parsedSource) {
+            $$parsedSource["explanation"] = $$createField13_0($$parsedSource["explanation"]);
+        }
+        return new CandidateView(/** @type {Partial<CandidateView>} */($$parsedSource));
+    }
+}
+
+/**
+ * CleanupResult is the user-facing cleanup outcome.
+ */
+export class CleanupResult {
+    /**
+     * Creates a new CleanupResult instance.
+     * @param {Partial<CleanupResult>} [$$source = {}] - The source object to create the CleanupResult.
+     */
+    constructor($$source = {}) {
+        if (!("ok" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["ok"] = false;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {boolean | undefined}
+             */
+            this["rate_limited"] = undefined;
+        }
+        if (!("bytes" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["bytes"] = 0;
+        }
+        if (!("duration_ms" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["duration_ms"] = 0;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {LastCleanupTask[] | undefined}
+             */
+            this["tasks"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CleanupResult instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {CleanupResult}
+     */
+    static createFrom($$source = {}) {
+        const $$createField4_0 = $$createType6;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("tasks" in $$parsedSource) {
+            $$parsedSource["tasks"] = $$createField4_0($$parsedSource["tasks"]);
+        }
+        return new CleanupResult(/** @type {Partial<CleanupResult>} */($$parsedSource));
+    }
+}
+
+/**
+ * ConfigDetail is the configuration details view (§17): protocol,
+ * endpoint, transport, security, compatible backends, latency, last
+ * test, source and status. Credential fields are redacted by
+ * default — the raw values stay in the store, never in the view.
  */
 export class ConfigDetail {
     /**
@@ -621,230 +702,718 @@ export class ConfigDetail {
      * @returns {ConfigDetail}
      */
     static createFrom($$source = {}) {
+        const $$createField21_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("compatible_backends" in $$parsedSource) {
+            $$parsedSource["compatible_backends"] = $$createField21_0($$parsedSource["compatible_backends"]);
+        }
         return new ConfigDetail(/** @type {Partial<ConfigDetail>} */($$parsedSource));
     }
 }
 
-// Private type creation functions
-const $$createType0 = store$0.Stats.createFrom;
-const $$createType1 = pipeline$0.Stats.createFrom;
-const $$createType2 = $Create.Nullable($$createType1);
-const $$createType3 = config$0.Config.createFrom;
-const $$createType4 = $Create.Array($$createType3);
-
 /**
- * Settings is the persisted user preference set.
+ * ConfigFilter describes server-side filtering + sorting for the
+ * configuration workspace (v0.9.0 §4). Empty fields match everything.
  */
-export class Settings {
+export class ConfigFilter {
     /**
-     * Creates a new Settings instance.
-     * @param {Partial<Settings>} [$$source = {}] - The source object to create the Settings.
+     * Creates a new ConfigFilter instance.
+     * @param {Partial<ConfigFilter>} [$$source = {}] - The source object to create the ConfigFilter.
      */
     constructor($$source = {}) {
-        if (!("preferred_backend" in $$source)) {
+        if (/** @type {any} */(false)) {
             /**
-             * @member
-             * @type {string}
-             */
-            this["preferred_backend"] = "";
-        }
-        if (!("refresh_interval_minutes" in $$source)) {
-            /**
-             * @member
-             * @type {number}
-             */
-            this["refresh_interval_minutes"] = 0;
-        }
-        if (!("testing_policy" in $$source)) {
-            /**
-             * @member
-             * @type {string}
-             */
-            this["testing_policy"] = "";
-        }
-        if (!("log_level" in $$source)) {
-            /**
-             * @member
-             * @type {string}
-             */
-            this["log_level"] = "";
-        }
-        // v0.9.8.4 hand-maintained addition (the generated class lags
-        // the Go Settings struct; same pattern as the v0.9.8.1
-        // provider fields): the logging profile
-        // ("" / "normal" / "detailed" / "debug").
-        if (!("logging_profile" in $$source)) {
-            /**
-             * @member
-             * @type {string}
-             */
-            this["logging_profile"] = "";
-        }
-        if (!("log_max_bytes_mb" in $$source)) {
-            /**
-             * @member
-             * @type {number}
-             */
-            this["log_max_bytes_mb"] = 0;
-        }
-        if (!("log_max_backups" in $$source)) {
-            /**
-             * @member
-             * @type {number}
-             */
-            this["log_max_backups"] = 0;
-        }
-        if (!("log_retention_days" in $$source)) {
-            /**
-             * @member
-             * @type {number}
-             */
-            this["log_retention_days"] = 0;
-        }
-        if (!("local_socks_port" in $$source)) {
-            /**
-             * @member
-             * @type {number}
-             */
-            this["local_socks_port"] = 0;
-        }
-        if (!("local_http_port" in $$source)) {
-            /**
-             * @member
-             * @type {number}
-             */
-            this["local_http_port"] = 0;
-        }
-        if (!("reduced_motion" in $$source)) {
-            /**
-             * @member
-             * @type {boolean}
-             */
-            this["reduced_motion"] = false;
-        }
-        // v0.9.8.6 addition: Quick Connect / Auto opt-in for public
-        // untrusted routes (default false — untrusted routes require
-        // explicit user choice or this switch).
-        if (!("allow_untrusted_public_routes" in $$source)) {
-            /**
-             * @member
-             * @type {boolean}
-             */
-            this["allow_untrusted_public_routes"] = false;
-        }
-        if (!("dev_verbose_diagnostics" in $$source)) {
-            /**
-             * @member
-             * @type {boolean}
-             */
-            this["dev_verbose_diagnostics"] = false;
-        }
-        if (!("dev_queue_workers" in $$source)) {
-            /**
-             * @member
-             * @type {number}
-             */
-            this["dev_queue_workers"] = 0;
-        }
-        if (!("dev_net_timeout_seconds" in $$source)) {
-            /**
-             * @member
-             * @type {number}
-             */
-            this["dev_net_timeout_seconds"] = 0;
-        }
-        if (!("dev_force_go_fallback" in $$source)) {
-            /**
-             * @member
-             * @type {boolean}
-             */
-            this["dev_force_go_fallback"] = false;
-        }
-        if (!("disable_auto_recovery" in $$source)) {
-            /**
-             * @member
-             * @type {boolean}
-             */
-            this["disable_auto_recovery"] = false;
-        }
-        if (!("test_mode" in $$source)) {
-            /**
-             * v0.9.6 selected test mode: ping | url | ping_url |
-             * handshake | full.
+             * Protocol filters by protocol ("vless", "vmess", ...).
              * @member
              * @type {string | undefined}
              */
-            this["test_mode"] = undefined;
+            this["protocol"] = undefined;
         }
-        if (!("test_ping_samples" in $$source)) {
+        if (/** @type {any} */(false)) {
             /**
-             * v0.9.6 ping facet sample count (default 4).
-             * @member
-             * @type {number | undefined}
-             */
-            this["test_ping_samples"] = undefined;
-        }
-        if (!("test_url" in $$source)) {
-            /**
-             * v0.9.6 URL test target.
+             * Status filters by test outcome: "working", "failed" or
+             * "untested" ("" = all).
              * @member
              * @type {string | undefined}
              */
-            this["test_url"] = undefined;
+            this["status"] = undefined;
         }
-        if (!("test_url_timeout_seconds" in $$source)) {
+        if (/** @type {any} */(false)) {
             /**
-             * v0.9.6 URL facet timeout (seconds).
-             * @member
-             * @type {number | undefined}
-             */
-            this["test_url_timeout_seconds"] = undefined;
-        }
-        if (!("test_max_candidates" in $$source)) {
-            /**
-             * v0.9.6 max candidates measured per flow.
-             * @member
-             * @type {number | undefined}
-             */
-            this["test_max_candidates"] = undefined;
-        }
-        if (!("sort_mode" in $$source)) {
-            /**
-             * v0.9.6 ranking order.
+             * Source filters by source ID.
              * @member
              * @type {string | undefined}
              */
-            this["sort_mode"] = undefined;
+            this["source"] = undefined;
         }
-        if (!("enable_racing" in $$source)) {
+        if (/** @type {any} */(false)) {
             /**
-             * v0.9.6 controlled connection racing toggle.
+             * Backend filters by the backend that ran the last test
+             * ("xray", "v2ray", "sing-box", "tcp").
              * @member
-             * @type {boolean}
+             * @type {string | undefined}
              */
-            this["enable_racing"] = false;
+            this["backend"] = undefined;
         }
-        if (!("racing_candidates" in $$source)) {
+        if (/** @type {any} */(false)) {
             /**
-             * v0.9.6 racer count (2-4).
+             * Query is a case-insensitive substring over address/name.
              * @member
-             * @type {number | undefined}
+             * @type {string | undefined}
              */
-            this["racing_candidates"] = undefined;
+            this["query"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * SortBy is one of: "fingerprint", "latency", "tested_at",
+             * "protocol", "source", "address" (default "fingerprint").
+             * @member
+             * @type {string | undefined}
+             */
+            this["sort_by"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * SortDesc flips the ordering.
+             * @member
+             * @type {boolean | undefined}
+             */
+            this["sort_desc"] = undefined;
         }
 
         Object.assign(this, $$source);
     }
 
     /**
-     * Creates a new Settings instance from a string or object.
+     * Creates a new ConfigFilter instance from a string or object.
      * @param {any} [$$source = {}]
-     * @returns {Settings}
+     * @returns {ConfigFilter}
      */
     static createFrom($$source = {}) {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new Settings(/** @type {Partial<Settings>} */($$parsedSource));
+        return new ConfigFilter(/** @type {Partial<ConfigFilter>} */($$parsedSource));
+    }
+}
+
+/**
+ * ConfigPage is one page of configurations for virtualized lists.
+ */
+export class ConfigPage {
+    /**
+     * Creates a new ConfigPage instance.
+     * @param {Partial<ConfigPage>} [$$source = {}] - The source object to create the ConfigPage.
+     */
+    constructor($$source = {}) {
+        if (!("items" in $$source)) {
+            /**
+             * @member
+             * @type {config$0.Config[]}
+             */
+            this["items"] = [];
+        }
+        if (!("total" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["total"] = 0;
+        }
+        if (!("offset" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["offset"] = 0;
+        }
+        if (!("has_more" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["has_more"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ConfigPage instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {ConfigPage}
+     */
+    static createFrom($$source = {}) {
+        const $$createField0_0 = $$createType8;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("items" in $$parsedSource) {
+            $$parsedSource["items"] = $$createField0_0($$parsedSource["items"]);
+        }
+        return new ConfigPage(/** @type {Partial<ConfigPage>} */($$parsedSource));
+    }
+}
+
+/**
+ * ConnectBestResult is the outcome of an automatic connection.
+ */
+export class ConnectBestResult {
+    /**
+     * Creates a new ConnectBestResult instance.
+     * @param {Partial<ConnectBestResult>} [$$source = {}] - The source object to create the ConnectBestResult.
+     */
+    constructor($$source = {}) {
+        if (!("snapshot" in $$source)) {
+            /**
+             * @member
+             * @type {connection$0.Snapshot}
+             */
+            this["snapshot"] = (new connection$0.Snapshot());
+        }
+        if (!("chosen" in $$source)) {
+            /**
+             * @member
+             * @type {CandidateView}
+             */
+            this["chosen"] = (new CandidateView());
+        }
+        if (!("candidates" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["candidates"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ConnectBestResult instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {ConnectBestResult}
+     */
+    static createFrom($$source = {}) {
+        const $$createField0_0 = $$createType9;
+        const $$createField1_0 = $$createType10;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("snapshot" in $$parsedSource) {
+            $$parsedSource["snapshot"] = $$createField0_0($$parsedSource["snapshot"]);
+        }
+        if ("chosen" in $$parsedSource) {
+            $$parsedSource["chosen"] = $$createField1_0($$parsedSource["chosen"]);
+        }
+        return new ConnectBestResult(/** @type {Partial<ConnectBestResult>} */($$parsedSource));
+    }
+}
+
+/**
+ * CoreLifecycleView is the complete UI-facing lifecycle projection of
+ * one managed core (manifest + registry discovery + failure text).
+ */
+export class CoreLifecycleView {
+    /**
+     * Creates a new CoreLifecycleView instance.
+     * @param {Partial<CoreLifecycleView>} [$$source = {}] - The source object to create the CoreLifecycleView.
+     */
+    constructor($$source = {}) {
+        if (!("manifest" in $$source)) {
+            /**
+             * @member
+             * @type {coremgr$0.Manifest}
+             */
+            this["manifest"] = (new coremgr$0.Manifest());
+        }
+        if (!("discovered" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["discovered"] = false;
+        }
+        if (!("runtime_state" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["runtime_state"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["runtime_version"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["path"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["failure_message"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new CoreLifecycleView instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {CoreLifecycleView}
+     */
+    static createFrom($$source = {}) {
+        const $$createField0_0 = $$createType11;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("manifest" in $$parsedSource) {
+            $$parsedSource["manifest"] = $$createField0_0($$parsedSource["manifest"]);
+        }
+        return new CoreLifecycleView(/** @type {Partial<CoreLifecycleView>} */($$parsedSource));
+    }
+}
+
+/**
+ * DeveloperInfoView is the structured developer/build information
+ * snapshot bound to the UI.
+ */
+export class DeveloperInfoView {
+    /**
+     * Creates a new DeveloperInfoView instance.
+     * @param {Partial<DeveloperInfoView>} [$$source = {}] - The source object to create the DeveloperInfoView.
+     */
+    constructor($$source = {}) {
+        if (!("version" in $$source)) {
+            /**
+             * Build identity.
+             * @member
+             * @type {string}
+             */
+            this["version"] = "";
+        }
+        if (!("commit" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["commit"] = "";
+        }
+        if (!("go_version" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["go_version"] = "";
+        }
+        if (!("platform" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["platform"] = "";
+        }
+        if (!("user_agent" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["user_agent"] = "";
+        }
+        if (!("base_dir" in $$source)) {
+            /**
+             * Runtime layout.
+             * @member
+             * @type {string}
+             */
+            this["base_dir"] = "";
+        }
+        if (!("data_dir" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["data_dir"] = "";
+        }
+        if (!("logs_dir" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["logs_dir"] = "";
+        }
+        if (!("cores_dir" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["cores_dir"] = "";
+        }
+        if (!("runtime_dir" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["runtime_dir"] = "";
+        }
+        if (!("portable_mode" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["portable_mode"] = false;
+        }
+        if (!("workspace_writable" in $$source)) {
+            /**
+             * Workspace state (v0.9.2).
+             * @member
+             * @type {boolean}
+             */
+            this["workspace_writable"] = false;
+        }
+        if (!("migration" in $$source)) {
+            /**
+             * @member
+             * @type {system$0.WorkspaceStatus}
+             */
+            this["migration"] = (new system$0.WorkspaceStatus());
+        }
+        if (!("native_acceleration" in $$source)) {
+            /**
+             * Engine status.
+             * @member
+             * @type {string}
+             */
+            this["native_acceleration"] = "";
+        }
+        if (!("queue_workers_override" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["queue_workers_override"] = 0;
+        }
+        if (!("net_timeout_override_seconds" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["net_timeout_override_seconds"] = 0;
+        }
+        if (!("queue_depth" in $$source)) {
+            /**
+             * Live queue internals (zero values when the queue is not up).
+             * @member
+             * @type {number}
+             */
+            this["queue_depth"] = 0;
+        }
+        if (!("active_workers" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["active_workers"] = 0;
+        }
+        if (!("total_enqueued" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["total_enqueued"] = 0;
+        }
+        if (!("total_passed" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["total_passed"] = 0;
+        }
+        if (!("total_failed" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["total_failed"] = 0;
+        }
+        if (!("auto_recovery" in $$source)) {
+            /**
+             * v0.9.3 autonomous-connection engine status.
+             * @member
+             * @type {RecoveryStatus}
+             */
+            this["auto_recovery"] = (new RecoveryStatus());
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new DeveloperInfoView instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {DeveloperInfoView}
+     */
+    static createFrom($$source = {}) {
+        const $$createField12_0 = $$createType12;
+        const $$createField21_0 = $$createType13;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("migration" in $$parsedSource) {
+            $$parsedSource["migration"] = $$createField12_0($$parsedSource["migration"]);
+        }
+        if ("auto_recovery" in $$parsedSource) {
+            $$parsedSource["auto_recovery"] = $$createField21_0($$parsedSource["auto_recovery"]);
+        }
+        return new DeveloperInfoView(/** @type {Partial<DeveloperInfoView>} */($$parsedSource));
+    }
+}
+
+/**
+ * DiagnosticReport is the sanitized, copy/export-friendly diagnostic
+ * summary (specification §8): version, platform, core and storage
+ * state plus recent connectivity findings. It never contains
+ * credentials — every component is already redaction-safe.
+ */
+export class DiagnosticReport {
+    /**
+     * Creates a new DiagnosticReport instance.
+     * @param {Partial<DiagnosticReport>} [$$source = {}] - The source object to create the DiagnosticReport.
+     */
+    constructor($$source = {}) {
+        if (!("generated_at" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["generated_at"] = "";
+        }
+        if (!("version" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["version"] = "";
+        }
+        if (!("platform" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["platform"] = "";
+        }
+        if (!("app_status" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["app_status"] = "";
+        }
+        if (!("config_count" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["config_count"] = 0;
+        }
+        if (!("cores" in $$source)) {
+            /**
+             * @member
+             * @type {string[]}
+             */
+            this["cores"] = [];
+        }
+        if (!("storage" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["storage"] = "";
+        }
+        if (!("network_state" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["network_state"] = "";
+        }
+        if (!("network_note" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["network_note"] = "";
+        }
+        if (!("connection" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["connection"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string[] | undefined}
+             */
+            this["warnings"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * v0.9.1 developer option (dev_verbose_diagnostics): when set,
+             * Technical gains the runtime detail block below (memory,
+             * native acceleration, portable mode, data paths). It stays
+             * redaction-safe — paths and versions only, never credentials.
+             * @member
+             * @type {string[] | undefined}
+             */
+            this["technical"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new DiagnosticReport instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {DiagnosticReport}
+     */
+    static createFrom($$source = {}) {
+        const $$createField5_0 = $$createType4;
+        const $$createField10_0 = $$createType4;
+        const $$createField11_0 = $$createType4;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("cores" in $$parsedSource) {
+            $$parsedSource["cores"] = $$createField5_0($$parsedSource["cores"]);
+        }
+        if ("warnings" in $$parsedSource) {
+            $$parsedSource["warnings"] = $$createField10_0($$parsedSource["warnings"]);
+        }
+        if ("technical" in $$parsedSource) {
+            $$parsedSource["technical"] = $$createField11_0($$parsedSource["technical"]);
+        }
+        return new DiagnosticReport(/** @type {Partial<DiagnosticReport>} */($$parsedSource));
+    }
+}
+
+/**
+ * EnqueueItem is one item in a batch enqueue.
+ */
+export class EnqueueItem {
+    /**
+     * Creates a new EnqueueItem instance.
+     * @param {Partial<EnqueueItem>} [$$source = {}] - The source object to create the EnqueueItem.
+     */
+    constructor($$source = {}) {
+        if (!("fingerprint" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["fingerprint"] = "";
+        }
+        if (!("protocol" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["protocol"] = "";
+        }
+        if (!("backends" in $$source)) {
+            /**
+             * @member
+             * @type {string[]}
+             */
+            this["backends"] = [];
+        }
+        if (!("priority" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["priority"] = 0;
+        }
+        if (!("source" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["source"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new EnqueueItem instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {EnqueueItem}
+     */
+    static createFrom($$source = {}) {
+        const $$createField2_0 = $$createType4;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("backends" in $$parsedSource) {
+            $$parsedSource["backends"] = $$createField2_0($$parsedSource["backends"]);
+        }
+        return new EnqueueItem(/** @type {Partial<EnqueueItem>} */($$parsedSource));
+    }
+}
+
+/**
+ * LastCleanupTask reports one task of the last cleanup pass.
+ */
+export class LastCleanupTask {
+    /**
+     * Creates a new LastCleanupTask instance.
+     * @param {Partial<LastCleanupTask>} [$$source = {}] - The source object to create the LastCleanupTask.
+     */
+    constructor($$source = {}) {
+        if (!("name" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["name"] = "";
+        }
+        if (!("bytes" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["bytes"] = 0;
+        }
+        if (!("items" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["items"] = 0;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["error"] = undefined;
+        }
+        if (!("status" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["status"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new LastCleanupTask instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {LastCleanupTask}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new LastCleanupTask(/** @type {Partial<LastCleanupTask>} */($$parsedSource));
     }
 }
 
@@ -857,83 +1426,92 @@ export class LogFilter {
      * @param {Partial<LogFilter>} [$$source = {}] - The source object to create the LogFilter.
      */
     constructor($$source = {}) {
-        if (!("since_seq" in $$source)) {
+        if (/** @type {any} */(false)) {
             /**
+             * SinceSeq returns only entries newer than this sequence number
+             * (incremental polling; 0 = from the beginning of the buffer).
              * @member
-             * @type {number}
+             * @type {number | undefined}
              */
-            this["since_seq"] = 0;
+            this["since_seq"] = undefined;
         }
-        if (!("limit" in $$source)) {
+        if (/** @type {any} */(false)) {
             /**
+             * Limit bounds the page (default 200, max 1000).
              * @member
-             * @type {number}
+             * @type {number | undefined}
              */
-            this["limit"] = 0;
+            this["limit"] = undefined;
         }
-        if (!("subsystem" in $$source)) {
+        if (/** @type {any} */(false)) {
             /**
+             * Subsystem filters by subsystem ("" = all).
              * @member
-             * @type {string}
+             * @type {string | undefined}
              */
-            this["subsystem"] = "";
+            this["subsystem"] = undefined;
         }
-        if (!("query" in $$source)) {
+        if (/** @type {any} */(false)) {
             /**
+             * Query is a case-insensitive substring over message and event.
              * @member
-             * @type {string}
+             * @type {string | undefined}
              */
-            this["query"] = "";
+            this["query"] = undefined;
         }
-        if (!("level" in $$source)) {
+        if (/** @type {any} */(false)) {
             /**
+             * Level filters to entries at or above the level ("" = all).
              * @member
-             * @type {string}
+             * @type {string | undefined}
              */
-            this["level"] = "";
+            this["level"] = undefined;
         }
-        if (!("event" in $$source)) {
+        if (/** @type {any} */(false)) {
             /**
-             * Exact event name filter (v0.9.7).
+             * Event filters to an exact event name ("" = all) — v0.9.7 §20.
              * @member
-             * @type {string}
+             * @type {string | undefined}
              */
-            this["event"] = "";
+            this["event"] = undefined;
         }
-        if (!("batch_id" in $$source)) {
+        if (/** @type {any} */(false)) {
             /**
+             * BatchID / TestID / ConfigID / Core narrow the view to one
+             * causal group (v0.9.7 §20).
              * @member
-             * @type {string}
+             * @type {string | undefined}
              */
-            this["batch_id"] = "";
+            this["batch_id"] = undefined;
         }
-        if (!("test_id" in $$source)) {
+        if (/** @type {any} */(false)) {
             /**
              * @member
-             * @type {string}
+             * @type {string | undefined}
              */
-            this["test_id"] = "";
+            this["test_id"] = undefined;
         }
-        if (!("config_id" in $$source)) {
+        if (/** @type {any} */(false)) {
             /**
              * @member
-             * @type {string}
+             * @type {string | undefined}
              */
-            this["config_id"] = "";
+            this["config_id"] = undefined;
         }
-        if (!("core" in $$source)) {
+        if (/** @type {any} */(false)) {
             /**
              * @member
-             * @type {string}
+             * @type {string | undefined}
              */
-            this["core"] = "";
+            this["core"] = undefined;
         }
-        if (!("errors_only" in $$source)) {
+        if (/** @type {any} */(false)) {
             /**
+             * ErrorsOnly keeps only warn/error entries (v0.9.7 §20).
              * @member
-             * @type {boolean}
+             * @type {boolean | undefined}
              */
-            this["errors_only"] = false;
+            this["errors_only"] = undefined;
         }
 
         Object.assign(this, $$source);
@@ -962,7 +1540,7 @@ export class LogPage {
         if (!("entries" in $$source)) {
             /**
              * @member
-             * @type {import("../../internal/logging/models.js").Entry[]}
+             * @type {logging$0.Entry[]}
              */
             this["entries"] = [];
         }
@@ -983,22 +1561,1603 @@ export class LogPage {
      * @returns {LogPage}
      */
     static createFrom($$source = {}) {
+        const $$createField0_0 = $$createType15;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        const result = new LogPage(/** @type {Partial<LogPage>} */($$parsedSource));
-        if ($$parsedSource != null && $$parsedSource["entries"] != null) {
-            result["entries"] = $$parsedSource["entries"].map($$castEntry);
+        if ("entries" in $$parsedSource) {
+            $$parsedSource["entries"] = $$createField0_0($$parsedSource["entries"]);
         }
-        return result;
+        return new LogPage(/** @type {Partial<LogPage>} */($$parsedSource));
     }
 }
 
-const $$create0 = logging$0.Entry.createFrom;
+/**
+ * MemorySnapshot is the structured, UI-bindable memory report. It
+ * combines the pressure picture, the adaptive settings and the
+ * subsystem measurements that produced them, so the diagnostics
+ * surface shows cause and effect together.
+ */
+export class MemorySnapshot {
+    /**
+     * Creates a new MemorySnapshot instance.
+     * @param {Partial<MemorySnapshot>} [$$source = {}] - The source object to create the MemorySnapshot.
+     */
+    constructor($$source = {}) {
+        if (!("pressure" in $$source)) {
+            /**
+             * @member
+             * @type {mempressure$0.Snapshot}
+             */
+            this["pressure"] = (new mempressure$0.Snapshot());
+        }
+        if (!("booster" in $$source)) {
+            /**
+             * @member
+             * @type {booster$0.Settings}
+             */
+            this["booster"] = (new booster$0.Settings());
+        }
+        if (!("queue_bytes" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["queue_bytes"] = 0;
+        }
+        if (!("cache_bytes" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["cache_bytes"] = 0;
+        }
+        if (!("pending_write_bytes" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["pending_write_bytes"] = 0;
+        }
+        if (!("samples" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["samples"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new MemorySnapshot instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {MemorySnapshot}
+     */
+    static createFrom($$source = {}) {
+        const $$createField0_0 = $$createType16;
+        const $$createField1_0 = $$createType17;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("pressure" in $$parsedSource) {
+            $$parsedSource["pressure"] = $$createField0_0($$parsedSource["pressure"]);
+        }
+        if ("booster" in $$parsedSource) {
+            $$parsedSource["booster"] = $$createField1_0($$parsedSource["booster"]);
+        }
+        return new MemorySnapshot(/** @type {Partial<MemorySnapshot>} */($$parsedSource));
+    }
+}
 
 /**
- * Casts one raw entry object into an Entry instance.
- * @param {any} $$value
- * @returns {InstanceType<typeof logging$0.Entry>}
+ * NetworkIdentityRequest is the UI-facing identity request (§6.4:
+ * explicit user action only — the service never runs it on its own).
  */
-function $$castEntry($$value) {
-    return $$create0($$value);
+export class NetworkIdentityRequest {
+    /**
+     * Creates a new NetworkIdentityRequest instance.
+     * @param {Partial<NetworkIdentityRequest>} [$$source = {}] - The source object to create the NetworkIdentityRequest.
+     */
+    constructor($$source = {}) {
+        if (/** @type {any} */(false)) {
+            /**
+             * Tunneled measures the identity THROUGH the active session
+             * endpoint when one exists (explicit user choice).
+             * @member
+             * @type {boolean | undefined}
+             */
+            this["tunneled"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new NetworkIdentityRequest instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {NetworkIdentityRequest}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new NetworkIdentityRequest(/** @type {Partial<NetworkIdentityRequest>} */($$parsedSource));
+    }
 }
+
+/**
+ * ProviderChoice is one scored option for Auto selection.
+ */
+export class ProviderChoice {
+    /**
+     * Creates a new ProviderChoice instance.
+     * @param {Partial<ProviderChoice>} [$$source = {}] - The source object to create the ProviderChoice.
+     */
+    constructor($$source = {}) {
+        if (!("kind" in $$source)) {
+            /**
+             * "configs" | "tor" | "psiphon"
+             * @member
+             * @type {string}
+             */
+            this["kind"] = "";
+        }
+        if (!("name" in $$source)) {
+            /**
+             * display name
+             * @member
+             * @type {string}
+             */
+            this["name"] = "";
+        }
+        if (!("score" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["score"] = 0;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * explainable, like ranking
+             * @member
+             * @type {string[] | undefined}
+             */
+            this["reasons"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ProviderChoice instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {ProviderChoice}
+     */
+    static createFrom($$source = {}) {
+        const $$createField3_0 = $$createType4;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("reasons" in $$parsedSource) {
+            $$parsedSource["reasons"] = $$createField3_0($$parsedSource["reasons"]);
+        }
+        return new ProviderChoice(/** @type {Partial<ProviderChoice>} */($$parsedSource));
+    }
+}
+
+/**
+ * ProviderModeView is one UI choice.
+ */
+export class ProviderModeView {
+    /**
+     * Creates a new ProviderModeView instance.
+     * @param {Partial<ProviderModeView>} [$$source = {}] - The source object to create the ProviderModeView.
+     */
+    constructor($$source = {}) {
+        if (!("mode" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["mode"] = "";
+        }
+        if (!("label" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["label"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ProviderModeView instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {ProviderModeView}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ProviderModeView(/** @type {Partial<ProviderModeView>} */($$parsedSource));
+    }
+}
+
+/**
+ * RecoveryStatus is the credential-free recovery view for the
+ * developer diagnostics surface.
+ */
+export class RecoveryStatus {
+    /**
+     * Creates a new RecoveryStatus instance.
+     * @param {Partial<RecoveryStatus>} [$$source = {}] - The source object to create the RecoveryStatus.
+     */
+    constructor($$source = {}) {
+        if (!("enabled" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["enabled"] = false;
+        }
+        if (!("watching" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["watching"] = false;
+        }
+        if (!("episode_active" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["episode_active"] = false;
+        }
+        if (!("episode_number" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["episode_number"] = 0;
+        }
+        if (!("attempts" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["attempts"] = 0;
+        }
+        if (!("max_attempts" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["max_attempts"] = 0;
+        }
+        if (!("cooled_candidates" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["cooled_candidates"] = 0;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["last_error"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {number | undefined}
+             */
+            this["next_attempt_in_ms"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new RecoveryStatus instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {RecoveryStatus}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new RecoveryStatus(/** @type {Partial<RecoveryStatus>} */($$parsedSource));
+    }
+}
+
+/**
+ * Settings is the persisted user preference set.
+ */
+export class Settings {
+    /**
+     * Creates a new Settings instance.
+     * @param {Partial<Settings>} [$$source = {}] - The source object to create the Settings.
+     */
+    constructor($$source = {}) {
+        if (/** @type {any} */(false)) {
+            /**
+             * PreferredBackend is the user-selected protocol core
+             * ("" / "xray" / "v2ray" / "sing-box"). It only influences
+             * selection when the backend is compatible and available.
+             * @member
+             * @type {string | undefined}
+             */
+            this["preferred_backend"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * ProviderMode is the Quick Connect provider choice:
+             * "" / "auto" (evidence-based) / "configs" / "tor" / "psiphon".
+             * @member
+             * @type {string | undefined}
+             */
+            this["provider_mode"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * TorBridgeLines are user-provided bridge lines (validated before
+             * launch; never logged — bridge material is private).
+             * @member
+             * @type {string[] | undefined}
+             */
+            this["tor_bridge_lines"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * TorTransportPlugins maps transport names (obfs4, snowflake) to
+             * user-provided client plugin executables.
+             * @member
+             * @type {{ [_ in string]?: string } | undefined}
+             */
+            this["tor_transport_plugins"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * PsiphonExtraConfig is advanced user-provided JSON merged into
+             * the generated Psiphon client config (validated as JSON).
+             * @member
+             * @type {string | undefined}
+             */
+            this["psiphon_extra_config"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * PsiphonUserBinary is an optional user-provided console-client
+             * path adopted after validation.
+             * @member
+             * @type {string | undefined}
+             */
+            this["psiphon_user_binary"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * RefreshIntervalMinutes is the source refresh cadence
+             * (0 = engine default).
+             * @member
+             * @type {number | undefined}
+             */
+            this["refresh_interval_minutes"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * TestingPolicy is one of "off", "on_add", "periodic".
+             * @member
+             * @type {string | undefined}
+             */
+            this["testing_policy"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * LogLevel is the runtime log minimum severity floor
+             * ("debug"/"info"/"warn"/"error"). It gates info/warn/error
+             * records; debug-severity verbosity is governed by the logging
+             * profile (v0.9.8.4).
+             * @member
+             * @type {string | undefined}
+             */
+            this["log_level"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * LoggingProfile is the v0.9.8.4 logging profile:
+             * "" / "normal" (default end-user mode) / "detailed" (adds
+             * lifecycle diagnostics + full record identity) / "debug"
+             * (verbose diagnostics + correlation identifiers). Applied to the
+             * live logger immediately on save — no restart.
+             * @member
+             * @type {string | undefined}
+             */
+            this["logging_profile"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * LogMaxBytesMB bounds the primary runtime log file before
+             * rotation (0 = default 5 MiB).
+             * @member
+             * @type {number | undefined}
+             */
+            this["log_max_bytes_mb"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * LogMaxBackups bounds the kept rotated log files (0 = default 4).
+             * @member
+             * @type {number | undefined}
+             */
+            this["log_max_backups"] = undefined;
+        }
+        if (!("reduced_motion" in $$source)) {
+            /**
+             * ReducedMotion asks the UI to minimize animation (accessibility).
+             * @member
+             * @type {boolean}
+             */
+            this["reduced_motion"] = false;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * LocalSocksPort is the user-selected local SOCKS inbound port
+             * (0 = automatic ephemeral allocation; otherwise 1024-65535).
+             * @member
+             * @type {number | undefined}
+             */
+            this["local_socks_port"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * LocalHTTPPort is the user-selected local HTTP inbound port
+             * (0 = disabled / automatic; otherwise 1024-65535).
+             * @member
+             * @type {number | undefined}
+             */
+            this["local_http_port"] = undefined;
+        }
+        if (!("allow_untrusted_public_routes" in $$source)) {
+            /**
+             * AllowUntrustedPublicRoutes opts Quick Connect / Auto into
+             * connecting through PUBLIC, UNTRUSTED source nodes (default:
+             * false). Public nodes remain fully usable through explicit
+             * selection on the Configs page — this switch only governs the
+             * AUTOMATIC route selection. A public node can be fast + stable +
+             * verified reachable + untrusted: reliability and route trust are
+             * separate dimensions, and the automatic policy never silently
+             * promotes untrusted routes to trusted ones.
+             * @member
+             * @type {boolean}
+             */
+            this["allow_untrusted_public_routes"] = false;
+        }
+        if (!("dev_verbose_diagnostics" in $$source)) {
+            /**
+             * DevVerboseDiagnostics enriches the diagnostic report (and the
+             * UI error surfaces) with technical detail: memory snapshot,
+             * native acceleration status, portable-mode state and runtime
+             * versions. Read live by BuildDiagnosticReport.
+             * @member
+             * @type {boolean}
+             */
+            this["dev_verbose_diagnostics"] = false;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * DevQueueWorkers overrides the test-queue worker-pool size
+             * (0 = adaptive memory-booster control, 1-64 = fixed). Applied
+             * to the live queue and respected over future booster ticks.
+             * @member
+             * @type {number | undefined}
+             */
+            this["dev_queue_workers"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * DevNetTimeoutSeconds overrides the per-probe network-test
+             * timeout (0 = default 4s, 1-120 = fixed). Read live by
+             * NetworkService.networkConfig before every check.
+             * @member
+             * @type {number | undefined}
+             */
+            this["dev_net_timeout_seconds"] = undefined;
+        }
+        if (!("dev_force_go_fallback" in $$source)) {
+            /**
+             * DevForceGoFallback pins the native acceleration bridge to the
+             * pure-Go implementation (same state as FREEIRAN_NATIVE=off).
+             * Applied to the live engine immediately on save.
+             * @member
+             * @type {boolean}
+             */
+            this["dev_force_go_fallback"] = false;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * TestMode is the user-selected test mode: "ping", "url",
+             * "ping_url", "handshake" or "full" ("" = ping_url default).
+             * @member
+             * @type {string | undefined}
+             */
+            this["test_mode"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * TestPingSamples bounds the ping facet's sample count
+             * (0 = default 4; clamped 1-16).
+             * @member
+             * @type {number | undefined}
+             */
+            this["test_ping_samples"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * TestURL is the URL-test target ("" = the standard 204 endpoint).
+             * @member
+             * @type {string | undefined}
+             */
+            this["test_url"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * TestURLTimeoutSeconds bounds the URL facet (0 = default 12s).
+             * @member
+             * @type {number | undefined}
+             */
+            this["test_url_timeout_seconds"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * TestMaxCandidates caps how many candidates one flow tests
+             * (0 = default 20; clamped 1-200).
+             * @member
+             * @type {number | undefined}
+             */
+            this["test_max_candidates"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * SortMode is the ranking order: best_overall (default),
+             * lowest_ping, lowest_median_ping, lowest_jitter,
+             * lowest_packet_loss, best_url_response, highest_success_rate,
+             * most_stable, recently_verified.
+             * @member
+             * @type {string | undefined}
+             */
+            this["sort_mode"] = undefined;
+        }
+        if (!("enable_racing" in $$source)) {
+            /**
+             * EnableRacing turns on controlled connection racing of the top
+             * candidates (first VERIFIED usable connection wins).
+             * @member
+             * @type {boolean}
+             */
+            this["enable_racing"] = false;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * RacingCandidates is how many top candidates race (2-4,
+             * default 2).
+             * @member
+             * @type {number | undefined}
+             */
+            this["racing_candidates"] = undefined;
+        }
+        if (!("disable_auto_recovery" in $$source)) {
+            /**
+             * DisableAutoRecovery turns off the v0.9.3 automatic recovery
+             * supervisor. Recovery is ON by default (the autonomous
+             * connection engine's core promise): when the active
+             * connection fails, FreeIran switches to the next viable
+             * candidate with bounded retries, cooldowns and failure
+             * memory. This flag is the explicit user opt-out.
+             * @member
+             * @type {boolean}
+             */
+            this["disable_auto_recovery"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new Settings instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {Settings}
+     */
+    static createFrom($$source = {}) {
+        const $$createField2_0 = $$createType4;
+        const $$createField3_0 = $$createType18;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("tor_bridge_lines" in $$parsedSource) {
+            $$parsedSource["tor_bridge_lines"] = $$createField2_0($$parsedSource["tor_bridge_lines"]);
+        }
+        if ("tor_transport_plugins" in $$parsedSource) {
+            $$parsedSource["tor_transport_plugins"] = $$createField3_0($$parsedSource["tor_transport_plugins"]);
+        }
+        return new Settings(/** @type {Partial<Settings>} */($$parsedSource));
+    }
+}
+
+/**
+ * SourceMetadataUpdate carries editable source metadata fields.
+ */
+export class SourceMetadataUpdate {
+    /**
+     * Creates a new SourceMetadataUpdate instance.
+     * @param {Partial<SourceMetadataUpdate>} [$$source = {}] - The source object to create the SourceMetadataUpdate.
+     */
+    constructor($$source = {}) {
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["name"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {number | undefined}
+             */
+            this["priority"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["region"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["format"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string[] | undefined}
+             */
+            this["protocol_hints"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {time$0.Duration | undefined}
+             */
+            this["refresh_interval"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SourceMetadataUpdate instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {SourceMetadataUpdate}
+     */
+    static createFrom($$source = {}) {
+        const $$createField4_0 = $$createType4;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("protocol_hints" in $$parsedSource) {
+            $$parsedSource["protocol_hints"] = $$createField4_0($$parsedSource["protocol_hints"]);
+        }
+        return new SourceMetadataUpdate(/** @type {Partial<SourceMetadataUpdate>} */($$parsedSource));
+    }
+}
+
+/**
+ * SourceStatsView is the UI projection of one source's stats.
+ * Re-exported as source.Stats; this alias documents the surface
+ * stable across future Source struct growth.
+ */
+export const SourceStatsView = source$0.Stats;
+
+/**
+ * SourceStatsView is the UI projection of one source's stats.
+ * Re-exported as source.Stats; this alias documents the surface
+ * stable across future Source struct growth.
+ * @typedef {source$0.Stats} SourceStatsView
+ */
+
+/**
+ * SourceView is the UI projection of a source.
+ */
+export class SourceView {
+    /**
+     * Creates a new SourceView instance.
+     * @param {Partial<SourceView>} [$$source = {}] - The source object to create the SourceView.
+     */
+    constructor($$source = {}) {
+        if (!("id" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["id"] = "";
+        }
+        if (!("name" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["name"] = "";
+        }
+        if (!("url" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["url"] = "";
+        }
+        if (!("enabled" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["enabled"] = false;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["last_hash"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * Trust is the ROUTE-trust band of the source (v0.9.8.6):
+             * "official" | "user" | "public". The Sources UI labels untrusted
+             * public routes explicitly; the Quick Connect policy enforces the
+             * boundary on the backend.
+             * @member
+             * @type {string | undefined}
+             */
+            this["trust"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SourceView instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {SourceView}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new SourceView(/** @type {Partial<SourceView>} */($$parsedSource));
+    }
+}
+
+/**
+ * StartFlowResult summarizes one completed flow run.
+ */
+export class StartFlowResult {
+    /**
+     * Creates a new StartFlowResult instance.
+     * @param {Partial<StartFlowResult>} [$$source = {}] - The source object to create the StartFlowResult.
+     */
+    constructor($$source = {}) {
+        if (!("discovered" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["discovered"] = 0;
+        }
+        if (!("valid" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["valid"] = 0;
+        }
+        if (!("duplicates" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["duplicates"] = 0;
+        }
+        if (!("tested" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["tested"] = 0;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["connected_fingerprint"] = undefined;
+        }
+        if (!("verified" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["verified"] = false;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["failure_class"] = undefined;
+        }
+        if (!("duration_ms" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["duration_ms"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new StartFlowResult instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {StartFlowResult}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new StartFlowResult(/** @type {Partial<StartFlowResult>} */($$parsedSource));
+    }
+}
+
+/**
+ * StartFlowStage names one stage of the adaptive start flow.
+ * @readonly
+ * @enum {string}
+ */
+export const StartFlowStage = {
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero: "",
+
+    FlowStageDetecting: "detecting",
+    FlowStageDiscovering: "discovering",
+    FlowStageTesting: "testing",
+    FlowStageRanking: "ranking",
+    FlowStageConnecting: "connecting",
+    FlowStageVerifying: "verifying",
+    FlowStageConnected: "connected",
+    FlowStageFailed: "failed",
+    FlowStageNoUsable: "no_usable_candidates",
+    FlowStageIdle: "idle",
+};
+
+/**
+ * StartFlowStatus is the current status of the flow.
+ */
+export class StartFlowStatus {
+    /**
+     * Creates a new StartFlowStatus instance.
+     * @param {Partial<StartFlowStatus>} [$$source = {}] - The source object to create the StartFlowStatus.
+     */
+    constructor($$source = {}) {
+        if (!("stage" in $$source)) {
+            /**
+             * @member
+             * @type {StartFlowStage}
+             */
+            this["stage"] = StartFlowStage.$zero;
+        }
+        if (!("running" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["running"] = false;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["message"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {number | undefined}
+             */
+            this["started_at"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {number | undefined}
+             */
+            this["finished_at"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {number | undefined}
+             */
+            this["last_run_ms"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {netcheck$0.EnvironmentSignal[] | undefined}
+             */
+            this["environment"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {StartFlowResult | null | undefined}
+             */
+            this["last_result"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new StartFlowStatus instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {StartFlowStatus}
+     */
+    static createFrom($$source = {}) {
+        const $$createField6_0 = $$createType19;
+        const $$createField7_0 = $$createType21;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("environment" in $$parsedSource) {
+            $$parsedSource["environment"] = $$createField6_0($$parsedSource["environment"]);
+        }
+        if ("last_result" in $$parsedSource) {
+            $$parsedSource["last_result"] = $$createField7_0($$parsedSource["last_result"]);
+        }
+        return new StartFlowStatus(/** @type {Partial<StartFlowStatus>} */($$parsedSource));
+    }
+}
+
+/**
+ * StorageOverview is the structured workspace/storage/memory report.
+ */
+export class StorageOverview {
+    /**
+     * Creates a new StorageOverview instance.
+     * @param {Partial<StorageOverview>} [$$source = {}] - The source object to create the StorageOverview.
+     */
+    constructor($$source = {}) {
+        if (!("workspace_path" in $$source)) {
+            /**
+             * Workspace identity.
+             * @member
+             * @type {string}
+             */
+            this["workspace_path"] = "";
+        }
+        if (!("workspace_writable" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["workspace_writable"] = false;
+        }
+        if (!("portable_mode" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["portable_mode"] = false;
+        }
+        if (!("data_bytes" in $$source)) {
+            /**
+             * Per-subsystem disk usage (bytes).
+             * @member
+             * @type {number}
+             */
+            this["data_bytes"] = 0;
+        }
+        if (!("chunk_bytes" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["chunk_bytes"] = 0;
+        }
+        if (!("wal_bytes" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["wal_bytes"] = 0;
+        }
+        if (!("cache_bytes" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["cache_bytes"] = 0;
+        }
+        if (!("logs_bytes" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["logs_bytes"] = 0;
+        }
+        if (!("core_bytes" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["core_bytes"] = 0;
+        }
+        if (!("runtime_bytes" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["runtime_bytes"] = 0;
+        }
+        if (!("total_bytes" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["total_bytes"] = 0;
+        }
+        if (!("records" in $$source)) {
+            /**
+             * Store counters (live snapshot).
+             * @member
+             * @type {number}
+             */
+            this["records"] = 0;
+        }
+        if (!("disk_bytes" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["disk_bytes"] = 0;
+        }
+        if (!("chunk_count" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["chunk_count"] = 0;
+        }
+        if (!("garbage_ratio" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["garbage_ratio"] = 0;
+        }
+        if (!("heap_alloc_bytes" in $$source)) {
+            /**
+             * Memory picture.
+             * @member
+             * @type {number}
+             */
+            this["heap_alloc_bytes"] = 0;
+        }
+        if (!("heap_sys_bytes" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["heap_sys_bytes"] = 0;
+        }
+        if (!("rss_bytes" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["rss_bytes"] = 0;
+        }
+        if (!("pressure_state" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["pressure_state"] = "";
+        }
+        if (!("usage_fraction" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["usage_fraction"] = 0;
+        }
+        if (!("memtable_records" in $$source)) {
+            /**
+             * Adaptive store limits (current pressure response).
+             * @member
+             * @type {number}
+             */
+            this["memtable_records"] = 0;
+        }
+        if (!("memtable_bytes" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["memtable_bytes"] = 0;
+        }
+        if (!("chunk_target_bytes" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["chunk_target_bytes"] = 0;
+        }
+        if (!("cleanup_passes" in $$source)) {
+            /**
+             * Cleanup state.
+             * @member
+             * @type {number}
+             */
+            this["cleanup_passes"] = 0;
+        }
+        if (!("total_reclaimed_bytes" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["total_reclaimed_bytes"] = 0;
+        }
+        if (!("last_cleanup_bytes" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["last_cleanup_bytes"] = 0;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["last_cleanup_at"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {LastCleanupTask[] | undefined}
+             */
+            this["last_cleanup_tasks"] = undefined;
+        }
+        if (!("migration" in $$source)) {
+            /**
+             * One-time workspace migration status.
+             * @member
+             * @type {system$0.WorkspaceStatus}
+             */
+            this["migration"] = (new system$0.WorkspaceStatus());
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new StorageOverview instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {StorageOverview}
+     */
+    static createFrom($$source = {}) {
+        const $$createField27_0 = $$createType6;
+        const $$createField28_0 = $$createType12;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("last_cleanup_tasks" in $$parsedSource) {
+            $$parsedSource["last_cleanup_tasks"] = $$createField27_0($$parsedSource["last_cleanup_tasks"]);
+        }
+        if ("migration" in $$parsedSource) {
+            $$parsedSource["migration"] = $$createField28_0($$parsedSource["migration"]);
+        }
+        return new StorageOverview(/** @type {Partial<StorageOverview>} */($$parsedSource));
+    }
+}
+
+/**
+ * TestBatchResult reports what a bulk test enqueued.
+ */
+export class TestBatchResult {
+    /**
+     * Creates a new TestBatchResult instance.
+     * @param {Partial<TestBatchResult>} [$$source = {}] - The source object to create the TestBatchResult.
+     */
+    constructor($$source = {}) {
+        if (!("enqueued" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["enqueued"] = 0;
+        }
+        if (!("skipped" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["skipped"] = 0;
+        }
+        if (!("scope" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["scope"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new TestBatchResult instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {TestBatchResult}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new TestBatchResult(/** @type {Partial<TestBatchResult>} */($$parsedSource));
+    }
+}
+
+/**
+ * TestFilter selects which stored configurations a bulk test covers.
+ */
+export class TestFilter {
+    /**
+     * Creates a new TestFilter instance.
+     * @param {Partial<TestFilter>} [$$source = {}] - The source object to create the TestFilter.
+     */
+    constructor($$source = {}) {
+        if (!("scope" in $$source)) {
+            /**
+             * Scope is one of: "selected", "all", "untested", "failed",
+             * "working" (retest working).
+             * @member
+             * @type {string}
+             */
+            this["scope"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * Fingerprints is required when Scope == "selected".
+             * @member
+             * @type {string[] | undefined}
+             */
+            this["fingerprints"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * Protocol restricts the batch to one protocol ("" = all).
+             * @member
+             * @type {string | undefined}
+             */
+            this["protocol"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * Source restricts the batch to one source id ("" = all).
+             * @member
+             * @type {string | undefined}
+             */
+            this["source"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * Limit bounds the batch (0 = 10000; the queue's duplicate
+             * suppression keeps huge batches safe).
+             * @member
+             * @type {number | undefined}
+             */
+            this["limit"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * Priority enqueued for the batch (user batches get a boost).
+             * @member
+             * @type {number | undefined}
+             */
+            this["priority"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new TestFilter instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {TestFilter}
+     */
+    static createFrom($$source = {}) {
+        const $$createField1_0 = $$createType4;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("fingerprints" in $$parsedSource) {
+            $$parsedSource["fingerprints"] = $$createField1_0($$parsedSource["fingerprints"]);
+        }
+        return new TestFilter(/** @type {Partial<TestFilter>} */($$parsedSource));
+    }
+}
+
+/**
+ * ToolRequestView is the UI-facing request.
+ */
+export class ToolRequestView {
+    /**
+     * Creates a new ToolRequestView instance.
+     * @param {Partial<ToolRequestView>} [$$source = {}] - The source object to create the ToolRequestView.
+     */
+    constructor($$source = {}) {
+        if (!("tool" in $$source)) {
+            /**
+             * Tool is the tool id (netcheck.ToolID string).
+             * @member
+             * @type {string}
+             */
+            this["tool"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * Target is the optional user-supplied target (validated by the
+             * safety layer before any bytes leave the machine).
+             * @member
+             * @type {string | undefined}
+             */
+            this["target"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * TimeoutMS bounds the run (0 = per-tool default, clamped to
+             * [1s, 60s]).
+             * @member
+             * @type {number | undefined}
+             */
+            this["timeout_ms"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * Tunneled runs the tool through the ACTIVE session endpoint
+             * when one exists (explicit user choice — never automatic).
+             * @member
+             * @type {boolean | undefined}
+             */
+            this["tunneled"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ToolRequestView instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {ToolRequestView}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ToolRequestView(/** @type {Partial<ToolRequestView>} */($$parsedSource));
+    }
+}
+
+/**
+ * TorOptionsView carries the user's Tor bridge configuration.
+ */
+export class TorOptionsView {
+    /**
+     * Creates a new TorOptionsView instance.
+     * @param {Partial<TorOptionsView>} [$$source = {}] - The source object to create the TorOptionsView.
+     */
+    constructor($$source = {}) {
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string[] | undefined}
+             */
+            this["bridge_lines"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {{ [_ in string]?: string } | undefined}
+             */
+            this["transport_plugins"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new TorOptionsView instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {TorOptionsView}
+     */
+    static createFrom($$source = {}) {
+        const $$createField0_0 = $$createType4;
+        const $$createField1_0 = $$createType18;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("bridge_lines" in $$parsedSource) {
+            $$parsedSource["bridge_lines"] = $$createField0_0($$parsedSource["bridge_lines"]);
+        }
+        if ("transport_plugins" in $$parsedSource) {
+            $$parsedSource["transport_plugins"] = $$createField1_0($$parsedSource["transport_plugins"]);
+        }
+        return new TorOptionsView(/** @type {Partial<TorOptionsView>} */($$parsedSource));
+    }
+}
+
+/**
+ * VerifyResult reports the outcome of a storage verification.
+ */
+export class VerifyResult {
+    /**
+     * Creates a new VerifyResult instance.
+     * @param {Partial<VerifyResult>} [$$source = {}] - The source object to create the VerifyResult.
+     */
+    constructor($$source = {}) {
+        if (!("chunks_checked" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["chunks_checked"] = 0;
+        }
+        if (!("ok" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["ok"] = false;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["error"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new VerifyResult instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {VerifyResult}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new VerifyResult(/** @type {Partial<VerifyResult>} */($$parsedSource));
+    }
+}
+
+/**
+ * connectionSnapshot is the JSON-facing snapshot type: the engine
+ * type marshals with the exact field names the UI relies on, so the
+ * service returns it directly.
+ */
+export const connectionSnapshot = connection$0.Snapshot;
+
+/**
+ * connectionSnapshot is the JSON-facing snapshot type: the engine
+ * type marshals with the exact field names the UI relies on, so the
+ * service returns it directly.
+ * @typedef {connection$0.Snapshot} connectionSnapshot
+ */
+
+/**
+ * stagingEntry is one persisted discovered source with its
+ * provenance and quality ledger (§9).
+ */
+export class stagingEntry {
+    /**
+     * Creates a new stagingEntry instance.
+     * @param {Partial<stagingEntry>} [$$source = {}] - The source object to create the stagingEntry.
+     */
+    constructor($$source = {}) {
+        if (!("url" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["url"] = "";
+        }
+        if (!("source_type" in $$source)) {
+            /**
+             * @member
+             * @type {discovery$0.SourceType}
+             */
+            this["source_type"] = discovery$0.SourceType.$zero;
+        }
+        if (!("trust" in $$source)) {
+            /**
+             * @member
+             * @type {discovery$0.Trust}
+             */
+            this["trust"] = discovery$0.Trust.$zero;
+        }
+        if (!("provenance" in $$source)) {
+            /**
+             * @member
+             * @type {discovery$0.Provenance}
+             */
+            this["provenance"] = (new discovery$0.Provenance());
+        }
+        if (!("candidate_count" in $$source)) {
+            /**
+             * Last validation outcome.
+             * @member
+             * @type {number}
+             */
+            this["candidate_count"] = 0;
+        }
+        if (!("valid_count" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["valid_count"] = 0;
+        }
+        if (!("duplicate_count" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["duplicate_count"] = 0;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["parser"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new stagingEntry instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {stagingEntry}
+     */
+    static createFrom($$source = {}) {
+        const $$createField3_0 = $$createType22;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("provenance" in $$parsedSource) {
+            $$parsedSource["provenance"] = $$createField3_0($$parsedSource["provenance"]);
+        }
+        return new stagingEntry(/** @type {Partial<stagingEntry>} */($$parsedSource));
+    }
+}
+
+// Private type creation functions
+const $$createType0 = store$0.Stats.createFrom;
+const $$createType1 = pipeline$0.Stats.createFrom;
+const $$createType2 = $Create.Nullable($$createType1);
+const $$createType3 = $Create.Map($Create.Any, $Create.Any);
+const $$createType4 = $Create.Array($Create.Any);
+const $$createType5 = LastCleanupTask.createFrom;
+const $$createType6 = $Create.Array($$createType5);
+const $$createType7 = config$0.Config.createFrom;
+const $$createType8 = $Create.Array($$createType7);
+const $$createType9 = connection$0.Snapshot.createFrom;
+const $$createType10 = CandidateView.createFrom;
+const $$createType11 = coremgr$0.Manifest.createFrom;
+const $$createType12 = system$0.WorkspaceStatus.createFrom;
+const $$createType13 = RecoveryStatus.createFrom;
+const $$createType14 = logging$0.Entry.createFrom;
+const $$createType15 = $Create.Array($$createType14);
+const $$createType16 = mempressure$0.Snapshot.createFrom;
+const $$createType17 = booster$0.Settings.createFrom;
+const $$createType18 = $Create.Map($Create.Any, $Create.Any);
+const $$createType19 = $Create.Array($Create.Any);
+const $$createType20 = StartFlowResult.createFrom;
+const $$createType21 = $Create.Nullable($$createType20);
+const $$createType22 = discovery$0.Provenance.createFrom;

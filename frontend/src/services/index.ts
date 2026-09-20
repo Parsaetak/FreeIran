@@ -525,6 +525,11 @@ export interface ToolResultView {
 }
 
 /** One tool run request (user-triggered only). */
+/** v0.9.8.7: the truthful generated wire shape (ToolRunRequest's twin). */
+export type ToolRequestView = import(
+  "../../bindings/github.com/Parsaetak/FreeIran/engine/app/models.js"
+).ToolRequestView;
+
 export interface ToolRunRequest {
   tool: string;
   target?: string;

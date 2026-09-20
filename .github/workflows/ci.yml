@@ -41,24 +41,31 @@ jobs:
           grep -q "var Version = \"$version\"" internal/version/version.go ||
             { echo "internal/version/version.go != $version" >&2; exit 1; }
 
-      # v0.9.8.6: the Wails toolchain pair must match EXACTLY. The
-      # v0.9.8.5 tree drifted (Go wails/v3 beta.19 while the lockfile
-      # resolved @wailsio/runtime beta.20): the ByID call hashes are
-      # toolchain-version-coupled, so mismatched betas can break the
-      # runtime call surface silently.
+      # The Wails toolchain pair must be semantically IDENTICAL: the Go
+      # module reports "v3.0.0-beta.19" while npm reports "3.0.0-beta.19"
+      # — the leading "v" is Go module notation, not version drift.
+      # Normalization strips exactly one optional leading "v" from each
+      # side before comparison; a real mismatch (different numbers or
+      # prerelease) still fails the job. The lockfile must resolve the
+      # SAME runtime version the package.json declares: the ByID call
+      # hashes are toolchain-version-coupled, so mismatched betas can
+      # break the runtime call surface silently.
       - name: Wails toolchain pair consistency
         run: |
+          normalize() { sed 's/^[vV]//'; }
           go_wails=$(go list -m github.com/wailsapp/wails/v3 |
-            awk '{print $2}')
+            awk '{print $2}' | normalize)
           js_wails=$(node -e \
-            "console.log(require('./frontend/package.json').dependencies['@wailsio/runtime'])")
+            "console.log(require('./frontend/package.json').dependencies['@wailsio/runtime'])" |
+            normalize)
           echo "go: $go_wails  js: $js_wails"
           if [ "$go_wails" != "$js_wails" ]; then
-            echo "Wails version drift: go.mod $go_wails vs package.json $js_wails" >&2
+            echo "Wails version drift: go.mod v$go_wails vs package.json $js_wails" >&2
             exit 1
           fi
           locked=$(node -e \
-            "console.log(require('./frontend/package-lock.json').packages['node_modules/@wailsio/runtime'].version)")
+            "console.log(require('./frontend/package-lock.json').packages['node_modules/@wailsio/runtime'].version)" |
+            normalize)
           echo "lockfile: $locked"
           if [ "$locked" != "$js_wails" ]; then
             echo "package-lock.json resolves @wailsio/runtime $locked, not $js_wails" >&2
@@ -178,6 +185,14 @@ jobs:
       # bundles retained in Git). build:embed wipes and re-copies the
       # target, so a clean `git diff` proves no stale bundles and no
       # drift between frontend/dist and cmd/freeiran/frontend/dist.
+      #
+      # v0.9.8.7: explicit ALLOWLIST on top of the git-diff check. The
+      # stable-filename contract (assets/app.js, assets/app.css,
+      # assets/export-worker.js) is enforced directly: an old hashed
+      # artifact, an unexpected index-*.js, a missing canonical asset,
+      # an undeclared index.html reference or a duplicate worker fails
+      # the job even when git diff would stay quiet (e.g. a file
+      # introduced AND committed in the same change).
       - name: Clean-room embed check
         run: |
           npm run build:embed
@@ -188,6 +203,41 @@ jobs:
             git status --short -- cmd/freeiran/frontend/dist
             exit 1
           fi
+
+          dist=cmd/freeiran/frontend/dist
+          allowlist="index.html assets/app.js assets/app.css assets/export-worker.js"
+
+          actual=$(cd "$dist" && find . -type f | sed 's|^\./||' | sort)
+          expected=$(echo "$allowlist" | tr ' ' '\n' | sort)
+
+          if [ "$actual" != "$expected" ]; then
+            echo "EMBED ALLOWLIST VIOLATION — produced tree:" >&2
+            echo "$actual" | sed 's/^/  /' >&2
+            echo "expected exactly:" >&2
+            echo "$expected" | sed 's/^/  /' >&2
+            echo "Stale or hashed assets are forbidden; see vite.config.ts" >&2
+            exit 1
+          fi
+
+          for f in $allowlist; do
+            if [ ! -s "$dist/$f" ]; then
+              echo "embed asset missing or empty: $f" >&2
+              exit 1
+            fi
+          done
+
+          # index.html must reference the canonical stable names and
+          # nothing else.
+          for ref in assets/app.js assets/app.css; do
+            grep -q "$ref" "$dist/index.html" ||
+              { echo "index.html does not reference $ref" >&2; exit 1; }
+          done
+          if grep -qE 'assets/[A-Za-z0-9_-]+-[A-Za-z0-9_-]{8,}\.(js|css)' "$dist/index.html"; then
+            echo "index.html references a hashed asset filename" >&2
+            exit 1
+          fi
+
+          echo "embed allowlist OK: $actual"
 
       - name: Upload dist
         uses: actions/upload-artifact@v7

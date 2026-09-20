@@ -315,6 +315,18 @@ type Manager struct {
 	// stability path) is still running (v0.9.8.6).
 	monitorDone chan struct{}
 	shutdown    bool
+
+	// v0.9.8.7 event-driven UI synchronization: subscribers receive the
+	// authoritative Snapshot after every real state mutation. notifyCh
+	// (buffered 1) collapses bursts; publishLoop dispatches the newest
+	// snapshot outside all locks; pubStopped serializes the close
+	// under m.mu (see publish.go / stateChanged).
+	subMu       sync.Mutex
+	subscribers map[int]func(Snapshot)
+	subSeq      int
+	notifyCh    chan struct{}
+	pubDone     chan struct{}
+	pubStopped  bool
 }
 
 // New creates a connection manager bound to a core registry.
@@ -342,7 +354,16 @@ func New(opts Options) *Manager {
 
 	opts.Verify = opts.Verify.WithDefaults()
 
-	return &Manager{opts: opts, state: StateDisconnected}
+	m := &Manager{opts: opts, state: StateDisconnected}
+
+	// v0.9.8.7: the snapshot dispatch goroutine starts with the
+	// manager; Shutdown joins it (stopPublisher) after the terminal
+	// state transitions.
+	m.notifyCh = make(chan struct{}, 1)
+	m.pubDone = make(chan struct{})
+	go m.publishLoop()
+
+	return m
 }
 
 // SetLocalPorts stores the user-selected local inbound ports for
@@ -427,6 +448,8 @@ func (m *Manager) Connect(
 	m.coreReadyMS = 0
 	m.lastPref = pref
 	m.corePID = 0
+
+	m.stateChanged()
 
 	m.mu.Unlock()
 
@@ -561,6 +584,7 @@ func (m *Manager) attempt(
 	}
 
 	m.state = StatePreparing
+	m.stateChanged()
 	m.mu.Unlock()
 
 	if err := backend.Validate(ctx, cfg); err != nil {
@@ -617,6 +641,7 @@ func (m *Manager) attempt(
 	}
 
 	m.state = StateStartingCore
+	m.stateChanged()
 	m.mu.Unlock()
 
 	instance, err := backend.Start(ctx, cfg, opts)
@@ -649,6 +674,7 @@ func (m *Manager) attempt(
 
 	m.state = StateWaitingForReady
 	m.instance = instance
+	m.stateChanged()
 	m.mu.Unlock()
 
 	if err := instance.WaitReady(ctx); err != nil {
@@ -711,6 +737,7 @@ func (m *Manager) attempt(
 	// end-to-end fields stay empty until a real verification runs.
 	m.coreReadyMS = coreReadyMS
 	m.port = opts.LocalPort
+	m.stateChanged()
 	m.mu.Unlock()
 
 	// --- Verifying (v0.9.8.3): readiness is NOT success -------------
@@ -722,6 +749,7 @@ func (m *Manager) attempt(
 	if !m.opts.Verify.Skip {
 		m.mu.Lock()
 		m.state = StateVerifying
+		m.stateChanged()
 		m.mu.Unlock()
 
 		result := VerifyTunnel(ctx, instance.Endpoint(), m.opts.Verify.verifyOptions())
@@ -766,6 +794,7 @@ func (m *Manager) attempt(
 			if m.generation == gen {
 				m.instance = nil
 				m.state = StateSelecting // the next candidate may run
+				m.stateChanged()
 			}
 
 			m.mu.Unlock()
@@ -803,6 +832,8 @@ func (m *Manager) attempt(
 	} else {
 		m.state = StateConnectedVerified
 	}
+
+	m.stateChanged()
 
 	m.mu.Unlock()
 
@@ -913,6 +944,8 @@ func (m *Manager) Disconnect() Snapshot {
 	m.verifiedAt = time.Time{}
 	m.lastVerify = VerifyResult{}
 
+	m.stateChanged()
+
 	m.mu.Unlock()
 
 	// Provider sessions stop through the provider lifecycle.
@@ -922,12 +955,14 @@ func (m *Manager) Disconnect() Snapshot {
 		if err := instance.Close(); err != nil {
 			m.mu.Lock()
 			m.lastError = fmt.Sprintf("disconnect: %v", err)
+			m.stateChanged()
 			m.mu.Unlock()
 		}
 	}
 
 	m.mu.Lock()
 	m.state = StateDisconnected
+	m.stateChanged()
 	m.mu.Unlock()
 
 	return m.Snapshot()
@@ -1139,6 +1174,8 @@ func (m *Manager) VerifyConnected(ctx context.Context, opts VerifyOptions) (Veri
 		m.nextVerifyAt = m.verifiedAt.Add(m.opts.VerifyInterval)
 	}
 
+	m.stateChanged()
+
 	m.mu.Unlock()
 
 	return result, nil
@@ -1207,6 +1244,11 @@ func (m *Manager) Shutdown() {
 	m.cfg = nil
 	m.attempts = nil
 	m.mu.Unlock()
+
+	// v0.9.8.7: join the snapshot dispatch goroutine AFTER the terminal
+	// state transitions so the final disconnected snapshot is still
+	// delivered. No listener callback can run after this returns.
+	m.stopPublisher()
 }
 
 // startMonitor launches the health-monitor loop bounded by ctx.
@@ -1289,6 +1331,7 @@ func (m *Manager) startMonitor() {
 							m.state = StateConnectionFailed
 							m.lastError = "provider process exited unexpectedly"
 							m.provider = nil
+							m.stateChanged()
 						}
 
 						m.mu.Unlock()
@@ -1325,6 +1368,7 @@ func (m *Manager) startMonitor() {
 						m.lastError = "core process exited unexpectedly"
 						m.instance = nil
 						m.corePID = 0
+						m.stateChanged()
 					}
 
 					m.mu.Unlock()
@@ -1431,6 +1475,8 @@ func (m *Manager) runStabilityRecheck(ctx context.Context, endpoint string, gen 
 		m.verifiedAt = time.Now().UTC()
 		m.nextVerifyAt = m.verifiedAt.Add(m.opts.VerifyInterval)
 
+		m.stateChanged()
+
 		m.mu.Unlock()
 
 		return
@@ -1443,6 +1489,8 @@ func (m *Manager) runStabilityRecheck(ctx context.Context, endpoint string, gen 
 	// single-probe flapping tears down a healthy session.
 	if m.verifyFailures < m.opts.VerifyFailureThreshold {
 		m.nextVerifyAt = time.Now().Add(m.opts.VerifyGrace)
+
+		m.stateChanged()
 
 		m.mu.Unlock()
 
@@ -1474,6 +1522,8 @@ func (m *Manager) runStabilityRecheck(ctx context.Context, endpoint string, gen 
 	// The epoch ends with the session: verifications captured by
 	// the old generation are stale from this point on.
 	m.generation++
+
+	m.stateChanged()
 
 	m.mu.Unlock()
 
@@ -1514,6 +1564,8 @@ func (m *Manager) runStabilityRecheck(ctx context.Context, endpoint string, gen 
 	if teardownErr != nil {
 		m.lastError = fmt.Sprintf("%s; teardown error: %v", degradedMsg, teardownErr)
 	}
+
+	m.stateChanged()
 }
 
 // stopMonitor cancels the monitor loop and JOINS the goroutine.
@@ -1561,6 +1613,7 @@ func (m *Manager) failAt(gen uint64, err error) (Snapshot, error) {
 		m.lastError = err.Error()
 		m.instance = nil
 		m.corePID = 0
+		m.stateChanged()
 	}
 
 	m.mu.Unlock()
@@ -1593,6 +1646,7 @@ func (m *Manager) recordAttemptAt(gen uint64, backend string, ok bool, err error
 
 	if gen == 0 || m.generation == gen {
 		m.attempts = append(m.attempts, attempt)
+		m.stateChanged()
 	}
 
 	m.mu.Unlock()

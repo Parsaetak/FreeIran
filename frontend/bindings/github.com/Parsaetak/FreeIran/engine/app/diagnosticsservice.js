@@ -21,13 +21,51 @@ import * as store$0 from "../store/models.js";
 // @ts-ignore: Unused imports
 import * as system$0 from "../../system/models.js";
 
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as $models from "./models.js";
+
+/**
+ * BuildDiagnosticReport assembles the sanitized report.
+ * @returns {$CancellablePromise<$models.DiagnosticReport | null>}
+ */
+export function BuildDiagnosticReport() {
+    return $Call.ByID(968569880).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType1($result);
+    }));
+}
+
 /**
  * Cores lists discovered protocol-core binaries.
  * @returns {$CancellablePromise<system$0.CoreBinary[]>}
  */
 export function Cores() {
     return $Call.ByID(2280326489).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType1($result);
+        return $$createType3($result);
+    }));
+}
+
+/**
+ * DeveloperInfo assembles the snapshot. Every accessor is best-effort:
+ * a lazy subsystem that has not started yet simply reports zeros.
+ * @returns {$CancellablePromise<$models.DeveloperInfoView>}
+ */
+export function DeveloperInfo() {
+    return $Call.ByID(37667759).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType4($result);
+    }));
+}
+
+/**
+ * Memory returns the Memory Booster 2.0 report: pressure state,
+ * Go/native memory picture, adaptive settings and the subsystem
+ * measurements that produced them. Every value is a live measurement
+ * or a live controller state — nothing is synthetic.
+ * @returns {$CancellablePromise<$models.MemorySnapshot>}
+ */
+export function Memory() {
+    return $Call.ByID(3556273300).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType5($result);
     }));
 }
 
@@ -37,7 +75,7 @@ export function Cores() {
  */
 export function Metrics() {
     return $Call.ByID(3687510332).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType2($result);
+        return $$createType6($result);
     }));
 }
 
@@ -49,7 +87,7 @@ export function Metrics() {
  */
 export function StoreDiagnostics() {
     return $Call.ByID(902993624).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType4($result);
+        return $$createType7($result);
     }));
 }
 
@@ -59,7 +97,7 @@ export function StoreDiagnostics() {
  */
 export function SystemInfo() {
     return $Call.ByID(1223730458).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType3($result);
+        return $$createType8($result);
     }));
 }
 
@@ -72,39 +110,12 @@ export function Version() {
 }
 
 // Private type creation functions
-const $$createType0 = system$0.CoreBinary.createFrom;
-const $$createType1 = $Create.Array($$createType0);
-const $$createType2 = metrics$0.Snapshot.createFrom;
-const $$createType3 = system$0.Info.createFrom;
-const $$createType4 = store$0.Diagnostics.createFrom;
-
-/**
- * Memory returns the Memory Booster 2.0 report: pressure state,
- * memory picture, adaptive settings and the subsystem measurements
- * that produced them. (v0.8 addition: ByName path until the wails3
- * generator is rerun on a GUI toolchain host.)
- * @returns {$CancellablePromise<any>}
- */
-export function Memory() {
-    return $Call.ByName("github.com/Parsaetak/FreeIran/engine/app.DiagnosticsService.Memory");
-}
-
-/**
- * BuildDiagnosticReport assembles the sanitized, copy/export-friendly
- * diagnostic summary (v0.9.0 §8).
- * @returns {$CancellablePromise<any>}
- */
-export function BuildDiagnosticReport() {
-    return $Call.ByName("github.com/Parsaetak/FreeIran/engine/app.DiagnosticsService.BuildDiagnosticReport");
-}
-
-/**
- * DeveloperInfo assembles the developer/build information snapshot:
- * build identity, data layout, portable mode, native acceleration
- * status and live queue internals. (v0.9.1 addition — ByName path
- * until the wails3 generator is rerun on a GUI toolchain host.)
- * @returns {$CancellablePromise<any>}
- */
-export function DeveloperInfo() {
-    return $Call.ByName("github.com/Parsaetak/FreeIran/engine/app.DiagnosticsService.DeveloperInfo");
-}
+const $$createType0 = $models.DiagnosticReport.createFrom;
+const $$createType1 = $Create.Nullable($$createType0);
+const $$createType2 = system$0.CoreBinary.createFrom;
+const $$createType3 = $Create.Array($$createType2);
+const $$createType4 = $models.DeveloperInfoView.createFrom;
+const $$createType5 = $models.MemorySnapshot.createFrom;
+const $$createType6 = metrics$0.Snapshot.createFrom;
+const $$createType7 = store$0.Diagnostics.createFrom;
+const $$createType8 = system$0.Info.createFrom;

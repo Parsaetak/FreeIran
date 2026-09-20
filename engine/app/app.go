@@ -48,6 +48,7 @@ import (
 	"github.com/Parsaetak/FreeIran/engine/provider"
 
 	"github.com/Parsaetak/FreeIran/internal/httpx"
+	"github.com/Parsaetak/FreeIran/internal/statepub"
 )
 
 // Subsystem identifies the app layer in structured errors.
@@ -220,6 +221,16 @@ type App struct {
 	sources    []source.Source
 	seenHashes map[string]string
 	lastStats  *pipeline.Stats
+
+	// v0.9.8.7 event-driven UI synchronization: deduplicating
+	// publishers for the two authoritative UI streams (application
+	// state + connection state machine). Created on the first listener
+	// registration (SetStateListener / SetConnectionListener), stopped
+	// synchronously in Shutdown. pubMu serializes creation/stop.
+	pubMu         sync.Mutex
+	statePub      *statepub.Publisher[AppState]
+	connPub       *statepub.Publisher[connection.Snapshot]
+	connSubCancel func()
 
 	ingesting atomic.Bool
 	started   atomic.Bool
@@ -636,6 +647,10 @@ func (a *App) Start() {
 			}
 
 			a.mu.Unlock()
+
+			// v0.9.8.7: the degraded transition reaches the UI as a
+			// real event, not at the next 2-second tick.
+			a.publishState()
 		}
 	}()
 
@@ -791,6 +806,10 @@ func (a *App) Shutdown() {
 		a.state.Status = "shutting_down"
 		a.mu.Unlock()
 
+		// v0.9.8.7: the shutting-down transition is published before
+		// the subsystem teardown starts.
+		a.publishState()
+
 		// v0.9.8.1: provider engines stop deterministically before the
 		// connection manager (their endpoints feed active sessions).
 		if a.providerMgr != nil {
@@ -802,6 +821,12 @@ func (a *App) Shutdown() {
 		if a.connMgr != nil {
 			a.connMgr.Shutdown()
 		}
+
+		// v0.9.8.7: the connection manager has joined its dispatch
+		// goroutine (final disconnected snapshot delivered); now stop
+		// both UI publishers synchronously — no emit callback survives
+		// this point, so nothing fires into a closing UI runtime.
+		a.stopPublishers()
 
 		// Snapshot the lazy-init subsystems under initMu so
 		// we stop the exact queue/tunnel that was initialized,
@@ -888,6 +913,10 @@ func (a *App) runIngestionCycle(ctx context.Context) error {
 		return nil // skip-if-busy
 	}
 
+	// v0.9.8.7: ingestion start/finish are meaningful state changes —
+	// published from the transition path instead of the next tick.
+	a.publishState()
+
 	defer a.ingesting.Store(false)
 
 	a.mu.RLock()
@@ -945,6 +974,11 @@ func (a *App) runIngestionCycle(ctx context.Context) error {
 			"refresh complete: %d discovered, %d persisted, %d duplicates",
 			stats.Discovered, stats.Persisted, stats.Duplicates)
 	}
+
+	// v0.9.8.7: ingestion finished (or failed) — publish the final
+	// state (ingestion_running=false + fresh storage/ingestion
+	// stats) as a real event.
+	a.publishState()
 
 	return err
 }

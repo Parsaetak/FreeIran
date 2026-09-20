@@ -43,6 +43,7 @@ beforeEach(() => {
     loaded: false,
     error: null,
     selected: null,
+    stale: false,
   });
 });
 
@@ -96,5 +97,75 @@ describe("quick connect store", () => {
     // null = Auto (engine best selection).
     useQuickConnectStore.getState().select(null);
     expect(useQuickConnectStore.getState().selected).toBeNull();
+  });
+
+  // v0.9.8.7 — meaningful-invalidation refresh: invalidate() refreshes
+  // exactly once per real ranking-input change, never polls.
+  it("invalidate triggers exactly one bounded refresh after a load", async () => {
+    services.BestCandidates.mockResolvedValue([view("a", 10)]);
+
+    await useQuickConnectStore.getState().load();
+    expect(services.BestCandidates).toHaveBeenCalledTimes(1);
+
+    // A single invalidation → exactly one bounded refresh.
+    useQuickConnectStore.getState().invalidate();
+
+    await vi.waitFor(() => {
+      expect(useQuickConnectStore.getState().loading).toBe(false);
+      expect(useQuickConnectStore.getState().stale).toBe(false);
+    });
+
+    expect(services.BestCandidates).toHaveBeenCalledTimes(2);
+
+    // A burst of invalidations converges to a bounded number of
+    // refreshes and then stops growing entirely (quiescence).
+    useQuickConnectStore.getState().invalidate();
+    useQuickConnectStore.getState().invalidate();
+    useQuickConnectStore.getState().invalidate();
+
+    await vi.waitFor(() => {
+      expect(useQuickConnectStore.getState().loading).toBe(false);
+      expect(useQuickConnectStore.getState().stale).toBe(false);
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const settled = services.BestCandidates.mock.calls.length;
+
+    expect(settled).toBeGreaterThanOrEqual(3);
+    expect(settled).toBeLessThanOrEqual(5); // bounded: initial + invalidations + drains
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(services.BestCandidates).toHaveBeenCalledTimes(settled);
+  });
+
+  it("invalidate is a no-op before the first load", () => {
+    // loaded=false: nothing to invalidate and no speculative fetch.
+    useQuickConnectStore.getState().invalidate();
+
+    expect(services.BestCandidates).not.toHaveBeenCalled();
+    expect(useQuickConnectStore.getState().loaded).toBe(false);
+  });
+
+  it("invalidate during an in-flight load drains exactly one follow-up refresh", async () => {
+    services.BestCandidates.mockImplementation(
+      () => new Promise((resolve) => setTimeout(() => resolve([view("a", 10)]), 10)),
+    );
+
+    const loading = useQuickConnectStore.getState().load(true);
+    expect(useQuickConnectStore.getState().loading).toBe(true);
+
+    // A ranking-input change lands while the refresh runs: it must be
+    // REMEMBERED (never dropped) and drain as one follow-up.
+    useQuickConnectStore.getState().invalidate();
+    expect(useQuickConnectStore.getState().stale).toBe(true);
+
+    await loading;
+
+    await vi.waitFor(() => {
+      expect(useQuickConnectStore.getState().stale).toBe(false);
+      expect(services.BestCandidates).toHaveBeenCalledTimes(2);
+    });
   });
 });

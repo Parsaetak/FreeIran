@@ -13,16 +13,17 @@ import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Cr
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as config$0 from "../config/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as connection$0 from "../connection/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as core$0 from "../core/models.js";
+
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as $models from "./models.js";
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore: Unused imports
-import * as $connection from "../connection/models.js";
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore: Unused imports
-import * as $core from "../core/models.js";
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore: Unused imports
-import * as $config from "../config/models.js";
 
 /**
  * Backends lists the registered protocol-core backends with their
@@ -31,120 +32,135 @@ import * as $config from "../config/models.js";
  */
 export function Backends() {
     return $Call.ByID(2779658394).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType0($result);
-    }));
-}
-
-/**
- * RefreshBackends re-runs executable discovery synchronously.
- * @returns {$CancellablePromise<$models.BackendView[]>}
- */
-export function RefreshBackends() {
-    return $Call.ByID(2762070079).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType0($result);
-    }));
-}
-
-/**
- * ConnectionState returns the connection state machine snapshot.
- * @returns {$CancellablePromise<$connection.Snapshot>}
- */
-export function ConnectionState() {
-    return $Call.ByID(1928655112).then(/** @type {($result: any) => any} */(($result) => {
         return $$createType1($result);
     }));
 }
 
 /**
- * Connect establishes the tunnel for a stored configuration.
- * @param {string} configID
- * @returns {$CancellablePromise<$connection.Snapshot>}
+ * BestCandidates returns the ranked candidate list for the UI (best
+ * first, credential-free). The limit is clamped to [1, 100].
+ * @param {number} limit
+ * @returns {$CancellablePromise<$models.CandidateView[]>}
  */
-export function Connect(configID) {
-    return $Call.ByID(2469079379, configID).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType1($result);
-    }));
-}
-
-/**
- * ConnectConfig establishes the tunnel for an ad-hoc configuration.
- * @param {$config.Config} cfg
- * @returns {$CancellablePromise<$connection.Snapshot>}
- */
-export function ConnectConfig(cfg) {
-    return $Call.ByID(2034769009, cfg).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType1($result);
-    }));
-}
-
-/**
- * Disconnect tears the session down.
- * @returns {$CancellablePromise<$connection.Snapshot>}
- */
-export function Disconnect() {
-    return $Call.ByID(922028949).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType1($result);
-    }));
-}
-
-/**
- * Reconnect re-establishes the last session.
- * @returns {$CancellablePromise<$connection.Snapshot>}
- */
-export function Reconnect() {
-    return $Call.ByID(1134772884).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType1($result);
-    }));
-}
-
-/**
- * Health measures the active session.
- * @returns {$CancellablePromise<$core.HealthReport>}
- */
-export function Health() {
-    return $Call.ByID(4221796969).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType2($result);
-    }));
-}
-
-/**
- * ConfigDetails renders the details view for one stored
- * configuration (credentials redacted by default).
- * @param {string} configID
- * @returns {$CancellablePromise<$models.ConfigDetail | null>}
- */
-export function ConfigDetails(configID) {
-    return $Call.ByID(2939126541, configID).then(/** @type {($result: any) => any} */(($result) => {
+export function BestCandidates(limit) {
+    return $Call.ByID(2658751439, limit).then(/** @type {($result: any) => any} */(($result) => {
         return $$createType3($result);
     }));
 }
 
 /**
- * BestCandidates returns the ranked, credential-free candidate list
- * (v0.9.3 autonomous connection engine). ByName path until the
- * wails3 generator is rerun on a GUI toolchain host.
- * @param {number} limit
- * @returns {$CancellablePromise<any[]>}
+ * ConfigDetails renders the details view for one stored
+ * configuration.
+ * @param {string} configID
+ * @returns {$CancellablePromise<$models.ConfigDetail | null>}
  */
-export function BestCandidates(limit) {
-    return $Call.ByName("github.com/Parsaetak/FreeIran/engine/app.ConnectionService.BestCandidates", limit);
+export function ConfigDetails(configID) {
+    return $Call.ByID(2939126541, configID).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType5($result);
+    }));
 }
 
 /**
- * ConnectBest ranks every stored configuration from its real test
- * history, selects the best viable candidate (excluding the given
- * fingerprints) and connects through the standard state machine
- * (v0.9.3 autonomous connection engine). ByName path until the
- * wails3 generator is rerun on a GUI toolchain host.
+ * Connect establishes the tunnel for a stored configuration. The
+ * configuration is loaded by fingerprint; credentials never cross
+ * the service boundary in the response.
+ * @param {string} configID
+ * @returns {$CancellablePromise<connection$0.Snapshot>}
+ */
+export function Connect(configID) {
+    return $Call.ByID(2469079379, configID).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType6($result);
+    }));
+}
+
+/**
+ * ConnectBest implements the automatic connection path: rank every// ConnectBest implements the automatic connection path (v0.9.8.3):
+ * the fresh-selection loop merges recent verified successes with the
+ * top ranked candidates, fresh-tests stale evidence, re-ranks and
+ * connects with an Internet-verification gate — the exact same loop
+ * recovery uses. A candidate that fails start/readiness/verification
+ * is cooled down and the next freshly-ranked candidate runs; the call
+ * finishes with a verified connection, an explicit failure reason or
+ * a bounded exhaustion — never a mere "core ready".
  * @param {string[]} exclude
- * @returns {$CancellablePromise<any>}
+ * @returns {$CancellablePromise<$models.ConnectBestResult>}
  */
 export function ConnectBest(exclude) {
-    return $Call.ByName("github.com/Parsaetak/FreeIran/engine/app.ConnectionService.ConnectBest", exclude);
+    return $Call.ByID(4048060805, exclude).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType7($result);
+    }));
+}
+
+/**
+ * ConnectConfig establishes the tunnel for an ad-hoc configuration
+ * (e.g. parsed from a pasted link, not yet stored).
+ * @param {config$0.Config} cfg
+ * @returns {$CancellablePromise<connection$0.Snapshot>}
+ */
+export function ConnectConfig(cfg) {
+    return $Call.ByID(2034769009, cfg).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType6($result);
+    }));
+}
+
+/**
+ * ConnectionState returns the connection state machine snapshot.
+ * @returns {$CancellablePromise<$models.connectionSnapshot>}
+ */
+export function ConnectionState() {
+    return $Call.ByID(1928655112).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType6($result);
+    }));
+}
+
+/**
+ * Disconnect tears the session down.
+ * @returns {$CancellablePromise<connection$0.Snapshot>}
+ */
+export function Disconnect() {
+    return $Call.ByID(922028949).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType6($result);
+    }));
+}
+
+/**
+ * Health measures the active session.
+ * @returns {$CancellablePromise<core$0.HealthReport>}
+ */
+export function Health() {
+    return $Call.ByID(4221796969).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType8($result);
+    }));
+}
+
+/**
+ * Reconnect re-establishes the last session.
+ * @returns {$CancellablePromise<connection$0.Snapshot>}
+ */
+export function Reconnect() {
+    return $Call.ByID(1134772884).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType6($result);
+    }));
+}
+
+/**
+ * RefreshBackends re-runs executable discovery synchronously (the
+ * user pressed "refresh" on the cores panel).
+ * @returns {$CancellablePromise<$models.BackendView[]>}
+ */
+export function RefreshBackends() {
+    return $Call.ByID(2762070079).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType1($result);
+    }));
 }
 
 // Private type creation functions
-const $$createType0 = $Create.Array($models.BackendView.createFrom);
-const $$createType1 = $connection.Snapshot.createFrom;
-const $$createType2 = $core.HealthReport.createFrom;
-const $$createType3 = $Create.Nullable($models.ConfigDetail.createFrom);
+const $$createType0 = $models.BackendView.createFrom;
+const $$createType1 = $Create.Array($$createType0);
+const $$createType2 = $models.CandidateView.createFrom;
+const $$createType3 = $Create.Array($$createType2);
+const $$createType4 = $models.ConfigDetail.createFrom;
+const $$createType5 = $Create.Nullable($$createType4);
+const $$createType6 = connection$0.Snapshot.createFrom;
+const $$createType7 = $models.ConnectBestResult.createFrom;
+const $$createType8 = core$0.HealthReport.createFrom;

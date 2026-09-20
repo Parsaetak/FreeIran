@@ -13,27 +13,11 @@ import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Cr
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as logging$0 from "../../internal/logging/models.js";
+
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as $models from "./models.js";
-
-/**
- * Recent returns a bounded, incremental page of redacted entries.
- * @param {$models.LogFilter} filter
- * @returns {$CancellablePromise<$models.LogPage>}
- */
-export function Recent(filter) {
-    return $Call.ByID(3039547118, filter).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType1($result);
-    }));
-}
-
-/**
- * Subsystems lists the subsystems present in the current buffer
- * (filter dropdown values).
- * @returns {$CancellablePromise<Array<string>>}
- */
-export function Subsystems() {
-    return $Call.ByID(2856078077);
-}
 
 /**
  * Clear empties the in-memory diagnostics buffer. The on-disk log is
@@ -60,17 +44,44 @@ export function OpenLogsDir() {
     return $Call.ByID(4206802217);
 }
 
-// Private type creation functions
-const $$createType1 = $models.LogPage.createFrom;
+/**
+ * Recent returns a bounded, incremental page of redacted entries.
+ * @param {$models.LogFilter} filter
+ * @returns {$CancellablePromise<$models.LogPage>}
+ */
+export function Recent(filter) {
+    return $Call.ByID(3039547118, filter).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType0($result);
+    }));
+}
 
 /**
  * Related returns every entry correlated with the given event id
- * (children via parent_event_id, batch/test/config siblings) —
- * v0.9.7 diagnostics causality view.
+ * (children via parent_event_id, batch/test/config siblings). Powers
+ * the diagnostics "show related" action (v0.9.7 §20).
  * @param {string} eventID
  * @param {number} limit
- * @returns {$CancellablePromise<Array<any>>}
+ * @returns {$CancellablePromise<logging$0.Entry[]>}
  */
 export function Related(eventID, limit) {
-    return $Call.ByName("github.com/Parsaetak/FreeIran/engine/app.LogService.Related", eventID, limit);
+    return $Call.ByID(3065589544, eventID, limit).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType2($result);
+    }));
 }
+
+/**
+ * Subsystems lists the subsystems present in the current buffer
+ * (filter dropdown values).
+ * @returns {$CancellablePromise<string[]>}
+ */
+export function Subsystems() {
+    return $Call.ByID(2856078077).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType3($result);
+    }));
+}
+
+// Private type creation functions
+const $$createType0 = $models.LogPage.createFrom;
+const $$createType1 = logging$0.Entry.createFrom;
+const $$createType2 = $Create.Array($$createType1);
+const $$createType3 = $Create.Array($Create.Any);

@@ -14,6 +14,9 @@ import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Cr
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as pipeline$0 from "../pipeline/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as source$0 from "../source/models.js";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -72,8 +75,31 @@ export function SetEnabled(id, enabled) {
     return $Call.ByID(3720130627, id, enabled);
 }
 
+/**
+ * SourceStatsList returns the statistics view of all sources.
+ * @returns {$CancellablePromise<$models.SourceStatsView[]>}
+ */
+export function SourceStatsList() {
+    return $Call.ByID(3558031882).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType5($result);
+    }));
+}
+
+/**
+ * UpdateSourceMetadata lets the user edit a source's metadata
+ * (display name, priority, region, protocol hints, refresh interval).
+ * @param {string} id
+ * @param {$models.SourceMetadataUpdate} metadata
+ * @returns {$CancellablePromise<void>}
+ */
+export function UpdateSourceMetadata(id, metadata) {
+    return $Call.ByID(1746651191, id, metadata);
+}
+
 // Private type creation functions
 const $$createType0 = $models.SourceView.createFrom;
 const $$createType1 = $Create.Array($$createType0);
 const $$createType2 = pipeline$0.Stats.createFrom;
 const $$createType3 = $Create.Nullable($$createType2);
+const $$createType4 = source$0.Stats.createFrom;
+const $$createType5 = $Create.Array($$createType4);

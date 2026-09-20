@@ -9,13 +9,86 @@ configurations.
 **Project:** FreeIran — A SHEYTAN Digital System
 **Architect:** Parsa Tak / SHEYTAN
 **Repository:** https://github.com/Parsaetak/FreeIran
-**Current version:** 0.9.8.6 (see `VERSION`)
+**Current version:** 0.9.8.7 (see `VERSION`)
 **Status:** production architecture — multi-core protocol runtime with
 managed installation, multi-level node discovery, Ping/URL test modes
 with measured ranking, verified-connection engine with racing,
 environment intelligence, system proxy mode (WinINet), unified adaptive
 memory control and kernel-level process supervision. TUN mode is
 EXPERIMENTAL and disabled in this release (see "TUN mode" below).
+
+---
+
+## What's new in v0.9.8.7
+
+v0.9.8.7 is a **determinism and responsiveness release** — the same
+FreeIran architecture with the waiting removed, not the safety
+boundaries. No new connectivity features.
+
+### CI recovered (run 35492972394)
+
+- The "Wails toolchain pair consistency" check compared the Go module
+  version (`v3.0.0-beta.19`) against the npm version
+  (`3.0.0-beta.19`) string-wise, so the Go module's leading `v` was
+  treated as version drift and every downstream stage (Go tests, race
+  tests, Windows tests, Windows desktop build) was skipped. The check
+  now normalizes the optional leading `v` on both sides before
+  comparing; a real mismatch still fails the job.
+
+### Event-driven UI synchronization (no more tickers)
+
+- The desktop entrypoint no longer broadcasts `freeiran:state` /
+  `freeiran:connection` from 2-second ticker loops. Both streams are
+  published from the AUTHORITATIVE transition paths (boot phases,
+  degraded/healthy transitions, ingestion start/finish, shutdown,
+  every connection state-machine mutation) through a new deduplicating
+  publisher (`internal/statepub`): identical snapshots never emit, a
+  burst of transitions collapses into one emission of the newest
+  snapshot within a 25 ms coalescing window, and `Stop()` joins the
+  publisher goroutine so no callback can fire into a closing UI
+  runtime. A slow heartbeat watchdog remains in the memory/recovery
+  services where it is diagnostics, not synchronization.
+- The frontend keeps its event subscriptions and generation guards;
+  the previous always-on 5 s provider poll on the Cores page now runs
+  ONLY while a provider is actually transitioning.
+
+### Stable, unified frontend asset filenames
+
+- The embedded production tree no longer carries content-hashed
+  bundles. After a clean build it is EXACTLY:
+  `index.html`, `assets/app.js`, `assets/app.css`,
+  `assets/export-worker.js` — replaced in place on every release.
+  Because the filenames are stable, the Wails asset handler is wrapped
+  with a `Cache-Control: no-cache` policy so an upgraded binary never
+  serves stale JavaScript/CSS from the webview cache. CI enforces the
+  exact inventory with an explicit allowlist (any hashed, stale or
+  unexpected artifact fails the job).
+
+### Truthful Wails bindings
+
+- The committed bindings were regenerated with the pinned wails3
+  toolchain (second generation byte-identical). The regeneration
+  removed the old hand-maintained ByName shims, surfaced the real
+  optionality of Go pointer fields, and exposed two real defects:
+  a phantom `log_retention_days` UI field (removed) and local inbound
+  port preferences whose controls shipped in v0.9.8.3 but were never
+  wired into the backend. The port settings are now persisted,
+  validated server-side (0 or 1024-65535) and applied to the live
+  connection manager on save.
+
+### Reliability & security verification
+
+- The two dormant fakecore failure injections are now regression
+  coverage: a core that never becomes ready is force-stopped with the
+  executable deletable and the temp workspace removed
+  (`FAKECORE_HANG`), and a mid-session crash transitions the session
+  to `connection_failed` with deterministic cleanup
+  (`FAKECORE_CRASH_AFTER_START`).
+- Core-install asset URLs are now HTTPS-only at code level (loopback
+  test authorities excepted), matching what the security
+  documentation always claimed.
+- The `BestCandidates` ranking path now labels every candidate with
+  its source route-trust band, matching the Quick Connect chosen view.
 
 ---
 
@@ -294,7 +367,7 @@ FreeIran/
 ├── .github/workflows/     CI, release and security pipelines
 ├── docs/                  Architecture, storage, performance, CI, security, dev
 ├── CHANGELOG.md           Release history (moved out of README, v0.9.8.6)
-└── VERSION                Application version (0.9.8.6)
+└── VERSION                Application version (0.9.8.7)
 ```
 
 ---

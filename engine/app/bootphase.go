@@ -82,9 +82,10 @@ func bootPhaseRank(phase string) int {
 // late "ready" signals from stale listeners cannot regress state).
 func (a *App) markBoot(phase string) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 
 	if bootPhaseRank(phase) <= bootPhaseRank(a.state.BootPhase) {
+		a.mu.Unlock()
+
 		return
 	}
 
@@ -94,6 +95,14 @@ func (a *App) markBoot(phase string) {
 
 	a.bootTimings[phase] = time.Since(a.bootStart).Milliseconds()
 	a.state.BootPhase = phase
+
+	a.mu.Unlock()
+
+	// v0.9.8.7: a real boot-phase advance reaches the UI as a real
+	// event (deduplicated by the publisher) instead of waiting for the
+	// next ticker — the BootProgress surface updates the moment the
+	// engine moves forward.
+	a.publishState()
 }
 
 // BootTimings returns a copy of the phase → elapsed-ms telemetry map.

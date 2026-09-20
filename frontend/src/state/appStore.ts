@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { Events } from "@wailsio/runtime";
 import { appService, call, type AppState } from "../services";
+import { useQuickConnectStore } from "./quickConnectStore";
 
 /**
  * AppState fields arrive as generated class instances; the store keeps
@@ -115,6 +116,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
     // unchanged (see sameJSON): reference-keyed consumers only re-run
     // when the underlying evidence actually changed.
     const prev = get().backend;
+
+    // v0.9.8.7 — meaningful-invalidation signal: an ingestion cycle
+    // FINISHING changed the configuration pool. That is exactly the
+    // event the Quick Connect candidate list waits for (one bounded
+    // refresh, no polling). Rising edge (ingestion starting) needs no
+    // refresh — the pool only changes when the cycle lands.
+    if (prev?.ingestion_running && !state.ingestion_running) {
+      useQuickConnectStore.getState().invalidate();
+    }
 
     if (prev) {
       if (sameJSON(prev.last_ingestion, state.last_ingestion)) {

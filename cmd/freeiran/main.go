@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 
 	"github.com/Parsaetak/FreeIran/engine/app"
+	"github.com/Parsaetak/FreeIran/engine/connection"
 	"github.com/Parsaetak/FreeIran/engine/coremgr"
 	"github.com/Parsaetak/FreeIran/internal/appicon"
 	"github.com/Parsaetak/FreeIran/internal/logging"
@@ -90,8 +92,6 @@ func main() {
 		reportBootFailure(err)
 	}
 
-	applicationInstance.Start()
-
 	wailsApp := application.New(application.Options{
 		Name:        "FreeIran",
 		Description: "Free, open-source VPN configuration manager",
@@ -121,16 +121,28 @@ func main() {
 			application.NewService(app.NewInternetToolsService(applicationInstance)),
 		},
 		Assets: application.AssetOptions{
-			Handler: application.BundledAssetFileServer(assets),
+			Handler: versionedAssetCache(application.BundledAssetFileServer(assets)),
 		},
 	})
 
-	// Push state transitions to the UI so it never needs polling.
-	startStateBroadcaster(wailsApp, applicationInstance)
+	// v0.9.8.7: event-driven UI synchronization — the 2-second
+	// ticker broadcasts are gone. The authoritative transition paths
+	// publish through deduplicating, coalescing publishers
+	// (internal/statepub); these callbacks are the only bridge to the
+	// UI runtime. Registration happens BEFORE Start() so no transition
+	// is missed, and each first registration immediately emits the
+	// current snapshot (the old 500/700 ms sleeps are gone too).
+	applicationInstance.SetStateListener(func(state app.AppState) {
+		wailsApp.Event.Emit("freeiran:state", state)
+	})
 
-	// Push connection state machine transitions (core identity,
-	// lifecycle state, latency) on the same event-driven model.
-	startConnectionBroadcaster(wailsApp, applicationInstance)
+	applicationInstance.SetConnectionListener(func(snapshot connection.Snapshot) {
+		wailsApp.Event.Emit("freeiran:connection", snapshot)
+	})
+
+	// Background work starts after the publishers are wired: every
+	// state change it produces is observed event-driven.
+	applicationInstance.Start()
 
 	// v0.9.0: forward Managed Core Manager install progress to the
 	// UI as events — the one-click Install path reports download,
@@ -192,6 +204,24 @@ func main() {
 
 		log.Fatalf("run failed: %v", err)
 	}
+}
+
+// versionedAssetCache wraps the bundled asset server with the cache
+// policy the v0.9.8.7 STABLE asset filenames require. The embed tree
+// uses fixed logical names (assets/app.js, assets/app.css,
+// assets/export-worker.js) that are replaced IN PLACE on every
+// release — so the webview must REVALIDATE instead of trusting a
+// cached response across application upgrades. "no-cache" (revalidate
+// before use) does exactly that: every launch re-reads the assets
+// from the in-process embedded filesystem (memory-speed, no network),
+// and an upgraded binary can never serve stale JavaScript or CSS.
+// Hashed filenames remain forbidden — this policy is the reason they
+// can stay forbidden safely.
+func versionedAssetCache(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // reportBootFailure surfaces a fatal boot error to a GUI user: a
@@ -364,73 +394,4 @@ func smokeTest() int {
 	fmt.Println("smoke: OK (boot, state, storage, log, shutdown)")
 
 	return 0
-}
-
-// startConnectionBroadcaster emits the connection state machine
-// snapshot periodically. The loop terminates with the application
-// context; like the state broadcaster it pushes instead of letting
-// the UI poll.
-func startConnectionBroadcaster(
-	wailsApp *application.App,
-	applicationInstance *app.App,
-) {
-	broadcast := func() {
-		wailsApp.Event.Emit("freeiran:connection",
-			app.NewConnectionService(applicationInstance).ConnectionState())
-	}
-
-	go func() {
-		time.Sleep(700 * time.Millisecond)
-		broadcast()
-	}()
-
-	go func() {
-		ticker := time.NewTicker(2 * time.Second)
-		defer ticker.Stop()
-
-		ctx := applicationInstance.Context()
-
-		for {
-			select {
-			case <-ticker.C:
-				broadcast()
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-}
-
-// startStateBroadcaster emits the application state periodically so
-// the UI observes loading, ingestion and degradation without polling.
-// The loop terminates with the application context: no goroutine
-// outlives the webview run.
-func startStateBroadcaster(
-	wailsApp *application.App,
-	applicationInstance *app.App,
-) {
-	broadcast := func() {
-		wailsApp.Event.Emit("freeiran:state", applicationInstance.State())
-	}
-
-	go func() {
-		time.Sleep(500 * time.Millisecond)
-		broadcast()
-	}()
-
-	go func() {
-		ticker := time.NewTicker(2 * time.Second)
-		defer ticker.Stop()
-
-		ctx := applicationInstance.Context()
-
-		for {
-			select {
-			case <-ticker.C:
-				broadcast()
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
 }

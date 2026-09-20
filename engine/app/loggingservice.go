@@ -85,6 +85,23 @@ type Settings struct {
 	// ReducedMotion asks the UI to minimize animation (accessibility).
 	ReducedMotion bool `json:"reduced_motion"`
 
+	// --- v0.9.8.7 local inbound port preferences --------------------
+	//
+	// The Settings UI exposed these controls since v0.9.8.3, but the
+	// fields were never persisted and the connection manager's
+	// user-port path was never reached (the stale bindings hid the
+	// gap). They now flow into Manager.SetLocalPorts on save: the
+	// manager re-validates bindability before every attempt and fails
+	// fast with a per-port error when a port is taken.
+
+	// LocalSocksPort is the user-selected local SOCKS inbound port
+	// (0 = automatic ephemeral allocation; otherwise 1024-65535).
+	LocalSocksPort int `json:"local_socks_port,omitempty"`
+
+	// LocalHTTPPort is the user-selected local HTTP inbound port
+	// (0 = disabled / automatic; otherwise 1024-65535).
+	LocalHTTPPort int `json:"local_http_port,omitempty"`
+
 	// --- v0.9.8.6 route-trust policy ----------------------------------
 
 	// AllowUntrustedPublicRoutes opts Quick Connect / Auto into
@@ -241,6 +258,15 @@ func (a *App) applySettings(settings Settings) {
 		queue.SetConcurrency(settings.DevQueueWorkers)
 	}
 
+	// v0.9.8.7: local inbound port preferences reach the live
+	// connection manager immediately on save (0 = automatic). The
+	// manager re-checks bindability per attempt, so an occupied port
+	// surfaces as a clear per-attempt failure, never a silent
+	// fallback.
+	if a.connMgr != nil {
+		a.connMgr.SetLocalPorts(settings.LocalSocksPort, settings.LocalHTTPPort)
+	}
+
 	// Developer: pin the native acceleration bridge to the Go path.
 	native.SetForcedFallback(settings.DevForceGoFallback)
 
@@ -355,6 +381,23 @@ func validateSettings(settings Settings) error {
 
 	if settings.LogMaxBackups < 0 || settings.LogMaxBackups > 64 {
 		return fmt.Errorf("app: log backup count out of range")
+	}
+
+	// v0.9.8.7: local inbound port preferences — 0 = automatic,
+	// otherwise a valid unprivileged TCP port. The manager still
+	// re-checks bindability per attempt (check-then-use races resolve
+	// as a normal failed attempt with a clear error).
+	for name, port := range map[string]int{
+		"SOCKS": settings.LocalSocksPort,
+		"HTTP":  settings.LocalHTTPPort,
+	} {
+		if port == 0 {
+			continue
+		}
+
+		if port < 1024 || port > 65535 {
+			return fmt.Errorf("app: local %s port %d out of range (1024-65535, or 0 = automatic)", name, port)
+		}
 	}
 
 	return nil

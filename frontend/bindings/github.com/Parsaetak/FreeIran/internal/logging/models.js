@@ -7,7 +7,8 @@
 import { Create as $Create } from "@wailsio/runtime";
 
 /**
- * Entry is one structured runtime log record (§17).
+ * Entry is one structured runtime log record (§17 + v0.9.7 session
+ * identity and correlation fields).
  */
 export class Entry {
     /**
@@ -24,6 +25,7 @@ export class Entry {
         }
         if (!("ts" in $$source)) {
             /**
+             * RFC3339, UTC
              * @member
              * @type {string}
              */
@@ -32,9 +34,9 @@ export class Entry {
         if (!("level" in $$source)) {
             /**
              * @member
-             * @type {string}
+             * @type {Level}
              */
-            this["level"] = "";
+            this["level"] = Level.$zero;
         }
         if (!("subsystem" in $$source)) {
             /**
@@ -57,102 +59,111 @@ export class Entry {
              */
             this["message"] = "";
         }
-        if (!("operation" in $$source)) {
+        if (/** @type {any} */(false)) {
             /**
              * @member
-             * @type {string}
+             * @type {string | undefined}
              */
-            this["operation"] = "";
+            this["operation"] = undefined;
         }
-        if (!("error_kind" in $$source)) {
+        if (/** @type {any} */(false)) {
             /**
              * @member
-             * @type {string}
+             * @type {string | undefined}
              */
-            this["error_kind"] = "";
+            this["error_kind"] = undefined;
         }
-        if (!("session_id" in $$source)) {
+        if (/** @type {any} */(false)) {
             /**
-             * Session identity (v0.9.7): unique per application launch.
+             * Session identity (v0.9.7): session_id identifies one
+             * application launch; Seq is monotonic within the session and
+             * EventID is unique per entry. Restarts are distinguishable by
+             * session_id alone — no message parsing required.
+             * v0.9.8.3: identity is emitted ONLY on correlated records.
              * @member
-             * @type {string}
+             * @type {string | undefined}
              */
-            this["session_id"] = "";
+            this["session_id"] = undefined;
         }
-        if (!("event_id" in $$source)) {
+        if (/** @type {any} */(false)) {
             /**
              * @member
-             * @type {string}
+             * @type {string | undefined}
              */
-            this["event_id"] = "";
+            this["event_id"] = undefined;
         }
-        if (!("parent_event_id" in $$source)) {
+        if (/** @type {any} */(false)) {
             /**
+             * Correlation (v0.9.7): parent_event_id links an event to the
+             * event that caused it; batch_id groups a bulk test run;
+             * test_id / config_id tie events to one test / one
+             * configuration; core + pid + listener identify a core
+             * process; duration_ms / status carry outcome data.
              * @member
-             * @type {string}
+             * @type {string | undefined}
              */
-            this["parent_event_id"] = "";
+            this["parent_event_id"] = undefined;
         }
-        if (!("batch_id" in $$source)) {
+        if (/** @type {any} */(false)) {
             /**
              * @member
-             * @type {string}
+             * @type {string | undefined}
              */
-            this["batch_id"] = "";
+            this["batch_id"] = undefined;
         }
-        if (!("test_id" in $$source)) {
+        if (/** @type {any} */(false)) {
             /**
              * @member
-             * @type {string}
+             * @type {string | undefined}
              */
-            this["test_id"] = "";
+            this["test_id"] = undefined;
         }
-        if (!("config_id" in $$source)) {
+        if (/** @type {any} */(false)) {
             /**
              * @member
-             * @type {string}
+             * @type {string | undefined}
              */
-            this["config_id"] = "";
+            this["config_id"] = undefined;
         }
-        if (!("core" in $$source)) {
+        if (/** @type {any} */(false)) {
             /**
              * @member
-             * @type {string}
+             * @type {string | undefined}
              */
-            this["core"] = "";
+            this["core"] = undefined;
         }
-        if (!("pid" in $$source)) {
+        if (/** @type {any} */(false)) {
             /**
              * @member
-             * @type {number}
+             * @type {number | undefined}
              */
-            this["pid"] = 0;
+            this["pid"] = undefined;
         }
-        if (!("listener" in $$source)) {
+        if (/** @type {any} */(false)) {
             /**
              * @member
-             * @type {string}
+             * @type {string | undefined}
              */
-            this["listener"] = "";
+            this["listener"] = undefined;
         }
-        if (!("duration_ms" in $$source)) {
+        if (/** @type {any} */(false)) {
             /**
              * @member
-             * @type {number}
+             * @type {number | undefined}
              */
-            this["duration_ms"] = 0;
+            this["duration_ms"] = undefined;
         }
-        if (!("status" in $$source)) {
+        if (/** @type {any} */(false)) {
             /**
              * @member
-             * @type {string}
+             * @type {string | undefined}
              */
-            this["status"] = "";
+            this["status"] = undefined;
         }
-        if (!("fields" in $$source)) {
+        if (/** @type {any} */(false)) {
             /**
              * @member
-             * @type {Object<string, any> | undefined}
+             * @type {{ [_ in string]?: any } | undefined}
              */
             this["fields"] = undefined;
         }
@@ -166,7 +177,34 @@ export class Entry {
      * @returns {Entry}
      */
     static createFrom($$source = {}) {
+        const $$createField19_0 = $$createType0;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("fields" in $$parsedSource) {
+            $$parsedSource["fields"] = $$createField19_0($$parsedSource["fields"]);
+        }
         return new Entry(/** @type {Partial<Entry>} */($$parsedSource));
     }
 }
+
+/**
+ * Level is a log severity.
+ * @readonly
+ * @enum {string}
+ */
+export const Level = {
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero: "",
+
+    /**
+     * Severity levels in increasing order.
+     */
+    LevelDebug: "debug",
+    LevelInfo: "info",
+    LevelWarn: "warn",
+    LevelError: "error",
+};
+
+// Private type creation functions
+const $$createType0 = $Create.Map($Create.Any, $Create.Any);

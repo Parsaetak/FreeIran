@@ -4,5 +4,6 @@
 
 export {
     CoreBinary,
-    Info
+    Info,
+    WorkspaceStatus
 } from "./models.js";

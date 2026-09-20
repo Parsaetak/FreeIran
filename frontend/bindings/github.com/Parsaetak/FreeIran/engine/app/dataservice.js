@@ -31,6 +31,16 @@ export function GetConfig(id) {
 }
 
 /**
+ * GetConfigOrder returns the stored order (may be empty).
+ * @returns {$CancellablePromise<string[]>}
+ */
+export function GetConfigOrder() {
+    return $Call.ByID(2328885517).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType2($result);
+    }));
+}
+
+/**
  * ListConfigs returns a page of configurations ordered by fingerprint.
  * Pages are virtualized in the UI; only the requested window is
  * decoded and materialised.
@@ -40,8 +50,36 @@ export function GetConfig(id) {
  */
 export function ListConfigs(offset, limit) {
     return $Call.ByID(962507682, offset, limit).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType3($result);
+        return $$createType4($result);
     }));
+}
+
+/**
+ * ListConfigsFiltered returns a sorted, filtered page of
+ * configurations. Filtering happens engine-side; only the requested
+ * window crosses the service boundary.
+ * @param {$models.ConfigFilter} filter
+ * @param {number} offset
+ * @param {number} limit
+ * @returns {$CancellablePromise<$models.ConfigPage | null>}
+ */
+export function ListConfigsFiltered(filter, offset, limit) {
+    return $Call.ByID(3482301325, filter, offset, limit).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType4($result);
+    }));
+}
+
+/**
+ * MoveConfig moves one configuration (by stable ID) to the given
+ * zero-based index within the complete ordered collection. It works
+ * for first→last, last→first, middle moves and repeated moves, and it
+ * never touches the underlying configurations — only their order.
+ * @param {string} id
+ * @param {number} toIndex
+ * @returns {$CancellablePromise<void>}
+ */
+export function MoveConfig(id, toIndex) {
+    return $Call.ByID(4459056, id, toIndex);
 }
 
 /**
@@ -53,8 +91,20 @@ export function ListConfigs(offset, limit) {
  */
 export function SearchConfigs(query, limit) {
     return $Call.ByID(3765505226, query, limit).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType4($result);
+        return $$createType5($result);
     }));
+}
+
+/**
+ * SetConfigOrder persists the complete ordered collection of stable
+ * configuration IDs. IDs missing from the current store are pruned on
+ * the next apply; IDs missing from the provided list are appended in
+ * store order (the list the caller sends is authoritative).
+ * @param {string[]} ids
+ * @returns {$CancellablePromise<void>}
+ */
+export function SetConfigOrder(ids) {
+    return $Call.ByID(1065506393, ids);
 }
 
 /**
@@ -71,50 +121,7 @@ export function TestConfig(id) {
 // Private type creation functions
 const $$createType0 = config$0.Config.createFrom;
 const $$createType1 = $Create.Nullable($$createType0);
-const $$createType2 = $models.ConfigPage.createFrom;
-const $$createType3 = $Create.Nullable($$createType2);
-const $$createType4 = $Create.Array($$createType0);
-
-/**
- * ListConfigsFiltered returns a sorted, filtered page of
- * configurations (v0.9.0 §4). Hand-appended ByName binding.
- * @param {{protocol?: string, status?: string, source?: string, backend?: string, query?: string, sort_by?: string, sort_desc?: boolean}} filter
- * @param {number} offset
- * @param {number} limit
- * @returns {$CancellablePromise<any>}
- */
-export function ListConfigsFiltered(filter, offset, limit) {
-    return $Call.ByName("github.com/Parsaetak/FreeIran/engine/app.DataService.ListConfigsFiltered", filter, offset, limit);
-}
-
-/**
- * GetConfigOrder returns the persisted manual configuration order
- * (stable config IDs; empty when none). v0.9.8.3. Hand-appended
- * ByName binding.
- * @returns {$CancellablePromise<Array<string>>}
- */
-export function GetConfigOrder() {
-    return $Call.ByName("github.com/Parsaetak/FreeIran/engine/app.DataService.GetConfigOrder");
-}
-
-/**
- * SetConfigOrder persists the COMPLETE ordered collection of stable
- * configuration IDs. v0.9.8.3. Hand-appended ByName binding.
- * @param {Array<string>} ids
- * @returns {$CancellablePromise<void>}
- */
-export function SetConfigOrder(ids) {
-    return $Call.ByName("github.com/Parsaetak/FreeIran/engine/app.DataService.SetConfigOrder", ids);
-}
-
-/**
- * MoveConfig moves one configuration (by stable ID) to a zero-based
- * index within the complete ordered collection. v0.9.8.3.
- * Hand-appended ByName binding.
- * @param {string} id
- * @param {number} toIndex
- * @returns {$CancellablePromise<void>}
- */
-export function MoveConfig(id, toIndex) {
-    return $Call.ByName("github.com/Parsaetak/FreeIran/engine/app.DataService.MoveConfig", id, toIndex);
-}
+const $$createType2 = $Create.Array($Create.Any);
+const $$createType3 = $models.ConfigPage.createFrom;
+const $$createType4 = $Create.Nullable($$createType3);
+const $$createType5 = $Create.Array($$createType0);

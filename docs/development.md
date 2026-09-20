@@ -61,12 +61,24 @@ go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.19
 wails3 generate bindings -clean -d frontend/bindings ./cmd/freeiran
 ```
 
-On Linux the generator needs the GTK development packages (same
-requirement as a local GUI build). When they are unavailable, single
-methods can be added by hand following the v0.3.0 precedent
-(`DiagnosticsService.StoreDiagnostics`) and the v0.4.0 ConnectionService:
-the method ID is the FNV-32a hash of the fully-qualified
-`github.com/Parsaetak/FreeIran/<package>.<Service>.<Method>` name.
+v0.9.8.7 correction: the CLI itself does NOT need the GTK development
+packages — it builds cleanly without CGO, so bindings can always be
+regenerated anywhere:
+
+```bash
+# in a scratch module (keeps the project go.mod clean):
+go mod init tmp && go get github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.19
+CGO_ENABLED=0 go build -o wails3 github.com/wailsapp/wails/v3/cmd/wails3
+./wails3 generate bindings -clean -d frontend/bindings ./cmd/freeiran
+```
+
+Reproducibility contract (v0.9.8.7): running the generation TWICE must
+produce byte-identical output. Hand-maintained binding patches are
+forbidden — the v0.9.8.7 regeneration removed the last hand-written
+ByName shims (the old "generator needs GTK" note above was wrong; it
+was verified with `CGO_ENABLED=0`). CI's contract test
+(TestFrontendBindingsMatchGoServices) plus the frontend typecheck
+guard the call surface.
 
 ## Protocol-core development
 

@@ -16,7 +16,7 @@ The application should feel like a mature desktop connectivity client rather tha
 
 Current main:
 
-* Version: `0.9.8.6`
+* Version: `0.9.8.7`
 * Platform focus: Windows x64
 * Runtime: Go + Wails + React/TypeScript (toolchain pair pinned:
   `wails/v3 v3.0.0-beta.19` + `@wailsio/runtime 3.0.0-beta.19`,
@@ -29,6 +29,14 @@ Current main:
 * Connection verification: multi-target quorum (2 of 3 operators) with transient retry and evidence-based degradation/recovery
 * Session teardown: deterministic (v0.9.8.6) — monitor join, teardown
   before the terminal state, stale generations discarded
+* UI synchronization: event-driven (v0.9.8.7) — authoritative
+  transition paths publish deduplicated, coalesced snapshots; the
+  2-second ticker broadcasts are gone
+* Embedded assets: stable filenames (v0.9.8.7) — `assets/app.js`,
+  `assets/app.css`, `assets/export-worker.js` replaced in place;
+  hashed asset names are CI-forbidden
+* Wails bindings: regenerated from the pinned toolchain
+  (v0.9.8.7), second generation byte-identical
 * Internet diagnostics: staged ladder (local link → local IP → DNS → TCP → TLS → HTTPS → captive portal → direct → tunnel) with per-stage failure classes
 * DNS diagnostics: system vs curated public resolvers, A/AAAA, UDP→TCP fallback, honest failure classification
 * Network identity: local IP + public IP + ISP/ASN on explicit user action
@@ -42,6 +50,20 @@ Current main:
 * Tunnel modes: System Proxy (WinINet) production; TUN EXPERIMENTAL
   and DISABLED (v0.9.8.6 — not a kill switch)
 * Logging profiles: enabled (Normal / Detailed / Debug)
+
+### v0.9.8.7 — completed historical work
+
+v0.9.8.7 is a determinism/responsiveness release — NO new connectivity
+feature was advanced. Completed, each verified by an executed test
+battery: the CI v-prefix normalization fix (run 35492972394 root
+cause), the `internal/statepub` deduplicating publisher and the
+connection-manager subscription mechanism, the stable asset pipeline
+(vite stable names + copy-dist inventory verification + CI allowlist),
+the truthful regenerated bindings (including the local-port settings
+wiring completion and the phantom `log_retention_days` removal), the
+two dormant fakecore failure injections activated as lifecycle
+regressions, HTTPS-only asset-URL enforcement, and the SourceTrust
+labeling on the `BestCandidates` ranking path.
 
 > Note: this section previously reported `0.9.8.2` with runtime
 > findings from that era (unbounded queue-depth growth, readiness

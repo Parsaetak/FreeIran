@@ -73,11 +73,13 @@ func (m *Manager) ConnectProvider(
 	m.lastProvider = prov
 	m.attempts = nil
 	m.lastError = ""
+	m.stateChanged()
 	m.mu.Unlock()
 
 	// --- START PROVIDER (includes wait-ready/bootstrap) ---------------
 	m.mu.Lock()
 	m.state = StatePreparing
+	m.stateChanged()
 	m.mu.Unlock()
 
 	started := time.Now()
@@ -138,11 +140,13 @@ func (m *Manager) ConnectProvider(
 	m.coreVersion = info.Version
 	m.coreReadyMS = coreReady.Milliseconds()
 	m.startedAt = time.Now().UTC()
+	m.stateChanged()
 	m.mu.Unlock()
 
 	// --- VERIFY ACTUAL INTERNET (no bypassing) -------------------------
 	m.mu.Lock()
 	m.state = StateWaitingForReady
+	m.stateChanged()
 	m.mu.Unlock()
 
 	opts = opts.normalize()
@@ -179,6 +183,8 @@ func (m *Manager) ConnectProvider(
 		m.nextVerifyAt = m.verifiedAt.Add(m.opts.VerifyInterval)
 	}
 
+	m.stateChanged()
+
 	m.mu.Unlock()
 
 	if !result.OK {
@@ -196,6 +202,7 @@ func (m *Manager) ConnectProvider(
 
 		m.mu.Lock()
 		m.provider = nil
+		m.stateChanged()
 		m.mu.Unlock()
 
 		return m.fail(fmt.Errorf("provider %s verification failed: %s",
@@ -227,6 +234,7 @@ func (m *Manager) ConnectProvider(
 
 	m.state = StateConnectedVerified
 	m.lastError = ""
+	m.stateChanged()
 	m.mu.Unlock()
 
 	m.startMonitor()

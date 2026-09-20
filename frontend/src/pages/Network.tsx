@@ -8,6 +8,7 @@ import type {
   ToolInfoView,
   ToolMeasurementView,
   ToolResultView,
+  ToolRequestView,
   ToolRunRequest,
   TunnelSnapshotView,
 } from "../services";
@@ -32,7 +33,9 @@ export function NetworkPage() {
     // without immediately retesting.
     void call(() => networkService.LastReport())
       .then((last) => {
-        if (last) setReport(last);
+        // v0.9.8.7: the generated wire model and the UI view share the
+        // same JSON shape — the cast documents the boundary.
+        if (last) setReport(last as unknown as NetCheckReport);
       })
       .catch(() => {
         /* best-effort */
@@ -44,7 +47,7 @@ export function NetworkPage() {
 
     try {
       const next = await call(() => networkService.CheckConnection());
-      setReport(next);
+      setReport(next as unknown as NetCheckReport);
     } catch (error) {
       toast("error", "Network check failed", describeError(error));
     } finally {
@@ -448,11 +451,17 @@ function InternetToolsSection() {
       setRunningTool(request.tool);
 
       try {
-        const result = await call(() => toolsService.RunTool(request));
+        // v0.9.8.7: truthful generated types at the service boundary —
+        // the hand-written view types share the same JSON shape.
+        const result = await call(() =>
+          toolsService.RunTool(request as unknown as ToolRequestView),
+        );
 
         if (result) {
           // Newest first, capped at twelve rows.
-          setResults((previous) => [result, ...previous].slice(0, TOOL_RESULT_LIMIT));
+          setResults((previous) =>
+            [result as unknown as ToolResultView, ...previous].slice(0, TOOL_RESULT_LIMIT),
+          );
         }
       } catch (error) {
         toast("error", "Tool run failed", describeError(error));

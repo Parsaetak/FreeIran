@@ -7,156 +7,13 @@
 import { Create as $Create } from "@wailsio/runtime";
 
 /**
- * MigrationResult reports what happened during a migration.
- */
-export class MigrationResult {
-    /**
-     * Creates a new MigrationResult instance.
-     * @param {Partial<MigrationResult>} [$$source = {}] - The source object to create the MigrationResult.
-     */
-    constructor($$source = {}) {
-        if (!("migrated" in $$source)) {
-            /**
-             * @member
-             * @type {number}
-             */
-            this["migrated"] = 0;
-        }
-        if (!("skipped" in $$source)) {
-            /**
-             * @member
-             * @type {number}
-             */
-            this["skipped"] = 0;
-        }
-        if (/** @type {any} */(false)) {
-            /**
-             * @member
-             * @type {string[] | undefined}
-             */
-            this["errors"] = undefined;
-        }
-        if (!("renamed" in $$source)) {
-            /**
-             * @member
-             * @type {boolean}
-             */
-            this["renamed"] = false;
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new MigrationResult instance from a string or object.
-     * @param {any} [$$source = {}]
-     * @returns {MigrationResult}
-     */
-    static createFrom($$source = {}) {
-        const $$createField2_0 = $$createType0;
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        if ("errors" in $$parsedSource) {
-            $$parsedSource["errors"] = $$createField2_0($$parsedSource["errors"]);
-        }
-        return new MigrationResult(/** @type {Partial<MigrationResult>} */($$parsedSource));
-    }
-}
-
-/**
- * Stats is a point-in-time store report for the UI and diagnostics.
- */
-export class Stats {
-    /**
-     * Creates a new Stats instance.
-     * @param {Partial<Stats>} [$$source = {}] - The source object to create the Stats.
-     */
-    constructor($$source = {}) {
-        if (!("status" in $$source)) {
-            /**
-             * @member
-             * @type {string}
-             */
-            this["status"] = "";
-        }
-        if (!("count" in $$source)) {
-            /**
-             * @member
-             * @type {number}
-             */
-            this["count"] = 0;
-        }
-        if (!("chunk_count" in $$source)) {
-            /**
-             * @member
-             * @type {number}
-             */
-            this["chunk_count"] = 0;
-        }
-        if (!("total_records" in $$source)) {
-            /**
-             * @member
-             * @type {number}
-             */
-            this["total_records"] = 0;
-        }
-        if (!("dead_records" in $$source)) {
-            /**
-             * @member
-             * @type {number}
-             */
-            this["dead_records"] = 0;
-        }
-        if (!("disk_bytes" in $$source)) {
-            /**
-             * @member
-             * @type {number}
-             */
-            this["disk_bytes"] = 0;
-        }
-        if (!("pending_keys" in $$source)) {
-            /**
-             * @member
-             * @type {number}
-             */
-            this["pending_keys"] = 0;
-        }
-        if (!("garbage_ratio" in $$source)) {
-            /**
-             * @member
-             * @type {number}
-             */
-            this["garbage_ratio"] = 0;
-        }
-        if (!("lsn" in $$source)) {
-            /**
-             * @member
-             * @type {number}
-             */
-            this["lsn"] = 0;
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new Stats instance from a string or object.
-     * @param {any} [$$source = {}]
-     * @returns {Stats}
-     */
-    static createFrom($$source = {}) {
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new Stats(/** @type {Partial<Stats>} */($$parsedSource));
-    }
-}
-
-/**
  * Diagnostics is a deep operational report for maintenance UIs. Every
  * value is a real measurement taken from live subsystem state.
  */
 export class Diagnostics {
     /**
      * Creates a new Diagnostics instance.
-     * @param {Partial<Diagnostics>} [$$source = {}] - The source object to create a Diagnostics from.
+     * @param {Partial<Diagnostics>} [$$source = {}] - The source object to create the Diagnostics.
      */
     constructor($$source = {}) {
         if (!("status" in $$source)) {
@@ -297,6 +154,149 @@ export class Diagnostics {
     static createFrom($$source = {}) {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new Diagnostics(/** @type {Partial<Diagnostics>} */($$parsedSource));
+    }
+}
+
+/**
+ * MigrationResult reports what happened during a migration.
+ */
+export class MigrationResult {
+    /**
+     * Creates a new MigrationResult instance.
+     * @param {Partial<MigrationResult>} [$$source = {}] - The source object to create the MigrationResult.
+     */
+    constructor($$source = {}) {
+        if (!("migrated" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["migrated"] = 0;
+        }
+        if (!("skipped" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["skipped"] = 0;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string[] | undefined}
+             */
+            this["errors"] = undefined;
+        }
+        if (!("renamed" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["renamed"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new MigrationResult instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {MigrationResult}
+     */
+    static createFrom($$source = {}) {
+        const $$createField2_0 = $$createType0;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("errors" in $$parsedSource) {
+            $$parsedSource["errors"] = $$createField2_0($$parsedSource["errors"]);
+        }
+        return new MigrationResult(/** @type {Partial<MigrationResult>} */($$parsedSource));
+    }
+}
+
+/**
+ * Stats is a point-in-time store report for the UI and diagnostics.
+ */
+export class Stats {
+    /**
+     * Creates a new Stats instance.
+     * @param {Partial<Stats>} [$$source = {}] - The source object to create the Stats.
+     */
+    constructor($$source = {}) {
+        if (!("status" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["status"] = "";
+        }
+        if (!("count" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["count"] = 0;
+        }
+        if (!("chunk_count" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["chunk_count"] = 0;
+        }
+        if (!("total_records" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["total_records"] = 0;
+        }
+        if (!("dead_records" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["dead_records"] = 0;
+        }
+        if (!("disk_bytes" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["disk_bytes"] = 0;
+        }
+        if (!("pending_keys" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["pending_keys"] = 0;
+        }
+        if (!("garbage_ratio" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["garbage_ratio"] = 0;
+        }
+        if (!("lsn" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["lsn"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new Stats instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {Stats}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new Stats(/** @type {Partial<Stats>} */($$parsedSource));
     }
 }
 

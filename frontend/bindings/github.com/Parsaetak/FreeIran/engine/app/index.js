@@ -4,30 +4,70 @@
 
 import * as AppService from "./appservice.js";
 import * as ConnectionService from "./connectionservice.js";
+import * as CoreService from "./coreservice.js";
 import * as DataService from "./dataservice.js";
 import * as DiagnosticsService from "./diagnosticsservice.js";
+import * as DiscoveryService from "./discoveryservice.js";
+import * as InternetToolsService from "./internettoolsservice.js";
 import * as LogService from "./logservice.js";
+import * as NetworkService from "./networkservice.js";
+import * as ProviderService from "./providerservice.js";
 import * as SettingsService from "./settingsservice.js";
 import * as SourceService from "./sourceservice.js";
 import * as StorageService from "./storageservice.js";
+import * as TestQueueService from "./testqueueservice.js";
+import * as TunnelService from "./tunnelservice.js";
 export {
     AppService,
     ConnectionService,
+    CoreService,
     DataService,
     DiagnosticsService,
+    DiscoveryService,
+    InternetToolsService,
     LogService,
+    NetworkService,
+    ProviderService,
     SettingsService,
     SourceService,
-    StorageService
+    StorageService,
+    TestQueueService,
+    TunnelService
 };
 
 export {
     AppState,
+    BackendView,
     CacheStats,
+    CandidateView,
+    CleanupResult,
+    ConfigDetail,
+    ConfigFilter,
     ConfigPage,
+    ConnectBestResult,
+    CoreLifecycleView,
+    DeveloperInfoView,
+    DiagnosticReport,
+    EnqueueItem,
+    LastCleanupTask,
     LogFilter,
     LogPage,
+    MemorySnapshot,
+    NetworkIdentityRequest,
+    ProviderChoice,
+    ProviderModeView,
+    RecoveryStatus,
     Settings,
+    SourceMetadataUpdate,
+    SourceStatsView,
     SourceView,
+    StartFlowResult,
+    StartFlowStage,
+    StartFlowStatus,
+    StorageOverview,
+    TestBatchResult,
+    TestFilter,
+    ToolRequestView,
+    TorOptionsView,
     VerifyResult
 } from "./models.js";

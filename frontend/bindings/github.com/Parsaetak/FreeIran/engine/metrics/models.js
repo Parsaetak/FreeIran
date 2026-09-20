@@ -184,12 +184,93 @@ export class Snapshot {
              */
             this["native_fallback_hits"] = 0;
         }
+        if (!("core_selections" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["core_selections"] = 0;
+        }
+        if (!("core_fallbacks" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["core_fallbacks"] = 0;
+        }
+        if (!("core_starts" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["core_starts"] = 0;
+        }
+        if (!("core_start_failures" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["core_start_failures"] = 0;
+        }
+        if (!("core_crashes" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["core_crashes"] = 0;
+        }
+        if (!("avg_core_startup_ms" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["avg_core_startup_ms"] = 0;
+        }
         if (!("num_goroutine" in $$source)) {
             /**
              * @member
              * @type {number}
              */
             this["num_goroutine"] = 0;
+        }
+        if (!("memory_pressure" in $$source)) {
+            /**
+             * Memory Booster 2.0 surface: the unified controller's live
+             * classification and measurements, mirrored into the metrics
+             * snapshot so one report answers "what is the machine doing about
+             * memory".
+             * @member
+             * @type {string}
+             */
+            this["memory_pressure"] = "";
+        }
+        if (!("rss_bytes" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["rss_bytes"] = 0;
+        }
+        if (!("heap_alloc_bytes" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["heap_alloc_bytes"] = 0;
+        }
+        if (!("heap_live_bytes" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["heap_live_bytes"] = 0;
+        }
+        if (!("gc_cpu_pct" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["gc_cpu_pct"] = 0;
         }
 
         Object.assign(this, $$source);

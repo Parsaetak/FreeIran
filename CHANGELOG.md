@@ -3,6 +3,22 @@
 Release history for FreeIran. The newest release is documented in the
 [README](README.md); everything older lives here, newest first.
 
+## v0.9.8.7 — determinism and responsiveness release
+
+CI recovery, event-driven UI synchronization, stable embedded asset
+filenames, truthful Wails bindings and verified lifecycle/security
+regressions. See [README — What's new in v0.9.8.7](README.md#whats-new-in-v0987)
+for the full summary: the Wails v-prefix normalization that un-skipped
+the Windows stage (run 35492972394), the deduplicating state publisher
+replacing the 2-second tickers, the canonical `assets/app.js` /
+`assets/app.css` / `assets/export-worker.js` inventory with a
+version-aware cache policy, the regenerated (twice-identical)
+bindings, the completed local-port settings wiring, the HTTPS-only
+asset-URL enforcement and the SourceTrust labeling on the ranking
+path.
+
+---
+
 ## v0.9.8.6 — reliability, security and hygiene release
 
 See [README — What's new in v0.9.8.6](README.md#whats-new-in-v0986)

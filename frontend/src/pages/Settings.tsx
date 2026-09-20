@@ -64,7 +64,6 @@ function normalize(settings: Settings): Settings {
     refresh_interval_minutes: settings.refresh_interval_minutes || REFRESH_MIN,
     log_max_bytes_mb: settings.log_max_bytes_mb || 5,
     log_max_backups: settings.log_max_backups || 4,
-    log_retention_days: settings.log_retention_days || 7,
     logging_profile: settings.logging_profile || "normal",
     local_socks_port: settings.local_socks_port || 0,
     local_http_port: settings.local_http_port || 0,
@@ -80,7 +79,6 @@ function sameSettings(a: Settings, b: Settings): boolean {
     a.logging_profile === b.logging_profile &&
     a.log_max_bytes_mb === b.log_max_bytes_mb &&
     a.log_max_backups === b.log_max_backups &&
-    a.log_retention_days === b.log_retention_days &&
     a.local_socks_port === b.local_socks_port &&
     a.local_http_port === b.local_http_port &&
     a.reduced_motion === b.reduced_motion &&
@@ -1154,10 +1152,17 @@ function validateDraft(draft: Settings | null): Array<{ key: string; message: st
 
   const errors: Array<{ key: string; message: string }> = [];
 
+  // v0.9.8.7: the regenerated (truthful) bindings mark these numeric
+  // settings optional (they are pointers in Go). Narrow through
+  // locals so undefined is rejected by the same validation that
+  // bounds the value.
+  const refreshMinutes = draft.refresh_interval_minutes;
+
   if (
-    !Number.isInteger(draft.refresh_interval_minutes) ||
-    draft.refresh_interval_minutes < REFRESH_MIN ||
-    draft.refresh_interval_minutes > REFRESH_MAX
+    refreshMinutes === undefined ||
+    !Number.isInteger(refreshMinutes) ||
+    refreshMinutes < REFRESH_MIN ||
+    refreshMinutes > REFRESH_MAX
   ) {
     errors.push({
       key: "refresh",
@@ -1165,10 +1170,13 @@ function validateDraft(draft: Settings | null): Array<{ key: string; message: st
     });
   }
 
+  const logMaxBytes = draft.log_max_bytes_mb;
+
   if (
-    !Number.isInteger(draft.log_max_bytes_mb) ||
-    draft.log_max_bytes_mb < LOG_MB_MIN ||
-    draft.log_max_bytes_mb > LOG_MB_MAX
+    logMaxBytes === undefined ||
+    !Number.isInteger(logMaxBytes) ||
+    logMaxBytes < LOG_MB_MIN ||
+    logMaxBytes > LOG_MB_MAX
   ) {
     errors.push({
       key: "log_mb",
@@ -1176,10 +1184,13 @@ function validateDraft(draft: Settings | null): Array<{ key: string; message: st
     });
   }
 
+  const logBackups = draft.log_max_backups;
+
   if (
-    !Number.isInteger(draft.log_max_backups) ||
-    draft.log_max_backups < LOG_BACKUPS_MIN ||
-    draft.log_max_backups > LOG_BACKUPS_MAX
+    logBackups === undefined ||
+    !Number.isInteger(logBackups) ||
+    logBackups < LOG_BACKUPS_MIN ||
+    logBackups > LOG_BACKUPS_MAX
   ) {
     errors.push({
       key: "log_backups",
@@ -1187,10 +1198,13 @@ function validateDraft(draft: Settings | null): Array<{ key: string; message: st
     });
   }
 
+  const devQueueWorkers = draft.dev_queue_workers;
+
   if (
-    !Number.isInteger(draft.dev_queue_workers) ||
-    draft.dev_queue_workers < 0 ||
-    draft.dev_queue_workers > QUEUE_WORKERS_MAX
+    devQueueWorkers === undefined ||
+    !Number.isInteger(devQueueWorkers) ||
+    devQueueWorkers < 0 ||
+    devQueueWorkers > QUEUE_WORKERS_MAX
   ) {
     errors.push({
       key: "dev_workers",
@@ -1198,10 +1212,13 @@ function validateDraft(draft: Settings | null): Array<{ key: string; message: st
     });
   }
 
+  const devNetTimeout = draft.dev_net_timeout_seconds;
+
   if (
-    !Number.isInteger(draft.dev_net_timeout_seconds) ||
-    draft.dev_net_timeout_seconds < 0 ||
-    draft.dev_net_timeout_seconds > NET_TIMEOUT_MAX
+    devNetTimeout === undefined ||
+    !Number.isInteger(devNetTimeout) ||
+    devNetTimeout < 0 ||
+    devNetTimeout > NET_TIMEOUT_MAX
   ) {
     errors.push({
       key: "dev_net_timeout",

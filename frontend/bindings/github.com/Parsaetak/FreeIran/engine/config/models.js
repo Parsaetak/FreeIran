@@ -6,13 +6,6 @@
 // @ts-ignore: Unused imports
 import { Create as $Create } from "@wailsio/runtime";
 
-/**
- * Config is the normalized representation of a VPN/proxy configuration.
- * 
- * Parsers convert external formats into Config objects.
- * Protocol engines later convert Config objects into core-specific
- * configurations.
- */
 export class Config {
     /**
      * Creates a new Config instance.
@@ -150,6 +143,60 @@ export class Config {
         }
         if (/** @type {any} */(false)) {
             /**
+             * Protocol details consumed by core backends. Parsers capture them
+             * and backend adapters read them, but they are deliberately NOT part
+             * of the fingerprint: identity is endpoint + credentials + transport,
+             * so existing stored records keep stable keys across the v0.4
+             * protocol-core upgrade (fingerprint stability is a
+             * storage-compatibility guarantee, see docs/storage-format.md).
+             * VLESS flow (xtls-rprx-vision).
+             * @member
+             * @type {string | undefined}
+             */
+            this["flow"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * VLESS encryption (default none).
+             * @member
+             * @type {string | undefined}
+             */
+            this["encryption"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * VMess legacy alterId.
+             * @member
+             * @type {number | undefined}
+             */
+            this["alter_id"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * VMess TCP header obfuscation.
+             * @member
+             * @type {string | undefined}
+             */
+            this["header_type"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * TLS ALPN list.
+             * @member
+             * @type {string[] | undefined}
+             */
+            this["alpn"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * REALITY spider path.
+             * @member
+             * @type {string | undefined}
+             */
+            this["spider_x"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
              * WireGuard.
              * @member
              * @type {string | undefined}
@@ -192,6 +239,18 @@ export class Config {
              */
             this["source"] = undefined;
         }
+        if (/** @type {any} */(false)) {
+            /**
+             * SourceTrust is the ROUTE-trust classification of the source this
+             * configuration was ingested from (v0.9.8.6):
+             * "official" | "user" | "public". Empty (legacy records) resolves
+             * as "public" — untrusted by default. Reliability and reachability
+             * measurements never promote a public route to trusted.
+             * @member
+             * @type {string | undefined}
+             */
+            this["source_trust"] = undefined;
+        }
         if (!("working" in $$source)) {
             /**
              * Runtime information.
@@ -209,7 +268,16 @@ export class Config {
         }
         if (/** @type {any} */(false)) {
             /**
-             * v0.9.0 test metadata.
+             * @member
+             * @type {number | undefined}
+             */
+            this["tested_at"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * v0.9.0 test metadata (§4): the backend that executed the last
+             * test, the endpoint it targeted and the total test duration.
+             * Runtime-only, never part of the fingerprint.
              * @member
              * @type {string | undefined}
              */
@@ -231,40 +299,51 @@ export class Config {
         }
         if (/** @type {any} */(false)) {
             /**
+             * v0.9.3 bounded observation history: the last TestHistoryLimit
+             * test outcomes for this configuration (newest last). It is the
+             * actual data the ranking engine scores — success rate, latency
+             * stability and timeout frequency come from here, never invented.
+             * Runtime-only: never part of the fingerprint, never uploaded.
              * @member
-             * @type {number | undefined}
+             * @type {TestObservation[] | undefined}
              */
-            this["tested_at"] = undefined;
+            this["test_history"] = undefined;
         }
         if (/** @type {any} */(false)) {
             /**
-             * v0.9.6 Ping test metrics (min/median/avg/max/jitter/
-             * loss/samples), plain object on the wire.
+             * Ping holds the latest repeated-sample TCP latency measurement
+             * (min/median/avg/max/jitter/loss). Nil = never ping-tested.
+             * Runtime-only: never part of the fingerprint.
              * @member
-             * @type {any | undefined}
+             * @type {PingMetrics | null | undefined}
              */
             this["ping"] = undefined;
         }
         if (/** @type {any} */(false)) {
             /**
-             * v0.9.6 URL test metrics (dns/connect/tls/ttfb/total/
-             * status/ok), plain object on the wire.
+             * URLTest holds the latest HTTP connectivity measurement through
+             * the candidate tunnel with its full phase breakdown (DNS/TCP/
+             * TLS/TTFB/total). Nil = never URL-tested. Runtime-only: never
+             * part of the fingerprint.
              * @member
-             * @type {any | undefined}
+             * @type {URLTestMetrics | null | undefined}
              */
             this["url_test"] = undefined;
         }
         if (/** @type {any} */(false)) {
             /**
-             * v0.9.6 protocol handshake metrics, plain object.
+             * Handshake holds the latest protocol-core handshake timing.
+             * Runtime-only: never part of the fingerprint.
              * @member
-             * @type {any | undefined}
+             * @type {HandshakeMetrics | null | undefined}
              */
             this["handshake"] = undefined;
         }
         if (/** @type {any} */(false)) {
             /**
-             * v0.9.6 last verified-usable timestamp (Unix ms).
+             * LastSuccessAt is the last time this candidate provided verified
+             * usable connectivity (Unix milliseconds) — the freshness anchor
+             * for "Recently Verified" ranking. Runtime-only.
              * @member
              * @type {number | undefined}
              */
@@ -272,8 +351,8 @@ export class Config {
         }
         if (/** @type {any} */(false)) {
             /**
-             * v0.9.6 consecutive failed verifications since the last
-             * success.
+             * FailureStreak counts consecutive failed verifications since the
+             * last success; reset on every success. Runtime-only.
              * @member
              * @type {number | undefined}
              */
@@ -281,7 +360,9 @@ export class Config {
         }
         if (/** @type {any} */(false)) {
             /**
-             * v0.9.6 classified cause of the most recent failure.
+             * LastFailureReason is the classified cause of the most recent
+             * failure (timeout/refused/reset/handshake/verify), stored
+             * without credentials. Runtime-only.
              * @member
              * @type {string | undefined}
              */
@@ -297,16 +378,288 @@ export class Config {
      * @returns {Config}
      */
     static createFrom($$source = {}) {
-        const $$createField19_0 = $$createType0;
-        const $$createField20_0 = $$createType0;
+        const $$createField22_0 = $$createType0;
+        const $$createField25_0 = $$createType0;
+        const $$createField26_0 = $$createType0;
+        const $$createField37_0 = $$createType2;
+        const $$createField38_0 = $$createType4;
+        const $$createField39_0 = $$createType6;
+        const $$createField40_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("alpn" in $$parsedSource) {
+            $$parsedSource["alpn"] = $$createField22_0($$parsedSource["alpn"]);
+        }
         if ("allowed_ips" in $$parsedSource) {
-            $$parsedSource["allowed_ips"] = $$createField19_0($$parsedSource["allowed_ips"]);
+            $$parsedSource["allowed_ips"] = $$createField25_0($$parsedSource["allowed_ips"]);
         }
         if ("dns" in $$parsedSource) {
-            $$parsedSource["dns"] = $$createField20_0($$parsedSource["dns"]);
+            $$parsedSource["dns"] = $$createField26_0($$parsedSource["dns"]);
+        }
+        if ("test_history" in $$parsedSource) {
+            $$parsedSource["test_history"] = $$createField37_0($$parsedSource["test_history"]);
+        }
+        if ("ping" in $$parsedSource) {
+            $$parsedSource["ping"] = $$createField38_0($$parsedSource["ping"]);
+        }
+        if ("url_test" in $$parsedSource) {
+            $$parsedSource["url_test"] = $$createField39_0($$parsedSource["url_test"]);
+        }
+        if ("handshake" in $$parsedSource) {
+            $$parsedSource["handshake"] = $$createField40_0($$parsedSource["handshake"]);
         }
         return new Config(/** @type {Partial<Config>} */($$parsedSource));
+    }
+}
+
+/**
+ * HandshakeMetrics records the protocol-core handshake phase of a
+ * test (core start → inbound ready), the v0.9.3 DurationMS split
+ * into its meaningful part.
+ */
+export class HandshakeMetrics {
+    /**
+     * Creates a new HandshakeMetrics instance.
+     * @param {Partial<HandshakeMetrics>} [$$source = {}] - The source object to create the HandshakeMetrics.
+     */
+    constructor($$source = {}) {
+        if (/** @type {any} */(false)) {
+            /**
+             * ReadyMS is the time from core process start to the inbound
+             * listener accepting connections.
+             * @member
+             * @type {number | undefined}
+             */
+            this["ready_ms"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * ProbeMS is the end-to-end probe time through the ready tunnel
+             * (when the probe ran).
+             * @member
+             * @type {number | undefined}
+             */
+            this["probe_ms"] = undefined;
+        }
+        if (!("ok" in $$source)) {
+            /**
+             * OK reports whether the handshake completed.
+             * @member
+             * @type {boolean}
+             */
+            this["ok"] = false;
+        }
+        if (!("at" in $$source)) {
+            /**
+             * At is the measurement time (Unix milliseconds).
+             * @member
+             * @type {number}
+             */
+            this["at"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new HandshakeMetrics instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {HandshakeMetrics}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new HandshakeMetrics(/** @type {Partial<HandshakeMetrics>} */($$parsedSource));
+    }
+}
+
+/**
+ * PingMetrics is the outcome of a repeated-sample latency measurement
+ * against a candidate's endpoint (TCP handshake RTT — see
+ * engine/tester/ping.go for why FreeIran measures TCP, not ICMP).
+ * 
+ * Every field is derived from the recorded samples; there is no
+ * interpolation and no invented value. Zero PingMetrics (Samples=0)
+ * means "not measured". A nonzero Samples with MinMS/MedianMS == 0
+ * means "measured, sub-millisecond" (v0.9.8.1): millisecond fields
+ * are projections, and SubMS flags the sub-millisecond case
+ * explicitly for display ("< 1 ms").
+ */
+export class PingMetrics {
+    /**
+     * Creates a new PingMetrics instance.
+     * @param {Partial<PingMetrics>} [$$source = {}] - The source object to create the PingMetrics.
+     */
+    constructor($$source = {}) {
+        if (!("min_ms" in $$source)) {
+            /**
+             * Min/Max are the fastest and slowest successful samples.
+             * @member
+             * @type {number}
+             */
+            this["min_ms"] = 0;
+        }
+        if (!("max_ms" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["max_ms"] = 0;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * SubMS reports that the median sample was faster than one
+             * millisecond (the projected fields read 0). It is the explicit
+             * measured-sub-millisecond marker (rule R4, engine/tester/latency.go).
+             * @member
+             * @type {boolean | undefined}
+             */
+            this["sub_ms"] = undefined;
+        }
+        if (!("median_ms" in $$source)) {
+            /**
+             * Median is the 50th percentile of the successful samples
+             * (resistant to outliers, the number the "Lowest Median Ping"
+             * sort uses).
+             * @member
+             * @type {number}
+             */
+            this["median_ms"] = 0;
+        }
+        if (!("avg_ms" in $$source)) {
+            /**
+             * Avg is the arithmetic mean of the successful samples.
+             * @member
+             * @type {number}
+             */
+            this["avg_ms"] = 0;
+        }
+        if (!("jitter_ms" in $$source)) {
+            /**
+             * Jitter is the mean absolute deviation between consecutive
+             * successful samples (instability of the path, in ms).
+             * @member
+             * @type {number}
+             */
+            this["jitter_ms"] = 0;
+        }
+        if (!("packet_loss" in $$source)) {
+            /**
+             * PacketLoss is the fraction of samples that failed (timeouts +
+             * refused + reset) in [0,1].
+             * @member
+             * @type {number}
+             */
+            this["packet_loss"] = 0;
+        }
+        if (!("samples" in $$source)) {
+            /**
+             * Samples counts the successful round trips; Failures counts
+             * every failed attempt; Timeouts counts the subset of failures
+             * that were deadline exceeded (path black-holing).
+             * @member
+             * @type {number}
+             */
+            this["samples"] = 0;
+        }
+        if (!("failures" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["failures"] = 0;
+        }
+        if (!("timeouts" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["timeouts"] = 0;
+        }
+        if (!("at" in $$source)) {
+            /**
+             * At is the measurement time (Unix milliseconds). Staleness is
+             * judged against this timestamp, never against discovery time.
+             * @member
+             * @type {number}
+             */
+            this["at"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PingMetrics instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {PingMetrics}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PingMetrics(/** @type {Partial<PingMetrics>} */($$parsedSource));
+    }
+}
+
+/**
+ * TestObservation is one recorded test outcome.
+ */
+export class TestObservation {
+    /**
+     * Creates a new TestObservation instance.
+     * @param {Partial<TestObservation>} [$$source = {}] - The source object to create the TestObservation.
+     */
+    constructor($$source = {}) {
+        if (!("at" in $$source)) {
+            /**
+             * At is the observation time (Unix milliseconds).
+             * @member
+             * @type {number}
+             */
+            this["at"] = 0;
+        }
+        if (!("working" in $$source)) {
+            /**
+             * Working reports whether the configuration served traffic.
+             * @member
+             * @type {boolean}
+             */
+            this["working"] = false;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * LatencyMS is the measured round-trip time (0 when failed).
+             * @member
+             * @type {number | undefined}
+             */
+            this["latency_ms"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * TimedOut marks failures that were timeouts — the ranking
+             * layer penalises them harder than refusals.
+             * @member
+             * @type {boolean | undefined}
+             */
+            this["timed_out"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * Backend is the core that executed the test (informational).
+             * @member
+             * @type {string | undefined}
+             */
+            this["backend"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new TestObservation instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {TestObservation}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new TestObservation(/** @type {Partial<TestObservation>} */($$parsedSource));
     }
 }
 
@@ -334,5 +687,146 @@ export const Type = {
     TypeUnknown: "unknown",
 };
 
+/**
+ * URLTestMetrics is the outcome of one HTTP connectivity measurement
+ * THROUGH the candidate tunnel — proving usable connectivity, not
+ * merely that a host responds.
+ * 
+ * Phase timings are the real httptrace phase durations in
+ * milliseconds; -1 marks a phase that did not complete (e.g. TLS
+ * timing on a plaintext request) and 0 is a valid, very fast phase.
+ */
+export class URLTestMetrics {
+    /**
+     * Creates a new URLTestMetrics instance.
+     * @param {Partial<URLTestMetrics>} [$$source = {}] - The source object to create the URLTestMetrics.
+     */
+    constructor($$source = {}) {
+        if (/** @type {any} */(false)) {
+            /**
+             * URL is the test target that was requested (recorded so results
+             * are comparable across configuration changes).
+             * @member
+             * @type {string | undefined}
+             */
+            this["url"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * DNSMS is the name-resolution phase (0 when the target was an
+             * IP literal or the proxy resolved it remotely).
+             * @member
+             * @type {number | undefined}
+             */
+            this["dns_ms"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * ConnectMS is the TCP connection phase.
+             * @member
+             * @type {number | undefined}
+             */
+            this["connect_ms"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * TLSMS is the TLS handshake phase (-1 when no TLS was used).
+             * @member
+             * @type {number | undefined}
+             */
+            this["tls_ms"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * TTFBMS is time-to-first-byte from the request write to the
+             * first response byte.
+             * @member
+             * @type {number | undefined}
+             */
+            this["ttfb_ms"] = undefined;
+        }
+        if (!("total_ms" in $$source)) {
+            /**
+             * TotalMS is the complete request wall time.
+             * @member
+             * @type {number}
+             */
+            this["total_ms"] = 0;
+        }
+        if (!("status" in $$source)) {
+            /**
+             * Status is the HTTP status code (0 when the request never
+             * completed).
+             * @member
+             * @type {number}
+             */
+            this["status"] = 0;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * Bytes is the response body size actually received.
+             * @member
+             * @type {number | undefined}
+             */
+            this["bytes"] = undefined;
+        }
+        if (!("ok" in $$source)) {
+            /**
+             * OK reports usable connectivity: the request completed with a
+             * 2xx/3xx status within the configured timeout.
+             * @member
+             * @type {boolean}
+             */
+            this["ok"] = false;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * Timeout marks a failure caused by the configured deadline
+             * (versus refused/reset/protocol errors).
+             * @member
+             * @type {boolean | undefined}
+             */
+            this["timeout"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * Error is the failure classification (empty on success); it is
+             * derived from the transport error, never raw credentials.
+             * @member
+             * @type {string | undefined}
+             */
+            this["error"] = undefined;
+        }
+        if (!("at" in $$source)) {
+            /**
+             * At is the measurement time (Unix milliseconds).
+             * @member
+             * @type {number}
+             */
+            this["at"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new URLTestMetrics instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {URLTestMetrics}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new URLTestMetrics(/** @type {Partial<URLTestMetrics>} */($$parsedSource));
+    }
+}
+
 // Private type creation functions
 const $$createType0 = $Create.Array($Create.Any);
+const $$createType1 = TestObservation.createFrom;
+const $$createType2 = $Create.Array($$createType1);
+const $$createType3 = PingMetrics.createFrom;
+const $$createType4 = $Create.Nullable($$createType3);
+const $$createType5 = URLTestMetrics.createFrom;
+const $$createType6 = $Create.Nullable($$createType5);
+const $$createType7 = HandshakeMetrics.createFrom;
+const $$createType8 = $Create.Nullable($$createType7);

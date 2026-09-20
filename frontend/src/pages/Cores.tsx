@@ -11,6 +11,7 @@ import type {
 } from "../services";
 import { describeError, toast } from "../state/toastStore";
 import { useProviderStore } from "../state/providerStore";
+import { useQuickConnectStore } from "../state/quickConnectStore";
 import { EmptyState, SkeletonPage } from "../components/common";
 import { IconDownload, IconPlay, IconRefresh, IconShield, IconStop } from "../components/Icons";
 import { formatBytes, truncate } from "../utilities/format";
@@ -61,6 +62,10 @@ export function CoresPage() {
     try {
       await fn();
       await load();
+      // v0.9.8.7: a core install/update/remove changed which backends
+      // candidates are connectable with — one bounded Quick Connect
+      // refresh per availability change (meaningful invalidation).
+      useQuickConnectStore.getState().invalidate();
     } catch (error) {
       toast("error", "Action failed", describeError(error));
     } finally {
@@ -366,7 +371,12 @@ function RecoveryActions({
 // bootstrap → ready → stop), rendered below the protocol-core cards.
 // ---------------------------------------------------------------------------
 
-/** Provider poll cadence — live runtime state (bootstrap, endpoints). */
+/**
+ * Provider refresh cadence — ONLY used while a provider is actually
+ * TRANSITIONING (installing / starting / stopping / bootstrapping).
+ * v0.9.8.7: the previous always-on 5s poll is gone; stable provider
+ * state changes only through user actions, which refresh explicitly.
+ */
 const PROVIDER_POLL_MS = 5000;
 
 function ProvidersSection() {
@@ -377,18 +387,33 @@ function ProvidersSection() {
 
   useEffect(() => {
     void load();
-
-    // Providers carry live runtime state (bootstrap progress, real
-    // endpoints) — one cheap list refresh every 5s keeps the cards
-    // honest without hammering the backend.
-    const timer = window.setInterval(() => void refresh(), PROVIDER_POLL_MS);
-
-    return () => window.clearInterval(timer);
-  }, [load, refresh]);
+  }, [load]);
 
   // kind "core" providers (xray / v2ray / sing-box) are the managed
   // core cards above — only the first-class engines render here.
   const managed = providers.filter((info) => info.kind === "tor" || info.kind === "psiphon");
+
+  // v0.9.8.7 — event-driven replacement for the always-on provider
+  // poll: a bounded 5s refresh runs ONLY while some provider is in a
+  // transitional state (install/start/stop/bootstrap in flight); the
+  // timer stops itself once every provider reaches a stable state.
+  // Stable-state changes always come from user actions, which call
+  // refresh() explicitly (busy completion / onRefresh callbacks).
+  const transitioning = managed.some(
+    (info) =>
+      info.bootstrap?.active === true ||
+      info.state === "installing" ||
+      info.state === "starting" ||
+      info.state === "stopping",
+  );
+
+  useEffect(() => {
+    if (!transitioning) return;
+
+    const timer = window.setInterval(() => void refresh(), PROVIDER_POLL_MS);
+
+    return () => window.clearInterval(timer);
+  }, [transitioning, refresh]);
 
   return (
     <section aria-label="Providers">

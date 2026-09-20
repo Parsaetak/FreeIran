@@ -408,8 +408,14 @@ function LogViewer() {
               key={entry.seq}
               entry={entry}
               onShowRelated={async (anchor) => {
+                // v0.9.8.7: truthful LogEntry marks event_id optional;
+                // an entry without one has nothing to correlate.
+                const eventID = anchor.event_id;
+
+                if (!eventID) return;
+
                 try {
-                  const list = await call(() => logService.Related(anchor.event_id, 200));
+                  const list = await call(() => logService.Related(eventID, 200));
                   setRelated({ anchor, entries: (list ?? []) as LogEntry[] });
                 } catch {
                   toast("error", "Related events unavailable", describeError(new Error("service call failed")));
@@ -537,7 +543,9 @@ function MaintenanceCards() {
       setStoreDiag(diag);
       setSystemInfo(info);
       setCores(coreList);
-      setMemory(mem as MemorySnapshotView | null);
+      // v0.9.8.7: the generated wire model and the UI view are the
+      // same JSON shape; the cast documents that boundary conversion.
+      setMemory(mem as unknown as MemorySnapshotView | null);
       setQueue(queueStats as QueueStatsView | null);
       setOverview(storageOverview as StorageOverviewView | null);
     } catch (error) {

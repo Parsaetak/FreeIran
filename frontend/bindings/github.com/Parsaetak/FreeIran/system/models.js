@@ -116,3 +116,82 @@ export class Info {
         return new Info(/** @type {Partial<Info>} */($$parsedSource));
     }
 }
+
+/**
+ * WorkspaceStatus is the persisted migration record.
+ */
+export class WorkspaceStatus {
+    /**
+     * Creates a new WorkspaceStatus instance.
+     * @param {Partial<WorkspaceStatus>} [$$source = {}] - The source object to create the WorkspaceStatus.
+     */
+    constructor($$source = {}) {
+        if (!("version" in $$source)) {
+            /**
+             * Version is the status format version.
+             * @member
+             * @type {number}
+             */
+            this["version"] = 0;
+        }
+        if (!("migrated" in $$source)) {
+            /**
+             * Migrated reports whether a legacy location was copied in.
+             * @member
+             * @type {boolean}
+             */
+            this["migrated"] = false;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * Source is the legacy root the data was copied from.
+             * @member
+             * @type {string | undefined}
+             */
+            this["source"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * MigratedAt is the completion time (UTC, RFC 3339).
+             * @member
+             * @type {string | undefined}
+             */
+            this["migrated_at"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * Files and Bytes describe the verified copy.
+             * @member
+             * @type {number | undefined}
+             */
+            this["files"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {number | undefined}
+             */
+            this["bytes"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * Skipped explains why no migration was attempted.
+             * @member
+             * @type {string | undefined}
+             */
+            this["skipped"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WorkspaceStatus instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {WorkspaceStatus}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WorkspaceStatus(/** @type {Partial<WorkspaceStatus>} */($$parsedSource));
+    }
+}

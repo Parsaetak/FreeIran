@@ -223,6 +223,13 @@ func (a *App) rankedViews() []CandidateView {
 	candidates := a.collectCandidates(ctx)
 	scores := ranking.Rank(candidates, time.Now().UTC())
 
+	// v0.9.8.7: label every view with its source's ROUTE-trust
+	// band — the BestCandidates path must expose the same
+	// reachability-vs-trust separation as the Quick Connect chosen
+	// view. Unknown (removed) sources resolve as "" which the UI
+	// treats as public/untrusted, matching config.RouteTrusted.
+	trustBySource := a.sourceTrustByID()
+
 	byFingerprint := make(map[string]ranking.Candidate, len(candidates))
 	for _, c := range candidates {
 		byFingerprint[c.Fingerprint] = c
@@ -250,6 +257,7 @@ func (a *App) rankedViews() []CandidateView {
 			Samples:           score.Samples,
 			TestedAt:          score.TestedAt,
 			Connectable:       score.Connectable,
+			SourceTrust:       trustBySource[cand.Source],
 			Explanation:       score.Explanation,
 		})
 	}
@@ -263,6 +271,23 @@ func (a *App) rankedViews() []CandidateView {
 	a.rankMu.Unlock()
 
 	return views
+}
+
+// sourceTrustByID maps every configured source id to its route-trust
+// band (official | user | public). The map is small (bounded by the
+// source list) and rebuilt per ranking pass — the ranking pass itself
+// is bounded and TTL-cached, so this costs nothing on the hot path.
+func (a *App) sourceTrustByID() map[string]string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	out := make(map[string]string, len(a.sources))
+
+	for _, s := range a.sources {
+		out[s.ID] = string(s.RouteTrust())
+	}
+
+	return out
 }
 
 // InvalidateRankingSnapshot drops the cached ranking snapshot so

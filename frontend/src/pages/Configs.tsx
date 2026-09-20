@@ -18,7 +18,14 @@ import {
   truncate,
 } from "../utilities/format";
 import { configToRow } from "../utilities/export";
+// v0.9.8.7: STATIC worker import — the worker factory is part of the
+// main bundle and the worker FILE is only fetched when an export
+// actually runs. This avoids the dynamic-import chunk that made Vite
+// emit export-worker.js twice (once as a dynamic chunk, once from the
+// worker pipeline).
+import ExportWorker from "../workers/export-worker?worker";
 import { useConnectionStore } from "../state/connectionStore";
+import { useQuickConnectStore } from "../state/quickConnectStore";
 import { describeError, toast } from "../state/toastStore";
 import { EmptyState, Menu, ResultBadge, SegmentedControl } from "../components/common";
 import {
@@ -146,11 +153,15 @@ export function ConfigsPage() {
       const page = await call(() =>
         dataService.ListConfigsFiltered(
           {
+            // v0.9.8.7: the truthful generated ConfigFilter declares
+            // every key (values may be undefined) — spell each key out.
             protocol: protocol || undefined,
             status: statusFilter || undefined,
             query: searchQuery || undefined,
             sort_by: sortBy || undefined,
             sort_desc: sortBy === "latency",
+            source: undefined,
+            backend: undefined,
           },
           0,
           limit,
@@ -238,31 +249,29 @@ export function ConfigsPage() {
   };
 
   const exportCSV = () => {
-    void import("../workers/exportWorker?worker").then(({ default: ExportWorker }) => {
-      const worker = new ExportWorker();
+    const worker = new ExportWorker();
 
-      worker.postMessage({
-        type: "export",
-        rows: items.map(configToRow),
-      });
-
-      worker.onmessage = (event: MessageEvent<{ type: string; csv: string }>) => {
-        if (event.data.type !== "export:done") return;
-
-        const blob = new Blob([event.data.csv], { type: "text/csv" });
-        const url = URL.createObjectURL(blob);
-
-        const anchor = document.createElement("a");
-
-        anchor.href = url;
-        anchor.download = "freeiran-export.csv";
-        anchor.click();
-
-        URL.revokeObjectURL(url);
-        worker.terminate();
-        toast("success", "Export ready", "CSV downloaded.");
-      };
+    worker.postMessage({
+      type: "export",
+      rows: items.map(configToRow),
     });
+
+    worker.onmessage = (event: MessageEvent<{ type: string; csv: string }>) => {
+      if (event.data.type !== "export:done") return;
+
+      const blob = new Blob([event.data.csv], { type: "text/csv" });
+      const url = URL.createObjectURL(blob);
+
+      const anchor = document.createElement("a");
+
+      anchor.href = url;
+      anchor.download = "freeiran-export.csv";
+      anchor.click();
+
+      URL.revokeObjectURL(url);
+      worker.terminate();
+      toast("success", "Export ready", "CSV downloaded.");
+    };
   };
 
 
@@ -297,6 +306,10 @@ export function ConfigsPage() {
     try {
       await dataService.TestConfig(id);
       await runSearch();
+      // v0.9.8.7: a persisted test result changed the ranking inputs —
+      // the Quick Connect candidate list refreshes once, on this
+      // meaningful invalidation (no polling anywhere).
+      useQuickConnectStore.getState().invalidate();
       toast("success", "Test finished", `${config["address"]}: responded.`);
     } catch (error) {
       toast("error", "Test failed", describeError(error));
@@ -312,6 +325,9 @@ export function ConfigsPage() {
           scope,
           fingerprints: scope === "selected" ? [...selected] : undefined,
           protocol: protocol || undefined,
+          source: undefined,
+          limit: undefined,
+          priority: undefined,
         }),
       );
 
@@ -812,6 +828,9 @@ function DetailPanel({ detail, onClose }: { detail: ConfigDetail; onClose: () =>
     try {
       await dataService.TestConfig(detail.id);
       await runSearch();
+      // v0.9.8.7: one bounded Quick Connect refresh per persisted test
+      // result (see testConfig above).
+      useQuickConnectStore.getState().invalidate();
       toast("success", "Test finished", "The result was stored with the configuration.");
     } catch (error) {
       toast("error", "Test failed", describeError(error));
