@@ -223,8 +223,8 @@ func (a *App) rankedViews() []CandidateView {
 	candidates := a.collectCandidates(ctx)
 	scores := ranking.Rank(candidates, time.Now().UTC())
 
-	// v0.9.8.7: label every view with its source's ROUTE-trust
-	// band — the BestCandidates path must expose the same
+	// Label every view with its source's ROUTE-trust band — the
+	// BestCandidates path must expose the same
 	// reachability-vs-trust separation as the Quick Connect chosen
 	// view. Unknown (removed) sources resolve as "" which the UI
 	// treats as public/untrusted, matching config.RouteTrusted.
@@ -300,7 +300,7 @@ func (a *App) InvalidateRankingSnapshot() {
 	a.rankMu.Unlock()
 }
 
-// ConnectBest implements the automatic connection path: rank every// ConnectBest implements the automatic connection path (v0.9.8.3):
+// ConnectBest implements the automatic connection path:
 // the fresh-selection loop merges recent verified successes with the
 // top ranked candidates, fresh-tests stale evidence, re-ranks and
 // connects with an Internet-verification gate — the exact same loop

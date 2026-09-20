@@ -1,24 +1,27 @@
-// statepublish.go implements the application-level state publishers
-// (v0.9.8.7): the event-driven UI synchronization that replaced the
-// 2-second ticker broadcasts in the desktop entrypoint.
+// statepublish.go implements the application-level state publishing
+// wiring: the event-driven UI synchronization between the engine's
+// authoritative transitions and the desktop runtime.
 //
 // Two authoritative streams feed the UI:
 //
-//	freeiran:state       ← Publisher[AppState]        (application state)
-//	freeiran:connection  ← Publisher[connection.Snapshot] (state machine)
+//	freeiran:state       ← AppState            (application state)
+//	freeiran:connection  ← connection.Snapshot (state machine)
 //
-// Both go through internal/statepub: semantic duplicate suppression
-// (same state = no event) plus a short coalescing window (a burst of
-// transitions collapses into one emission of the newest snapshot).
-// The composition root registers the emit callbacks (SetStateListener
-// / SetConnectionListener) — the engine itself never imports the UI
-// runtime, exactly like the existing core-progress and start-flow
-// listeners.
+// The connection manager OWNS its snapshot publisher
+// (engine/connection/publish.go) and pushes every real transition
+// into it. SetConnectionListener only subscribes the UI bridge to
+// that stream. The application-state publisher lives here. Both are
+// internal/statepub publishers: semantic duplicate suppression (same
+// state = no event), ordered zero-delay delivery (lifecycle
+// transitions are never silently coalesced away) and a synchronous,
+// draining Stop. The engine never imports the UI runtime; only the
+// composition root (cmd/freeiran) registers the emit callbacks.
 //
-// Lifecycle: the publishers are stopped synchronously inside
-// App.Shutdown BEFORE the runtime log closes — after Shutdown returns
-// no emit callback can run, no publisher goroutine survives, and no
-// callback fires into a destroyed UI runtime.
+// Lifecycle: the state publisher and the connection subscription are
+// stopped synchronously inside App.Shutdown — the connection manager
+// has already delivered its terminal snapshot and joined its own
+// publisher by then — so after Shutdown returns no emit callback can
+// run and no publisher goroutine survives.
 package app
 
 import (
@@ -30,11 +33,11 @@ import (
 
 // SetStateListener registers the emit callback for application-state
 // changes (AppState snapshots). The first registration immediately
-// emits the CURRENT state — the "initial broadcast" is event-driven,
-// not a timed sleep — and every subsequent real change is published
-// from the transition path that caused it. Registering twice is
-// rejected (the composition root wires exactly one listener; a second
-// registration would leak the first publisher's goroutine).
+// publishes the CURRENT state — the UI converges at registration time
+// — and every subsequent real change is published from the transition
+// path that caused it. Registering twice is rejected (the composition
+// root wires exactly one listener; a second registration would leak a
+// second publisher goroutine).
 func (a *App) SetStateListener(fn func(AppState)) {
 	if fn == nil {
 		return
@@ -53,20 +56,23 @@ func (a *App) SetStateListener(fn func(AppState)) {
 		return
 	}
 
-	a.statePub = statepub.New("app-state", fn, appStateEqual, statepub.DefaultCoalesce)
+	a.statePub = statepub.New("app-state", appStateEqual)
+	a.statePub.Subscribe(fn)
 
 	a.pubMu.Unlock()
 
 	// Initial authoritative snapshot: the UI converges at
-	// registration time without waiting for any ticker.
+	// registration time without waiting for any transition.
 	a.publishState()
 }
 
 // SetConnectionListener registers the emit callback for connection
-// state-machine changes. The manager's subscription dispatches after
-// every real transition; this publisher deduplicates and coalesces
-// before the UI is touched. The first registration emits the current
-// snapshot immediately.
+// state-machine snapshots. The manager's publisher dispatches after
+// every real transition — deduplicated, ordered, zero-delay — and the
+// current snapshot is (re-)published through the same stream at
+// registration, so the UI converges immediately. Registering twice is
+// rejected (a second subscription would outlive the first one's
+// teardown and leak delivery work).
 func (a *App) SetConnectionListener(fn func(connection.Snapshot)) {
 	if fn == nil {
 		return
@@ -74,38 +80,25 @@ func (a *App) SetConnectionListener(fn func(connection.Snapshot)) {
 
 	a.pubMu.Lock()
 
-	if a.connPub != nil {
+	if a.connSubCancel != nil {
 		a.pubMu.Unlock()
 
 		if a.logger != nil {
-			a.logger.Warn("app", "connection_publisher",
+			a.logger.Warn("app", "connection_listener",
 				"SetConnectionListener called twice; ignoring the second registration")
 		}
 
 		return
 	}
 
-	a.connPub = statepub.New("connection", fn, connectionSnapshotEqual, statepub.DefaultCoalesce)
+	// Subscribe + initial convergence in one step: the manager
+	// re-publishes the current snapshot through its ordered stream
+	// (deduplicated when nothing changed since the last delivery).
+	cancel := a.connMgr.Subscribe(fn)
 
-	a.pubMu.Unlock()
-
-	// Bridge: manager transition → deduplicating publisher.
-	cancel := a.connMgr.Subscribe(func(snapshot connection.Snapshot) {
-		a.pubMu.Lock()
-		pub := a.connPub
-		a.pubMu.Unlock()
-
-		if pub != nil {
-			pub.Publish(snapshot)
-		}
-	})
-
-	a.pubMu.Lock()
 	a.connSubCancel = cancel
-	a.pubMu.Unlock()
 
-	// Initial authoritative snapshot.
-	a.connPub.Publish(a.connMgr.Snapshot())
+	a.pubMu.Unlock()
 }
 
 // publishState pushes the current application state into the
@@ -124,26 +117,23 @@ func (a *App) publishState() {
 	pub.Publish(a.State())
 }
 
-// stopPublishers terminates both publishers synchronously. Called in
-// App.Shutdown after the connection manager joined its dispatcher:
-// after this returns no emit callback can run again.
+// stopPublishers terminates the UI wiring synchronously. Called in
+// App.Shutdown after the connection manager joined its own publisher
+// (final disconnected snapshot delivered): the connection subscription
+// is cancelled and the application-state publisher is stopped after
+// draining its pending snapshots — after this returns no emit
+// callback can run again.
 func (a *App) stopPublishers() {
 	a.pubMu.Lock()
 	statePub := a.statePub
-	connPub := a.connPub
 	cancel := a.connSubCancel
 
 	a.statePub = nil
-	a.connPub = nil
 	a.connSubCancel = nil
 	a.pubMu.Unlock()
 
 	if cancel != nil {
 		cancel()
-	}
-
-	if connPub != nil {
-		connPub.Stop()
 	}
 
 	if statePub != nil {
@@ -157,12 +147,5 @@ func (a *App) stopPublishers() {
 // storage stats, ingestion stats) — the publisher drops a snapshot
 // only when NOTHING observable changed.
 func appStateEqual(a, b AppState) bool {
-	return reflect.DeepEqual(a, b)
-}
-
-// connectionSnapshotEqual is the semantic-equality predicate for
-// connection snapshots. DeepEqual covers the state string, core
-// identity, latency/verification evidence and the attempt history.
-func connectionSnapshotEqual(a, b connection.Snapshot) bool {
 	return reflect.DeepEqual(a, b)
 }

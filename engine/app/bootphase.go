@@ -98,10 +98,9 @@ func (a *App) markBoot(phase string) {
 
 	a.mu.Unlock()
 
-	// v0.9.8.7: a real boot-phase advance reaches the UI as a real
-	// event (deduplicated by the publisher) instead of waiting for the
-	// next ticker — the BootProgress surface updates the moment the
-	// engine moves forward.
+	// A real boot-phase advance reaches the UI as a real event
+	// (deduplicated by the publisher) — the BootProgress surface
+	// updates the moment the engine moves forward.
 	a.publishState()
 }
 

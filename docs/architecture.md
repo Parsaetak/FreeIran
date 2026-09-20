@@ -57,20 +57,24 @@ record, and verified in the background. The UI observes
 `loading → ready → degraded` transitions through the `freeiran:state`
 event.
 
-**UI synchronization model (v0.9.8.7):** both UI event streams are
-published from the authoritative transition paths — never from ticker
-loops. Every meaningful mutation (boot-phase advance, degraded/healthy
+**UI synchronization model:** both UI event streams are published
+from the authoritative transition paths — never from ticker loops.
+Every meaningful mutation (boot-phase advance, degraded/healthy
 transition, ingestion start/finish, shutdown, every connection
-state-machine mutation) calls a publisher that (1) drops semantically
-identical snapshots, (2) collapses bursts into one emission of the
-newest snapshot within a 25 ms coalescing window, and (3) stops
-synchronously during `App.Shutdown`, so no emit callback can fire
-into a closing UI runtime. The connection manager owns a
-subscription mechanism (`Subscribe`) whose dispatch goroutine is
-joined on `Manager.Shutdown`; the composition root bridges it into
-the same publisher. The publishers are dedup+coalescing only — they
-are NOT the source of truth, and there is no periodic full-state
-heartbeat on the normal path.
+state-machine mutation) pushes its snapshot into a publisher
+(`internal/statepub`) that (1) drops semantically identical
+snapshots, (2) delivers every real change in publication order with
+ZERO artificial delay — user-visible lifecycle transitions
+(selecting → preparing → starting_core → …) are never silently
+coalesced away — through a bounded in-memory queue, and (3) stops
+synchronously during `App.Shutdown` after draining pending
+snapshots, so the final terminal state is delivered and no emit
+callback can fire into a closing UI runtime. The connection manager
+owns its snapshot publisher (`Subscribe` registers a listener and
+converges it with the current snapshot); the composition root
+registers the UI bridges directly. The publishers are dedup +
+ordered delivery only — they are NOT the source of truth, and there
+is no periodic full-state heartbeat on the normal path.
 
 ## 3. Ingestion pipeline
 

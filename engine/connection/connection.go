@@ -34,8 +34,8 @@ import (
 	"github.com/Parsaetak/FreeIran/engine/core"
 	firerrors "github.com/Parsaetak/FreeIran/engine/errors"
 	"github.com/Parsaetak/FreeIran/engine/metrics"
-
 	"github.com/Parsaetak/FreeIran/engine/provider"
+	"github.com/Parsaetak/FreeIran/internal/statepub"
 )
 
 // Subsystem identifies the connection layer in structured errors.
@@ -316,17 +316,12 @@ type Manager struct {
 	monitorDone chan struct{}
 	shutdown    bool
 
-	// v0.9.8.7 event-driven UI synchronization: subscribers receive the
-	// authoritative Snapshot after every real state mutation. notifyCh
-	// (buffered 1) collapses bursts; publishLoop dispatches the newest
-	// snapshot outside all locks; pubStopped serializes the close
-	// under m.mu (see publish.go / stateChanged).
-	subMu       sync.Mutex
-	subscribers map[int]func(Snapshot)
-	subSeq      int
-	notifyCh    chan struct{}
-	pubDone     chan struct{}
-	pubStopped  bool
+	// Event-driven UI synchronization: the statepub publisher is the
+	// single dispatch boundary. Every mutation path calls stateChanged()
+	// (with m.mu held), which pushes the authoritative snapshot into the
+	// publisher's ordered, deduplicated, zero-delay delivery stream
+	// (see publish.go).
+	publisher *statepub.Publisher[Snapshot]
 }
 
 // New creates a connection manager bound to a core registry.
@@ -356,12 +351,10 @@ func New(opts Options) *Manager {
 
 	m := &Manager{opts: opts, state: StateDisconnected}
 
-	// v0.9.8.7: the snapshot dispatch goroutine starts with the
-	// manager; Shutdown joins it (stopPublisher) after the terminal
-	// state transitions.
-	m.notifyCh = make(chan struct{}, 1)
-	m.pubDone = make(chan struct{})
-	go m.publishLoop()
+	// The snapshot publisher starts with the manager; Shutdown stops
+	// it (stopPublisher) after the terminal state transitions — the
+	// final snapshot is drained and delivered before it terminates.
+	m.publisher = statepub.New("connection", snapshotsEqual)
 
 	return m
 }
@@ -1245,9 +1238,10 @@ func (m *Manager) Shutdown() {
 	m.attempts = nil
 	m.mu.Unlock()
 
-	// v0.9.8.7: join the snapshot dispatch goroutine AFTER the terminal
-	// state transitions so the final disconnected snapshot is still
-	// delivered. No listener callback can run after this returns.
+	// Join the snapshot publisher AFTER the terminal state
+	// transitions: pending snapshots (the final disconnected state)
+	// are drained and delivered before the publisher terminates.
+	// No listener callback can run after this returns.
 	m.stopPublisher()
 }
 

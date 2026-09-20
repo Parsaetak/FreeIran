@@ -1,33 +1,43 @@
-; FreeIran Windows installer (v0.9.8.7, §17/§18).
+; FreeIran Windows installer.
 ;
 ; A minimal, reliable, standard Windows installer built on the mature
 ; Inno Setup ecosystem — no custom installer engine.
 ;
-; v0.9.8.3 workspace model: the APPLICATION FOLDER is the workspace
-; root for every deployment (installed and portable alike). There is
-; NO %AppData%\FreeIran secondary tree anymore:
+; Workspace model: the APPLICATION FOLDER is the workspace root for
+; every deployment (installed and portable alike). There is NO
+; %AppData%\FreeIran secondary tree:
 ;
 ;   - the default install directory is per-user writable
 ;     (%LOCALAPPDATA%\Programs\FreeIran) and the user may choose any
 ;     writable directory — the installer verifies writability;
-;   - the installer no longer writes installed.marker. A stale marker
-;     from a pre-0.9.8.3 install is inert; the one-time migration in
+;   - no installed.marker is written. A stale marker from a
+;     pre-0.9.8.3 install is inert; the one-time migration in
 ;     system/workspace_migrate.go copies legacy %AppData%\FreeIran
 ;     data (config, data, cores, cache, providers) into the
 ;     application folder, verifies it, and leaves the source intact;
 ;   - the portable ZIP keeps portable.marker and stores everything
 ;     next to the executable — same model.
 ;
-; Uninstalling stops the app and its managed child processes, removes
-; application-owned files, and asks BEFORE deleting user data (the
-; workspace under the application folder). It never silently leaves a
-; hidden secondary workspace.
+; PROCESS SHUTDOWN POLICY (ownership-aware, never by bare name):
+;
+;   - Install/upgrade: CloseApplications=yes (the Windows Restart
+;     Manager) closes a running FreeIran gracefully, keyed to the
+;     files being replaced — inherently ownership-aware. A graceful
+;     close runs the application's own shutdown, which terminates
+;     every managed child through kernel job objects.
+;   - Uninstall: StopOwnedProcesses (below) stops, before file
+;     removal, (a) FreeIran.exe instances whose executable path is
+;     exactly {app}\FreeIran.exe and (b) the PIDs recorded in the
+;     application's managed-process manifest ({app}\runtime\
+;     managed-processes.txt) — each verified by executable path
+;     before termination. taskkill /im <name> would risk killing an
+;     unrelated process that shares an image name; it is forbidden.
 ;
 ; CI passes the version explicitly (single source of truth: VERSION):
-;   ISCC.exe /DAPP_VERSION=0.9.8.7 scripts/freeiran.iss
+;   ISCC.exe /DAPP_VERSION=0.9.8.8 scripts/freeiran.iss
 
 #ifndef APP_VERSION
-  #define APP_VERSION "0.9.8.7"
+  #define APP_VERSION "0.9.8.8"
 #endif
 
 #define MyAppName "FreeIran"
@@ -53,7 +63,8 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayIcon={app}\{#MyAppExeName}
-; Stop a running FreeIran before replacing files (§18).
+; Graceful stop of a running app before replacing/removing files
+; (Restart Manager — keyed to the {app} files, ownership-aware).
 CloseApplications=yes
 RestartApplications=no
 VersionInfoVersion={#APP_VERSION}
@@ -80,16 +91,6 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; \
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; \
     Flags: nowait postinstall skipifsilent
-
-[UninstallRun]
-; Stop the app and every managed child core/provider before file
-; removal (no orphan processes; session cleanup discipline).
-Run: taskkill /f /im FreeIran.exe; Flags: runhidden; RunOnceId: "KillApp"
-Run: taskkill /f /im xray.exe; Flags: runhidden; RunOnceId: "KillXray"
-Run: taskkill /f /im v2ray.exe; Flags: runhidden; RunOnceId: "KillV2ray"
-Run: taskkill /f /im sing-box.exe; Flags: runhidden; RunOnceId: "KillSingbox"
-Run: taskkill /f /im tor.exe; Flags: runhidden; RunOnceId: "KillTor"
-Run: taskkill /f /im psiphon-tunnel-core*.exe; Flags: runhidden; RunOnceId: "KillPsiphon"
 
 [UninstallDelete]
 ; Application-owned runtime artifacts that Inno does not know about
@@ -139,12 +140,67 @@ end;
 
 // Legacy marker cleanup: pre-0.9.8.3 installs carried installed.marker
 // (the workspace then lived in %AppData%\FreeIran). The marker is now
-// inert; remove it so the deployment converges on the new model. The
-// legacy %AppData% tree is handled at uninstall time below.
+// inert; remove it so the deployment converges on the new model.
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
     DeleteFile(ExpandConstant('{app}\installed.marker'));
+end;
+
+// StopOwnedProcesses terminates, BEFORE file removal, exactly the
+// processes this installation owns:
+//
+//   1. FreeIran.exe instances whose executable path is EXACTLY
+//      {app}\FreeIran.exe (a portable copy running from another
+//      directory is never touched);
+//   2. every PID recorded in the managed-process manifest
+//      ({app}\runtime\managed-processes.txt) — the manifest is
+//      maintained by the application itself (system/process_manifest.go)
+//      and each entry is verified against the CURRENT executable path
+//      of the PID before termination, so a reused PID or a stale
+//      entry can never cause an unrelated kill.
+//
+// Broad image-name termination (taskkill /im xray.exe and friends) is
+// deliberately NOT used: it would terminate unrelated user processes
+// that happen to share an executable name. When PowerShell (present
+// on every supported Windows) cannot run, cleanup degrades to the
+// kernel job-object guarantee (children die with their parent) — it
+// never degrades to a blind kill.
+procedure StopOwnedProcesses();
+var
+  AppDir: String;
+  Manifest: String;
+  Script: String;
+  ResultCode: Integer;
+begin
+  AppDir := ExpandConstant('{app}');
+  Manifest := AppDir + '\runtime\managed-processes.txt';
+
+  // Single-quoted PowerShell strings: AppDir may contain spaces.
+  Script :=
+    '$ErrorActionPreference = ''SilentlyContinue''; ' +
+    '$app = ''' + AppDir + '''; ' +
+    // (1) the installed FreeIran itself — exact executable path.
+    'Get-Process -Name ''FreeIran'' | ' +
+    'Where-Object { $_.Path -eq ($app + ''\FreeIran.exe'') } | ' +
+    'Stop-Process -Force; ' +
+    // (2) manifest-recorded children — PID + path verified.
+    '$m = $app + ''\runtime\managed-processes.txt''; ' +
+    'if (Test-Path $m) { ' +
+    '  Get-Content $m | ForEach-Object { ' +
+    '    $e = $_ -split ''\|'', 2; ' +
+    '    if ($e.Count -eq 2) { ' +
+    '      $p = Get-Process -Id ([int]$e[0]); ' +
+    '      if ($p -and $p.Path -eq $e[1]) { Stop-Process -Id $p.Id -Force } ' +
+    '    } ' +
+    '  } ' +
+    '}';
+
+  if not Exec('powershell.exe',
+       '-NoProfile -ExecutionPolicy Bypass -Command "' + Script + '"',
+       '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    Log('StopOwnedProcesses: PowerShell unavailable (' +
+        'job-object cleanup remains in force); no broad kill performed');
 end;
 
 // Uninstall: the workspace now lives INSIDE the application folder,
@@ -156,6 +212,10 @@ var
   UserDataDir: String;
   LegacyDataDir: String;
 begin
+  if CurUninstallStep = usUninstall then
+    // Stop owned processes BEFORE the files they run from are removed.
+    StopOwnedProcesses();
+
   if CurUninstallStep <> usPostUninstall then
     Exit;
 

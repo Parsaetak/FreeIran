@@ -85,7 +85,7 @@ type Settings struct {
 	// ReducedMotion asks the UI to minimize animation (accessibility).
 	ReducedMotion bool `json:"reduced_motion"`
 
-	// --- v0.9.8.7 local inbound port preferences --------------------
+	// --- local inbound port preferences ------------------------------
 	//
 	// The Settings UI exposed these controls since v0.9.8.3, but the
 	// fields were never persisted and the connection manager's
@@ -258,7 +258,7 @@ func (a *App) applySettings(settings Settings) {
 		queue.SetConcurrency(settings.DevQueueWorkers)
 	}
 
-	// v0.9.8.7: local inbound port preferences reach the live
+	// Local inbound port preferences reach the live
 	// connection manager immediately on save (0 = automatic). The
 	// manager re-checks bindability per attempt, so an occupied port
 	// surfaces as a clear per-attempt failure, never a silent
@@ -383,7 +383,7 @@ func validateSettings(settings Settings) error {
 		return fmt.Errorf("app: log backup count out of range")
 	}
 
-	// v0.9.8.7: local inbound port preferences — 0 = automatic,
+	// Local inbound port preferences — 0 = automatic,
 	// otherwise a valid unprivileged TCP port. The manager still
 	// re-checks bindability per attempt (check-then-use races resolve
 	// as a normal failed attempt with a clear error).

@@ -222,14 +222,16 @@ type App struct {
 	seenHashes map[string]string
 	lastStats  *pipeline.Stats
 
-	// v0.9.8.7 event-driven UI synchronization: deduplicating
-	// publishers for the two authoritative UI streams (application
-	// state + connection state machine). Created on the first listener
-	// registration (SetStateListener / SetConnectionListener), stopped
-	// synchronously in Shutdown. pubMu serializes creation/stop.
+	// Event-driven UI synchronization. The application-state
+	// publisher (internal/statepub) is created on the first
+	// SetStateListener registration and stopped synchronously in
+	// Shutdown; the connection stream is published by the
+	// connection manager itself (engine/connection), and
+	// SetConnectionListener only subscribes the UI bridge to it —
+	// one publisher per stream, no stacked dispatch layers.
+	// pubMu serializes registration/stop.
 	pubMu         sync.Mutex
 	statePub      *statepub.Publisher[AppState]
-	connPub       *statepub.Publisher[connection.Snapshot]
 	connSubCancel func()
 
 	ingesting atomic.Bool
@@ -381,6 +383,13 @@ func New(opts Options) (*App, error) {
 	// manager's validation/smoke folders) live under
 	// <workspace>/runtime instead of the system temp root.
 	core.SetRuntimeRoot(layout.Runtime)
+
+	// Managed-process manifest: every supervised child process
+	// (cores, providers) is recorded with its PID and executable
+	// path so external cleanup (the Windows installer) can kill
+	// exactly the processes FreeIran owns — never an unrelated
+	// process that happens to share an image name.
+	system.SetProcessManifestPath(filepath.Join(layout.Runtime, "managed-processes.txt"))
 
 	st, err := store.Open(store.Options{
 		Path: layout.Data,
@@ -648,8 +657,8 @@ func (a *App) Start() {
 
 			a.mu.Unlock()
 
-			// v0.9.8.7: the degraded transition reaches the UI as a
-			// real event, not at the next 2-second tick.
+			// The degraded transition reaches the UI as a real
+			// event, never delayed behind a poll.
 			a.publishState()
 		}
 	}()
@@ -806,7 +815,7 @@ func (a *App) Shutdown() {
 		a.state.Status = "shutting_down"
 		a.mu.Unlock()
 
-		// v0.9.8.7: the shutting-down transition is published before
+		// The shutting-down transition is published before
 		// the subsystem teardown starts.
 		a.publishState()
 
@@ -822,10 +831,12 @@ func (a *App) Shutdown() {
 			a.connMgr.Shutdown()
 		}
 
-		// v0.9.8.7: the connection manager has joined its dispatch
-		// goroutine (final disconnected snapshot delivered); now stop
-		// both UI publishers synchronously — no emit callback survives
-		// this point, so nothing fires into a closing UI runtime.
+		// The connection manager has joined its own publisher
+		// (final disconnected snapshot delivered); now stop the
+		// UI wiring synchronously — the connection subscription
+		// is cancelled and the state publisher stopped after
+		// draining, so no emit callback survives this point and
+		// nothing fires into a closing UI runtime.
 		a.stopPublishers()
 
 		// Snapshot the lazy-init subsystems under initMu so
@@ -913,7 +924,7 @@ func (a *App) runIngestionCycle(ctx context.Context) error {
 		return nil // skip-if-busy
 	}
 
-	// v0.9.8.7: ingestion start/finish are meaningful state changes —
+	// Ingestion start/finish are meaningful state changes —
 	// published from the transition path instead of the next tick.
 	a.publishState()
 
@@ -975,7 +986,7 @@ func (a *App) runIngestionCycle(ctx context.Context) error {
 			stats.Discovered, stats.Persisted, stats.Duplicates)
 	}
 
-	// v0.9.8.7: ingestion finished (or failed) — publish the final
+	// Ingestion finished (or failed) — publish the final
 	// state (ingestion_running=false + fresh storage/ingestion
 	// stats) as a real event.
 	a.publishState()

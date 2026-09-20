@@ -125,13 +125,13 @@ func main() {
 		},
 	})
 
-	// v0.9.8.7: event-driven UI synchronization — the 2-second
-	// ticker broadcasts are gone. The authoritative transition paths
-	// publish through deduplicating, coalescing publishers
-	// (internal/statepub); these callbacks are the only bridge to the
-	// UI runtime. Registration happens BEFORE Start() so no transition
-	// is missed, and each first registration immediately emits the
-	// current snapshot (the old 500/700 ms sleeps are gone too).
+	// Event-driven UI synchronization — the authoritative
+	// transition paths publish through the statepub publishers
+	// (deduplicated, ordered, zero-delay; see internal/statepub);
+	// these callbacks are the only bridge to the UI runtime.
+	// Registration happens BEFORE Start() so no transition is
+	// missed, and each registration immediately publishes the
+	// current snapshot for initial convergence.
 	applicationInstance.SetStateListener(func(state app.AppState) {
 		wailsApp.Event.Emit("freeiran:state", state)
 	})
@@ -207,16 +207,16 @@ func main() {
 }
 
 // versionedAssetCache wraps the bundled asset server with the cache
-// policy the v0.9.8.7 STABLE asset filenames require. The embed tree
-// uses fixed logical names (assets/app.js, assets/app.css,
+// policy the STABLE asset filenames require. The embed tree uses
+// fixed logical names (assets/index.js, assets/index.css,
 // assets/export-worker.js) that are replaced IN PLACE on every
 // release — so the webview must REVALIDATE instead of trusting a
-// cached response across application upgrades. "no-cache" (revalidate
-// before use) does exactly that: every launch re-reads the assets
-// from the in-process embedded filesystem (memory-speed, no network),
-// and an upgraded binary can never serve stale JavaScript or CSS.
-// Hashed filenames remain forbidden — this policy is the reason they
-// can stay forbidden safely.
+// cached response across application upgrades. "no-cache"
+// (revalidate before use) does exactly that: every launch re-reads
+// the assets from the in-process embedded filesystem (memory-speed,
+// no network), and an upgraded binary can never serve stale
+// JavaScript or CSS. Hashed filenames remain forbidden — this policy
+// is the reason they can stay forbidden safely.
 func versionedAssetCache(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-cache")

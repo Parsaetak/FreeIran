@@ -7,35 +7,26 @@ import react from "@vitejs/plugin-react";
 // npm at build time. Inside the desktop app the backend serves the
 // built assets; no HTTP API is involved.
 //
-// v0.9.8.7 — STABLE, UNIFIED ASSET FILENAMES: the embedded production
+// STABLE ASSET FILENAME CONTRACT (permanent): the embedded production
 // tree uses fixed logical names that are replaced IN PLACE on every
 // release — no content hashes, ever:
 //
 //      dist/index.html
-//      dist/assets/app.js             (main entry bundle)
-//      dist/assets/app.css            (entry stylesheet)
-//      dist/assets/export-worker.js   (CSV export worker)
+//      dist/assets/index.js            (main entry bundle)
+//      dist/assets/index.css           (entry stylesheet)
+//      dist/assets/export-worker.js    (CSV export worker)
 //
-// The Wails asset handler serves the embed with a version-aware
-// cache policy (cmd/freeiran), so updated content is re-fetched
-// after an upgrade without renaming files. CI's clean-room embed
-// check enforces this exact inventory and fails on any hashed or
-// stale artifact.
+// index.js / index.css are the entry's natural names (the HTML entry
+// is index.html), so the build produces them without any renaming.
+// The Wails asset handler serves the embed with a revalidation cache
+// policy (cmd/freeiran), so updated content is re-fetched after an
+// upgrade without renaming files. copy-dist.mjs and the CI embed
+// check enforce this exact inventory and fail on any hashed or stale
+// artifact.
 const stableOutput = {
-  entryFileNames: "assets/app.js",
+  entryFileNames: "assets/index.js",
   chunkFileNames: "assets/[name].js",
-  // The entry stylesheet is bundled into the "index" entry chunk, so
-  // Vite names it index.css — canonically renamed to app.css. Every
-  // other asset keeps its logical name.
-  assetFileNames: (info: { names?: readonly string[] }) => {
-    const names = info.names ?? [];
-
-    if (names.some((name) => name === "index.css")) {
-      return "assets/app.css";
-    }
-
-    return "assets/[name][extname]";
-  },
+  assetFileNames: "assets/[name][extname]",
 };
 
 export default defineConfig({
@@ -50,11 +41,12 @@ export default defineConfig({
       output: stableOutput,
     },
   },
-  // Worker bundles get their own stable name. format "es" makes the
-  // `?worker` import a single module-worker chunk of the MAIN build —
-  // exactly one export-worker.js is emitted (the default iife format
-  // emitted the file twice: once from the worker pipeline and once
-  // from the dynamic-import chunk, which the clean-room embed check
+  // Worker bundles keep their source-derived logical name
+  // (export-worker.ts -> assets/export-worker.js). format "es" makes
+  // the `?worker` import a single module-worker chunk of the MAIN
+  // build — exactly one export-worker.js is emitted (the default iife
+  // format emits the file twice: once from the worker pipeline and
+  // once from the dynamic-import chunk, which the embed check
   // forbids).
   worker: {
     format: "es",

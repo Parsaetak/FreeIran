@@ -9,7 +9,7 @@ configurations.
 **Project:** FreeIran — A SHEYTAN Digital System
 **Architect:** Parsa Tak / SHEYTAN
 **Repository:** https://github.com/Parsaetak/FreeIran
-**Current version:** 0.9.8.7 (see `VERSION`)
+**Current version:** 0.9.8.8 (see `VERSION`)
 **Status:** production architecture — multi-core protocol runtime with
 managed installation, multi-level node discovery, Ping/URL test modes
 with measured ranking, verified-connection engine with racing,
@@ -19,11 +19,79 @@ EXPERIMENTAL and disabled in this release (see "TUN mode" below).
 
 ---
 
+## What's new in v0.9.8.8
+
+v0.9.8.8 is a **deep cleanup, stable-filenames and repository-hygiene
+release** — no new connectivity features, no safety boundary weakened.
+
+### CI recovered (run 35519469195)
+
+- The frontend typecheck failed with four `TS2393 Duplicate function
+  implementation` errors: two byte-identical copies of the CSV export
+  worker (`src/workers/export-worker.ts` and `src/workers/
+  exportWorker.ts`) were both tracked, and because a worker module has
+  no top-level imports/exports, TypeScript treated both as global
+  scripts — their identically-named functions collided. The duplicate
+  is deleted; the canonical import (`export-worker?worker`) is
+  unchanged and the build emits exactly one `export-worker.js`.
+
+### Final unified asset filename contract
+
+- The embedded production tree is now EXACTLY `index.html`,
+  `assets/index.js`, `assets/index.css`, `assets/export-worker.js` —
+  stable logical names produced directly by the build (they are the
+  entry's natural names; the previous release's index→app renaming
+  step is gone), replaced in place on every release. All six stale
+  hashed/legacy artifacts that the v0.9.8.7 tree still carried
+  (app.js, app.css, two `exportWorker-*.js`, hashed `index-*` bundles)
+  are deleted; the v0.9.8.7 asset pipeline never actually landed in
+  the committed tree because the typecheck failure blocked the
+  regeneration. `copy-dist.mjs` wipes the target completely, copies
+  the fresh output and verifies the exact inventory; CI enforces the
+  same allowlist plus an explicit hashed-filename scan.
+
+### State publishing without artificial delay
+
+- `internal/statepub` is now the single publisher boundary for both
+  UI streams. The connection manager owns its snapshot publisher and
+  pushes every real transition; the app layer no longer stacks a
+  second dispatch layer on top. The 25 ms sleep inside the delivery
+  loop is gone: delivery is ordered, deduplicated and ZERO-delay, and
+  a bounded queue guarantees that fast lifecycle bursts
+  (selecting → preparing → starting_core → waiting_for_ready) are
+  delivered in order with none silently lost (regression-proved).
+  `Stop()` drains pending snapshots before terminating, so the final
+  terminal state always reaches the UI.
+
+### Ownership-aware installer
+
+- The uninstaller no longer runs broad `taskkill /f /im <name>.exe`
+  sweeps (which could terminate an unrelated user process sharing an
+  image name). The application records every supervised child process
+  (PID + executable path) in a managed-process manifest under the
+  workspace runtime directory; the uninstaller terminates only
+  FreeIran.exe instances whose path is exactly the installed copy,
+  plus manifest-recorded PIDs each verified against its current
+  executable path before termination. Graceful install-time closure
+  stays with the Windows Restart Manager.
+
+### Repository hygiene
+
+- Wails bindings verified reproducible (two consecutive generations
+  byte-identical; every binding machine-generated, no hand-written
+  shims — stale documentation claiming otherwise is corrected).
+- Duplicate-implementation audit, dead-file scan, stale-reference
+  scan and a documentation truth pass completed; release-narration
+  comments replaced with invariant descriptions.
+
+---
+
 ## What's new in v0.9.8.7
 
-v0.9.8.7 is a **determinism and responsiveness release** — the same
+v0.9.8.7 was a **determinism and responsiveness release** — the same
 FreeIran architecture with the waiting removed, not the safety
-boundaries. No new connectivity features.
+boundaries. No new connectivity features. (Its stable-asset-filenames
+work was completed and superseded by v0.9.8.8 — see above.)
 
 ### CI recovered (run 35492972394)
 
@@ -41,12 +109,12 @@ boundaries. No new connectivity features.
   `freeiran:connection` from 2-second ticker loops. Both streams are
   published from the AUTHORITATIVE transition paths (boot phases,
   degraded/healthy transitions, ingestion start/finish, shutdown,
-  every connection state-machine mutation) through a new deduplicating
-  publisher (`internal/statepub`): identical snapshots never emit, a
-  burst of transitions collapses into one emission of the newest
-  snapshot within a 25 ms coalescing window, and `Stop()` joins the
-  publisher goroutine so no callback can fire into a closing UI
-  runtime. A slow heartbeat watchdog remains in the memory/recovery
+  every connection state-machine mutation) through a deduplicating
+  publisher (`internal/statepub`): identical snapshots never emit,
+  and `Stop()` joins the publisher goroutine so no callback can fire
+  into a closing UI runtime. (The initial 25 ms coalescing window
+  was removed in v0.9.8.8 in favor of ordered zero-delay delivery.)
+  A slow heartbeat watchdog remains in the memory/recovery
   services where it is diagnostics, not synchronization.
 - The frontend keeps its event subscriptions and generation guards;
   the previous always-on 5 s provider poll on the Cores page now runs
@@ -54,15 +122,16 @@ boundaries. No new connectivity features.
 
 ### Stable, unified frontend asset filenames
 
-- The embedded production tree no longer carries content-hashed
-  bundles. After a clean build it is EXACTLY:
-  `index.html`, `assets/app.js`, `assets/app.css`,
-  `assets/export-worker.js` — replaced in place on every release.
-  Because the filenames are stable, the Wails asset handler is wrapped
-  with a `Cache-Control: no-cache` policy so an upgraded binary never
-  serves stale JavaScript/CSS from the webview cache. CI enforces the
-  exact inventory with an explicit allowlist (any hashed, stale or
-  unexpected artifact fails the job).
+- The build configuration moved to stable, hash-free asset names and
+  the previous release's 14 accumulated hashed bundles were addressed
+  at the configuration level. (The v0.9.8.7 committed embed tree was
+  never actually regenerated with this pipeline — a typecheck failure
+  blocked CI before the embed check could run — so the stale hashed
+  artifacts remained in Git until v0.9.8.8 completed the work with
+  the final `index.js` / `index.css` / `export-worker.js` names.)
+  The Wails asset handler is wrapped with a `Cache-Control: no-cache`
+  policy so an upgraded binary never serves stale JavaScript/CSS
+  from the webview cache.
 
 ### Truthful Wails bindings
 
@@ -367,7 +436,7 @@ FreeIran/
 ├── .github/workflows/     CI, release and security pipelines
 ├── docs/                  Architecture, storage, performance, CI, security, dev
 ├── CHANGELOG.md           Release history (moved out of README, v0.9.8.6)
-└── VERSION                Application version (0.9.8.7)
+└── VERSION                Application version (0.9.8.8)
 ```
 
 ---

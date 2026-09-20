@@ -29,9 +29,11 @@ jobs:
           go-version: "1.26.8"
           cache: true
 
-      # §26: fail loudly on version drift between the three synced
-      # sources (VERSION, frontend/package.json, internal/version).
-      # release.yml re-checks against the git tag at release time.
+      # §26: fail loudly on version drift between the synced sources
+      # (VERSION, frontend/package.json, internal/version, and the
+      # Windows resource definition build/winres.json that produces
+      # cmd/freeiran/*.syso). release.yml re-checks against the git
+      # tag at release time.
       - name: Version consistency
         run: |
           version=$(tr -d '[:space:]' < VERSION)
@@ -40,6 +42,16 @@ jobs:
             { echo "frontend/package.json version != $version" >&2; exit 1; }
           grep -q "var Version = \"$version\"" internal/version/version.go ||
             { echo "internal/version/version.go != $version" >&2; exit 1; }
+          # winres.json carries the version in several places; every
+          # "0.9.8.x" literal in it must be the current version (a
+          # stale resource made v0.9.8.6/0.9.8.7 ship 0.9.8.5 PE
+          # version metadata).
+          bad=$(grep -oE '0\.9\.[0-9]+(\.[0-9]+)?' build/winres.json |
+            sort -u | grep -vx "$version" || true)
+          if [ -n "$bad" ]; then
+            echo "build/winres.json carries stale version(s): $bad (want $version only)" >&2
+            exit 1
+          fi
 
       # The Wails toolchain pair must be semantically IDENTICAL: the Go
       # module reports "v3.0.0-beta.19" while npm reports "3.0.0-beta.19"
@@ -179,18 +191,17 @@ jobs:
       - name: Production build
         run: npm run build
 
-      # v0.9.8.6: the committed embed output must be EXACTLY what the
-      # pinned toolchain regenerates. The v0.9.8.5 tree carried 14
-      # hashed asset files of which only 3 were referenced (historical
-      # bundles retained in Git). build:embed wipes and re-copies the
+      # The committed embed output must be EXACTLY what the pinned
+      # toolchain regenerates: build:embed wipes and re-copies the
       # target, so a clean `git diff` proves no stale bundles and no
       # drift between frontend/dist and cmd/freeiran/frontend/dist.
       #
-      # v0.9.8.7: explicit ALLOWLIST on top of the git-diff check. The
-      # stable-filename contract (assets/app.js, assets/app.css,
-      # assets/export-worker.js) is enforced directly: an old hashed
-      # artifact, an unexpected index-*.js, a missing canonical asset,
-      # an undeclared index.html reference or a duplicate worker fails
+      # On top of the git-diff check, the CANONICAL INVENTORY is
+      # enforced directly (index.html, assets/index.js,
+      # assets/index.css, assets/export-worker.js): an old hashed
+      # artifact (assets/index-*.js, assets/app-*.js,
+      # assets/exportWorker-*.js, ...), a missing canonical asset, an
+      # undeclared index.html reference or a duplicate worker fails
       # the job even when git diff would stay quiet (e.g. a file
       # introduced AND committed in the same change).
       - name: Clean-room embed check
@@ -205,7 +216,7 @@ jobs:
           fi
 
           dist=cmd/freeiran/frontend/dist
-          allowlist="index.html assets/app.js assets/app.css assets/export-worker.js"
+          allowlist="index.html assets/index.js assets/index.css assets/export-worker.js"
 
           actual=$(cd "$dist" && find . -type f | sed 's|^\./||' | sort)
           expected=$(echo "$allowlist" | tr ' ' '\n' | sort)
@@ -226,9 +237,20 @@ jobs:
             fi
           done
 
+          # Hashed-era artifacts must never return, not even under a
+          # name the exact allowlist would already reject — the
+          # explicit patterns document the forbidden families.
+          if find "$dist/assets" -type f | grep -qE \
+            'assets/(index|app|exportWorker|export-worker)-[A-Za-z0-9_-]+\.(js|css)$'; then
+            echo "hashed asset filename found in the embed tree:" >&2
+            find "$dist/assets" -type f | grep -E \
+              'assets/(index|app|exportWorker|export-worker)-[A-Za-z0-9_-]+\.(js|css)$' | sed 's/^/  /' >&2
+            exit 1
+          fi
+
           # index.html must reference the canonical stable names and
           # nothing else.
-          for ref in assets/app.js assets/app.css; do
+          for ref in assets/index.js assets/index.css; do
             grep -q "$ref" "$dist/index.html" ||
               { echo "index.html does not reference $ref" >&2; exit 1; }
           done

@@ -1,11 +1,10 @@
-// publish_test.go pins the v0.9.8.7 snapshot-subscription contract:
-// every real state-machine transition wakes the dispatch loop, which
-// delivers the NEWEST authoritative snapshot — event-driven, no
-// periodic heartbeat. Bursts of sub-millisecond transitions collapse
-// into newer snapshots by design (the app-layer publisher dedups and
-// coalesces for the UI); the delivered sequence is therefore
-// monotonic in lifecycle order and always terminates with the
-// authoritative terminal state.
+// publish_test.go pins the snapshot-subscription contract: every real
+// state-machine transition reaches the subscriber through the
+// publisher's ordered, deduplicated, zero-delay stream — no periodic
+// heartbeat, no coalescing window that could silently swallow
+// user-visible lifecycle states. The delivered sequence preserves
+// every distinct transition in publication order and always
+// terminates with the authoritative terminal state.
 package connection_test
 
 import (
@@ -47,12 +46,25 @@ func lifecycleRank(s connection.State) int {
 	return -1
 }
 
+// collectStates drains the event channel into the ordered list of
+// states the subscriber observed.
+func collectStates(events <-chan connection.Snapshot) []connection.State {
+	var states []connection.State
+
+	for {
+		select {
+		case s := <-events:
+			states = append(states, s.State)
+		default:
+			return states
+		}
+	}
+}
+
 // TestSubscribeReceivesTransitionsWithoutHeartbeat pins the
-// event-propagation contract from §15: a successful connect's
-// terminal state reaches the subscriber WITHOUT any ticker, through
-// monotonic snapshots of the real state machine (selecting → … →
-// connected; sub-millisecond intermediates may coalesce into newer
-// snapshots, but none may regress).
+// event-propagation contract: a successful connect's transitions
+// reach the subscriber WITHOUT any ticker, through ordered snapshots
+// of the real state machine.
 func TestSubscribeReceivesTransitionsWithoutHeartbeat(t *testing.T) {
 	manager, _ := testEnv(t)
 	defer manager.Shutdown()
@@ -80,8 +92,8 @@ func TestSubscribeReceivesTransitionsWithoutHeartbeat(t *testing.T) {
 				t.Fatalf("subscriber observed unknown state %q", s.State)
 			}
 
-			// Monotonic within the session: a coalescing dispatcher
-			// may skip intermediate states but never goes backwards.
+			// Monotonic within the session: the delivery stream never
+			// goes backwards.
 			if rank < lastRank && s.State != connection.StateConnectionFailed {
 				t.Fatalf("state regression: %q after rank %d", s.State, lastRank)
 			}
@@ -94,6 +106,55 @@ func TestSubscribeReceivesTransitionsWithoutHeartbeat(t *testing.T) {
 		case <-deadline:
 			t.Fatal("connected snapshot not delivered within 5s — events are not reaching the subscriber without a heartbeat")
 		}
+	}
+}
+
+// TestFastTransitionBurstPreservesLifecycleStates pins the §8
+// contract at the manager level: the user-visible lifecycle states
+// (selecting → preparing → starting_core → waiting_for_ready →
+// connected) are delivered IN ORDER and none is silently lost to a
+// coalescing window — even when the machine moves through them as
+// fast as the fake core allows.
+func TestFastTransitionBurstPreservesLifecycleStates(t *testing.T) {
+	manager, _ := testEnv(t)
+	defer manager.Shutdown()
+
+	events := make(chan connection.Snapshot, 128)
+	cancel := manager.Subscribe(func(s connection.Snapshot) { events <- s })
+	defer cancel()
+
+	snapshot, err := manager.Connect(context.Background(), vlessTestConfig(), core.Preferences{})
+	if err != nil {
+		t.Fatalf("Connect() = %v (state %s)", err, snapshot.State)
+	}
+
+	// Connect returns after the terminal state; give the delivery
+	// stream a bounded moment to finish dispatching the burst, then
+	// collect EVERYTHING the subscriber observed (registration
+	// snapshot included).
+	time.Sleep(100 * time.Millisecond)
+
+	states := collectStates(events)
+
+	want := []connection.State{
+		connection.StateSelecting,
+		connection.StatePreparing,
+		connection.StateStartingCore,
+		connection.StateWaitingForReady,
+		connection.StateConnected,
+	}
+
+	idx := 0
+
+	for _, s := range states {
+		if idx < len(want) && s == want[idx] {
+			idx++
+		}
+	}
+
+	if idx != len(want) {
+		t.Fatalf("lifecycle states lost or out of order: delivered %v, matched %d of %d",
+			states, idx, len(want))
 	}
 }
 
@@ -167,7 +228,7 @@ drainLoop:
 
 // TestStopPublisherJoinsOnShutdown pins the shutdown guarantee: after
 // Manager.Shutdown returns, no listener callback can still be running
-// and no dispatch goroutine survives.
+// and no delivery goroutine survives.
 func TestStopPublisherJoinsOnShutdown(t *testing.T) {
 	manager, _ := testEnv(t)
 
@@ -176,7 +237,7 @@ func TestStopPublisherJoinsOnShutdown(t *testing.T) {
 
 	manager.Subscribe(func(connection.Snapshot) {
 		// Signal once (the first callback only) and hold the
-		// dispatcher inside the callback.
+		// delivery goroutine inside the callback.
 		select {
 		case <-blocked:
 		default:
@@ -193,13 +254,13 @@ func TestStopPublisherJoinsOnShutdown(t *testing.T) {
 		close(shutdownDone)
 	}()
 
-	<-blocked // a callback is running inside the dispatch loop
+	<-blocked // a callback is running inside the delivery loop
 
 	select {
 	case <-shutdownDone:
 		t.Fatal("Shutdown returned while a listener callback was still running")
 	case <-time.After(200 * time.Millisecond):
-		// expected: Shutdown is joined on the dispatcher
+		// expected: Shutdown is joined on the delivery goroutine
 	}
 
 	close(release)
@@ -212,8 +273,8 @@ func TestStopPublisherJoinsOnShutdown(t *testing.T) {
 }
 
 // TestShutdownDuringVerificationStillDeliversTerminalState pins the
-// §15 shutdown propagation: a Shutdown while a session runs still
-// delivers the final disconnected snapshot before the dispatcher
+// shutdown propagation: a Shutdown while a session runs still
+// delivers the final disconnected snapshot before the publisher
 // stops (the composition root may forward it to the UI).
 func TestShutdownDuringVerificationStillDeliversTerminalState(t *testing.T) {
 	manager, _ := testEnv(t)

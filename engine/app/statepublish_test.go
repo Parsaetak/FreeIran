@@ -1,4 +1,4 @@
-// statepublish_test.go pins the v0.9.8.7 application-level publisher
+// statepublish_test.go pins the application-level publisher
 // contract:
 //
 //	SetStateListener delivers the current state at registration
@@ -119,8 +119,10 @@ func TestStateListenerReceivesInitialStateAndBootPhases(t *testing.T) {
 }
 
 // TestStateListenerDuplicateSuppression pins the dedup contract: a
-// no-op MarkUIReady / MarkUIRuntimeReady re-run (idempotent calls that
-// do NOT advance the phase) must NOT produce additional events.
+// REAL change is always delivered (each phase advance is exactly one
+// event — zero-delay, no coalescing window), while idempotent no-op
+// calls (re-marking an already-recorded phase, re-publishing an
+// unchanged state) produce NO additional events.
 func TestStateListenerDuplicateSuppression(t *testing.T) {
 	a := newTestApp(t)
 	defer a.Shutdown()
@@ -130,20 +132,37 @@ func TestStateListenerDuplicateSuppression(t *testing.T) {
 
 	waitForCount(t, c, 1, 2*time.Second)
 
-	// Idempotent no-ops: no phase advance → no publication.
+	// Two REAL phase advances: exactly one event each, delivered
+	// without a coalescing window (the zero-delay contract).
+	a.MarkUIRuntimeReady()
+	a.MarkUIReady()
+
+	waitForCount(t, c, 3, 2*time.Second)
+
+	// Idempotent no-ops: no phase advance → no publication, no matter
+	// how often they repeat.
 	a.MarkUIRuntimeReady()
 	a.MarkUIRuntimeReady()
 	a.MarkUIReady()
 	a.MarkUIReady()
 
-	time.Sleep(80 * time.Millisecond)
+	time.Sleep(120 * time.Millisecond)
 
-	// The bootphase may legitimately advance twice here
-	// (ui_runtime_ready → ui_ready), but every identical snapshot is
-	// dropped: at most 2 events total (initial + ui_ready advance),
-	// never a storm of 5.
-	if n := c.count(); n > 2 {
-		t.Fatalf("duplicate suppression failed: %d events for 1 real change", n)
+	if n := c.count(); n != 3 {
+		t.Fatalf("duplicate suppression failed: %d events (want 3 — initial + 2 real advances; idempotent re-marks must not emit)", n)
+	}
+
+	// Every emitted event carries a DISTINCT phase: the advances
+	// arrived in order.
+	phases := make([]string, 0, 3)
+	for _, s := range c.snapshot() {
+		phases = append(phases, s.BootPhase)
+	}
+
+	for i := 1; i < len(phases); i++ {
+		if phases[i] == phases[i-1] {
+			t.Fatalf("duplicate event emitted for phase %q (events: %v)", phases[i], phases)
+		}
 	}
 }
 

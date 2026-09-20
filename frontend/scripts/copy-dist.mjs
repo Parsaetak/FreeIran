@@ -7,14 +7,23 @@
  * index.html is committed so the Go build also works before any
  * frontend build (tests, compile-validation).
  *
- * v0.9.8.7 — CLEAN-ROOM EMBED GUARANTEE: after the wipe-and-copy the
- * target is verified against the canonical asset inventory. Any
- * hashed artifact (e.g. app-BOgvMedM.js), duplicate worker or
- * unexpected file fails the build loudly — the committed embed tree
- * must always be EXACTLY what the pinned toolchain produces.
+ * CLEAN-ROOM EMBED GUARANTEE: the target is wiped completely, the
+ * fresh output is copied, and the result is verified against the
+ * canonical asset inventory below. Any hashed artifact, duplicate
+ * worker or unexpected file fails the build loudly — the committed
+ * embed tree must always be EXACTLY what the pinned toolchain
+ * produces.
+ *
+ * CANONICAL INVENTORY (the user-facing filename contract, stable
+ * across every release):
+ *
+ *      index.html
+ *      assets/index.js
+ *      assets/index.css
+ *      assets/export-worker.js
  */
 import { cpSync, existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const frontendDir = dirname(fileURLToPath(import.meta.url));
@@ -24,14 +33,16 @@ const source = join(repoRoot, "frontend", "dist");
 const target = join(repoRoot, "cmd", "freeiran", "frontend", "dist");
 
 /**
- * Canonical embedded asset inventory (v0.9.8.7). The build output is
- * exactly this set — stable logical filenames, no content hashes.
- * Keep in sync with frontend/vite.config.ts and the CI allowlist.
+ * The one authoritative embedded asset inventory. The frontend build
+ * output must be exactly this set — stable logical filenames, no
+ * content hashes, no duplicates, no compatibility copies. CI verifies
+ * the generated tree against the same list (see
+ * .github/workflows/ci.yml, "Clean-room embed check").
  */
 const REQUIRED_ASSETS = [
   "index.html",
-  "assets/app.js",
-  "assets/app.css",
+  "assets/index.js",
+  "assets/index.css",
   "assets/export-worker.js",
 ];
 
@@ -40,6 +51,9 @@ if (!existsSync(source)) {
   process.exit(1);
 }
 
+// Wipe the target COMPLETELY: stale artifacts from any previous build
+// (hashed bundles, renamed-era files, duplicate workers) must never
+// survive into the new embed tree.
 rmSync(target, { recursive: true, force: true });
 
 cpSync(source, target, { recursive: true });
@@ -86,10 +100,18 @@ if (unexpected.length > 0) {
   process.exit(1);
 }
 
+// Every canonical asset must be present AND non-empty.
+for (const name of REQUIRED_ASSETS) {
+  if (statSync(join(target, name)).size === 0) {
+    console.error(`embed asset is empty: ${name}`);
+    process.exit(1);
+  }
+}
+
 // index.html must reference exactly the canonical stable names.
 const html = readFileSync(join(target, "index.html"), "utf8");
 
-for (const ref of ["assets/app.js", "assets/app.css"]) {
+for (const ref of ["assets/index.js", "assets/index.css"]) {
   if (!html.includes(ref)) {
     console.error(`index.html does not reference ${ref} — stable-name contract broken`);
     process.exit(1);

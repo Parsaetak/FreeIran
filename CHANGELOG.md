@@ -3,6 +3,20 @@
 Release history for FreeIran. The newest release is documented in the
 [README](README.md); everything older lives here, newest first.
 
+## v0.9.8.8 — deep cleanup, stable filenames and repository hygiene
+
+See [README — What's new in v0.9.8.8](README.md#whats-new-in-v0988)
+for the full summary: the TS2393 duplicate-worker root cause (CI run
+35519469195), the final canonical asset inventory
+(`index.html`, `assets/index.js`, `assets/index.css`,
+`assets/export-worker.js` — with all six stale hashed/legacy
+artifacts actually deleted from the committed tree), the single
+zero-delay statepub publisher boundary (no 25 ms sleep, ordered
+lifecycle delivery, drain-on-stop), the ownership-aware installer
+(managed-process manifest + path-verified termination instead of
+broad taskkill sweeps), reproducible machine-generated Wails bindings
+and the documentation truth pass.
+
 ## v0.9.8.7 — determinism and responsiveness release
 
 CI recovery, event-driven UI synchronization, stable embedded asset

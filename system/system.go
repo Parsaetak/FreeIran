@@ -387,6 +387,11 @@ func supervise(
 		state:           StateRunning,
 	}
 
+	// Ownership evidence for external, path-verified cleanup (see
+	// process_manifest.go). Recorded after the child exists and removed
+	// in finish(); a process that fails to spawn is never recorded.
+	manifestRecord(proc.pid, spec.Path)
+
 	if !bound {
 		// v0.9.7: once-per-session warning + silent counter instead of
 		// one warning per temporary core process. The structural state
@@ -456,6 +461,10 @@ func (m *ManagedProcess) finish(state ProcessState, err error, code int) {
 	// Closing the job handle is itself a kernel-level kill for any
 	// member that somehow survived the reap.
 	m.closeJob()
+
+	// The process is gone: drop it from the managed-process manifest
+	// so external cleanup never sees a stale ownership claim.
+	manifestRemove(m.pid)
 
 	close(m.exited)
 }

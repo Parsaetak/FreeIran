@@ -9,7 +9,22 @@
 | C++17 compiler | gcc/clang/MSVC | optional native acceleration |
 | make | any | optional native build helper |
 | wails3 CLI | v3.0.0-beta.19 | regenerating bindings |
+| go-winres | latest | regenerating the Windows resource (`cmd/freeiran/*.syso`) from `build/winres.json` |
 | govulncheck | **v1.8.0** (pinned) | security scanning |
+
+Regenerating the Windows executable resource (icon + PE version
+metadata + DPI manifest) after a version bump:
+
+```bash
+go install github.com/tc-hib/go-winres@latest
+go-winres make --in build/winres.json --out cmd/freeiran/rsrc
+rm cmd/freeiran/rsrc_windows_386.syso   # only the amd64 resource is built
+```
+
+`build/winres.json` is a version-synced source (CI's version
+consistency step fails on any stale `0.9.x` literal in it); the
+committed `.syso` is its compiled output and must be regenerated
+together with the bump.
 
 Protocol-core runtimes (external executables, discovered at runtime —
 never Go dependencies):
@@ -320,10 +335,10 @@ CONNECT to the configured upstream, so verification, racing and
 end-to-end tunnel tests run against the deterministic fixture
 instead of real servers.
 
-Frontend: the DiscoveryService bindings are hand-written
-(`frontend/bindings/.../discoveryservice.js`, the Call.ByName
-pattern documented in networkservice.js); their wire shapes live in
-`frontend/src/types/discovery.ts`, and the start-flow store tests
+Frontend: the DiscoveryService bindings are machine-generated
+(`frontend/bindings/.../discoveryservice.js`, generated with the
+pinned wails3 CLI like every other service); their wire shapes live
+in `frontend/src/types/discovery.ts`, and the start-flow store tests
 mock only `Events.On` via a partial module mock.
 
 ## v0.9.8.1 — provider test fixtures
@@ -385,17 +400,15 @@ now fails on any drift between the two.
 
 ### Bindings maintenance
 
-The committed bindings (`frontend/bindings/...`) are of two
-generations: machine-generated files (`appservice.js` etc., calling
-`$Call.ByID`) and hand-written files (`coreservice.js`,
-`discoveryservice.js`, `networkservice.js`, `testqueueservice.js`,
-`tunnelservice.js`, calling `$Call.ByName` with a documented prefix
-contract). Regenerating with the wails3 CLI is NOT part of the pinned
-toolchain (no GUI toolchain on CI hosts); instead:
+All committed bindings (`frontend/bindings/...`) are machine-generated
+by the pinned wails3 CLI (they call `$Call.ByID(<FNV-32a hash>)`).
+Hand-written or hand-patched binding files are forbidden: a hidden
+signature change would only surface at runtime. Regenerating is
+cheap and needs no GUI toolchain (see above), and the generation is
+reproducible — running it twice must produce byte-identical output.
 
-* `engine/app/bindings_contract_test.go` verifies every hand-written
-  `Call.ByName` target exists as an exported method on its Go
-  service, and structurally checks the generated files' services.
+* `engine/app/bindings_contract_test.go` structurally verifies the
+  generated files' services against the Go service surface.
 * The frontend CI job runs `npm run build:embed` and requires a clean
   `git diff --exit-code -- cmd/freeiran/frontend/dist`, so the
   committed embed output can never accumulate stale hashed bundles.
