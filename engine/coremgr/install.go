@@ -1,13 +1,11 @@
 package coremgr
 
 import (
-	"archive/tar"
-	"archive/zip"
-	"bytes"
-	"compress/gzip"
 	"context"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"path"
@@ -18,6 +16,7 @@ import (
 
 	firerrors "github.com/Parsaetak/FreeIran/engine/errors"
 	"github.com/Parsaetak/FreeIran/internal/httpx"
+	"github.com/Parsaetak/FreeIran/internal/safearchive"
 )
 
 // Install downloads, verifies and activates the latest stable release
@@ -461,6 +460,26 @@ func verifyAssetIdentity(src Source, p Platform, info UpdateInfo) error {
 	return nil
 }
 
+// isLoopbackHost reports whether host:port names a loopback authority
+// (127.0.0.0/8, ::1, localhost) — the documented http exception for
+// test harnesses and pinned local mirrors.
+func isLoopbackHost(hostport string) bool {
+	host, _, err := net.SplitHostPort(hostport)
+	if err != nil {
+		host = hostport
+	}
+
+	host = strings.Trim(host, "[]")
+
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+
+	ip := net.ParseIP(host)
+
+	return ip != nil && ip.IsLoopback()
+}
+
 // trustedAssetHost reports whether an asset host is acceptable: the
 // host serving the source's release API (same authority) or a known
 // GitHub release host. Comparison is case-insensitive; a port is
@@ -543,14 +562,17 @@ func assetNamesArch(assetName, archName string) bool {
 }
 
 // verifyAssetDigest verifies the computed SHA-256 against the
-// published digests, in order of authority:
+// AUTHORITATIVE published digests, in order of authority:
 //
 //  1. the GitHub release-API digest field (asset.digest,
 //     "sha256:<hex>" — strongest, comes with the signed metadata);
 //  2. the .dgst sidecar file published next to the asset
-//     (Xray/V2Ray convention);
-//  3. none published → the computed hash is recorded in the manifest
-//     (tamper-evidence trail) and verification passes.
+//     (Xray/V2Ray convention).
+//
+// v0.9.8.6: NO third tier. When no authoritative digest is available
+// the install is REJECTED — a locally computed SHA-256 is tamper
+// evidence, never a trust anchor, and may never make a remotely
+// acquired executable runnable.
 func (m *Manager) verifyAssetDigest(ctx context.Context, src Source, info UpdateInfo, computedSHA string) error {
 	// 1. API-provided digest.
 	if info.AssetSHA256 != "" {
@@ -566,7 +588,10 @@ func (m *Manager) verifyAssetDigest(ctx context.Context, src Source, info Update
 
 	// 2. Published .dgst sidecar (Xray/V2Ray convention).
 	if info.AssetURL == "" {
-		return nil
+		return firerrors.New(firerrors.KindDependencyUnavailable,
+			Subsystem, "install",
+			"no authoritative digest available for the selected asset; "+
+				"refusing to install an unverified executable")
 	}
 
 	digestURL := info.AssetURL + ".dgst"
@@ -574,14 +599,42 @@ func (m *Manager) verifyAssetDigest(ctx context.Context, src Source, info Update
 	resp, err := m.httpClient.Get(ctx, digestURL, httpx.GetOptions{
 		Header: map[string]string{"Accept": "application/octet-stream"},
 	})
-	if err != nil || resp.StatusCode != 200 {
-		// No digest published; not an error.
-		return nil
+
+	// httpx turns non-2xx into a status error; a 404 sidecar is the
+	// normal "no digest published" answer, every other failure is a
+	// digest-authority outage. BOTH reject the install (v0.9.8.6: fail
+	// closed); only the explanation differs.
+	if err != nil {
+		if httpx.StatusCodeOf(err) == http.StatusNotFound {
+			return firerrors.New(firerrors.KindDependencyUnavailable,
+				Subsystem, "install",
+				"release %s publishes no digest for %s; refusing to install an "+
+					"unverified executable (computed sha256=%s recorded for "+
+					"evidence only)", info.ReleaseTag, path.Base(info.AssetURL), computedSHA)
+		}
+
+		return firerrors.Wrap(err, firerrors.KindDependencyUnavailable,
+			Subsystem, "install", "could not fetch the published digest %s", digestURL)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		// Belt and braces (httpx already converts statuses to errors).
+		return firerrors.New(firerrors.KindDependencyUnavailable,
+			Subsystem, "install",
+			"release %s publishes no digest for %s; refusing to install an "+
+				"unverified executable (computed sha256=%s recorded for "+
+				"evidence only)", info.ReleaseTag, path.Base(info.AssetURL), computedSHA)
 	}
 
 	expected, perr := extractSHA256FromDigest(string(resp.Body))
 	if perr != nil {
-		return nil // ignore unparseable digest; the computed hash is recorded
+		// A digest sidecar that exists but cannot be parsed is a
+		// broken authority: fail closed rather than install on the
+		// strength of the download itself.
+		return firerrors.New(firerrors.KindDependencyUnavailable,
+			Subsystem, "install",
+			"published digest for %s is unparseable (%v); refusing to "+
+				"install an unverified executable", path.Base(info.AssetURL), perr)
 	}
 
 	if !strings.EqualFold(expected, computedSHA) {
@@ -628,145 +681,16 @@ func isHex(s string) bool {
 	return true
 }
 
-// unpackArchive unpacks a .zip, .tar.gz or .tgz archive into dst.
-// The format is selected by filename extension, with a content
-// sniffing fallback (PK zip magic / gzip magic) so a misnamed staged
-// file still unpacks instead of failing the whole install.
+// unpackArchive unpacks a .zip, .tar.gz or .tgz archive into dst
+// through internal/safearchive: bounded (archive size, total
+// expansion, per-file size, entry count), path-traversal protected,
+// absolute-path rejecting, symlink/hostile-entry rejecting and
+// fail-closed on malformed archives (v0.9.8.6). The format is
+// selected by filename extension with a content-sniffing fallback
+// (PK zip magic / gzip magic) so a misnamed staged file still unpacks
+// instead of failing the whole install.
 func unpackArchive(archivePath, dst string) error {
-	name := strings.ToLower(filepath.Base(archivePath))
-	switch {
-	case strings.HasSuffix(name, ".zip"):
-		return unpackZip(archivePath, dst)
-	case strings.HasSuffix(name, ".tar.gz") || strings.HasSuffix(name, ".tgz"):
-		return unpackTarGz(archivePath, dst)
-	case strings.HasSuffix(name, ".tar"):
-		return unpackTar(archivePath, dst)
-	default:
-		// Content sniffing fallback.
-		magic := make([]byte, 2)
-
-		if f, err := os.Open(archivePath); err == nil {
-			_, _ = io.ReadFull(f, magic)
-			_ = f.Close()
-		}
-
-		switch {
-		case bytes.Equal(magic, []byte("PK")):
-			return unpackZip(archivePath, dst)
-		case bytes.Equal(magic, []byte{0x1f, 0x8b}):
-			return unpackTarGz(archivePath, dst)
-		default:
-			return fmt.Errorf("unknown archive format: %s", name)
-		}
-	}
-}
-
-func unpackZip(archivePath, dst string) error {
-	r, err := zip.OpenReader(archivePath)
-	if err != nil {
-		return err
-	}
-	defer r.Close()
-
-	for _, f := range r.File {
-		if err := extractZipFile(f, dst); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func extractZipFile(f *zip.File, dst string) error {
-	p := filepath.Join(dst, f.Name)
-	if !strings.HasPrefix(filepath.Clean(p), filepath.Clean(dst)+string(os.PathSeparator)) && p != dst {
-		return fmt.Errorf("zip slip: %s", p)
-	}
-
-	if f.FileInfo().IsDir() {
-		return os.MkdirAll(p, 0o700)
-	}
-
-	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
-		return err
-	}
-
-	rc, err := f.Open()
-	if err != nil {
-		return err
-	}
-	defer rc.Close()
-
-	out, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	_, err = io.Copy(out, rc)
-	return err
-}
-
-func unpackTarGz(archivePath, dst string) error {
-	f, err := os.Open(archivePath)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	gz, err := gzip.NewReader(f)
-	if err != nil {
-		return err
-	}
-	defer gz.Close()
-
-	return unpackTarReader(tar.NewReader(gz), dst)
-}
-
-func unpackTar(archivePath, dst string) error {
-	f, err := os.Open(archivePath)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	return unpackTarReader(tar.NewReader(f), dst)
-}
-
-func unpackTarReader(tr *tar.Reader, dst string) error {
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return err
-		}
-
-		p := filepath.Join(dst, hdr.Name)
-		if !strings.HasPrefix(filepath.Clean(p), filepath.Clean(dst)+string(os.PathSeparator)) && p != dst {
-			return fmt.Errorf("tar slip: %s", p)
-		}
-
-		switch hdr.Typeflag {
-		case tar.TypeDir:
-			if err := os.MkdirAll(p, 0o700); err != nil {
-				return err
-			}
-		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
-				return err
-			}
-			out, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.FileMode(hdr.Mode)&0o700)
-			if err != nil {
-				return err
-			}
-			if _, err := io.Copy(out, tr); err != nil {
-				_ = out.Close()
-				return err
-			}
-			_ = out.Close()
-		}
-	}
-	return nil
+	return safearchive.Unpack(archivePath, dst, safearchive.DefaultLimits())
 }
 
 // findExecutable walks a directory looking for the core's executable

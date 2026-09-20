@@ -133,6 +133,13 @@ type Snapshot struct {
 	Attempts      []Attempt `json:"attempts,omitempty"`
 	FallbacksUsed int       `json:"fallbacks_used,omitempty"`
 
+	// CorePID is the operating-system process id of the active core
+	// (0 while no core session runs). It exists so lifecycle tests and
+	// diagnostics can PROVE process teardown after a session ends
+	// (v0.9.8.6): observing state=disconnected/connection_failed must
+	// mean the supervised process is gone, not merely unmanaged.
+	CorePID int `json:"core_pid,omitempty"`
+
 	// v0.9.7 separated measurements.
 	CoreReadyMS  int64  `json:"core_ready_ms,omitempty"`
 	PingMedianMS int64  `json:"ping_median_ms,omitempty"`
@@ -271,6 +278,11 @@ type Manager struct {
 	latencyMS    int64
 	port         int
 
+	// corePID is the process id of the active core session (0 when
+	// none); mirrored into Snapshot so teardown can be PROVEN from
+	// outside the package (v0.9.8.6).
+	corePID int
+
 	// coreReadyMS is the LOCAL core startup→ready duration of the
 	// active session (v0.9.7: never reported as network latency).
 	coreReadyMS int64
@@ -286,8 +298,23 @@ type Manager struct {
 	verifyFailures int
 	nextVerifyAt   time.Time
 
+	// generation is the session epoch (v0.9.8.6): it increments on
+	// every session boundary — Connect accepting a new session,
+	// Disconnect, Shutdown, a provider session starting and the
+	// stability-teardown ending one. Every ASYNCHRONOUS verification
+	// (monitor recheck, connect-time probe, VerifyConnected) captures
+	// the generation when it starts and may apply its result only
+	// while that generation is still current. A stale result is
+	// discarded: it can never mutate — or poison — a newer session.
+	generation uint64
+
 	monitorCancel context.CancelFunc
-	shutdown      bool
+	// monitorDone is closed when the monitor goroutine exits;
+	// stopMonitor JOINS it so returning from Disconnect/Shutdown means
+	// no monitor work (including an in-flight teardown started by the
+	// stability path) is still running (v0.9.8.6).
+	monitorDone chan struct{}
+	shutdown    bool
 }
 
 // New creates a connection manager bound to a core registry.
@@ -385,12 +412,21 @@ func (m *Manager) Connect(
 
 	cfg.SetID()
 
+	// Session boundary (v0.9.8.6): a new session epoch starts here.
+	// Every async result captured before this point becomes stale; a
+	// Disconnect/Reconnect during this Connect cannot have its later
+	// state mutations clobber the newer session state.
+	m.generation++
+
+	gen := m.generation
+
 	m.cfg = &cfg
 	m.state = StateSelecting
 	m.attempts = nil
 	m.lastError = ""
 	m.coreReadyMS = 0
 	m.lastPref = pref
+	m.corePID = 0
 
 	m.mu.Unlock()
 
@@ -426,7 +462,7 @@ func (m *Manager) Connect(
 	var lastErr error
 
 	for index, candidate := range candidates {
-		snapshot, err := m.attempt(ctx, candidate, cfg, registry, index > 0)
+		snapshot, err := m.attempt(ctx, candidate, cfg, registry, index > 0, gen)
 		if err == nil {
 			return snapshot, nil
 		}
@@ -435,6 +471,12 @@ func (m *Manager) Connect(
 
 		// Context cancelled: stop retrying immediately.
 		if ctx.Err() != nil {
+			break
+		}
+
+		// The session was disconnected/superseded while an attempt was
+		// running: its remaining candidates belong to a dead session.
+		if m.currentGeneration() != gen {
 			break
 		}
 
@@ -447,7 +489,7 @@ func (m *Manager) Connect(
 			m.port = 0 // force fresh allocation
 			m.mu.Unlock()
 
-			snapshot, err = m.attempt(ctx, candidate, cfg, registry, index > 0)
+			snapshot, err = m.attempt(ctx, candidate, cfg, registry, index > 0, gen)
 			if err == nil {
 				return snapshot, nil
 			}
@@ -461,7 +503,16 @@ func (m *Manager) Connect(
 			Subsystem, "connect", "no backend attempt succeeded")
 	}
 
-	return m.fail(lastErr)
+	return m.failAt(gen, lastErr)
+}
+
+// currentGeneration returns the session epoch (caller-friendly
+// accessor, lock-internal use only via mu).
+func (m *Manager) currentGeneration() uint64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.generation
 }
 
 // isStartupCrash reports whether an attempt failed because the core
@@ -476,13 +527,19 @@ func isStartupCrash(err error) bool {
 		strings.Contains(err.Error(), "did not become ready")
 }
 
-// attempt runs one backend through prepare → start → ready.
+// attempt runs one backend through prepare → start → ready. The
+// session generation gates every state mutation after an awaitable
+// step (process start, readiness, verification): a session that was
+// disconnected or superseded mid-attempt gets its instance closed
+// deterministically and the attempt fails honestly — it can never
+// resurrect state or leak an unowned process (v0.9.8.6).
 func (m *Manager) attempt(
 	ctx context.Context,
 	backend core.Core,
 	cfg config.Config,
 	registry *core.Registry,
 	isFallback bool,
+	gen uint64,
 ) (Snapshot, error) {
 	started := time.Now()
 
@@ -492,18 +549,29 @@ func (m *Manager) attempt(
 	}
 
 	m.mu.Lock()
+
+	// Generation gate: a stale attempt (its session ended before
+	// the attempt started) must not touch the state machine a
+	// newer session owns.
+	if m.generation != gen {
+		m.mu.Unlock()
+
+		return Snapshot{}, firerrors.New(firerrors.KindCancelled,
+			Subsystem, "connect", "session ended before %s attempt prepared", backend.Name())
+	}
+
 	m.state = StatePreparing
 	m.mu.Unlock()
 
 	if err := backend.Validate(ctx, cfg); err != nil {
-		m.recordAttempt(backend.Name(), false, err, started)
+		m.recordAttemptAt(gen, backend.Name(), false, err, started)
 
 		if m.opts.Metrics != nil {
 			m.opts.Metrics.AddCoreStart(false)
 		}
 
-		return Snapshot{}, firerrors.Wrap(err, firerrors.KindInvalidInput,
-			Subsystem, "connect", "%s validation failed", backend.Name())
+		return m.staleOrWrap(gen, err, firerrors.KindInvalidInput,
+			"%s validation failed", backend.Name())
 	}
 
 	opts := core.RuntimeOptions{
@@ -533,36 +601,58 @@ func (m *Manager) attempt(
 	// bind remains the final authority (check-then-use races resolve
 	// as a normal failed attempt).
 	if err := m.checkPortBindability(opts.LocalPort, opts.HTTPPort); err != nil {
-		m.recordAttempt(backend.Name(), false, err, started)
+		m.recordAttemptAt(gen, backend.Name(), false, err, started)
 
 		return Snapshot{}, err
 	}
 
 	// --- StartingCore ----------------------------------------------
 	m.mu.Lock()
+
+	if m.generation != gen {
+		m.mu.Unlock()
+
+		return Snapshot{}, firerrors.New(firerrors.KindCancelled,
+			Subsystem, "connect", "session ended before %s launch", backend.Name())
+	}
+
 	m.state = StateStartingCore
 	m.mu.Unlock()
 
 	instance, err := backend.Start(ctx, cfg, opts)
 	if err != nil {
-		m.recordAttempt(backend.Name(), false, err, started)
+		m.recordAttemptAt(gen, backend.Name(), false, err, started)
 
 		if m.opts.Metrics != nil {
 			m.opts.Metrics.AddCoreStart(false)
 		}
 
-		return Snapshot{}, firerrors.Wrap(err, firerrors.KindDependencyUnavailable,
-			Subsystem, "connect", "%s failed to start", backend.Name())
+		return m.staleOrWrap(gen, err, firerrors.KindDependencyUnavailable,
+			"%s failed to start", backend.Name())
 	}
 
 	// --- WaitingForReady -------------------------------------------
 	m.mu.Lock()
+
+	// Generation gate: a Disconnect/Shutdown that ran while the process
+	// was being spawned means this instance is unowned — it must never
+	// be published into the manager (that would leak a process nobody
+	// will close).
+	if m.generation != gen {
+		m.mu.Unlock()
+
+		_ = instance.Close()
+
+		return Snapshot{}, firerrors.New(firerrors.KindCancelled,
+			Subsystem, "connect", "session ended during %s startup", backend.Name())
+	}
+
 	m.state = StateWaitingForReady
 	m.instance = instance
 	m.mu.Unlock()
 
 	if err := instance.WaitReady(ctx); err != nil {
-		m.recordAttempt(backend.Name(), false, err, started)
+		m.recordAttemptAt(gen, backend.Name(), false, err, started)
 
 		if m.opts.Metrics != nil {
 			m.opts.Metrics.AddCoreStart(false)
@@ -572,11 +662,17 @@ func (m *Manager) attempt(
 		_ = instance.Close()
 
 		m.mu.Lock()
-		m.instance = nil
+
+		// Generation gate: only the owning session may clear the slot —
+		// a newer session may already own m.instance.
+		if m.generation == gen && m.instance == instance {
+			m.instance = nil
+		}
+
 		m.mu.Unlock()
 
-		return Snapshot{}, firerrors.Wrap(err, firerrors.KindDependencyUnavailable,
-			Subsystem, "connect", "%s did not become ready", backend.Name())
+		return m.staleOrWrap(gen, err, firerrors.KindDependencyUnavailable,
+			"%s did not become ready", backend.Name())
 	}
 
 	// --- Connected -------------------------------------------------
@@ -592,11 +688,24 @@ func (m *Manager) attempt(
 	_ = instance.Health(ctx)
 
 	m.mu.Lock()
+
+	// Generation gate: the session must still own the state machine
+	// before its readiness evidence is published.
+	if m.generation != gen {
+		m.mu.Unlock()
+
+		_ = instance.Close()
+
+		return Snapshot{}, firerrors.New(firerrors.KindCancelled,
+			Subsystem, "connect", "session ended while %s became ready", backend.Name())
+	}
+
 	m.instance = instance
 	m.coreName = backend.Name()
 	m.coreVersion = registry.Version(backend.Name())
 	m.state = StateConnected
 	m.startedAt = time.Now().UTC()
+	m.corePID = instance.PID()
 	// v0.9.7: the loopback listener probe is stored as the local
 	// readiness fallback ONLY — it is not network latency and the
 	// end-to-end fields stay empty until a real verification runs.
@@ -618,6 +727,25 @@ func (m *Manager) attempt(
 		result := VerifyTunnel(ctx, instance.Endpoint(), m.opts.Verify.verifyOptions())
 
 		m.mu.Lock()
+
+		// Generation gate (v0.9.8.6): the verification ran while the
+		// session was current, but a Disconnect/Reconnect may have
+		// completed in the meantime (this probe is awaitable and
+		// bounded only by its own timeout). A stale result — success OR
+		// failure — must never mutate the newer session's state.
+		if m.generation != gen {
+			m.mu.Unlock()
+
+			// The instance was closed by the session-boundary path
+			// (Disconnect/Shutdown); Close is idempotent, so this is a
+			// deterministic no-op reaping in case it was not.
+			_ = instance.Close()
+
+			return Snapshot{}, firerrors.New(firerrors.KindCancelled,
+				Subsystem, "connect",
+				"session ended during %s verification (result discarded)", backend.Name())
+		}
+
 		m.lastVerify = result
 
 		if result.OK {
@@ -633,15 +761,20 @@ func (m *Manager) attempt(
 			_ = instance.Close()
 
 			m.mu.Lock()
-			m.instance = nil
-			m.state = StateSelecting // the next candidate may run
+
+			// Generation gate (see above).
+			if m.generation == gen {
+				m.instance = nil
+				m.state = StateSelecting // the next candidate may run
+			}
+
 			m.mu.Unlock()
 
 			err := firerrors.New(firerrors.KindDependencyUnavailable,
 				Subsystem, "connect", "%s started but Internet verification "+
 					"failed (%s); route not usable", backend.Name(), result.Describe())
 
-			m.recordAttempt(backend.Name(), false, err, started)
+			m.recordAttemptAt(gen, backend.Name(), false, err, started)
 
 			return Snapshot{}, err
 		}
@@ -655,6 +788,16 @@ func (m *Manager) attempt(
 
 	m.mu.Lock()
 
+	if m.generation != gen {
+		// The session ended between verification success and the final
+		// transition (re-checked under the lock; the instance is already
+		// closed by the boundary path).
+		m.mu.Unlock()
+
+		return Snapshot{}, firerrors.New(firerrors.KindCancelled,
+			Subsystem, "connect", "session ended before %s became verified", backend.Name())
+	}
+
 	if m.opts.Verify.Skip {
 		m.state = StateConnected
 	} else {
@@ -663,7 +806,7 @@ func (m *Manager) attempt(
 
 	m.mu.Unlock()
 
-	m.recordAttempt(backend.Name(), true, nil, started)
+	m.recordAttemptAt(gen, backend.Name(), true, nil, started)
 
 	m.startMonitor()
 
@@ -677,6 +820,20 @@ func (m *Manager) userPorts() (socks, http int) {
 	defer m.mu.Unlock()
 
 	return m.socksPortPref, m.httpPortPref
+}
+
+// staleOrWrap wraps an attempt failure for the ORIGINAL caller, but
+// classifies it as cancelled when the session ended while the
+// attempt ran (v0.9.8.6) — a superseded session's failure is not a
+// connectivity verdict about anything.
+func (m *Manager) staleOrWrap(gen uint64, err error, kind firerrors.Kind, format string, args ...any) (Snapshot, error) {
+	if m.currentGeneration() != gen {
+		return Snapshot{}, firerrors.New(firerrors.KindCancelled,
+			Subsystem, "connect", "session ended during attempt (%v)", err)
+	}
+
+	return Snapshot{}, firerrors.Wrap(err, kind,
+		Subsystem, "connect", format, args...)
 }
 
 // checkPortBindability probes whether the requested local inbound
@@ -712,11 +869,31 @@ func (m *Manager) checkPortBindability(socks, http int) error {
 // file-lock discipline), then release resources, then clear state.
 // Provider sessions (§11) stop through their own deterministic
 // lifecycle — no orphan processes either way.
+//
+// v0.9.8.6 determinism contract: returning from Disconnect means the
+// session epoch has ended (generation bumped BEFORE any teardown),
+// the monitor goroutine has JOINED (an in-flight stability recheck
+// and its process teardown completed or was discarded), and the
+// instance was closed — the supervised process is gone or the error
+// was recorded in lastError. Nothing keeps mutating the manager
+// afterwards.
 func (m *Manager) Disconnect() Snapshot {
 	if m == nil {
 		return Snapshot{}
 	}
 
+	// Session boundary FIRST: any in-flight verification (monitor
+	// recheck, connect-time probe) captured an older generation and
+	// will therefore DISCARD its result instead of applying it to the
+	// post-disconnect state.
+	m.mu.Lock()
+	m.generation++
+	m.mu.Unlock()
+
+	// Join the monitor: cancel its context and WAIT for the goroutine
+	// to exit. The goroutine's current iteration (including a
+	// stability teardown that is closing the instance) finishes before
+	// Disconnect proceeds — an in-flight Close is never orphaned.
 	m.stopMonitor()
 
 	m.mu.Lock()
@@ -724,10 +901,17 @@ func (m *Manager) Disconnect() Snapshot {
 	instance := m.instance
 	m.instance = nil
 	m.state = StateDisconnecting
+	m.corePID = 0
 
 	// v0.9.8.5: clear the stability evidence with the session.
+	// v0.9.8.6: the verification verdicts are session evidence too —
+	// a disconnected session reports "none", never a stale
+	// "degraded"/"failed" label produced by a recheck that the
+	// generation guard discarded.
 	m.verifyFailures = 0
 	m.nextVerifyAt = time.Time{}
+	m.verifiedAt = time.Time{}
+	m.lastVerify = VerifyResult{}
 
 	m.mu.Unlock()
 
@@ -820,6 +1004,7 @@ func (m *Manager) snapshotLocked() Snapshot {
 		CoreVersion: m.coreVersion,
 		LastError:   m.lastError,
 		Attempts:    append([]Attempt(nil), m.attempts...),
+		CorePID:     m.corePID,
 	}
 
 	if m.cfg != nil {
@@ -907,6 +1092,7 @@ func (m *Manager) VerifyConnected(ctx context.Context, opts VerifyOptions) (Veri
 	instance := m.instance
 	providerSession := m.provider
 	state := m.state
+	gen := m.generation
 	m.mu.Unlock()
 
 	if (instance == nil && providerSession == nil) || !state.ConnectedLike() {
@@ -928,6 +1114,19 @@ func (m *Manager) VerifyConnected(ctx context.Context, opts VerifyOptions) (Veri
 	result := VerifyTunnel(ctx, endpoint, opts)
 
 	m.mu.Lock()
+
+	// Generation gate (v0.9.8.6): a session boundary (disconnect /
+	// reconnect / shutdown) completed while this probe was running —
+	// the result describes a route that no longer belongs to the
+	// manager's current session, so it is returned to the caller but
+	// NOT applied (a stale failure must never poison the newer
+	// session's stability evidence).
+	if m.generation != gen {
+		m.mu.Unlock()
+
+		return result, nil
+	}
+
 	m.lastVerify = result
 
 	if result.OK {
@@ -991,7 +1190,8 @@ func (m *Manager) Health(ctx context.Context) core.HealthReport {
 }
 
 // Shutdown disconnects and permanently disables the manager
-// (application shutdown path).
+// (application shutdown path). Like Disconnect it is deterministic:
+// the session epoch ends and the monitor joins before returning.
 func (m *Manager) Shutdown() {
 	if m == nil {
 		return
@@ -1022,18 +1222,29 @@ func (m *Manager) Shutdown() {
 // grace recheck; only CONSECUTIVE failures beyond the threshold
 // transition the session to ConnectionFailed, handing control to
 // the bounded recovery loop (fresh-test → re-rank → reconnect).
+//
+// v0.9.8.6: the loop captures the session generation together with
+// the instance on every tick; every mutation and the crash transition
+// are generation-gated so a tick observing a superseded session can
+// never touch the newer one. The goroutine closes monitorDone on
+// exit — stopMonitor JOINS on it.
 func (m *Manager) startMonitor() {
 	m.stopMonitor()
 
 	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
 
 	m.mu.Lock()
 	m.monitorCancel = cancel
+	m.monitorDone = done
+	gen := m.generation
 	m.mu.Unlock()
 
 	interval := m.opts.MonitorInterval
 
 	go func() {
+		defer close(done)
+
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 
@@ -1047,9 +1258,18 @@ func (m *Manager) startMonitor() {
 				instance := m.instance
 				provSession := m.provider
 				state := m.state
+				tickGen := m.generation
 				m.mu.Unlock()
 
 				if (instance == nil && provSession == nil) || !state.ConnectedLike() {
+					return
+				}
+
+				// The session this tick observed was superseded
+				// (a disconnect/reconnect completed between
+				// scheduling and running): stop touching the
+				// manager entirely.
+				if tickGen != gen {
 					return
 				}
 
@@ -1065,7 +1285,7 @@ func (m *Manager) startMonitor() {
 
 						m.mu.Lock()
 
-						if m.state.ConnectedLike() {
+						if m.generation == tickGen && m.state.ConnectedLike() {
 							m.state = StateConnectionFailed
 							m.lastError = "provider process exited unexpectedly"
 							m.provider = nil
@@ -1073,13 +1293,20 @@ func (m *Manager) startMonitor() {
 
 						m.mu.Unlock()
 
+						// Deterministic cleanup of the dead
+						// provider's resources (bounded; the
+						// process is already gone).
+						stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
+						_ = provSession.prov.Stop(stopCtx)
+						stopCancel()
+
 						return
 					}
 
 					// Stability re-verification for provider
 					// sessions: the same multi-target gate,
 					// the same thresholds (§2.3).
-					m.runStabilityRecheck(ctx, provSession.endpoint)
+					m.runStabilityRecheck(ctx, provSession.endpoint, tickGen)
 
 					continue
 				}
@@ -1093,13 +1320,22 @@ func (m *Manager) startMonitor() {
 
 					m.mu.Lock()
 
-					if m.state.ConnectedLike() {
+					if m.generation == tickGen && m.state.ConnectedLike() {
 						m.state = StateConnectionFailed
 						m.lastError = "core process exited unexpectedly"
 						m.instance = nil
+						m.corePID = 0
 					}
 
 					m.mu.Unlock()
+
+					// Deterministic cleanup of the crashed
+					// instance's owned files (process dead →
+					// handles releasable; Close is safe on an
+					// exited process). Dropping the instance
+					// without Close — the v0.9.8.5 behaviour —
+					// leaked its temporary runtime directory.
+					_ = instance.Close()
 
 					return
 				}
@@ -1112,7 +1348,7 @@ func (m *Manager) startMonitor() {
 				m.mu.Unlock()
 
 				// Stability re-verification for core sessions.
-				m.runStabilityRecheck(ctx, instance.Endpoint())
+				m.runStabilityRecheck(ctx, instance.Endpoint(), tickGen)
 			}
 		}
 	}()
@@ -1123,12 +1359,19 @@ func (m *Manager) startMonitor() {
 // the documented degradation policy:
 //
 //	connected_verified → recheck failed → (grace) recheck again →
-//	still failing × threshold → connection_failed → recovery
+//	still failing × threshold → teardown → connection_failed → recovery
 //
 // A success at ANY point resets the failure evidence and restores
 // the normal recheck pacing — there is no permanent "healthy"
 // label without measured evidence.
-func (m *Manager) runStabilityRecheck(ctx context.Context, endpoint string) {
+//
+// v0.9.8.6 determinism (the Windows teardown contract): the teardown
+// completes BEFORE the ConnectionFailed state becomes observable, and
+// a session superseded while the recheck ran never mutates the newer
+// session (generation gate). If the teardown cannot PROVE termination
+// (instance.Close error), the error is preserved in lastError —
+// evidence, never silence.
+func (m *Manager) runStabilityRecheck(ctx context.Context, endpoint string, gen uint64) {
 	if endpoint == "" {
 		return
 	}
@@ -1136,6 +1379,14 @@ func (m *Manager) runStabilityRecheck(ctx context.Context, endpoint string) {
 	m.mu.Lock()
 
 	if m.state != StateConnectedVerified || m.opts.Verify.Skip {
+		m.mu.Unlock()
+
+		return
+	}
+
+	if m.generation != gen {
+		// The session was superseded between the monitor tick
+		// and this recheck: a stale recheck never runs at all.
 		m.mu.Unlock()
 
 		return
@@ -1160,7 +1411,18 @@ func (m *Manager) runStabilityRecheck(ctx context.Context, endpoint string) {
 	result := VerifyTunnel(probeCtx, endpoint, m.opts.Verify.verifyOptions())
 
 	m.mu.Lock()
-	defer m.mu.Unlock()
+
+	// Generation gate (v0.9.8.6): a disconnect/reconnect/shutdown
+	// completed while the probe ran. The result — success OR
+	// failure — describes a route that no longer exists; discarding
+	// it is the only correct action (a stale failure must never
+	// poison a newer session, and a stale success must never
+	// "heal" one either).
+	if m.generation != gen {
+		m.mu.Unlock()
+
+		return
+	}
 
 	m.lastVerify = result
 
@@ -1168,6 +1430,8 @@ func (m *Manager) runStabilityRecheck(ctx context.Context, endpoint string) {
 		m.verifyFailures = 0
 		m.verifiedAt = time.Now().UTC()
 		m.nextVerifyAt = m.verifiedAt.Add(m.opts.VerifyInterval)
+
+		m.mu.Unlock()
 
 		return
 	}
@@ -1180,59 +1444,125 @@ func (m *Manager) runStabilityRecheck(ctx context.Context, endpoint string) {
 	if m.verifyFailures < m.opts.VerifyFailureThreshold {
 		m.nextVerifyAt = time.Now().Add(m.opts.VerifyGrace)
 
+		m.mu.Unlock()
+
 		return
 	}
 
 	// Threshold reached: the verified session has no measured
 	// evidence of usable Internet anymore — tear it down and let
 	// the bounded recovery loop take over with FRESH evidence.
-	m.lastError = fmt.Sprintf("connection degraded: %d consecutive failed verification rechecks (%s)",
+	//
+	// The session ENDS here (v0.9.8.6): grab the resources, mark
+	// Disconnecting and bump the generation so late observers can
+	// distinguish a live teardown from a finished failure, then
+	// run the bounded teardown BEFORE the terminal state becomes
+	// observable.
+	degradedMsg := fmt.Sprintf("connection degraded: %d consecutive failed verification rechecks (%s)",
 		m.verifyFailures, result.Describe())
-	m.state = StateConnectionFailed
-	m.verifyFailures = 0
 
 	instance := m.instance
 	provSession := m.provider
 
 	m.instance = nil
 	m.provider = nil
+	m.corePID = 0
+	m.verifyFailures = 0
+	m.state = StateDisconnecting
+	m.lastError = degradedMsg
+
+	// The epoch ends with the session: verifications captured by
+	// the old generation are stale from this point on.
+	m.generation++
 
 	m.mu.Unlock()
 
-	// Deterministic cleanup outside the lock (Windows file-lock
-	// discipline: stop the process first).
+	// Deterministic teardown OUTSIDE the lock and BEFORE the
+	// terminal state becomes observable (Windows file-lock
+	// discipline: stop the process first). Completing this block
+	// with a nil teardown error means: child exited, descendants
+	// reaped, owned runtime files removed. A non-nil error means
+	// termination could NOT be proven — it is preserved below.
+	var teardownErr error
+
 	if instance != nil {
-		_ = instance.Close()
+		teardownErr = instance.Close()
 	}
 
 	if provSession != nil {
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		_ = provSession.prov.Stop(stopCtx)
+
+		if err := provSession.prov.Stop(stopCtx); err != nil && teardownErr == nil {
+			teardownErr = err
+		}
+
 		stopCancel()
 	}
 
 	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Re-check under the lock: a Disconnect/Shutdown that ran while
+	// the teardown was in progress owns the terminal state now —
+	// this goroutine must not overwrite it.
+	if m.state == StateDisconnecting {
+		m.state = StateConnectionFailed
+	}
+
+	// Teardown evidence: a process that could not be proven dead
+	// is reported, never silently dropped.
+	if teardownErr != nil {
+		m.lastError = fmt.Sprintf("%s; teardown error: %v", degradedMsg, teardownErr)
+	}
 }
 
-// stopMonitor cancels the monitor loop and waits for it to observe
-// the cancellation (bounded by the next tick).
+// stopMonitor cancels the monitor loop and JOINS the goroutine.
+// v0.9.8.6: cancelling alone is not synchronization — the goroutine
+// may be mid-recheck or mid-teardown. Waiting for monitorDone makes
+// "the monitor has stopped" a proved fact: any in-flight verification
+// finished (and, if a stability teardown had started, the process
+// teardown completed) before this returns. The wait is bounded by
+// construction: the probe honours ctx cancellation, and the teardown
+// path is bounded by the grace period plus the hard-kill deadline.
 func (m *Manager) stopMonitor() {
 	m.mu.Lock()
 	cancel := m.monitorCancel
+	done := m.monitorDone
 	m.monitorCancel = nil
+	m.monitorDone = nil
 	m.mu.Unlock()
 
 	if cancel != nil {
 		cancel()
 	}
+
+	if done != nil {
+		<-done
+	}
 }
 
 // fail records the failure and returns the failed snapshot.
 func (m *Manager) fail(err error) (Snapshot, error) {
+	return m.failAt(0, err)
+}
+
+// failAt records the failure and returns the failed snapshot — but
+// only while the session generation gen is still current (v0.9.8.6).
+// A stale attempt (its session was disconnected or superseded while
+// it ran) must not clobber the state machine a newer session owns:
+// the error is returned to the ORIGINAL caller while the manager
+// state is left untouched. gen == 0 records unconditionally (legacy
+// internal callers whose sessions cannot be superseded).
+func (m *Manager) failAt(gen uint64, err error) (Snapshot, error) {
 	m.mu.Lock()
-	m.state = StateConnectionFailed
-	m.lastError = err.Error()
-	m.instance = nil
+
+	if gen == 0 || m.generation == gen {
+		m.state = StateConnectionFailed
+		m.lastError = err.Error()
+		m.instance = nil
+		m.corePID = 0
+	}
+
 	m.mu.Unlock()
 
 	return m.Snapshot(), err
@@ -1240,6 +1570,14 @@ func (m *Manager) fail(err error) (Snapshot, error) {
 
 // recordAttempt appends one attempt record.
 func (m *Manager) recordAttempt(backend string, ok bool, err error, started time.Time) {
+	m.recordAttemptAt(0, backend, ok, err, started)
+}
+
+// recordAttemptAt appends one attempt record for the session that
+// owned generation gen. A stale attempt (its session ended before the
+// record was written) is skipped: it must not pollute a newer
+// session's attempt history. gen == 0 records unconditionally.
+func (m *Manager) recordAttemptAt(gen uint64, backend string, ok bool, err error, started time.Time) {
 	attempt := Attempt{
 		Backend:  backend,
 		OK:       ok,
@@ -1252,7 +1590,11 @@ func (m *Manager) recordAttempt(backend string, ok bool, err error, started time
 	}
 
 	m.mu.Lock()
-	m.attempts = append(m.attempts, attempt)
+
+	if gen == 0 || m.generation == gen {
+		m.attempts = append(m.attempts, attempt)
+	}
+
 	m.mu.Unlock()
 }
 

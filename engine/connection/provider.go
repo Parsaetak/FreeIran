@@ -60,9 +60,16 @@ func (m *Manager) ConnectProvider(
 
 	// --- SELECT ------------------------------------------------------
 	m.mu.Lock()
+
+	// Session boundary (v0.9.8.6): a new provider session epoch.
+	m.generation++
+
+	gen := m.generation
+
 	m.state = StateSelecting
 	m.cfg = nil
 	m.provider = nil
+	m.corePID = 0
 	m.lastProvider = prov
 	m.attempts = nil
 	m.lastError = ""
@@ -112,6 +119,20 @@ func (m *Manager) ConnectProvider(
 	info := prov.Info()
 
 	m.mu.Lock()
+
+	// Generation gate (v0.9.8.6): the session was ended
+	// (Disconnect/Shutdown) while the provider was starting — stop it
+	// and fail honestly instead of publishing a session nobody owns.
+	if m.generation != gen {
+		m.mu.Unlock()
+
+		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_ = prov.Stop(stopCtx)
+		cancel()
+
+		return m.failAt(gen, fmt.Errorf("session ended while provider %s was starting", prov.Name()))
+	}
+
 	m.provider = &providerSession{prov: prov, endpoint: endpoint}
 	m.coreName = info.Name
 	m.coreVersion = info.Version
@@ -129,6 +150,24 @@ func (m *Manager) ConnectProvider(
 	result := VerifyTunnel(ctx, endpoint, opts)
 
 	m.mu.Lock()
+
+	// Generation gate (v0.9.8.6): a session boundary completed while
+	// the provider verification was in flight. A stale result — success
+	// OR failure — is discarded: it must never resurrect a torn-down
+	// session nor poison a newer one.
+	if m.generation != gen {
+		m.mu.Unlock()
+
+		// The provider belongs to a dead session: stop it
+		// deterministically (Stop is idempotent).
+		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_ = prov.Stop(stopCtx)
+		cancel()
+
+		return m.failAt(gen, fmt.Errorf(
+			"session ended during provider %s verification (result discarded)", prov.Name()))
+	}
+
 	m.lastVerify = result
 
 	if result.OK {
@@ -171,6 +210,21 @@ func (m *Manager) ConnectProvider(
 	// left verified Tor/Psiphon sessions looking unverified to the UI
 	// (stuck on the "verifying" transitional surface).
 	m.mu.Lock()
+
+	// Generation gate (re-checked under the lock): the session must
+	// still be current before the final transition and the monitor
+	// start (v0.9.8.6).
+	if m.generation != gen {
+		m.mu.Unlock()
+
+		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_ = prov.Stop(stopCtx)
+		cancel()
+
+		return m.failAt(gen, fmt.Errorf(
+			"session ended before provider %s became verified", prov.Name()))
+	}
+
 	m.state = StateConnectedVerified
 	m.lastError = ""
 	m.mu.Unlock()

@@ -121,3 +121,73 @@ func countURL(sources []Source, want string) int {
 	}
 	return n
 }
+
+// TestDefaultSourcesArePublicUntrusted pins the v0.9.8.6 route-trust
+// boundary at the source registry level: every built-in public source
+// is classified TrustPublic — reliable fetch behaviour and route
+// trust are separate dimensions, and built-in sources are never
+// silently promoted to trusted routes.
+func TestDefaultSourcesArePublicUntrusted(t *testing.T) {
+	defaults := DefaultSources()
+
+	if len(defaults) == 0 {
+		t.Fatal("DefaultSources is empty")
+	}
+
+	for _, src := range defaults {
+		if got := src.RouteTrust(); got != TrustPublic {
+			t.Errorf("source %s: RouteTrust = %q, want %q (built-in public sources are untrusted routes)",
+				src.ID, got, TrustPublic)
+		}
+
+		if src.Custom {
+			t.Errorf("source %s: built-in source must not be marked Custom", src.ID)
+		}
+
+		if src.Trust != TrustPublic {
+			t.Errorf("source %s: Trust field = %q, want explicit %q", src.ID, src.Trust, TrustPublic)
+		}
+	}
+}
+
+// TestRouteTrustResolution pins the resolution rules: explicit Trust
+// wins, Custom (user-added, unstamped) resolves to user trust, and
+// everything else resolves to public.
+func TestRouteTrustResolution(t *testing.T) {
+	cases := []struct {
+		name string
+		src  Source
+		want Trust
+	}{
+		{"explicit official", Source{Trust: TrustOfficial}, TrustOfficial},
+		{"explicit user", Source{Trust: TrustUser}, TrustUser},
+		{"explicit public", Source{Trust: TrustPublic}, TrustPublic},
+		{"custom unstamped", Source{Custom: true}, TrustUser},
+		{"default unstamped", Source{}, TrustPublic},
+	}
+
+	for _, tc := range cases {
+		if got := tc.src.RouteTrust(); got != tc.want {
+			t.Errorf("%s: RouteTrust = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestDefaultSourcesExcludeRemovedNiREvilEndpoint documents the
+// v0.9.8.6 correction: the nirevil-vless default pointed at the
+// repository's README.md (documentation markup — zero vless://
+// URIs; verified against the live repository) and the subscription
+// paths it referenced 404. The entry was removed, not repaired with
+// an unverified guess.
+func TestDefaultSourcesExcludeRemovedNiREvilEndpoint(t *testing.T) {
+	for _, src := range DefaultSources() {
+		if src.ID == "nirevil-vless" {
+			t.Fatal("the invalid nirevil-vless README endpoint must not be a default source")
+		}
+
+		if strings.Contains(src.URL, "README.md") {
+			t.Errorf("source %s points at a README documentation endpoint (%s), not raw config data",
+				src.ID, src.URL)
+		}
+	}
+}

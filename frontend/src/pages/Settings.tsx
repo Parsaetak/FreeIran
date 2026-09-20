@@ -84,6 +84,7 @@ function sameSettings(a: Settings, b: Settings): boolean {
     a.local_socks_port === b.local_socks_port &&
     a.local_http_port === b.local_http_port &&
     a.reduced_motion === b.reduced_motion &&
+    a.allow_untrusted_public_routes === b.allow_untrusted_public_routes &&
     a.dev_verbose_diagnostics === b.dev_verbose_diagnostics &&
     a.dev_queue_workers === b.dev_queue_workers &&
     a.dev_net_timeout_seconds === b.dev_net_timeout_seconds &&
@@ -633,6 +634,13 @@ export function SettingsPage() {
           hint="When the active connection fails, FreeIran switches to the next best healthy candidate automatically (bounded retries, recently failed servers are skipped). This is the engine's core behaviour — disable only if you want full manual control."
           checked={!draft.disable_auto_recovery}
           onChange={(next) => update({ disable_auto_recovery: !next })}
+        />
+        <ToggleRow
+          id="allow-untrusted-public-routes"
+          label="Allow public untrusted routes in Quick Connect"
+          hint="Off by default: Quick Connect and Auto only connect through official or user-configured sources. Public nodes stay fully usable through explicit selection on the Configs page. A public node can be fast, stable and verified reachable while remaining untrusted — reliability and route trust are separate dimensions."
+          checked={draft.allow_untrusted_public_routes ?? false}
+          onChange={(next) => update({ allow_untrusted_public_routes: next })}
         />
       </SettingsSection>
 

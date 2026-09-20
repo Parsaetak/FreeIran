@@ -532,7 +532,12 @@ func probeHTTPS(ctx context.Context, url string) (bool, int64, string) {
 	client := &http.Client{
 		Timeout: 8 * time.Second,
 		Transport: &http.Transport{
-			Proxy:                 http.ProxyFromEnvironment,
+			// v0.9.8.6: the DIRECT-path probe is explicitly proxyless
+			// (internal/httpx ProxyDirect policy). An ambient
+			// HTTP(S)_PROXY here would silently re-route the "direct"
+			// measurement through an unaudited intermediary and report
+			// proxied connectivity as direct.
+			Proxy:                 nil,
 			DisableKeepAlives:     true,
 			TLSHandshakeTimeout:   5 * time.Second,
 			ResponseHeaderTimeout: 6 * time.Second,

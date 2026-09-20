@@ -1,4 +1,4 @@
-; FreeIran Windows installer (v0.9.8.5, §17/§18).
+; FreeIran Windows installer (v0.9.8.6, §17/§18).
 ;
 ; A minimal, reliable, standard Windows installer built on the mature
 ; Inno Setup ecosystem — no custom installer engine.
@@ -24,10 +24,10 @@
 ; hidden secondary workspace.
 ;
 ; CI passes the version explicitly (single source of truth: VERSION):
-;   ISCC.exe /DAPP_VERSION=0.9.8.3 scripts/freeiran.iss
+;   ISCC.exe /DAPP_VERSION=0.9.8.6 scripts/freeiran.iss
 
 #ifndef APP_VERSION
-  #define APP_VERSION "0.9.8.5"
+  #define APP_VERSION "0.9.8.6"
 #endif
 
 #define MyAppName "FreeIran"

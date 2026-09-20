@@ -20,7 +20,7 @@ Go application orchestration (engine/app)
         ├── engine/core          protocol-core execution boundary
         ├── engine/coremgr       [v0.6] managed core install/update/rollback
         ├── engine/testqueue     [v0.6] bounded-worker test queue
-        ├── engine/tunnel        [v0.6] system proxy (WinINet) + TUN (Wintun)
+        ├── engine/tunnel        [v0.6] system proxy (WinINet); TUN disabled (v0.9.8.6, experimental)
         ├── engine/provider      [v0.9.8.1] Tor/Psiphon/core provider lifecycle
         ├── engine/scheduler     interval scheduling
         ├── engine/native        optional C++ acceleration bridge
@@ -355,10 +355,11 @@ A dedicated subsystem responsible for install, discover, inspect,
 verify, update, rollback, enable/disable, remove, health-check and
 version reporting for Xray, V2Ray and sing-box.
 
-**Directory layout:**
+**Directory layout** (relative to the workspace root — see
+docs/workspace.md; the pre-v0.9.2 %AppData% path is history):
 
 ```
-<AppData>/FreeIran/cores/
+<workspace>/cores/
   xray/
     bin/xray.exe              ← active executable
     bin/xray.exe.previous     ← rollback target (last healthy)

@@ -85,6 +85,18 @@ type Settings struct {
 	// ReducedMotion asks the UI to minimize animation (accessibility).
 	ReducedMotion bool `json:"reduced_motion"`
 
+	// --- v0.9.8.6 route-trust policy ----------------------------------
+
+	// AllowUntrustedPublicRoutes opts Quick Connect / Auto into
+	// connecting through PUBLIC, UNTRUSTED source nodes (default:
+	// false). Public nodes remain fully usable through explicit
+	// selection on the Configs page — this switch only governs the
+	// AUTOMATIC route selection. A public node can be fast + stable +
+	// verified reachable + untrusted: reliability and route trust are
+	// separate dimensions, and the automatic policy never silently
+	// promotes untrusted routes to trusted ones.
+	AllowUntrustedPublicRoutes bool `json:"allow_untrusted_public_routes"`
+
 	// --- v0.9.1 developer / advanced options -----------------------
 	//
 	// Every field here is wired to real engine behaviour in

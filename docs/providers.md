@@ -268,3 +268,12 @@ binaries. The supported path is the user-binary flow: select →
 SHA-256 → validate → supervised smoke test → managed copy verified
 byte-identical → activate. The UI distinguishes auto-available,
 manual-required, installed, failed and unavailable states.
+
+## v0.9.8.6 — bounded extraction
+
+Provider archive extraction runs through `internal/safearchive`
+(same as core installs): archive/total/per-file/file-count bounds,
+path-traversal and absolute-path rejection, symlink/hardlink
+rejection and fail-closed handling of malformed archives. The
+mandatory published-checksum gate is unchanged — it was already
+correct for providers.

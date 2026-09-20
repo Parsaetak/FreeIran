@@ -2,6 +2,7 @@ package tunnel
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -36,20 +37,58 @@ func TestControllerEnableDirectIsNoop(t *testing.T) {
 	}
 }
 
-// TestControllerUnsupportedPlatform verifies that on non-Windows the
-// stub TUN backend reports unavailable and Enable returns
-// ErrUnsupportedPlatform. On Windows this test exercises the real
-// Wintun backend's Available check.
-func TestControllerUnsupportedPlatform(t *testing.T) {
+// TestControllerTUNDisabledEverywhere pins the v0.9.8.6 TUN policy:
+// on EVERY platform the controller reports TUN as unavailable and
+// Enable(ModeTUN) fails with the explicit experimental/disabled
+// error. No platform may half-configure the system before refusing.
+func TestControllerTUNDisabledEverywhere(t *testing.T) {
 	c := New()
-	state := c.State()
 
-	// On every platform, calling EnableTUN through the TunnelService
-	// should produce a deterministic error when the platform does not
-	// support TUN mode (non-Windows) OR when Wintun.dll is missing
-	// (Windows). Either case returns a wrapped error.
-	if state.Mode != ModeDirect {
-		t.Errorf("fresh controller Mode = %s, want %s", state.Mode, ModeDirect)
+	if c.tun.Available() {
+		t.Fatal("TUN must report unavailable on every platform in this release")
+	}
+
+	err := c.Enable(context.Background(), ModeTUN, "127.0.0.1", 1080, Options{})
+	if err == nil {
+		t.Fatal("Enable(ModeTUN) must fail with the experimental/disabled error")
+	}
+
+	if !errors.Is(err, ErrTunExperimental) {
+		t.Fatalf("err = %v, want ErrTunExperimental", err)
+	}
+
+	// The failed enable must leave the controller untouched.
+	state := c.State()
+	if state.Mode != ModeDirect || state.Active {
+		t.Fatalf("state = %+v, want direct/inactive after the refused enable", state)
+	}
+}
+
+// TestTunBackendRefusesInstallAndEnable pins the backend surface
+// directly: Install and Enable both refuse, Disable is a harmless
+// no-op and the snapshot reports the honest unavailable state.
+func TestTunBackendRefusesInstallAndEnable(t *testing.T) {
+	backend := newTUNBackend()
+
+	if backend.Available() {
+		t.Fatal("Available must be false")
+	}
+
+	if err := backend.Install(context.Background()); !errors.Is(err, ErrTunExperimental) {
+		t.Fatalf("Install err = %v, want ErrTunExperimental", err)
+	}
+
+	if err := backend.Enable(context.Background(), "127.0.0.1", 1080); !errors.Is(err, ErrTunExperimental) {
+		t.Fatalf("Enable err = %v, want ErrTunExperimental", err)
+	}
+
+	if err := backend.Disable(context.Background()); err != nil {
+		t.Fatalf("Disable err = %v, want nil no-op", err)
+	}
+
+	snap := backend.Snapshot()
+	if snap.Available || snap.Installed {
+		t.Fatalf("snapshot = %+v, want unavailable/not-installed", snap)
 	}
 }
 

@@ -7,8 +7,11 @@ Windows. All integers are little-endian.
 
 ## 1. Directory layout
 
+Relative to the workspace root (the application folder — see
+docs/workspace.md; the pre-v0.9.2 %AppData% layout is history):
+
 ```text
-<appdata>/data/
+<workspace>/data/
 ├── store.meta              JSON chunk registry (atomic replace)
 ├── index.bin               binary fingerprint index (atomic replace)
 ├── chunks/

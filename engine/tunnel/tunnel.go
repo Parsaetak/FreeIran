@@ -2,9 +2,14 @@
 //
 //   - System Proxy: sets Windows system proxy through WinINet's
 //     per-connection options, with safe save/restore of the previous
-//     settings.
-//   - TUN mode: a real Windows TUN interface backed by Wintun (not a
-//     fake system-proxy substitution).
+//     settings. PRODUCTION-supported.
+//   - TUN mode: DISABLED in this release. The v0.9.8.6 audit removed
+//     the unfinished Wintun backend (inverted route tracking,
+//     non-transactional DNS "restore", unverified curl/PowerShell
+//     acquisition, unbounded extraction) — see tun_unavailable.go
+//     for the full defect list. TUN is NOT a kill switch and must
+//     never be described as one; re-enabling it requires a
+//     transactional implementation with verified rollback.
 //
 // Both modes require explicit user action and run independently of
 // the protocol-core execution boundary (engine/core). They consume
@@ -38,10 +43,10 @@ const (
 	// routing.
 	ModeSystemProxy Mode = "system_proxy"
 
-	// ModeTUN: a real TUN interface is created (Wintun on Windows),
-	// routing is configured to send traffic through the TUN, and the
-	// active core's SOCKS endpoint is used as the upstream. Requires
-	// elevation on Windows.
+	// ModeTUN: DISABLED (v0.9.8.6). TUN remains in the mode enum so
+	// the UI can report it as unavailable/experimental, but Enable
+	// always returns ErrTunExperimental until a safe, transactional
+	// implementation exists. See tun_unavailable.go.
 	ModeTUN Mode = "tun"
 )
 
@@ -101,7 +106,10 @@ type SystemProxySnapshot struct {
 	Saved    bool     `json:"saved"`              // previous settings saved?
 }
 
-// TUNBackend is the platform interface for TUN operations.
+// TUNBackend is the platform interface for TUN operations. The only
+// implementation in this release is unavailableTUNBackend (see
+// tun_unavailable.go): TUN is experimental and disabled until a
+// transactional design exists.
 type TUNBackend interface {
 	// Available reports whether the TUN driver (Wintun.dll) is
 	// installed and usable.
@@ -171,10 +179,9 @@ func New() *Controller {
 // State. On failure the previous settings are NOT modified (the
 // function returns before any state mutation).
 //
-// For ModeTUN the endpoint is upstream of the TUN interface. The
-// function checks Wintun availability, requires elevation, creates
-// the TUN, configures routes + DNS, and forwards packets. On failure
-// all changes are rolled back (route + interface removed).
+// For ModeTUN the function returns ErrTunExperimental: TUN is
+// disabled in this release (v0.9.8.6) because its implementation was
+// not transactional and its Wintun acquisition was not verifiable.
 //
 // For ModeDirect the function is a no-op (use Disable instead).
 func (c *Controller) Enable(ctx context.Context, mode Mode, host string, port int, opts Options) error {
@@ -205,23 +212,11 @@ func (c *Controller) Enable(ctx context.Context, mode Mode, host string, port in
 		return nil
 
 	case ModeTUN:
-		if !c.tun.Available() {
-			if err := c.tun.Install(ctx); err != nil {
-				return fmt.Errorf("tunnel: install wintun: %w", err)
-			}
-		}
-		if err := c.tun.Enable(ctx, host, port); err != nil {
-			return fmt.Errorf("tunnel: enable tun: %w", err)
-		}
-		c.state = State{
-			Mode:              mode,
-			Active:            true,
-			Endpoint:          fmt.Sprintf("%s:%d", host, port),
-			RequiresElevation: true,
-			StartedAt:         time.Now().UTC(),
-		}
-		c.enabled = true
-		return nil
+		// v0.9.8.6: TUN is experimental and disabled everywhere (see
+		// tun_unavailable.go). Fail with the explicit, user-visible
+		// status BEFORE touching any platform backend — never fake
+		// support, never half-configure the system.
+		return fmt.Errorf("tunnel: enable tun: %w", ErrTunExperimental)
 
 	default:
 		return fmt.Errorf("tunnel: unknown mode %q", mode)

@@ -27,20 +27,8 @@ package source
 func DefaultSources() []Source {
 	return []Source{
 		{
-			ID:              "nirevil-vless",
-			Name:            "NiREvil VLESS",
-			URL:             "https://raw.githubusercontent.com/NiREvil/vless/main/README.md",
-			Enabled:         true,
-			Provider:        "NiREvil",
-			Project:         "NiREvil/vless",
-			ProtocolHints:   []string{"vless"},
-			Region:          "global",
-			Format:          "auto",
-			Priority:        100,
-			RefreshInterval: 0, // global cadence
-		},
-		{
 			ID:            "morpheusadam-best",
+			Trust:         TrustPublic,
 			Name:          "MorpheusAdam Best",
 			URL:           "https://raw.githubusercontent.com/morpheusadam/v2ray-config/main/subs/bundles/best.txt",
 			Enabled:       true,
@@ -53,6 +41,7 @@ func DefaultSources() []Source {
 		},
 		{
 			ID:            "morpheusadam-iran",
+			Trust:         TrustPublic,
 			Name:          "MorpheusAdam Iran",
 			URL:           "https://raw.githubusercontent.com/morpheusadam/v2ray-config/main/subs/bundles/iran.txt",
 			Enabled:       true,
@@ -65,6 +54,7 @@ func DefaultSources() []Source {
 		},
 		{
 			ID:            "radikal-verified",
+			Trust:         TrustPublic,
 			Name:          "0xRadikal Verified",
 			URL:           "https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/verified/configs.txt",
 			Enabled:       true,
@@ -77,6 +67,7 @@ func DefaultSources() []Source {
 		},
 		{
 			ID:            "radikal-vless",
+			Trust:         TrustPublic,
 			Name:          "0xRadikal VLESS",
 			URL:           "https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/data/protocols/vless.txt",
 			Enabled:       true,
@@ -89,6 +80,7 @@ func DefaultSources() []Source {
 		},
 		{
 			ID:            "radikal-vmess",
+			Trust:         TrustPublic,
 			Name:          "0xRadikal VMess",
 			URL:           "https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/data/protocols/vmess.txt",
 			Enabled:       true,
@@ -101,6 +93,7 @@ func DefaultSources() []Source {
 		},
 		{
 			ID:            "radikal-trojan",
+			Trust:         TrustPublic,
 			Name:          "0xRadikal Trojan",
 			URL:           "https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/data/protocols/trojan.txt",
 			Enabled:       true,
@@ -113,6 +106,7 @@ func DefaultSources() []Source {
 		},
 		{
 			ID:            "radikal-shadowsocks",
+			Trust:         TrustPublic,
 			Name:          "0xRadikal Shadowsocks",
 			URL:           "https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/data/protocols/shadowsocks.txt",
 			Enabled:       true,
@@ -125,6 +119,7 @@ func DefaultSources() []Source {
 		},
 		{
 			ID:            "radikal-hysteria2",
+			Trust:         TrustPublic,
 			Name:          "0xRadikal Hysteria2",
 			URL:           "https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/data/protocols/hysteria2.txt",
 			Enabled:       true,
@@ -137,6 +132,7 @@ func DefaultSources() []Source {
 		},
 		{
 			ID:            "radikal-tuic",
+			Trust:         TrustPublic,
 			Name:          "0xRadikal TUIC",
 			URL:           "https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/data/protocols/tuic.txt",
 			Enabled:       true,
@@ -149,6 +145,7 @@ func DefaultSources() []Source {
 		},
 		{
 			ID:            "radikal-wireguard",
+			Trust:         TrustPublic,
 			Name:          "0xRadikal WireGuard",
 			URL:           "https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/data/protocols/wireguard.txt",
 			Enabled:       true,
@@ -164,6 +161,7 @@ func DefaultSources() []Source {
 
 		{
 			ID:            "shadowsocks-aggregator-eternity",
+			Trust:         TrustPublic,
 			Name:          "ShadowsocksAggregator Eternity",
 			URL:           "https://raw.githubusercontent.com/mahdibland/ShadowsocksAggregator/master/Eternity.txt",
 			Enabled:       true,
@@ -176,6 +174,7 @@ func DefaultSources() []Source {
 		},
 		{
 			ID:            "mahsa-free-config-mtn",
+			Trust:         TrustPublic,
 			Name:          "MahsaFreeConfig MTN",
 			URL:           "https://raw.githubusercontent.com/mahsanet/MahsaFreeConfig/main/mtn/sub_1.txt",
 			Enabled:       true,
@@ -188,6 +187,7 @@ func DefaultSources() []Source {
 		},
 		{
 			ID:            "scrape-and-categorize-netherlands",
+			Trust:         TrustPublic,
 			Name:          "ScrapeAndCategorize Netherlands",
 			URL:           "https://raw.githubusercontent.com/10ium/ScrapeAndCategorize/refs/heads/main/output_configs/Netherlands.txt",
 			Enabled:       true,

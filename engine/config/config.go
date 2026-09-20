@@ -30,6 +30,31 @@ const (
 // Parsers convert external formats into Config objects.
 // Protocol engines later convert Config objects into core-specific
 // configurations.
+// Source-trust bands (v0.9.8.6) — mirror engine/source.Trust. Kept
+// as plain string constants so the persisted record stays
+// self-describing without importing the source package.
+const (
+	// SourceTrustOfficial: first-party FreeIran sources.
+	SourceTrustOfficial = "official"
+	// SourceTrustUser: user-configured sources.
+	SourceTrustUser = "user"
+	// SourceTrustPublic: third-party public sources — untrusted
+	// routes. The default for empty (legacy) records.
+	SourceTrustPublic = "public"
+)
+
+// RouteTrusted reports whether a configuration's source is trusted
+// for AUTOMATIC route selection (official or user). Public/empty
+// bands require explicit user choice or opt-in.
+func (c Config) RouteTrusted() bool {
+	switch c.SourceTrust {
+	case SourceTrustOfficial, SourceTrustUser:
+		return true
+	default:
+		return false
+	}
+}
+
 type Config struct {
 	ID      string `json:"id"`
 	Type    Type   `json:"type"`
@@ -78,6 +103,13 @@ type Config struct {
 
 	// Source information.
 	Source string `json:"source,omitempty"`
+
+	// SourceTrust is the ROUTE-trust classification of the source this
+	// configuration was ingested from (v0.9.8.6):
+	// "official" | "user" | "public". Empty (legacy records) resolves
+	// as "public" — untrusted by default. Reliability and reachability
+	// measurements never promote a public route to trusted.
+	SourceTrust string `json:"source_trust,omitempty"`
 
 	// Runtime information.
 	Working   bool  `json:"working"`

@@ -31,6 +31,11 @@ type SourceView struct {
 	URL      string `json:"url"`
 	Enabled  bool   `json:"enabled"`
 	LastHash string `json:"last_hash,omitempty"`
+	// Trust is the ROUTE-trust band of the source (v0.9.8.6):
+	// "official" | "user" | "public". The Sources UI labels untrusted
+	// public routes explicitly; the Quick Connect policy enforces the
+	// boundary on the backend.
+	Trust string `json:"trust,omitempty"`
 }
 
 // SourceService manages configuration sources.
@@ -57,6 +62,7 @@ func (s *SourceService) List() []SourceView {
 			URL:      src.URL,
 			Enabled:  src.Enabled,
 			LastHash: s.app.seenHashes[src.ID],
+			Trust:    string(src.RouteTrust()),
 		})
 	}
 
@@ -113,6 +119,8 @@ func (s *SourceService) Add(id, name, url string) error {
 		Name:    name,
 		URL:     url,
 		Enabled: true,
+		Custom:  true,
+		Trust:   source.TrustUser,
 	})
 
 	s.app.mu.Unlock()

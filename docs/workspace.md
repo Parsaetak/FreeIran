@@ -19,7 +19,7 @@ FreeIran/                  ← workspace root (default: directory of FreeIran.ex
 │   └── index.bin          #   fingerprint index (atomic replace)
 ├── cache/
 ├── logs/                  # freeiran.log + rotated backups
-├── cores/                 # managed protocol cores (+ wintun on Windows)
+├── cores/                 # managed protocol cores
 ├── runtime/               # short-lived temp files, always cleaned
 └── docs/, deployment/     # static release content
 ```

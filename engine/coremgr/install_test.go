@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -147,6 +148,14 @@ func newInstallHarness(t *testing.T, coreName, tag string) *installHarness {
 	}
 
 	h.assetBody = zipAsset(t, coreName, fakeCorePath)
+
+	// v0.9.8.6: the install pipeline refuses assets without an
+	// authoritative digest, so the standard harness publishes the
+	// .dgst sidecar by default. Tests exercising the rejection path
+	// clear digestSHA themselves.
+	assetSum := sha256.Sum256(h.assetBody)
+	h.digestSHA = hex.EncodeToString(assetSum[:])
+
 	h.releaseJSON = []byte(fmt.Sprintf(`{
                 "tag_name": %q,
                 "name": %q,
@@ -620,6 +629,62 @@ func TestInstallVerifiesAgainstPublishedSidecarDigest(t *testing.T) {
 	mf, _ := mgr.Info(CoreXray)
 	if mf.State != StateReady {
 		t.Fatalf("state = %s (reason %q)", mf.State, mf.FailureReason)
+	}
+}
+
+// TestInstallRejectsMissingAuthoritativeDigest pins the v0.9.8.6
+// executable-trust invariant: when a release publishes NO digest
+// (neither the release-API digest field nor a .dgst sidecar), the
+// install is REJECTED. A locally computed SHA-256 is tamper evidence,
+// never a trust anchor — it may not make a remotely acquired
+// executable runnable.
+func TestInstallRejectsMissingAuthoritativeDigest(t *testing.T) {
+	h := newInstallHarness(t, "xray", "v1.4.0")
+
+	t.Setenv("FAKECORE_VERSION", "v1.4.0")
+
+	// No authoritative digest anywhere: clear the harness default and
+	// keep the API digest empty.
+	h.mu.Lock()
+	h.digestSHA = ""
+	h.mu.Unlock()
+
+	mgr := newTestManager(t, h, "xray")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	err := mgr.Install(ctx, CoreXray)
+	if err == nil {
+		t.Fatal("Install succeeded without any authoritative digest, want rejection")
+	}
+
+	if !strings.Contains(err.Error(), "verify_digest") {
+		t.Fatalf("err = %v, want a verify_digest failure", err)
+	}
+
+	// The structured wrap names the stage; the UNWRAPPED cause carries
+	// the full explanation (fail() replaces the cause text with the
+	// stage summary but preserves the chain for errors.Unwrap).
+	var explanation string
+
+	for cur := error(err); cur != nil; cur = errors.Unwrap(cur) {
+		explanation += cur.Error() + " "
+	}
+
+	if !strings.Contains(explanation, "unverified executable") {
+		t.Fatalf("unwrapped chain = %q, want the unverified-executable explanation", explanation)
+	}
+
+	mf, _ := mgr.Info(CoreXray)
+
+	if mf.State != StateBroken {
+		t.Errorf("state = %s, want broken", mf.State)
+	}
+
+	// No executable may be active after the rejection.
+	if _, statErr := os.Stat(mf.BinaryPath); statErr == nil {
+		t.Error("a binary was activated despite the missing digest")
 	}
 }
 

@@ -42,6 +42,13 @@ const (
 	// integrity checks and may need recovery.
 	KindCorruptData Kind = "corrupt_data"
 
+	// KindCancelled indicates the operation ended because its session
+	// or context was superseded (v0.9.8.6): a disconnect/reconnect/
+	// shutdown completed while the operation was in flight. The result
+	// was discarded by design — this is not a failure of the operation
+	// itself.
+	KindCancelled Kind = "cancelled"
+
 	// KindFatal indicates the engine cannot continue this operation
 	// and the failure is not expected to resolve by itself.
 	KindFatal Kind = "fatal"

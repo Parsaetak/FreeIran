@@ -77,6 +77,11 @@ the job.
    desktop package type-checked for its real target.
 3. A suspicious-pattern scan over `./engine` and `./system`:
    - `exec.Command("sh", "-c"` — shell-injection surface in engine code.
+   - Dangerous child-process patterns (PowerShell, cmd, curl, wget,
+     netsh, route, Start-Process, Invoke-WebRequest,
+     Expand-Archive, bitsadmin, certutil, mshta) in product Go code
+     — allowlist-based, every exception justified inline (v0.9.8.6).
+   - v0.9.86 placeholder
    - `password=` / `secret=` literals in non-test Go code (allowing the
      existing `REDACT` marker for deliberate tests/documentation).
 
@@ -300,3 +305,54 @@ not even once — and makes the checksum MANDATORY:
   only user-provided, non-secret inputs (bridge lines, plugin paths,
   extra config JSON), and the existing entry-level redaction applies
   to every log line.
+
+## v0.9.8.6 — executable trust, bounded extraction, explicit proxies, command-surface audit
+
+- **Digest-mandatory core installs.** A remotely acquired executable
+  may never become runnable without AUTHORITATIVE integrity evidence.
+  Core installs are REJECTED when the release publishes no digest
+  (release-API digest field or `.dgst` sidecar); a locally computed
+  SHA-256 is recorded as tamper evidence but is never a trust anchor.
+  Asset URLs must be HTTPS (loopback test authorities excepted).
+  Provider binaries keep their mandatory published-checksum gate and
+  the copy-never-move adoption contract for user-provided files.
+- **Bounded archive extraction** (`internal/safearchive`): archive
+  size, total expansion, per-file size and entry-count limits;
+  path-traversal and absolute-path rejection (POSIX and Windows
+  forms); symlink/hardlink/device/fifo entries rejected; malformed
+  archives fail closed. Zip-bomb and tar-slip test batteries cover
+  the limits.
+- **Explicit HTTP proxy policy** (`internal/httpx`): transports state
+  their proxy mode (direct / environment / user URL / tunnel).
+  DIRECT is the default everywhere — ambient `HTTP_PROXY` /
+  `HTTPS_PROXY` / `ALL_PROXY` are ignored unless a caller explicitly
+  opts in. The SSRF-guarded discovery client is direct by policy: an
+  ambient proxy would bypass the dial-time destination validation
+  (proxy-assisted destination confusion), so this is enforced, tested
+  and documented — not assumed.
+- **Route-trust boundary:** sources are classified official / user /
+  public. Quick Connect and Auto connect through trusted routes only,
+  unless the user explicitly enables untrusted public routes. A
+  public node can be fast, stable, verified reachable and untrusted —
+  reliability and route trust are separate dimensions.
+- **TUN removed from the trusted surface:** the v0.9.8.5 Wintun
+  backend (raw curl/PowerShell acquisition without digest
+  verification, inverted route tracking, DHCP-not-restore DNS,
+  unbounded extraction) was deleted. TUN reports
+  experimental/unavailable on every platform and is NOT a kill
+  switch.
+- **Allowlist-based child-process audit** (security.yml): product Go
+  code must not invoke PowerShell, cmd, curl, wget, netsh, route,
+  Start-Process, Invoke-WebRequest, Expand-Archive or similar
+  download/exec tools. Every exception is explicit and justified
+  inline (currently exactly one: the validated cmd.exe PATH RESOLVER
+  in system/resolve_windows.go, which never executes anything).
+  The scan's push trigger was also repaired — `branches: ain]`
+  never matched a real branch, so pushes to main were never scanned.
+- **Release signing state:** Authenticode signing is ACTIVE only when
+  the `WINDOWS_SIGNING_PFX` / `WINDOWS_SIGNING_PASSWORD` secrets are
+  configured; signtool signs `FreeIran.exe` (before anything embeds
+  it) and the installer, and `Get-AuthenticodeSignature` verifies both
+  in CI. Without the secrets the release ships UNSIGNED and every
+  artifact, `SIGNING-STATUS.txt` and the release notes say so —
+  signing is never fabricated.

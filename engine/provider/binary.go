@@ -30,6 +30,7 @@ import (
 
 	"github.com/Parsaetak/FreeIran/internal/httpx"
 	"github.com/Parsaetak/FreeIran/internal/logging"
+	"github.com/Parsaetak/FreeIran/internal/safearchive"
 )
 
 // Manifest is the persisted provider install state.
@@ -591,28 +592,17 @@ func safeCopyFile(src, dst, expectedSHA256 string) error {
 	return nil
 }
 
-// unpackTarGz extracts a .tar.gz with tar-slip protection (same
-// discipline as engine/coremgr).
+// unpackTarGz extracts a .tar.gz through internal/safearchive
+// (v0.9.8.6): bounded archive/total/per-file/file-count limits,
+// tar-slip and absolute-path rejection, symlink/hardlink rejection
+// and fail-closed handling of malformed archives — the same
+// discipline engine/coremgr now uses, in ONE shared implementation.
 func unpackTarGz(archivePath, dst string) error {
-	f, err := os.Open(archivePath)
-	if err != nil {
-		return err
-	}
-
-	defer f.Close()
-
-	gz, err := newGzipReader(f)
-	if err != nil {
-		return err
-	}
-
-	defer gz.Close()
-
 	if err := os.MkdirAll(dst, 0o700); err != nil {
 		return err
 	}
 
-	return extractTar(gz, dst)
+	return safearchive.Unpack(archivePath, dst, safearchive.DefaultLimits())
 }
 
 // PlatformSuffix renders the asset platform token for GOOS/GOARCH.

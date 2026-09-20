@@ -41,6 +41,30 @@ jobs:
           grep -q "var Version = \"$version\"" internal/version/version.go ||
             { echo "internal/version/version.go != $version" >&2; exit 1; }
 
+      # v0.9.8.6: the Wails toolchain pair must match EXACTLY. The
+      # v0.9.8.5 tree drifted (Go wails/v3 beta.19 while the lockfile
+      # resolved @wailsio/runtime beta.20): the ByID call hashes are
+      # toolchain-version-coupled, so mismatched betas can break the
+      # runtime call surface silently.
+      - name: Wails toolchain pair consistency
+        run: |
+          go_wails=$(go list -m github.com/wailsapp/wails/v3 |
+            awk '{print $2}')
+          js_wails=$(node -e \
+            "console.log(require('./frontend/package.json').dependencies['@wailsio/runtime'])")
+          echo "go: $go_wails  js: $js_wails"
+          if [ "$go_wails" != "$js_wails" ]; then
+            echo "Wails version drift: go.mod $go_wails vs package.json $js_wails" >&2
+            exit 1
+          fi
+          locked=$(node -e \
+            "console.log(require('./frontend/package-lock.json').packages['node_modules/@wailsio/runtime'].version)")
+          echo "lockfile: $locked"
+          if [ "$locked" != "$js_wails" ]; then
+            echo "package-lock.json resolves @wailsio/runtime $locked, not $js_wails" >&2
+            exit 1
+          fi
+
       - name: Format check
         run: |
           unformatted=$(gofmt -l ./engine ./system ./cmd ./internal)
@@ -147,6 +171,23 @@ jobs:
 
       - name: Production build
         run: npm run build
+
+      # v0.9.8.6: the committed embed output must be EXACTLY what the
+      # pinned toolchain regenerates. The v0.9.8.5 tree carried 14
+      # hashed asset files of which only 3 were referenced (historical
+      # bundles retained in Git). build:embed wipes and re-copies the
+      # target, so a clean `git diff` proves no stale bundles and no
+      # drift between frontend/dist and cmd/freeiran/frontend/dist.
+      - name: Clean-room embed check
+        run: |
+          npm run build:embed
+          if ! git diff --exit-code -- cmd/freeiran/frontend/dist; then
+            echo "cmd/freeiran/frontend/dist is stale: the committed embed" >&2
+            echo "output differs from a fresh build. Run 'npm run build:embed'" >&2
+            echo "and commit the result (copy-dist.mjs wipes stale hashed files)." >&2
+            git status --short -- cmd/freeiran/frontend/dist
+            exit 1
+          fi
 
       - name: Upload dist
         uses: actions/upload-artifact@v7

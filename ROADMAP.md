@@ -16,26 +16,77 @@ The application should feel like a mature desktop connectivity client rather tha
 
 Current main:
 
-* Version: `0.9.8.5`
+* Version: `0.9.8.6`
 * Platform focus: Windows x64
-* Runtime: Go + Wails + React/TypeScript
+* Runtime: Go + Wails + React/TypeScript (toolchain pair pinned:
+  `wails/v3 v3.0.0-beta.19` + `@wailsio/runtime 3.0.0-beta.19`,
+  CI-enforced)
 * Core families: Xray, V2Ray, sing-box
 * First-class providers: Tor, Psiphon
-* Quick Connect: enabled (fresh-selection loop, verification-gated)
+* Quick Connect: enabled (fresh-selection loop, verification-gated,
+  trusted-routes-only by default — public untrusted sources require
+  the explicit "Allow public untrusted routes" opt-in)
 * Connection verification: multi-target quorum (2 of 3 operators) with transient retry and evidence-based degradation/recovery
+* Session teardown: deterministic (v0.9.8.6) — monitor join, teardown
+  before the terminal state, stale generations discarded
 * Internet diagnostics: staged ladder (local link → local IP → DNS → TCP → TLS → HTTPS → captive portal → direct → tunnel) with per-stage failure classes
 * DNS diagnostics: system vs curated public resolvers, A/AAAA, UDP→TCP fallback, honest failure classification
 * Network identity: local IP + public IP + ISP/ASN on explicit user action
 * Adaptive memory controller: enabled (evidence-gated growth)
 * Managed workspace: enabled (application-folder-only)
-* Managed provider/core installation: enabled
+* Managed provider/core installation: enabled (digest-mandatory:
+  installs are rejected without an authoritative published digest;
+  bounded archive extraction via internal/safearchive)
+* HTTP policy: explicit transport proxy modes (direct by default —
+  ambient HTTP(S)_PROXY variables are ignored)
+* Tunnel modes: System Proxy (WinINet) production; TUN EXPERIMENTAL
+  and DISABLED (v0.9.8.6 — not a kill switch)
 * Logging profiles: enabled (Normal / Detailed / Debug)
 
 > Note: this section previously reported `0.9.8.2` with runtime
 > findings from that era (unbounded queue-depth growth, readiness
 > presented as success). Those findings described real defects that
 > the v0.9.8.3 implementation already fixed; the baseline text lagged
-> the repository and is corrected as of v0.9.8.4.
+> the repository and was corrected as of v0.9.8.4, then again for the
+> v0.9.8.6 trust/teardown changes above.
+
+### v0.9.8.6 — completed historical work
+
+v0.9.8.6 is a reliability/security/hygiene release — NO new
+connectivity feature was advanced. Completed, each verified by an
+executed test battery:
+
+* Deterministic Windows session teardown — `stopMonitor` joins the
+  monitor goroutine, the stability teardown completes before
+  `connection_failed` is observable, teardown errors are preserved,
+  and the crash path closes the crashed instance's owned files
+  (root cause of the v0.9.8.5 Windows CI TempDir failure).
+* Session generations — every async verification is generation-gated;
+  stale results (success or failure) are discarded at disconnect,
+  reconnect, shutdown and stability teardown.
+* Route-trust boundary — sources classified official/user/public,
+  configs carry their source's trust band, Quick Connect excludes
+  untrusted public routes by default with an explicit opt-in; the
+  invalid nirevil-vless README endpoint was removed.
+* TUN disabled everywhere — the non-transactional Wintun backend was
+  removed; TUN is reported experimental/unavailable and is not a
+  kill switch.
+* Executable trust — core installs rejected without an authoritative
+  digest; https-only asset URLs (loopback excepted); bounded archive
+  extraction (internal/safearchive) with zip-bomb/tar-slip tests.
+* Explicit HTTP proxy policy — direct by default; SSRF and netcheck
+  no longer inherit ambient proxies; proxy-confusion tests added.
+* Wails contract — runtime pinned and lockfile re-resolved to
+  beta.19 (the tree had drifted to beta.20); bindings contract test
+  (41 ByName + 24 ByID calls verified); clean-room embed check in CI.
+* Security CI — corrupted push trigger repaired (`branches: ain]`
+  never fired); allowlist-based dangerous child-process scan with
+  justified exceptions.
+* Release signing — explicit Authenticode architecture with honest
+  UNSIGNED state when secrets are absent.
+* Hygiene — worklog.md, tools/neteval, rsrc_windows_386.syso and 11
+  stale hashed frontend bundles removed; release history moved to
+  CHANGELOG.md; documentation truth pass.
 
 ### v0.9.8.5 — completed historical work
 

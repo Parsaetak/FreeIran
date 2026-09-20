@@ -95,3 +95,71 @@ jobs:
           fi
 
           echo "Pattern scan clean."
+
+      # v0.9.8.6: allowlist-based audit of the REAL Windows/child
+      # command surface. The product code (engine/, system/,
+      # internal/, cmd/ — excluding *_test.go and the contract test
+      # fixture builder) must not invoke privileged system shells or
+      # download/exec tools. The v0.9.8.5 TUN backend used raw
+      # curl/PowerShell/netsh/route — that surface was REMOVED with it
+      # (engine/tunnel/tun_unavailable.go). Every future exception
+      # must be added to the allowlist BELOW with a justification;
+      # the scan is never weakened to make CI green.
+      - name: Dangerous child-process surface (allowlist)
+        run: |
+          # The allowlist is EMPTY by design (v0.9.8.6): after the TUN
+          # backend removal the product command surface contains no
+          # justified exceptions. When a future, reviewed exception is
+          # genuinely required, express it as an explicit `case` below
+          # with the justification inline — never by weakening the
+          # pattern set.
+          #
+          # Current intentional skips (documented, bounded):
+          #   - *_test.go            — tests may assert on error text
+          #   - engine/core/contract/ — the deterministic fake-test-core
+          #                            builder runs `go build` (test-only
+          #                            package, never linked into product
+          #                            binaries)
+          #   - system/resolve_windows.go — JUSTIFIED EXCEPTION: the
+          #                            validated cmd.exe PATH RESOLVER.
+          #                            It never executes anything; it
+          #                            maps the bare name to a validated
+          #                            absolute path (%COMSPEC% checked
+          #                            to actually BE cmd.exe + on-disk
+          #                            validation, System32 fallback) so
+          #                            tests never depend on PATH/CWD.
+          #                            Removal of this entry requires
+          #                            removing the resolver first.
+
+          PATTERNS='powershell|pwsh|invoke-webrequest|iwr |start-process|expand-archive|netsh|route add|route delete|bitsadmin|certutil|mshta|curl |wget |cmd /c|cmd\.exe'
+
+          violations=0
+          while IFS= read -r file; do
+            case "$file" in *_test.go) continue;; esac
+            # The contract package builds the deterministic fake test
+            # core through the go toolchain — justified, test-only.
+            case "$file" in engine/core/contract/*) continue;; esac
+            case "$file" in ./system/resolve_windows.go) continue;; esac
+
+            # Comment lines are documentation (the tun_unavailable.go
+            # defect list NAMES the removed tools); only executable
+            # code may violate.
+            if grep -vE '^\s*(//|/\*|\*)' "$file" | \
+               grep -niE "$PATTERNS" >/tmp/scan_hits 2>/dev/null; then
+              echo "---- $file ----" >&2
+              cat /tmp/scan_hits >&2
+              violations=$((violations+1))
+            fi
+          done < <(find ./engine ./system ./internal ./cmd -name '*.go' -type f)
+
+          if [ "$violations" -gt 0 ]; then
+            echo "" >&2
+            echo "Dangerous child-process patterns found in $violations file(s)." >&2
+            echo "Product code must not shell out to PowerShell/cmd/curl/wget/netsh/route" >&2
+            echo "or archive-extraction commands. If a use is genuinely required, add a" >&2
+            echo "JUSTIFIED entry to the allowlist in this workflow step and note it in" >&2
+            echo "docs/security.md — do not weaken the pattern set." >&2
+            exit 1
+          fi
+
+          echo "Dangerous child-process surface clean (0 violations)."

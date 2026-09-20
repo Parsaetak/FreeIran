@@ -354,3 +354,41 @@ engine/provider/testdata/fakepsiphon  (Go source, single binary)
   drive `ConnectProvider` end-to-end against the same fixtures; the
   frontend provider store and mode routing are covered by vitest
   (`frontend/src/state/providerStore.test.ts`, 104 tests total).
+
+## Wails toolchain contract (v0.9.8.6)
+
+The desktop contract is a PINNED PAIR, enforced by CI:
+
+* Go module: `github.com/wailsapp/wails/v3 v3.0.0-beta.19`
+  (go.mod)
+* Frontend runtime: `@wailsio/runtime` pinned to the EXACT same
+  version in `frontend/package.json` (no `^` range) and re-resolved
+  in `package-lock.json`.
+
+At v0.9.8.5 the lockfile had drifted to `@wailsio/runtime@3.0.0-beta.20`
+against Go beta.19 — the machine-generated bindings call
+`$Call.ByID(<hash>)`, and those hashes are toolchain-version-coupled,
+so a mismatched pair can break the runtime call surface silently. CI
+now fails on any drift between the two.
+
+### Bindings maintenance
+
+The committed bindings (`frontend/bindings/...`) are of two
+generations: machine-generated files (`appservice.js` etc., calling
+`$Call.ByID`) and hand-written files (`coreservice.js`,
+`discoveryservice.js`, `networkservice.js`, `testqueueservice.js`,
+`tunnelservice.js`, calling `$Call.ByName` with a documented prefix
+contract). Regenerating with the wails3 CLI is NOT part of the pinned
+toolchain (no GUI toolchain on CI hosts); instead:
+
+* `engine/app/bindings_contract_test.go` verifies every hand-written
+  `Call.ByName` target exists as an exported method on its Go
+  service, and structurally checks the generated files' services.
+* The frontend CI job runs `npm run build:embed` and requires a clean
+  `git diff --exit-code -- cmd/freeiran/frontend/dist`, so the
+  committed embed output can never accumulate stale hashed bundles.
+
+Do not delete the bindings: the build architecture requires them.
+When a Go service method is renamed or removed, update the
+corresponding binding file in the same change — the contract test
+will catch misses.

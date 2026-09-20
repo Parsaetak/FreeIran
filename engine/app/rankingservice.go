@@ -71,12 +71,17 @@ type CandidateView struct {
 	LatencyMS   int64   `json:"latency_ms"`
 	// LatencyMSMeasured (v0.9.8.1): LatencyMS is a real measurement.
 	// 0 ms + measured = sub-millisecond (render "< 1 ms", sort FIRST).
-	LatencyMSMeasured bool     `json:"latency_ms_measured"`
-	SuccessRate       float64  `json:"success_rate"`
-	Samples           int      `json:"samples"`
-	TestedAt          int64    `json:"tested_at,omitempty"`
-	Connectable       bool     `json:"connectable"`
-	Explanation       []string `json:"explanation,omitempty"`
+	LatencyMSMeasured bool    `json:"latency_ms_measured"`
+	SuccessRate       float64 `json:"success_rate"`
+	Samples           int     `json:"samples"`
+	TestedAt          int64   `json:"tested_at,omitempty"`
+	Connectable       bool    `json:"connectable"`
+	// SourceTrust is the ROUTE-trust band of the candidate's source
+	// (v0.9.8.6): "official" | "user" | "public" ("" = legacy record,
+	// treated as public). Surfaced so the UI can label untrusted
+	// public routes explicitly.
+	SourceTrust string   `json:"source_trust,omitempty"`
+	Explanation []string `json:"explanation,omitempty"`
 }
 
 // ConnectBestResult is the outcome of an automatic connection.

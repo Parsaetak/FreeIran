@@ -44,6 +44,108 @@ import (
 // Subsystem identifies this package in structured errors.
 const Subsystem = "httpx"
 
+// ProxyMode classifies how ONE transport acquires a proxy
+// (v0.9.8.6). There is no implicit proxy anywhere in FreeIran: every
+// transport states its mode explicitly.
+type ProxyMode int
+
+const (
+	// ProxyDirect never uses a proxy: ambient HTTP_PROXY / HTTPS_PROXY
+	// / ALL_PROXY variables are IGNORED. This is the default and the
+	// ONLY mode security-sensitive paths (SSRF-guarded discovery,
+	// netcheck direct measurements) may use — silently inheriting an
+	// ambient proxy would both corrupt measurements and route
+	// "direct" traffic through an unaudited intermediary.
+	ProxyDirect ProxyMode = iota
+
+	// ProxyEnvironment explicitly opts IN to the standard proxy
+	// environment variables (http.ProxyFromEnvironment). Used only
+	// where the user asked for it by setting the variables AND the
+	// surface documents the behaviour.
+	ProxyEnvironment
+
+	// ProxyURL routes through one user-configured proxy URL
+	// (http:// or https://; SOCKS proxies use the dial-layer tunnel
+	// approach instead — see ProxyTunnel).
+	ProxyURL
+
+	// ProxyTunnel routes through the FreeIran tunnel itself: the
+	// active session's local SOCKS endpoint. Transports implement
+	// this at the DIAL layer (a SOCKS DialContext — see
+	// engine/socks5 and engine/connection/verify.go), not through the
+	// Proxy field, because http.Transport cannot dial SOCKS through
+	// Proxy. The mode exists so policy surfaces can NAME the tunnel
+	// dimension; ProxyFunc returns nil for it.
+	ProxyTunnel
+)
+
+// String renders the mode for diagnostics.
+func (m ProxyMode) String() string {
+	switch m {
+	case ProxyDirect:
+		return "direct"
+	case ProxyEnvironment:
+		return "environment"
+	case ProxyURL:
+		return "user-url"
+	case ProxyTunnel:
+		return "tunnel"
+	}
+
+	return "unknown"
+}
+
+// ProxySpec is the explicit proxy configuration of one transport
+// (v0.9.8.6). The zero value is ProxyDirect — ambient environment
+// proxies are never inherited implicitly.
+type ProxySpec struct {
+	// Mode selects the acquisition mode.
+	Mode ProxyMode
+
+	// URL is the user-configured proxy URL (ProxyURL mode only;
+	// http:// or https://).
+	URL string
+
+	// Tunnel names the FreeIran tunnel's local SOCKS endpoint
+	// (ProxyTunnel mode only; informational for policy surfaces — the
+	// dial layer owns the actual routing).
+	Tunnel string
+}
+
+// ProxyFunc renders the spec as an http.Transport Proxy function.
+// Direct and Tunnel return nil (no Proxy-field proxy); Environment
+// returns http.ProxyFromEnvironment; URL returns a fixed proxy.
+func (p ProxySpec) ProxyFunc() (func(*http.Request) (*url.URL, error), error) {
+	switch p.Mode {
+	case ProxyDirect, ProxyTunnel:
+		return nil, nil
+
+	case ProxyEnvironment:
+		return http.ProxyFromEnvironment, nil
+
+	case ProxyURL:
+		if strings.TrimSpace(p.URL) == "" {
+			return nil, fmt.Errorf("httpx: proxy mode %s requires a URL", p.Mode)
+		}
+
+		u, err := url.Parse(p.URL)
+		if err != nil {
+			return nil, fmt.Errorf("httpx: proxy URL %q is malformed: %w", p.URL, err)
+		}
+
+		switch u.Scheme {
+		case "http", "https":
+			return http.ProxyURL(u), nil
+		default:
+			return nil, fmt.Errorf(
+				"httpx: proxy URL scheme %q is not supported by the transport Proxy field "+
+					"(SOCKS routing belongs to the dial layer / ProxyTunnel)", u.Scheme)
+		}
+	}
+
+	return nil, fmt.Errorf("httpx: unknown proxy mode %d", p.Mode)
+}
+
 // Policy tunes the shared client. Zero values select the defaults in
 // normalize(); the same Policy value drives both planes.
 type Policy struct {
@@ -80,6 +182,12 @@ type Policy struct {
 
 	// MaxBodyBytes caps control-plane response bodies (default 8 MiB).
 	MaxBodyBytes int64
+
+	// Proxy is the EXPLICIT transport proxy policy (v0.9.8.6). The
+	// zero value is ProxyDirect: ambient HTTP_PROXY/HTTPS_PROXY/
+	// ALL_PROXY are ignored unless a caller deliberately selects
+	// ProxyEnvironment or configures ProxyURL.
+	Proxy ProxySpec
 }
 
 // normalize fills zero fields with the defaults described on Policy.
@@ -199,12 +307,21 @@ var ErrRateLimited = errors.New("httpx: rate limited (Retry-After exceeds the co
 var ErrBodyTooLarge = errors.New("httpx: response body exceeds the size limit")
 
 // NewClient builds a Client with the given policy (zero value = all
-// defaults). The returned client must not be copied.
+// defaults; the proxy policy defaults to DIRECT — ambient proxy
+// variables are ignored unless Policy.Proxy explicitly selects them).
+// The returned client must not be copied.
 func NewClient(p Policy) *Client {
 	p = p.normalize()
 
+	proxyFunc, err := p.Proxy.ProxyFunc()
+	if err != nil {
+		// An invalid explicit proxy configuration fails LOUDLY at
+		// construction instead of silently falling back to direct.
+		panic(err)
+	}
+
 	tr := &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
+		Proxy:                 proxyFunc,
 		DialContext:           (&net.Dialer{Timeout: p.DialTimeout, KeepAlive: 30 * time.Second}).DialContext,
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          16,

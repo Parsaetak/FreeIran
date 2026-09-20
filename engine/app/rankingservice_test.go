@@ -22,6 +22,14 @@ func storeConfigWithHistory(
 	cfg.SetID()
 	cfg.TestHistory = history
 
+	// Test fixtures model user-known configurations (v0.9.8.6 route
+	// trust): the automatic-selection policy treats unstamped records
+	// as untrusted public routes, which these historical-behaviour
+	// tests are not about.
+	if cfg.SourceTrust == "" {
+		cfg.SourceTrust = config.SourceTrustUser
+	}
+
 	if len(history) > 0 {
 		last := history[len(history)-1]
 

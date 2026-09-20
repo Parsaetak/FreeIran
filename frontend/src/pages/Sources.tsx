@@ -153,6 +153,19 @@ export function SourcesPage() {
                   </div>
                 </span>
 
+                {source.trust === "user" || source.trust === "official" ? (
+                  <span className="badge success hide-sm" data-tip="Official or user-configured source: eligible for automatic route selection.">
+                    {source.trust === "official" ? "official" : "user"}
+                  </span>
+                ) : (
+                  <span
+                    className="badge warn hide-sm"
+                    data-tip="Public third-party source: untrusted routes. Quick Connect excludes these unless you enable 'Allow public untrusted routes' in Settings."
+                  >
+                    public · untrusted
+                  </span>
+                )}
+
                 {source.last_hash ? (
                   <span className="badge success hide-sm">synced · {source.last_hash.slice(0, 8)}</span>
                 ) : (

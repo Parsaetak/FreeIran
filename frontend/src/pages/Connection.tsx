@@ -51,8 +51,9 @@ function ConnectionFailure({ message }: { message: string }) {
     next = "The server address could not be resolved. Check your Internet connection or switch networks.";
   } else if (haystack.includes("refused") || haystack.includes("unreachable") || haystack.includes("network")) {
     next = "The server refused the connection or is unreachable. Run a Network check to confirm your Internet access.";
-  } else if (haystack.includes("tun") && haystack.includes("elevat")) {
-    next = "TUN mode needs administrator rights. Re-run the application as administrator to use it.";
+  } else if (haystack.includes("tun")) {
+    next =
+      "TUN mode is experimental and disabled in this release. Use the system proxy mode instead.";
   } else if (haystack.includes("port")) {
     next = "The local proxy port may be in use by another application. Disconnect other VPN tools and retry.";
   }
@@ -368,16 +369,13 @@ function TunnelModeCard({ connected, endpoint }: { connected: boolean; endpoint:
     };
   }, []);
 
-  const apply = async (action: "proxy" | "tun" | "off") => {
+  const apply = async (action: "proxy" | "off") => {
     setBusy(true);
 
     try {
       if (action === "proxy") {
         await call(() => tunnelService.EnableSystemProxy(host, port, false, null));
         setMode("system_proxy");
-      } else if (action === "tun") {
-        await call(() => tunnelService.EnableTUN(host, port));
-        setMode("tun");
       } else {
         await call(() => tunnelService.Disable());
         setMode("off");
@@ -401,7 +399,12 @@ function TunnelModeCard({ connected, endpoint }: { connected: boolean; endpoint:
       <p className="card-subtitle">
         {connected
           ? `Route system traffic through the local inbound at ${host}:${port}.`
-          : "Connect first: system proxy and TUN need a live local inbound."}
+          : "Connect first: the system proxy needs a live local inbound."}
+      </p>
+      <p className="card-subtitle">
+        TUN mode is experimental and disabled in this release. It is not a kill
+        switch: process supervision does not filter packets. A transactional
+        implementation is required before it can be enabled.
       </p>
 
       <div className="toolbar">
@@ -416,10 +419,10 @@ function TunnelModeCard({ connected, endpoint }: { connected: boolean; endpoint:
         <button
           type="button"
           className="btn sm"
-          disabled={!connected || busy || port === 0}
-          onClick={() => void apply("tun")}
+          disabled
+          title="TUN mode is experimental and disabled in this release (not a kill switch)"
         >
-          Enable TUN
+          Enable TUN (experimental — off)
         </button>
         <button
           type="button"

@@ -720,7 +720,12 @@ func (s *TunnelService) EnableSystemProxy(host string, port int, asHTTP bool, by
 	})
 }
 
-// EnableTUN enables TUN mode. Requires elevation on Windows.
+// EnableTUN reports the v0.9.8.6 TUN status: experimental and
+// disabled. The method is kept on the service surface so older
+// frontends receive the explicit, user-visible error instead of a
+// missing-method failure — the controller refuses TUN on every
+// platform (tunnel.ErrTunExperimental; see engine/tunnel/
+// tun_unavailable.go for why the Wintun backend was removed).
 func (s *TunnelService) EnableTUN(host string, port int) error {
 	return s.ensureController().Enable(s.app.ctx, tunnel.ModeTUN, host, port, tunnel.Options{})
 }

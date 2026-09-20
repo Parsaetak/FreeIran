@@ -265,8 +265,16 @@ func NewSSRFClient(p Policy, opts SSRFOptions) *Client {
 		Control:   ssrfDialControl(opts),
 	}
 
+	// v0.9.8.6: the SSRF client is DIRECT by policy — no ambient
+	// proxy. With a proxy configured, http.Transport would CONNECT to
+	// the PROXY, so the dial-time Control hook below would validate
+	// the PROXY's address instead of the destination's, and the proxy
+	// could reach internal addresses the URL-level checks rejected
+	// (proxy-assisted destination confusion). Proxies are only usable
+	// on this client when a future caller explicitly designs for it;
+	// none does today.
 	tr := &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
+		Proxy:                 nil, // ProxyDirect (see ProxySpec)
 		DialContext:           dialer.DialContext,
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          16,

@@ -9,6 +9,17 @@ name: Release
 # sidecar (both platform ZIPs and the Windows installer), verified
 # for presence before publish and consumed by the application
 # updater (internal/appupdate) after download.
+#
+# v0.9.8.6 Authenticode architecture (EXPLICIT, never fabricated):
+# when the WINDOWS_SIGNING_PFX + WINDOWS_SIGNING_PASSWORD secrets are
+# configured on the repository, the Windows executable is signed with
+# signtool (SHA-256 + RFC3161 timestamping) BEFORE anything embeds it,
+# the installer is signed after it is built, and Get-AuthenticodeSignature
+# VERIFIES both signatures in-CI. When the secrets are absent the
+# release proceeds UNSIGNED and every artifact/report says so loudly —
+# the workflow never pretends signing is active. The signing state is
+# written to SIGNING-STATUS.txt, shipped with the release assets and
+# appended to the release notes by the publish job.
 
 on:
   push:
@@ -79,8 +90,7 @@ jobs:
             assets/freeiran-icon.ico \
             assets/freeiran-icon.png \
             internal/appicon/freeiran-icon.png \
-            cmd/freeiran/rsrc_windows_amd64.syso \
-            cmd/freeiran/rsrc_windows_386.syso; do
+            cmd/freeiran/rsrc_windows_amd64.syso; do
             if [ ! -s "$f" ]; then
               echo "icon asset missing or empty: $f" >&2
               exit 1
@@ -173,6 +183,13 @@ jobs:
     needs: [verify]
     env:
       GOTOOLCHAIN: local
+      # v0.9.8.6: Authenticode signing is ACTIVE only when both secrets
+      # exist on the repository. Absent secrets produce an explicitly
+      # UNSIGNED release (see the signature verification step) — never
+      # a fabricated "signed" claim.
+      WINDOWS_SIGNING_PFX: ${{ secrets.WINDOWS_SIGNING_PFX }}
+      WINDOWS_SIGNING_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PASSWORD }}
+      WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL || 'http://timestamp.digicert.com' }}
     steps:
       - uses: actions/checkout@v7
 
@@ -266,6 +283,26 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "PE subsystem check failed: console-subsystem binary detected" }
           Write-Host "PE subsystem verified: WINDOWS_GUI (no console on startup)"
 
+      # v0.9.8.6: sign FreeIran.exe BEFORE the installer and the ZIP
+      # embed it, so every shipped artifact contains the signed image.
+      # The step runs only when the signing secrets are configured.
+      - name: Sign Windows executable (Authenticode)
+        shell: pwsh
+        if: ${{ env.WINDOWS_SIGNING_PFX != '' }}
+        run: |
+          [IO.File]::WriteAllBytes("$PWD\signing.pfx", [Convert]::FromBase64String($env:WINDOWS_SIGNING_PFX))
+
+          $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" \
+            -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $signtool) { throw "signtool.exe not found (Windows SDK)" }
+
+          & $signtool.FullName sign /f "$PWD\signing.pfx" /p "$env:WINDOWS_SIGNING_PASSWORD" \
+            /fd SHA256 /tr "$env:WINDOWS_TIMESTAMP_URL" /td SHA256 FreeIran-windows-amd64.exe
+          if ($LASTEXITCODE -ne 0) { throw "signtool failed on FreeIran.exe (exit $LASTEXITCODE)" }
+
+          Remove-Item "$PWD\signing.pfx" -Force
+          Write-Host "FreeIran.exe signed (SHA-256, RFC3161 timestamped)"
+
       # §17/§18: standard Windows installer on the mature Inno Setup
       # ecosystem (preinstalled on hosted runners; Chocolatey is the
       # fallback). Writes installed.marker so the installed deployment
@@ -289,6 +326,74 @@ jobs:
           if (-not (Test-Path $out)) { throw "installer output missing: $out" }
 
           Write-Host "Installer built: $out ($([math]::Round((Get-Item $out).Length/1MB,1)) MB)"
+
+      # v0.9.8.6: sign the installer itself once it is built.
+      - name: Sign Windows installer (Authenticode)
+        shell: pwsh
+        if: ${{ env.WINDOWS_SIGNING_PFX != '' }}
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          $out = "FreeIran-Setup-v$version-windows-amd64.exe"
+
+          [IO.File]::WriteAllBytes("$PWD\signing.pfx", [Convert]::FromBase64String($env:WINDOWS_SIGNING_PFX))
+
+          $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" \
+            -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $signtool) { throw "signtool.exe not found (Windows SDK)" }
+
+          & $signtool.FullName sign /f "$PWD\signing.pfx" /p "$env:WINDOWS_SIGNING_PASSWORD" \
+            /fd SHA256 /tr "$env:WINDOWS_TIMESTAMP_URL" /td SHA256 $out
+          if ($LASTEXITCODE -ne 0) { throw "signtool failed on the installer (exit $LASTEXITCODE)" }
+
+          Remove-Item "$PWD\signing.pfx" -Force
+          Write-Host "$out signed (SHA-256, RFC3161 timestamped)"
+
+      # v0.9.8.6: ALWAYS-run signature verification + explicit signing
+      # state. With signing secrets: both signatures must VALIDATE
+      # (Status "Valid") or the release fails. Without secrets: the
+      # state is recorded as UNSIGNED — honestly, never fabricated.
+      - name: Verify signatures and record signing state
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          $installer = "FreeIran-Setup-v$version-windows-amd64.exe"
+
+          $lines = @("FreeIran v$version — Windows artifact signing state")
+          $failed = $false
+
+          foreach ($artifact in @("FreeIran-windows-amd64.exe", $installer)) {
+            if (-not (Test-Path $artifact)) { continue }
+
+            $sig = Get-AuthenticodeSignature $artifact
+
+            if ($env:WINDOWS_SIGNING_PFX -ne "") {
+              if ($sig.Status -ne "Valid") {
+                Write-Host "::error::$artifact signature status: $($sig.Status) ($($sig.StatusMessage))"
+                $failed = $true
+                $lines += "$artifact : SIGNATURE INVALID ($($sig.Status))"
+              } else {
+                $lines += "$artifact : SIGNED and VALID ($($sig.SignerCertificate.Subject))"
+              }
+            } else {
+              if ($sig.Status -eq "NotSigned") {
+                $lines += "$artifact : UNSIGNED (no signing credentials configured for this repository)"
+              } else {
+                $lines += "$artifact : unexpected signature state $($sig.Status)"
+              }
+            }
+          }
+
+          if ($env:WINDOWS_SIGNING_PFX -eq "") {
+            $lines += ""
+            $lines += "Authenticode signing is NOT configured. Add the WINDOWS_SIGNING_PFX"
+            $lines += "and WINDOWS_SIGNING_PASSWORD repository secrets to enable signing;"
+            $lines += "until then every Windows artifact ships unsigned and this file says so."
+          }
+
+          $lines | Set-Content -Path "SIGNING-STATUS.txt" -Encoding utf8
+          Get-Content "SIGNING-STATUS.txt"
+
+          if ($failed) { throw "signature verification failed" }
 
       # The release ZIP is a COMPLETE, self-contained deployment
       # directory — not a bare exe. A user can extract it anywhere and
@@ -422,6 +527,7 @@ jobs:
             FreeIran-windows-amd64.zip
             FreeIran-Setup-v*-windows-amd64.exe
             FreeIran-*.sha256
+            SIGNING-STATUS.txt
           retention-days: 3
 
   build-linux:
@@ -693,6 +799,27 @@ jobs:
             exit 1
           fi
 
+      - name: Surface signing state in the release notes
+        run: |
+          if [ ! -s SIGNING-STATUS.txt ]; then
+            echo "SIGNING-STATUS.txt missing from the Windows artifacts" >&2
+            exit 1
+          fi
+
+          echo "---- Windows signing state ----"
+          cat SIGNING-STATUS.txt
+
+          # The honest state travels with the release: append it to the
+          # generated notes. An unsigned release is PUBLISHED as unsigned.
+          {
+            echo ""
+            echo "## Windows artifact signing state"
+            echo ""
+            echo '```'
+            cat SIGNING-STATUS.txt
+            echo '```'
+          } >> RELEASE-SIGNING.md
+
       - name: Publish release
         uses: softprops/action-gh-release@v3
         with:
@@ -701,6 +828,8 @@ jobs:
             FreeIran-linux-amd64.zip
             FreeIran-Setup-v*-windows-amd64.exe
             *.sha256
+            SIGNING-STATUS.txt
+          body_path: RELEASE-SIGNING.md
           generate_release_notes: true
           draft: false
           prerelease: ${{ contains(github.ref, '-') }}

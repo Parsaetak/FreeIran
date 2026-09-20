@@ -24,6 +24,50 @@ const (
 	DefaultMaxBodySize = 10 << 20 // 10 MiB
 )
 
+// Trust is the ROUTE-trust classification of a source (v0.9.8.6).
+// It answers a different question than ReliabilityScore: "how much
+// does FreeIran trust the ROUTES this source hands out?" — not "how
+// reliably does it fetch?". A public source can be fast, stable,
+// fetch-reliable and verified reachable while remaining UNTRUSTED as
+// a route; reliability and security trust are separate dimensions and
+// are never silently conflated.
+type Trust string
+
+// Trust bands.
+const (
+	// TrustOfficial marks first-party sources maintained by the
+	// FreeIran project itself. None exist yet; the band is part of the
+	// contract so future first-party sources are classified, not
+	// improvised.
+	TrustOfficial Trust = "official"
+
+	// TrustUser marks sources the user explicitly configured
+	// (source.Custom). The user vouched for them by hand.
+	TrustUser Trust = "user"
+
+	// TrustPublic marks third-party public sources — the built-in
+	// defaults and everything autonomous discovery ingests. Their
+	// nodes are UNTRUSTED ROUTES: candidates may be tested, ranked and
+	// connected by EXPLICIT user choice, but Quick Connect / Auto must
+	// never silently promote them to trusted routes.
+	TrustPublic Trust = "public"
+)
+
+// RouteTrust resolves the effective trust band of a source. Custom
+// (user-added) sources are user-trust; an explicit Trust field wins
+// when present; everything else is public.
+func (s Source) RouteTrust() Trust {
+	if s.Trust != "" {
+		return s.Trust
+	}
+
+	if s.Custom {
+		return TrustUser
+	}
+
+	return TrustPublic
+}
+
 // Source describes a remote configuration source.
 //
 // In v0.6 the Source model gained a full metadata surface so the UI
@@ -135,6 +179,14 @@ type Source struct {
 	// Custom marks user-added sources (not in the default list).
 	// Custom sources are never auto-removed by the registry update.
 	Custom bool `json:"custom,omitempty"`
+
+	// Trust is the ROUTE-trust classification (v0.9.8.6):
+	// "official" | "user" | "public". Empty resolves through
+	// RouteTrust() (Custom → user, everything else → public).
+	// ReliabilityScore measures fetch reliability and is a SEPARATE
+	// dimension — it never promotes a public source's routes to
+	// trusted.
+	Trust Trust `json:"trust,omitempty"`
 }
 
 // Stats is the runtime statistics block for one source, returned to
@@ -149,6 +201,7 @@ type Stats struct {
 	Region              string    `json:"region"`
 	Enabled             bool      `json:"enabled"`
 	Priority            int       `json:"priority"`
+	Trust               string    `json:"trust"`
 	LastSuccessfulFetch time.Time `json:"last_successful_fetch"`
 	LastFailure         time.Time `json:"last_failure,omitempty"`
 	LastFailureReason   string    `json:"last_failure_reason,omitempty"`
@@ -174,6 +227,7 @@ func (s Source) Stats() Stats {
 		Region:              s.Region,
 		Enabled:             s.Enabled,
 		Priority:            priority,
+		Trust:               string(s.RouteTrust()),
 		LastSuccessfulFetch: s.LastSuccessfulFetch,
 		LastFailure:         s.LastFailure,
 		LastFailureReason:   s.LastFailureReason,

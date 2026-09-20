@@ -407,6 +407,15 @@ func (p *Pipeline) Run(
 				cfgPtr := &item.configs[i]
 				cfgPtr.Normalize()
 
+				// Route-trust propagation (v0.9.8.6): every ingested
+				// config carries its source identity AND the source's
+				// trust band, so ranking surfaces and the Quick Connect
+				// policy can reason about route trust. (The Source
+				// field was previously never stamped — the per-source
+				// ranking stats read empty values.)
+				cfgPtr.Source = item.src.ID
+				cfgPtr.SourceTrust = string(item.src.RouteTrust())
+
 				if err := cfgPtr.Validate(); err != nil {
 					invalid.Add(1)
 

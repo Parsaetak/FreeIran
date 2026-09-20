@@ -110,7 +110,7 @@ usability is never blocked.
 | Surface | Role |
 |---------|------|
 | **Quick Connect** | simple · fast · minimal. One tap to the fastest measured connection. |
-| **Connection** | advanced · diagnostic · controllable. Manual selection, attempt history, recovery details, tunnel/system integration, core inventory. |
+| **Connection** | advanced · diagnostic · controllable. Manual selection, attempt history, recovery details, system-proxy integration (TUN is experimental and disabled — v0.9.8.6), core inventory. |
 | **Dashboard** | overview. Summarized connection state, onboarding, metrics. Its connect action stays functional and shares the visual language. |
 
 ## Quick Connect provider modes (v0.9.8.1)

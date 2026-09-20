@@ -593,10 +593,12 @@ func TestTargetSatisfactionSkipsSearch(t *testing.T) {
 
 // TestDiscoveryOverRealServerNotRequired documents that the engine
 // is fully covered by the fake-getter tests above; real-network
-// behaviour is exercised by the external evaluation harness
-// (tools/neteval), never by the CI matrix.
+// validation runs out-of-band on operator machines (the v0.9.8.5
+// tools/neteval helper was removed with the repository cleanup —
+// its ad-hoc harness is not part of the product or CI surface),
+// never by the CI matrix.
 func TestDiscoveryOverRealServerNotRequired(t *testing.T) {
-	t.Skip("real-network validation runs out-of-band via tools/neteval")
+	t.Skip("real-network validation runs out-of-band on operator machines")
 }
 
 // Compile-time interface check: the engine tolerates the production

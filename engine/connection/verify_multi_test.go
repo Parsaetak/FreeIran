@@ -475,6 +475,13 @@ type tunnelMux struct {
 	upstream string
 	mu       sync.Mutex
 	healthy  bool
+
+	// probes signals every accepted connection (non-blocking, bounded
+	// buffer). v0.9.8.6 generation tests use it as the DETERMINISTIC
+	// in-flight marker: when the degraded mux accepts a connection,
+	// a verification probe is running right now and will time out
+	// only later — no sleeps needed to hit that window.
+	probes chan struct{}
 }
 
 func startTunnelMux(t *testing.T, upstream string) *tunnelMux {
@@ -485,7 +492,7 @@ func startTunnelMux(t *testing.T, upstream string) *tunnelMux {
 		t.Fatal(err)
 	}
 
-	mux := &tunnelMux{ln: ln, upstream: upstream, healthy: true}
+	mux := &tunnelMux{ln: ln, upstream: upstream, healthy: true, probes: make(chan struct{}, 64)}
 
 	t.Cleanup(func() { _ = ln.Close() })
 
@@ -501,6 +508,30 @@ func (m *tunnelMux) setHealthy(v bool) {
 	defer m.mu.Unlock()
 
 	m.healthy = v
+}
+
+// drainProbes empties the probe signal channel.
+func (m *tunnelMux) drainProbes() {
+	for {
+		select {
+		case <-m.probes:
+			continue
+		default:
+			return
+		}
+	}
+}
+
+// awaitProbe blocks until the next probe arrival (bounded).
+func (m *tunnelMux) awaitProbe(t *testing.T, what string) {
+	t.Helper()
+
+	select {
+	case <-m.probes:
+		return
+	case <-time.After(15 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+	}
 }
 
 func (m *tunnelMux) isHealthy() bool {
@@ -523,6 +554,12 @@ func (m *tunnelMux) serve() {
 
 func (m *tunnelMux) handle(conn net.Conn) {
 	defer conn.Close()
+
+	// Every accepted connection is a probe arrival (see probes).
+	select {
+	case m.probes <- struct{}{}:
+	default:
+	}
 
 	if !m.isHealthy() {
 		// Blackhole: accept the bytes, send nothing — the client's

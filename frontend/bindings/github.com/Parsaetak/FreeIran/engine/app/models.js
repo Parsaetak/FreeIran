@@ -268,6 +268,17 @@ export class SourceView {
              */
             this["enabled"] = false;
         }
+        if (!("trust" in $$source)) {
+            /**
+             * Route-trust band of the source (v0.9.8.6):
+             * "official" | "user" | "public". Public sources are
+             * untrusted routes; the Quick Connect policy excludes them
+             * unless the user opts in.
+             * @member
+             * @type {string}
+             */
+            this["trust"] = "";
+        }
         if (/** @type {any} */(false)) {
             /**
              * @member
@@ -711,6 +722,16 @@ export class Settings {
              * @type {boolean}
              */
             this["reduced_motion"] = false;
+        }
+        // v0.9.8.6 addition: Quick Connect / Auto opt-in for public
+        // untrusted routes (default false — untrusted routes require
+        // explicit user choice or this switch).
+        if (!("allow_untrusted_public_routes" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["allow_untrusted_public_routes"] = false;
         }
         if (!("dev_verbose_diagnostics" in $$source)) {
             /**

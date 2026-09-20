@@ -70,6 +70,16 @@ var errNoViableCandidate = errors.New(
 	"no verified connection could be established from the ranked " +
 		"candidates; run \"Test connections\" and try again")
 
+// errOnlyUntrustedCandidates reports the explicit route-trust policy
+// (v0.9.8.6): candidates existed, but every one of them came from
+// public untrusted sources, and the user has not opted automatic
+// selection into untrusted routes.
+var errOnlyUntrustedCandidates = errors.New(
+	"only public untrusted nodes are available; Quick Connect does not " +
+		"silently route through untrusted sources — connect one explicitly " +
+		"from the Configs page or enable \"Allow public untrusted routes\" " +
+		"in Settings")
+
 // qcRecord is one candidate record with its evidence snapshot.
 type qcRecord struct {
 	cfg config.Config
@@ -107,6 +117,14 @@ func (a *App) collectCandidateRecords(ctx context.Context) []qcRecord {
 	}
 
 	return records
+}
+
+// trustedRoute reports whether the candidate's source is trusted for
+// AUTOMATIC selection (v0.9.8.6): official or user-configured.
+// Public/untrusted (and legacy records with no trust stamp —
+// untrusted by default) require the explicit user opt-in.
+func (r qcRecord) trustedRoute() bool {
+	return r.cfg.RouteTrusted()
 }
 
 // lastSuccessTime returns the candidate's last verified success.
@@ -185,12 +203,47 @@ func (a *App) quickConnectLoop(
 	// cooldown decays, so previously good configurations return).
 	records = a.filterQuickConnectCooldowns(records, now, excluded)
 
-	if len(records) == 0 {
+	// Route-trust policy (v0.9.8.6): automatic selection (Quick
+	// Connect / Auto / recovery candidate discovery) considers TRUSTED
+	// routes only — official and user-configured sources — unless the
+	// user explicitly allowed public untrusted routes. Public nodes
+	// stay fully reachable through EXPLICIT selection; this filter is
+	// the boundary that keeps untrusted routes out of the automatic
+	// path without removing the autonomous discovery architecture.
+	allowPublic := a.currentSettings().AllowUntrustedPublicRoutes
+
+	var untrusted int
+
+	trusted := make([]qcRecord, 0, len(records))
+
+	for _, rec := range records {
+		if rec.trustedRoute() || allowPublic {
+			trusted = append(trusted, rec)
+
+			continue
+		}
+
+		untrusted++
+	}
+
+	if len(trusted) == 0 {
+		if untrusted > 0 {
+			a.logger.Warn("connection", "quick_connect_untrusted_only",
+				"%d candidates from untrusted public sources were excluded by the route-trust policy",
+				untrusted)
+
+			return ConnectBestResult{Candidates: len(records)},
+				fmt.Errorf("%w (%d untrusted public candidates were excluded)",
+					errOnlyUntrustedCandidates, untrusted)
+		}
+
 		a.logger.Warn("connection", "quick_connect_exhausted",
 			"no viable candidates after cooldowns and exclusions")
 
 		return ConnectBestResult{}, errNoViableCandidate
 	}
+
+	records = trusted
 
 	// ---- 1. Merge recent verified successes with the ranked set ----
 	shortlistRecords := a.buildQuickConnectShortlist(records, now, shortlist)
@@ -503,6 +556,7 @@ func quickConnectView(rec qcRecord) CandidateView {
 		Endpoint:    rec.cfg.DisplayURL(),
 		TestedAt:    rec.cfg.TestedAt,
 		Connectable: true,
+		SourceTrust: rec.cfg.SourceTrust,
 	}
 }
 
