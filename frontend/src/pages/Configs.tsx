@@ -556,8 +556,11 @@ export function ConfigsPage() {
         <section className={`queue-panel ${queuePaused ? "paused" : ""}`} aria-label="Test queue progress">
           <div className="queue-head">
             <span className="queue-title">Testing {queueStats.total_completed} / {queueStats.total_enqueued}{queuePaused ? " · paused" : ""}</span>
+            {/* v0.9.8.5 UI audit: the dead "indeterminate-none" class
+                is gone — this bar is fully determinate (the width below
+                always reflects completed / enqueued). */}
             <div
-              className={`progress ${queueStats.total_completed >= queueStats.total_enqueued ? "" : "indeterminate-none"}`}
+              className="progress"
               role="progressbar"
               aria-label="Test queue progress"
               aria-valuemin={0}

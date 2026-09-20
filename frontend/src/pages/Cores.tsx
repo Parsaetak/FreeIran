@@ -13,7 +13,7 @@ import { describeError, toast } from "../state/toastStore";
 import { useProviderStore } from "../state/providerStore";
 import { EmptyState, SkeletonPage } from "../components/common";
 import { IconDownload, IconPlay, IconRefresh, IconShield, IconStop } from "../components/Icons";
-import { truncate } from "../utilities/format";
+import { formatBytes, truncate } from "../utilities/format";
 
 /**
  * CoresPage — the dedicated core-management tab (v0.9.0 §7): install,
@@ -464,7 +464,7 @@ function ProviderCard({ info, onRefresh }: { info: ProviderInfoView; onRefresh: 
   const busy = busyAction !== null;
 
   return (
-    <section className="card provider-card" data-state={info.state}>
+    <section className="card" data-state={info.state}>
       <header className="card-head">
         <div>
           <h3>{providerDisplayName(info.name)}</h3>
@@ -737,12 +737,6 @@ function downloadTelemetry(p: CoreInstallProgress): string | null {
   }
 
   return parts.length > 0 ? parts.join(" · ") : null;
-}
-
-function formatBytes(n: number): string {
-  if (n < 1024) return `${Math.round(n)} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
 function displayNameOf(name: string): string {

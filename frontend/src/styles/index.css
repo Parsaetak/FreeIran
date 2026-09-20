@@ -619,6 +619,19 @@ button {
   color: var(--text);
 }
 
+/* v0.9.8.5 UI audit: ghost + danger previously lost the error color
+   on hover — the ghost hover rule reset it to the default text color.
+   A dangerous action keeps reading as dangerous in every state. */
+.btn.ghost.danger {
+  color: var(--error);
+}
+
+.btn.ghost.danger:hover:not(:disabled) {
+  background: var(--error-dim);
+  border-color: var(--error-border);
+  color: var(--error);
+}
+
 .btn.sm {
   min-height: var(--control-h-sm);
   padding: 2px 10px;
@@ -781,6 +794,25 @@ button {
 .field.invalid .input,
 .field.invalid .select {
   border-color: var(--error-border);
+}
+
+/* v0.9.8.5 UI audit: the Settings page's paired port fields render in
+   a .field-grid.two layout that was referenced but never defined —
+   the fields silently stacked with their built-in bottom margins
+   instead of aligning side by side. */
+.field-grid {
+  display: grid;
+  gap: 0 var(--space-4);
+}
+
+.field-grid.two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@media (max-width: 900px) {
+  .field-grid.two {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* ----- switch ----- */
@@ -1176,6 +1208,16 @@ button {
   background: var(--neutral-dim);
   border-color: var(--neutral-border);
   color: var(--neutral);
+}
+
+/* v0.9.8.5 UI audit: the Cores page renders "installed" as a DIMMED
+   success (installed but not the active success story) — the variant
+   was referenced but never defined, so those badges rendered
+   unstyled. */
+.badge.success-dim {
+  background: var(--success-dim);
+  border-color: transparent;
+  color: var(--text-dim);
 }
 
 .chip {
@@ -1623,8 +1665,24 @@ button {
 }
 
 /* spacing utilities (token-driven) */
+.mt-1 {
+  margin-top: var(--space-1);
+}
+
+.mt-2 {
+  margin-top: var(--space-2);
+}
+
+.mt-3 {
+  margin-top: var(--space-3);
+}
+
 .mt-4 {
   margin-top: var(--space-4);
+}
+
+.mb-3 {
+  margin-bottom: var(--space-3);
 }
 
 .mb-0 {
@@ -3282,6 +3340,100 @@ html.reduced-motion .skeleton::after {
   flex: 0 1 45%;
   color: var(--danger);
   font-size: 0.78rem;
+}
+
+/* v0.9.8.5 staged-ladder + DNS-diagnostic + identity evidence
+   (shared Network-page surfaces — one design system, no page-local
+   visual systems). */
+.probe-row .dot.idle {
+  background: var(--border);
+}
+
+.probe-row.stage-first-failed {
+  font-weight: 600;
+}
+
+.identity-others {
+  margin-top: var(--space-2);
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+
+.identity-error {
+  margin-top: var(--space-1);
+  font-size: 0.8rem;
+}
+
+.dns-evidence {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+}
+
+.dns-evidence-head {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}
+
+.dns-resolver {
+  border-left: 2px solid var(--border);
+  padding-left: var(--space-2);
+}
+
+.dns-resolver-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 0.82rem;
+}
+
+.dns-resolver-head .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--danger);
+}
+
+.dns-resolver-head .dot.ok {
+  background: var(--success);
+}
+
+.dns-resolver-name {
+  font-weight: 600;
+}
+
+.dns-queries {
+  list-style: none;
+  margin: var(--space-1) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dns-query {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-size: 0.78rem;
+}
+
+.dns-qtype {
+  font-family: var(--font-mono);
+  flex: none;
+  min-width: 2.6em;
+}
+
+.dns-answer {
+  overflow-wrap: anywhere;
+}
+
+.dns-failure {
+  color: var(--danger);
+  overflow-wrap: anywhere;
 }
 
 /* Onboarding checklist */

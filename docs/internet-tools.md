@@ -1,4 +1,4 @@
-# Internet Tools (v0.9.8.1)
+# Internet Tools (v0.9.8.1, extended in v0.9.8.5)
 
 This document describes the shared Internet-Tools engine (§5 of the
 upgrade specification): ONE bounded, cancellable, structured tool
@@ -7,6 +7,10 @@ lives in `engine/netcheck` (tools.go, tools_impl.go, tools_path.go,
 toolsafety.go) and extends the existing connectivity-diagnostics
 package instead of spawning unrelated services. The app service
 (`engine/app/internettools.go`) exposes it to the UI.
+
+v0.9.8.5 adds three surfaces on the same engine: the DNS diagnostic
+(`dnsdiag.go`), the Network Identity check (`identity.go`) and the
+staged connectivity ladder (`stages.go`).
 
 ## The result contract
 
@@ -36,8 +40,8 @@ measurement / error / details
 
 | Tool | Group | Transport | Default target | Notes |
 |------|-------|-----------|----------------|-------|
-| `internet` | connectivity | aggregate | builtin probe set | the classic connectivity report (bounded sub-probes) |
-| `dns` | connectivity | UDP/TCP 53 | system resolver | resolve a name; answers reported as IP literals with a count |
+| `internet` | connectivity | aggregate | builtin probe set | the classic connectivity report (bounded sub-probes); v0.9.8.5: carries the staged ladder evidence (below) |
+| `dns` | connectivity | UDP/TCP 53 | system + curated resolvers | v0.9.8.5 DNS DIAGNOSTIC: system vs Cloudflare/Google/Quad9, A + AAAA, UDP with TCP fallback; per-resolver rows with transports, latencies, answer counts and honest failure classes (structured evidence in `result.dns`) |
 | `tcp` | connectivity | TCP | `1.1.1.1:443` | raw reachability + RTT |
 | `tls` | connectivity | TLS | `www.gstatic.com:443` | TCP + TLS handshake; negotiated version/cipher reported |
 | `https` | connectivity | HTTP(S) | `https://www.gstatic.com/generate_204` | full GET with redirect/size caps |
@@ -55,6 +59,73 @@ measurement / error / details
 The catalogue with labels, groups, target-taking flags and default
 timeouts is served to the UI through `ToolCatalogue()`; the Network
 page renders it as a grouped grid (`frontend/src/pages/Network.tsx`).
+
+## DNS diagnostic (v0.9.8.5)
+
+The `dns` tool is a resolver COMPARISON, not a single lookup. One run
+produces one row per resolver (the system resolver plus the curated
+public set — Cloudflare, Google, Quad9 — or one explicit
+user-supplied public resolver), each with an A and an AAAA query:
+
+```text
+System       A     24 ms   2 answers   OK
+             AAAA  27 ms   2 answers   OK
+Cloudflare   A     18 ms   2 answers   OK  (udp)
+             AAAA  20 ms   2 answers   OK  (udp)
+```
+
+- **Transports**: the explicit-resolver queries speak the RFC 1035
+  wire protocol directly — UDP first, one TCP fallback on a
+  truncation (TC bit) or a UDP transport failure; the transport that
+  produced each answer is recorded. System rows use the OS
+  resolver API.
+- **Failure classes**: timeout / refused / SERVFAIL / NXDOMAIN /
+  empty_answer / malformed / resolver_unreachable / cancelled /
+  invalid_target — never one generic failure string.
+- **Safety**: query names are validated before any bytes leave the
+  machine (IP literals, URLs, empty labels, over-long names and
+  invalid characters are rejected); user-supplied resolvers must be
+  PUBLIC IP literals (private/loopback resolvers are blocked by the
+  private-target policy); responses are bounded (4 KiB) and parsed
+  with bounded compression-pointer loops; no DNSSEC claim is made —
+  this is a plain diagnostic query engine.
+- **Tunneled runs**: when the tool runs through the active tunnel,
+  the resolver queries travel through the supplied dialer; the
+  SYSTEM resolver row is replaced by the curated public set (a
+  system-resolver query would silently bypass the tunnel).
+
+## Network Identity (v0.9.8.5)
+
+The `NetworkIdentity` service method (Network tab, top card) answers
+"who am I on this network right now" in one bounded check:
+
+- **Local IP** — the route-relevant local IPv4 (and IPv6) plus the
+  owning interface, discovered through connected-UDP route lookups
+  that send NO packets; additional active non-loopback addresses are
+  listed honestly.
+- **Public IP** — through the same bounded identity endpoints the
+  `public_ip` tool established; a tunneled run measures the tunnel
+  exit AND the direct exit, with a match comparison.
+- **ISP / ASN / country** — documented keyless HTTPS metadata
+  sources (ipinfo.io primary, ipwho.is fallback). Unavailable
+  metadata reports Unknown — never fabricated. The request reveals
+  only the caller's public IP (the fact the public-IP check already
+  measures); no configuration, credentials or proxy URLs are
+  transmitted.
+- **Explicit user action only** — never automatic; a 60-second
+  response cache only prevents hammering the endpoints on page
+  re-renders, and only serves the same question (direct vs
+  tunneled) the user last asked.
+
+## Staged connectivity ladder (v0.9.8.5)
+
+The `internet` check's report now carries ordered stage evidence —
+local link → local IP → DNS → TCP → TLS → HTTPS → captive portal →
+direct Internet → tunnel Internet — each rung with status
+(ok/failed/skipped/not_checked), measured latency, target and a
+failure class, plus `failed_stage` naming the first broken rung. The
+seven-state classifier remains authoritative; the ladder explains
+it (`engine/netcheck/stages.go`).
 
 ## Safety policy (`engine/netcheck/toolsafety.go`, §7)
 
@@ -133,4 +204,9 @@ rebinding guard, redirect and size caps) and the honest
 `unsupported`/`invalid_target` paths against local listeners and
 `httptest` servers — no external infrastructure. Latency values in
 results follow the canonical semantics and are covered by
-`engine/tester/latency_test.go` (see docs/latency.md).
+`engine/tester/latency_test.go` (see docs/latency.md). The v0.9.8.5
+surfaces have their own deterministic matrices: `dnsdiag_test.go`
+(14 tests against a local fake RFC 1035 resolver over real
+UDP/TCP sockets), `identity_test.go` (12 tests with local fake
+identity endpoints and a relaying SOCKS proxy) and `stages_test.go`
+(5 ladder tests).

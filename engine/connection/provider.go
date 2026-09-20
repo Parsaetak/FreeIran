@@ -133,6 +133,11 @@ func (m *Manager) ConnectProvider(
 
 	if result.OK {
 		m.verifiedAt = time.Now().UTC()
+
+		// v0.9.8.5 (§2.3): provider sessions join the same
+		// stability recheck schedule as core sessions.
+		m.verifyFailures = 0
+		m.nextVerifyAt = m.verifiedAt.Add(m.opts.VerifyInterval)
 	}
 
 	m.mu.Unlock()

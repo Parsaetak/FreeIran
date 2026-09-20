@@ -155,7 +155,7 @@ usability is never blocked.
   cards; the adapter exposes no provider-level Start for cores
   (they run per node-configuration through the connection engine).
 
-## Network tools (v0.9.8.1)
+## Network tools (v0.9.8.1, extended v0.9.8.5)
 
 - The Network page gains the **Internet tools** section (§6): the
   grouped tool grid from the backend catalogue (connectivity /
@@ -170,6 +170,33 @@ usability is never blocked.
   user action (the backend enforces user-triggered-only); honestly
   unsupported tools (QUIC) and privilege-gated ones (traceroute)
   render their honest statuses rather than fake results.
+
+### Network Identity card (v0.9.8.5)
+
+- The top of the Network page carries the identity card: local IP
+  (route-relevant, with its interface), public/exit IP (direct or
+  tunnel, with a match comparison on tunneled runs), ISP/ASN/country
+  metadata, and the checked-at time. The empty state explains that
+  nothing is sent automatically; the card runs ONLY from its
+  explicit **Check identity** button. A via-tunnel toggle appears
+  only while a live tunnel exists. Unavailable metadata renders
+  "Unknown — never fabricated".
+
+### Staged diagnostics ladder (v0.9.8.5)
+
+- Below the connectivity callout, the "Connection stages" card
+  renders the nine-rung ladder (local link → local IP → DNS → TCP →
+  TLS → HTTPS → captive portal → direct Internet → tunnel Internet)
+  with per-rung status dots (ok / failed / neutral for skipped and
+  not-checked), measured latency, failure class and the first
+  failed rung emphasized.
+
+### DNS diagnostic evidence (v0.9.8.5)
+
+- A DNS tool run renders its structured per-resolver rows: one block
+  per resolver with its A/AAAA outcomes, transport badges, best
+  latency, answer counts with the first addresses, and honest
+  failure classes for failing rows.
 
 ## Design-system contract
 
@@ -210,4 +237,6 @@ row models, stores) test in the node environment; the Quick Connect
 page suite runs under jsdom (`@testing-library/react`) and pins the
 page contract: single primary action, picker ordering, all connection
 states, keyboard operation, reduced-motion class, no-candidate
-fallback to the discovery flow, and the one-poll-per-mount rule.
+fallback to the discovery flow, and the one-poll-per-mount rule. The
+Network page suite (v0.9.8.5) pins the identity card's no-auto-run
+contract, the staged ladder rendering and the DNS evidence rows.

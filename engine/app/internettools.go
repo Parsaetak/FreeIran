@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/Parsaetak/FreeIran/engine/netcheck"
@@ -27,11 +28,23 @@ import (
 // toolConcurrency bounds simultaneous tool executions (§14).
 const toolConcurrency = 3
 
+// identityCacheTTL bounds the short-lived UI convenience cache of the
+// Network Identity result (v0.9.8.5 §6.4): a fresh identity check is
+// an EXPLICIT user action; the cache only avoids hammering the
+// bounded identity endpoints when the Network tab re-renders within
+// one minute of the user's last request. It is never populated by
+// anything but an explicit request.
+const identityCacheTTL = 60 * time.Second
+
 // InternetToolsService is the Wails-bound tools surface.
 type InternetToolsService struct {
 	app    *App
 	runner *netcheck.ToolRunner
 	tokens chan struct{}
+
+	identityMu     sync.Mutex
+	identityCached *netcheck.IdentityReport
+	identityAt     time.Time
 }
 
 // NewInternetToolsService creates the service with bounded
@@ -123,6 +136,71 @@ func (s *InternetToolsService) LiveTunnel() *netcheck.TunnelSnapshot {
 	}
 
 	return s.app.liveTunnelSnapshot(providerName, endpoint)
+}
+
+// NetworkIdentityRequest is the UI-facing identity request (§6.4:
+// explicit user action only — the service never runs it on its own).
+type NetworkIdentityRequest struct {
+	// Tunneled measures the identity THROUGH the active session
+	// endpoint when one exists (explicit user choice).
+	Tunneled bool `json:"tunneled,omitempty"`
+}
+
+// NetworkIdentity runs the bounded Network Identity check (v0.9.8.5
+// §6): local IP (route-relevant, no traffic), public IP (the shared
+// identity endpoints) and ISP/ASN metadata (documented keyless
+// sources). It runs ONLY on this explicit call, honours the tool
+// concurrency bound, and returns the cached result for at most one
+// minute (UI convenience) before requiring a fresh explicit request.
+func (s *InternetToolsService) NetworkIdentity(req NetworkIdentityRequest) (*netcheck.IdentityReport, error) {
+	// The bounded UI convenience cache: only ever populated by an
+	// explicit user request (never at startup, never in the
+	// background), and only valid for identityCacheTTL.
+	s.identityMu.Lock()
+
+	if s.identityCached != nil && time.Since(s.identityAt) < identityCacheTTL {
+		cached := s.identityCached
+		tunneledPath := cached.Path == netcheck.PathTunneled
+
+		s.identityMu.Unlock()
+
+		// Serve the cache only when it answers the SAME question
+		// (direct vs tunneled) the user is asking now.
+		if tunneledPath == req.Tunneled {
+			return cached, nil
+		}
+	} else {
+		s.identityMu.Unlock()
+	}
+
+	// Bounded concurrency (§14): same discipline as every tool run.
+	select {
+	case s.tokens <- struct{}{}:
+		defer func() { <-s.tokens }()
+	default:
+		return nil, errors.New("too many tools running concurrently; wait for one to finish")
+	}
+
+	opts := netcheck.IdentityOptions{Timeout: netcheck.IdentityTimeout}
+
+	if req.Tunneled {
+		if endpoint, providerName, active := s.app.liveTunnelEndpoint(); active {
+			opts.Dial = tunnelDial(endpoint)
+			opts.Provider = providerName
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(s.app.ctx, 70*time.Second)
+	defer cancel()
+
+	report := netcheck.RunNetworkIdentity(ctx, opts)
+
+	s.identityMu.Lock()
+	s.identityCached = &report
+	s.identityAt = time.Now().UTC()
+	s.identityMu.Unlock()
+
+	return &report, nil
 }
 
 // liveTunnelEndpoint resolves the active session's local SOCKS

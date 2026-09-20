@@ -137,7 +137,13 @@ type Snapshot struct {
 	CoreReadyMS  int64  `json:"core_ready_ms,omitempty"`
 	PingMedianMS int64  `json:"ping_median_ms,omitempty"`
 	URLTotalMS   int64  `json:"url_total_ms,omitempty"`
-	Verification string `json:"verification,omitempty"` // none|usable|failed
+	Verification string `json:"verification,omitempty"` // none|usable|failed|degraded
+
+	// v0.9.8.5 stability evidence (§2.3): when the session was last
+	// verified usable, and how many consecutive stability rechecks
+	// have failed since (0 while healthy).
+	VerifiedAt     int64 `json:"verified_at,omitempty"`
+	VerifyFailures int   `json:"verify_failures,omitempty"`
 }
 
 // VerifyPolicy controls the mandatory end-to-end verification that
@@ -155,6 +161,12 @@ type VerifyPolicy struct {
 	// Target overrides the verification URL (default: the standard
 	// 204 endpoint).
 	Target string
+
+	// Targets is the bounded multi-target verification set
+	// (v0.9.8.5). Empty selects DefaultVerifyTargets (three
+	// independent operators, quorum = majority). Target (singular)
+	// takes precedence when set.
+	Targets []string
 }
 
 // WithDefaults applies the verification defaults.
@@ -166,6 +178,19 @@ func (p VerifyPolicy) WithDefaults() VerifyPolicy {
 	}
 
 	return resolved
+}
+
+// verifyOptions renders the policy as one verification request.
+func (p VerifyPolicy) verifyOptions() VerifyOptions {
+	opts := VerifyOptions{Timeout: p.Timeout}
+
+	if p.Target != "" {
+		opts.URL = p.Target
+	} else {
+		opts.Targets = p.Targets
+	}
+
+	return opts
 }
 
 // Options configure the connection manager.
@@ -189,6 +214,22 @@ type Options struct {
 
 	// MonitorInterval paces health checks while connected (0 = 10s).
 	MonitorInterval time.Duration
+
+	// VerifyInterval paces the post-connection stability rechecks
+	// (0 = 30s): a ConnectedVerified session is periodically
+	// re-verified so degradation is DETECTED, not assumed (v0.9.8.5
+	// §2.3). One failed recheck never tears a healthy session down.
+	VerifyInterval time.Duration
+
+	// VerifyGrace is the shorter recheck delay after one failed
+	// recheck (0 = 8s) — the "grace / recheck" window that filters
+	// single-probe flapping before any degradation decision.
+	VerifyGrace time.Duration
+
+	// VerifyFailureThreshold is the number of CONSECUTIVE failed
+	// rechecks (0 = 3) after which the session is declared degraded
+	// and torn down, handing control to the bounded recovery loop.
+	VerifyFailureThreshold int
 
 	// LaunchEnv carries additional environment variables for core
 	// processes launched by this manager (asset directories, test
@@ -238,6 +279,13 @@ type Manager struct {
 	verifiedAt time.Time
 	lastVerify VerifyResult
 
+	// v0.9.8.5 stability evidence (§2.3): consecutive failed
+	// stability rechecks and the time of the next scheduled recheck.
+	// A single failed recheck marks the session degraded but never
+	// tears it down; the threshold does.
+	verifyFailures int
+	nextVerifyAt   time.Time
+
 	monitorCancel context.CancelFunc
 	shutdown      bool
 }
@@ -250,6 +298,19 @@ func New(opts Options) *Manager {
 
 	if opts.MonitorInterval <= 0 {
 		opts.MonitorInterval = 10 * time.Second
+	}
+
+	// v0.9.8.5 stability pacing (§2.3).
+	if opts.VerifyInterval <= 0 {
+		opts.VerifyInterval = 30 * time.Second
+	}
+
+	if opts.VerifyGrace <= 0 {
+		opts.VerifyGrace = 8 * time.Second
+	}
+
+	if opts.VerifyFailureThreshold <= 0 {
+		opts.VerifyFailureThreshold = 3
 	}
 
 	opts.Verify = opts.Verify.WithDefaults()
@@ -547,25 +608,22 @@ func (m *Manager) attempt(
 	// The listener accepting loopback connections proves the core
 	// runs; only an end-to-end request through the tunnel proves
 	// usable Internet. A failed verification fails the attempt and
-	// lets the next candidate run.
+	// lets the next candidate run. v0.9.8.5: the verification itself
+	// probes a bounded multi-target set with a quorum rule.
 	if !m.opts.Verify.Skip {
 		m.mu.Lock()
 		m.state = StateVerifying
 		m.mu.Unlock()
 
-		verifyOpts := VerifyOptions{Timeout: m.opts.Verify.Timeout}
-
-		if m.opts.Verify.Target != "" {
-			verifyOpts.URL = m.opts.Verify.Target
-		}
-
-		result := VerifyTunnel(ctx, instance.Endpoint(), verifyOpts)
+		result := VerifyTunnel(ctx, instance.Endpoint(), m.opts.Verify.verifyOptions())
 
 		m.mu.Lock()
 		m.lastVerify = result
 
 		if result.OK {
 			m.verifiedAt = time.Now().UTC()
+			m.verifyFailures = 0
+			m.nextVerifyAt = m.verifiedAt.Add(m.opts.VerifyInterval)
 		}
 
 		m.mu.Unlock()
@@ -666,6 +724,10 @@ func (m *Manager) Disconnect() Snapshot {
 	instance := m.instance
 	m.instance = nil
 	m.state = StateDisconnecting
+
+	// v0.9.8.5: clear the stability evidence with the session.
+	m.verifyFailures = 0
+	m.nextVerifyAt = time.Time{}
 
 	m.mu.Unlock()
 
@@ -771,17 +833,7 @@ func (m *Manager) snapshotLocked() Snapshot {
 		// semantics, reported through the same Snapshot surface.
 		snapshot.Endpoint = m.provider.endpoint
 		snapshot.CoreReadyMS = m.coreReadyMS
-
-		if m.verifiedAt.IsZero() {
-			snapshot.Verification = "none"
-		} else if m.lastVerify.OK {
-			snapshot.Verification = "usable"
-			snapshot.LatencyMS = m.lastVerify.TunnelProbeMS
-			snapshot.PingMedianMS = m.lastVerify.TunnelProbeMS
-			snapshot.URLTotalMS = m.lastVerify.Metrics.TotalMS
-		} else {
-			snapshot.Verification = "failed"
-		}
+		snapshot.applyVerification(m)
 
 		if !m.startedAt.IsZero() {
 			snapshot.StartedAt = m.startedAt.UnixMilli()
@@ -798,16 +850,7 @@ func (m *Manager) snapshotLocked() Snapshot {
 
 		// LatencyMS reflects the best known END-TO-END measurement
 		// (tunnel verification), never the loopback probe.
-		if m.verifiedAt.IsZero() {
-			snapshot.Verification = "none"
-		} else if m.lastVerify.OK {
-			snapshot.Verification = "usable"
-			snapshot.LatencyMS = m.lastVerify.TunnelProbeMS
-			snapshot.PingMedianMS = m.lastVerify.TunnelProbeMS
-			snapshot.URLTotalMS = m.lastVerify.Metrics.TotalMS
-		} else {
-			snapshot.Verification = "failed"
-		}
+		snapshot.applyVerification(m)
 
 		if !m.startedAt.IsZero() {
 			snapshot.StartedAt = m.startedAt.UnixMilli()
@@ -815,6 +858,37 @@ func (m *Manager) snapshotLocked() Snapshot {
 	}
 
 	return snapshot
+}
+
+// applyVerification renders the verification/stability evidence of
+// the active session onto the snapshot (caller holds the lock).
+// v0.9.8.5: a verified session whose latest stability recheck failed
+// reports "degraded" — honestly, without tearing itself down over
+// one transient failure (§2.3).
+func (s *Snapshot) applyVerification(m *Manager) {
+	if m.verifiedAt.IsZero() {
+		s.Verification = "none"
+
+		return
+	}
+
+	s.VerifiedAt = m.verifiedAt.UnixMilli()
+	s.VerifyFailures = m.verifyFailures
+
+	if m.lastVerify.OK {
+		s.Verification = "usable"
+		s.LatencyMS = m.lastVerify.TunnelProbeMS
+		s.PingMedianMS = m.lastVerify.TunnelProbeMS
+		s.URLTotalMS = m.lastVerify.Metrics.TotalMS
+
+		return
+	}
+
+	if m.state == StateConnectedVerified {
+		s.Verification = "degraded"
+	} else {
+		s.Verification = "failed"
+	}
 }
 
 // VerifyConnected verifies USABLE connectivity through the ACTIVE
@@ -831,22 +905,39 @@ func (m *Manager) VerifyConnected(ctx context.Context, opts VerifyOptions) (Veri
 
 	m.mu.Lock()
 	instance := m.instance
+	providerSession := m.provider
 	state := m.state
 	m.mu.Unlock()
 
-	if instance == nil || !state.ConnectedLike() {
+	if (instance == nil && providerSession == nil) || !state.ConnectedLike() {
 		return VerifyResult{}, firerrors.New(firerrors.KindConfiguration,
 			Subsystem, "verify",
 			"no active session to verify (state %s)", state)
 	}
 
-	result := VerifyTunnel(ctx, instance.Endpoint(), opts)
+	// One endpoint, one verification model: core sessions and provider
+	// sessions share the same multi-target gate (v0.9.8.5 §2.3).
+	endpoint := ""
+
+	if instance != nil {
+		endpoint = instance.Endpoint()
+	} else if providerSession != nil {
+		endpoint = providerSession.endpoint
+	}
+
+	result := VerifyTunnel(ctx, endpoint, opts)
 
 	m.mu.Lock()
 	m.lastVerify = result
 
 	if result.OK {
 		m.verifiedAt = time.Now().UTC()
+
+		// A manual successful verification is fresh evidence: the
+		// stability counter resets (the monitor schedules its own next
+		// recheck from here).
+		m.verifyFailures = 0
+		m.nextVerifyAt = m.verifiedAt.Add(m.opts.VerifyInterval)
 	}
 
 	m.mu.Unlock()
@@ -919,6 +1010,18 @@ func (m *Manager) Shutdown() {
 }
 
 // startMonitor launches the health-monitor loop bounded by ctx.
+//
+// v0.9.8.5 (§2.3): the loop carries TWO evidence axes —
+//
+//	process health    (core/provider alive — failures are immediate)
+//	stability health  (periodic multi-target re-verification through
+//	                   the active session — failures are cumulative)
+//
+// A single failed stability recheck NEVER tears a healthy session
+// down: the failure marks the session degraded and schedules a fast
+// grace recheck; only CONSECUTIVE failures beyond the threshold
+// transition the session to ConnectionFailed, handing control to
+// the bounded recovery loop (fresh-test → re-rank → reconnect).
 func (m *Manager) startMonitor() {
 	m.stopMonitor()
 
@@ -973,6 +1076,11 @@ func (m *Manager) startMonitor() {
 						return
 					}
 
+					// Stability re-verification for provider
+					// sessions: the same multi-target gate,
+					// the same thresholds (§2.3).
+					m.runStabilityRecheck(ctx, provSession.endpoint)
+
 					continue
 				}
 
@@ -1002,9 +1110,108 @@ func (m *Manager) startMonitor() {
 				// measurement stays authoritative.
 				_ = report
 				m.mu.Unlock()
+
+				// Stability re-verification for core sessions.
+				m.runStabilityRecheck(ctx, instance.Endpoint())
 			}
 		}
 	}()
+}
+
+// runStabilityRecheck performs ONE bounded multi-target recheck of
+// the active session when the pacing schedule says so, and applies
+// the documented degradation policy:
+//
+//	connected_verified → recheck failed → (grace) recheck again →
+//	still failing × threshold → connection_failed → recovery
+//
+// A success at ANY point resets the failure evidence and restores
+// the normal recheck pacing — there is no permanent "healthy"
+// label without measured evidence.
+func (m *Manager) runStabilityRecheck(ctx context.Context, endpoint string) {
+	if endpoint == "" {
+		return
+	}
+
+	m.mu.Lock()
+
+	if m.state != StateConnectedVerified || m.opts.Verify.Skip {
+		m.mu.Unlock()
+
+		return
+	}
+
+	if m.nextVerifyAt.IsZero() || time.Now().Before(m.nextVerifyAt) {
+		m.mu.Unlock()
+
+		return
+	}
+
+	// Reserve the slot so one slow recheck is never started
+	// twice (the next attempt is scheduled from the outcome).
+	m.nextVerifyAt = time.Now().Add(m.opts.VerifyInterval)
+
+	m.mu.Unlock()
+
+	// Bounded, cancellable probe OUTSIDE the lock.
+	probeCtx, cancel := context.WithTimeout(ctx, m.opts.Verify.Timeout)
+	defer cancel()
+
+	result := VerifyTunnel(probeCtx, endpoint, m.opts.Verify.verifyOptions())
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.lastVerify = result
+
+	if result.OK {
+		m.verifyFailures = 0
+		m.verifiedAt = time.Now().UTC()
+		m.nextVerifyAt = m.verifiedAt.Add(m.opts.VerifyInterval)
+
+		return
+	}
+
+	m.verifyFailures++
+
+	// Grace / recheck: one (or a few) failed recheck keeps the
+	// session alive but schedules a fast follow-up probe — no
+	// single-probe flapping tears down a healthy session.
+	if m.verifyFailures < m.opts.VerifyFailureThreshold {
+		m.nextVerifyAt = time.Now().Add(m.opts.VerifyGrace)
+
+		return
+	}
+
+	// Threshold reached: the verified session has no measured
+	// evidence of usable Internet anymore — tear it down and let
+	// the bounded recovery loop take over with FRESH evidence.
+	m.lastError = fmt.Sprintf("connection degraded: %d consecutive failed verification rechecks (%s)",
+		m.verifyFailures, result.Describe())
+	m.state = StateConnectionFailed
+	m.verifyFailures = 0
+
+	instance := m.instance
+	provSession := m.provider
+
+	m.instance = nil
+	m.provider = nil
+
+	m.mu.Unlock()
+
+	// Deterministic cleanup outside the lock (Windows file-lock
+	// discipline: stop the process first).
+	if instance != nil {
+		_ = instance.Close()
+	}
+
+	if provSession != nil {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_ = provSession.prov.Stop(stopCtx)
+		stopCancel()
+	}
+
+	m.mu.Lock()
 }
 
 // stopMonitor cancels the monitor loop and waits for it to observe

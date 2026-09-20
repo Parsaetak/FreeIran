@@ -109,6 +109,16 @@ type Report struct {
 	Proxy       *CheckResult  `json:"proxy,omitempty"`
 	Cancelled   bool          `json:"cancelled"`
 	TargetCount int           `json:"target_count"`
+
+	// v0.9.8.5 staged evidence (§4): the ordered diagnostic ladder
+	// (local link → local IP → DNS → TCP → TLS → HTTPS → captive
+	// portal → direct Internet → tunnel Internet) with per-stage
+	// status, measured latency and failure class — so a failure
+	// surfaces as WHICH stage failed and why, never one generic
+	// message. FailedStage names the first failed rung ("" when the
+	// ladder is clean).
+	Stages      []StageResult `json:"stages,omitempty"`
+	FailedStage string        `json:"failed_stage,omitempty"`
 }
 
 // Config selects and bounds the probes. Zero-value fields fall back
@@ -315,6 +325,25 @@ func (c *Checker) Run(ctx context.Context) Report {
 	mu.Lock()
 	proxy := report.Proxy
 	mu.Unlock()
+
+	// v0.9.8.5 (§4): the dedicated stage probes — route-relevant local
+	// address, real TLS handshake, captive-portal signature. Bounded,
+	// cancellation-aware, and additive to (never a replacement of) the
+	// seven-state classification.
+	localIP, _ := probeLocalAddress(ctx)
+	localIP6, _ := probeLocalAddress6(ctx)
+	tlsEvidence := probeTLSStage(ctx, cfg.ProbeHost)
+	captive := captiveStageEvidence{}
+
+	if anyOK(report.HTTPS) {
+		captive = probeCaptiveStage(ctx, cfg.HTTPSURLs[0])
+	}
+
+	report.Stages = buildStages(report, localIP, localIP6, tlsEvidence, captive, cfg.ProbeHost)
+
+	if failed := FirstFailedStage(report.Stages); failed != nil {
+		report.FailedStage = string(failed.Stage)
+	}
 
 	report.DurationMS = elapsedMS(started)
 	report.State = classify(cfg, report, proxy)

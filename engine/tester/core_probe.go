@@ -2,17 +2,13 @@ package tester
 
 import (
 	"context"
-	"fmt"
-	"io"
 	"net"
-	"net/http"
-	"net/url"
 	"strconv"
 	"time"
 
 	"github.com/Parsaetak/FreeIran/engine/config"
+	"github.com/Parsaetak/FreeIran/engine/connection"
 	"github.com/Parsaetak/FreeIran/engine/core"
-	"github.com/Parsaetak/FreeIran/engine/socks5"
 )
 
 // DefaultE2ETarget is the URL fetched through the tunnel to verify a
@@ -252,96 +248,68 @@ func (p *CoreProbe) testOne(
 	return base, nil
 }
 
-// probeEndToEnd measures the real round-trip through the tunnel and
-// fetches the target URL through it.
+// probeEndToEnd verifies the tunnel forwards usable traffic through
+// the SAME canonical multi-target verification the connection engine
+// gates success on (v0.9.8.5 §3: one verification model — the tester
+// never carries a second, weaker verdict path). The measured ping is
+// the SOCKS CONNECT round-trip; the fetch duration is the winning
+// HTTP round-trip through the tunnel.
 func (p *CoreProbe) probeEndToEnd(ctx context.Context, instance *core.Instance) (time.Duration, time.Duration, error) {
-	target := p.E2ETarget
-
-	if target == "" {
-		target = DefaultE2ETarget
-	}
-
 	budget := p.E2ETimeout
 
 	if budget <= 0 {
 		budget = DefaultE2ETimeout
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, budget)
-	defer cancel()
-
 	endpoint := instance.Endpoint()
 	if endpoint == "" {
-		return 0, 0, fmt.Errorf("core instance reports no local endpoint")
+		return 0, 0, errNoEndpoint
 	}
 
-	parsed, err := url.Parse(target)
-	if err != nil {
-		return 0, 0, fmt.Errorf("invalid e2e target: %w", err)
+	opts := connection.VerifyOptions{Timeout: budget, Backoff: verifyBackoff}
+
+	if p.E2ETarget != "" {
+		// A pinned target (tests / explicit configuration) keeps
+		// the single-target contract.
+		opts.URL = p.E2ETarget
 	}
 
-	port := parsed.Port()
-	if port == "" {
-		if parsed.Scheme == "https" {
-			port = "443"
-		} else {
-			port = "80"
+	result := connection.VerifyTunnel(ctx, endpoint, opts)
+
+	if !result.OK {
+		if result.Metrics.TotalMS > 0 {
+			return time.Duration(result.TunnelProbeMS) * time.Millisecond,
+				time.Duration(result.Metrics.TotalMS) * time.Millisecond,
+				errVerification{describe: result.Describe()}
 		}
+
+		return time.Duration(result.TunnelProbeMS) * time.Millisecond, 0,
+			errVerification{describe: result.Describe()}
 	}
 
-	dialer := socks5.Dialer{ProxyAddr: endpoint, Timeout: budget}
+	ping := time.Duration(result.TunnelProbeMS) * time.Millisecond
+	fetch := time.Duration(result.Metrics.TotalMS) * time.Millisecond
 
-	// 1. Ping: the SOCKS5 CONNECT round-trip through the tunnel.
-	started := time.Now()
-
-	conn, err := dialer.Dial(ctx, "tcp", net.JoinHostPort(parsed.Hostname(), port))
-	if err != nil {
-		return 0, 0, fmt.Errorf("tunnel connect to %s failed: %w", parsed.Hostname(), err)
-	}
-
-	ping := time.Since(started)
-	_ = conn.Close()
-
-	// 2. Verify the tunnel forwards real traffic.
-	// Disposable per-probe transport (DisableKeepAlives): this probe
-	// MEASURES round-trip latency through the tunnel — connection
-	// reuse (internal/httpx) would corrupt the measurement. It is a
-	// probe, not a download path.
-	transport := &http.Transport{
-		DialContext:           dialer.Dial,
-		DisableKeepAlives:     true,
-		TLSHandshakeTimeout:   budget / 2,
-		ResponseHeaderTimeout: budget / 2,
-	}
-	defer transport.CloseIdleConnections()
-
-	client := &http.Client{
-		Transport: transport,
-		Timeout:   budget,
-	}
-
-	fetchStart := time.Now()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
-	if err != nil {
-		return ping, 0, err
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return ping, time.Since(fetchStart), fmt.Errorf("request through tunnel failed: %w", err)
-	}
-
-	defer resp.Body.Close()
-
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
-
-	if resp.StatusCode >= 400 {
-		return ping, time.Since(fetchStart), fmt.Errorf("request through tunnel returned HTTP %d", resp.StatusCode)
-	}
-
-	return ping, time.Since(fetchStart), nil
+	return ping, fetch, nil
 }
+
+// errVerification carries a credential-free verification failure.
+type errVerification struct {
+	describe string
+}
+
+func (e errVerification) Error() string { return e.describe }
+
+// errNoEndpoint is the deterministic no-endpoint failure.
+var errNoEndpoint = errorString("core instance reports no local endpoint")
+
+type errorString string
+
+func (e errorString) Error() string { return string(e) }
+
+// verifyBackoff keeps the tester's transient retry tight: testing
+// throughput matters more than waiting out third-party blips.
+const verifyBackoff = 150 * time.Millisecond
 
 // configEndpoint renders the remote server address for reporting.
 func configEndpoint(cfg config.Config) string {

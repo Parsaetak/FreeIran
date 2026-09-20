@@ -16,12 +16,16 @@ The application should feel like a mature desktop connectivity client rather tha
 
 Current main:
 
-* Version: `0.9.8.4`
+* Version: `0.9.8.5`
 * Platform focus: Windows x64
 * Runtime: Go + Wails + React/TypeScript
 * Core families: Xray, V2Ray, sing-box
 * First-class providers: Tor, Psiphon
 * Quick Connect: enabled (fresh-selection loop, verification-gated)
+* Connection verification: multi-target quorum (2 of 3 operators) with transient retry and evidence-based degradation/recovery
+* Internet diagnostics: staged ladder (local link → local IP → DNS → TCP → TLS → HTTPS → captive portal → direct → tunnel) with per-stage failure classes
+* DNS diagnostics: system vs curated public resolvers, A/AAAA, UDP→TCP fallback, honest failure classification
+* Network identity: local IP + public IP + ISP/ASN on explicit user action
 * Adaptive memory controller: enabled (evidence-gated growth)
 * Managed workspace: enabled (application-folder-only)
 * Managed provider/core installation: enabled
@@ -32,6 +36,51 @@ Current main:
 > presented as success). Those findings described real defects that
 > the v0.9.8.3 implementation already fixed; the baseline text lagged
 > the repository and is corrected as of v0.9.8.4.
+
+### v0.9.8.5 — completed historical work
+
+The v0.9.8.5 release completed the following items, each verified by
+an executed test battery (not by inspection alone):
+
+* Multi-target connection verification (§10, verification stage) —
+  the single-endpoint gate became a bounded multi-target quorum
+  (2 of 3 independent operators), with one bounded transient retry
+  (timeout/reset/proxy-handshake/5xx only — deterministic 4xx,
+  refused and TLS-interception failures never retry) and per-target
+  evidence (`engine/connection/verify.go`; regression battery
+  `verify_multi_test.go`, 8 tests).
+* Stability degradation + recovery (§1.2/§1.3 evidence rules) — a
+  verified session is periodically re-verified through the active
+  tunnel: one failed recheck degrades the snapshot without tearing
+  the session down; the consecutive-failure threshold transitions to
+  `connection_failed` and the bounded recovery loop; any success
+  resets the evidence. Provider sessions join the same schedule
+  (`engine/connection/connection.go`, `provider.go`; manager-level
+  degradation + recovery tests).
+* One testing-engine verification model — the tester's end-to-end
+  probe runs the same `connection.VerifyTunnel` gate instead of a
+  second, weaker single-target copy (`engine/tester/core_probe.go`).
+* Staged Internet diagnostics — the connectivity report carries the
+  ordered nine-rung ladder with per-stage status, latency and failure
+  class, plus `failed_stage`; the seven-state classifier remains
+  authoritative (`engine/netcheck/stages.go`; 5 ladder tests).
+* DNS diagnostics — resolver comparison (system vs Cloudflare/
+  Google/Quad9), A + AAAA, UDP with TCP fallback, failure classes
+  (timeout/refused/SERVFAIL/NXDOMAIN/empty/malformed/unreachable/
+  cancelled/invalid), query-name validation, private-resolver
+  rejection, bounded responses, no DNSSEC claims
+  (`engine/netcheck/dnsdiag.go`; 14-test matrix against a local fake
+  resolver).
+* Network identity — route-relevant local IPv4/IPv6 (no traffic),
+  public exit IP direct vs tunnel with match comparison, ISP/ASN/
+  country from documented keyless sources, Unknown-when-unavailable,
+  explicit user action only with a 60-second response cache
+  (`engine/netcheck/identity.go`, `engine/app/internettools.go`;
+  12-test matrix).
+* UI/UX audit (§17 alignment) — dead classes removed, missing styles
+  defined, ghost-danger hover fixed, inline styles tokenized,
+  duplicate helpers consolidated; 9 tabs × 6 viewports responsive
+  verification with zero horizontal overflow.
 
 ### v0.9.8.3 — completed historical work
 

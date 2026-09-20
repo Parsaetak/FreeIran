@@ -35,3 +35,14 @@ export function RunTool(view) {
 export function LiveTunnel() {
     return $Call.ByName("github.com/Parsaetak/FreeIran/engine/app.InternetToolsService.LiveTunnel");
 }
+
+/**
+ * NetworkIdentity runs the bounded Network Identity check (v0.9.8.5
+ * §6): local IP (route-relevant, no traffic), public IP and
+ * ISP/ASN metadata. Explicit user action only — never automatic.
+ * @param {any} req
+ * @returns {$CancellablePromise<any>}
+ */
+export function NetworkIdentity(req) {
+    return $Call.ByName("github.com/Parsaetak/FreeIran/engine/app.InternetToolsService.NetworkIdentity", req);
+}

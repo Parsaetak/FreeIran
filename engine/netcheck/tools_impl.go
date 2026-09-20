@@ -237,61 +237,160 @@ func stateToToolStatus(state State) ToolStatus {
 	}
 }
 
-// runDNS resolves a name (through a specific resolver when the target
-// is an IP literal, else the system resolver) and reports the honest
-// answers.
+// runDNS is the v0.9.8.5 DNS DIAGNOSTIC (§5): one user-triggered
+// run compares the system resolver against the curated public
+// resolver set (or one explicit user-supplied resolver), for both
+// A and AAAA, over UDP with TCP fallback — every row carrying its
+// transport, measured latency, answer count and honest failure
+// class. The structured evidence rides on result.DNS.
 func (r *ToolRunner) runDNS(ctx context.Context, req ToolRequest, result *ToolResult) {
 	result.Transport = "udp/tcp"
 
 	host, _ := targetHostPort(req, 53)
 
-	// A resolver address runs the lookup against that server; any
-	// other target is the NAME to resolve.
+	host = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(host, "["), "]"))
+
+	// Target semantics (unchanged contract, upgraded engine):
+	//   ""            → full diagnostic (system + curated, default name)
+	//   hostname      → diagnostic of that name
+	//   IP literal    → diagnostic through that ONE explicit resolver
 	var (
-		resolver *net.Resolver
-		name     string
+		diagOpts = DNSDiagnosticOptions{}
+		mode     = "system + curated"
 	)
 
-	if ip := net.ParseIP(strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")); ip != nil && req.Target != "" {
-		server := net.JoinHostPort(ip.String(), "53")
-		name = "www.gstatic.com"
-
-		dialer := &net.Dialer{Timeout: 5 * time.Second}
-
-		resolver = &net.Resolver{
-			PreferGo: true,
-			Dial: func(dctx context.Context, _, _ string) (net.Conn, error) {
-				return dialer.DialContext(dctx, "udp", server)
-			},
-		}
-
-		result.Target = server + " → " + name
-	} else {
-		name = host
-		result.Target = name
-
-		resolver = &net.Resolver{}
+	switch {
+	case req.Target != "" && net.ParseIP(host) != nil:
+		diagOpts.Resolvers = []string{host}
+		mode = "resolver " + host
+		result.Target = host
+	case req.Target != "":
+		diagOpts.Name = host
+		result.Target = host
+	default:
+		result.Target = "system + curated resolvers"
 	}
 
-	started := time.Now()
-
-	addrs, err := resolver.LookupHost(ctx, name)
-	elapsed := time.Since(started)
-
-	if err != nil {
-		setStatusFromError(result, err)
-
-		if elapsed > 0 {
-			result.Measurement = ToolMeasurement{LatencyMS: elapsed.Milliseconds(), Measured: false}
-		}
-
-		return
+	if req.Path == PathTunneled && req.Dial != nil {
+		// A tunneled DNS diagnostic resolves through the tunnel: the
+		// SYSTEM resolver row would silently leak around the tunnel,
+		// so an explicit resolver set is required (the curated public
+		// set by default — queries travel through the supplied dialer).
+		diagOpts.Resolvers = curatedResolverAddresses()
+		diagOpts.Dial = req.Dial
+		mode = "curated via tunnel"
 	}
 
-	result.Status = ToolStatusOK
-	result.Measurement = measurementFor(elapsed)
-	result.Measurement.Addresses = boundedAddresses(addrs, 8)
-	result.Measurement.AddressCount = len(addrs)
+	report := RunDNSDiagnostic(ctx, diagOpts)
+
+	result.DNS = &report
+
+	// Aggregate surface: the best successful evidence feeds the
+	// shared measurement fields; the status is honest about how many
+	// resolvers answered.
+	bestLatency, bestAnswers, okCount, total := summarizeDNSReport(&report)
+
+	result.Measurement = ToolMeasurement{
+		LatencyMS:    bestLatency,
+		Measured:     bestLatency > 0,
+		Addresses:    bestAnswers,
+		AddressCount: len(bestAnswers),
+		Probes:       total,
+	}
+
+	result.Details = map[string]string{
+		"name":        report.Name,
+		"mode":        mode,
+		"types":       "A, AAAA",
+		"resolvers":   strconv.Itoa(len(report.Resolvers)),
+		"user_action": "DNS diagnostics are never run automatically",
+	}
+
+	switch {
+	case okCount > 0:
+		result.Status = ToolStatusOK
+	case ctx.Err() != nil:
+		result.Status = ToolStatusCancelled
+		result.Error = "cancelled"
+	default:
+		result.Status = ToolStatusFailed
+
+		if class, msg := dominantDNSFailure(&report); class != "" {
+			result.Error = msg
+			result.Details["failure_class"] = class
+		} else {
+			result.Error = "every resolver failed"
+		}
+	}
+}
+
+// curatedResolverAddresses lists the curated set as bare addresses.
+func curatedResolverAddresses() []string {
+	out := make([]string, 0, len(CuratedDNSResolvers))
+	for _, r := range CuratedDNSResolvers {
+		out = append(out, r.Address)
+	}
+	return out
+}
+
+// summarizeDNSReport extracts the best successful evidence.
+func summarizeDNSReport(report *DNSDiagnosticReport) (bestLatency int64, bestAnswers []string, okCount, total int) {
+	bestSet := false
+
+	for _, resolver := range report.Resolvers {
+		for _, q := range resolver.Queries {
+			total++
+
+			if !q.OK {
+				continue
+			}
+
+			if !bestSet || (q.LatencyMS > 0 && q.LatencyMS < bestLatency) {
+				bestSet = true
+				bestLatency = q.LatencyMS
+				bestAnswers = q.Addresses
+			}
+		}
+	}
+
+	for _, resolver := range report.Resolvers {
+		if resolver.OK {
+			okCount++
+		}
+	}
+
+	return bestLatency, bestAnswers, okCount, total
+}
+
+// dominantDNSFailure renders the most common failure class of a
+// fully failed run.
+func dominantDNSFailure(report *DNSDiagnosticReport) (string, string) {
+	counts := map[DNSFailureClass]int{}
+	samples := map[DNSFailureClass]string{}
+
+	for _, resolver := range report.Resolvers {
+		for _, q := range resolver.Queries {
+			if q.OK || q.FailureClass == DNSFailNone {
+				continue
+			}
+
+			counts[q.FailureClass]++
+			samples[q.FailureClass] = q.Resolver + " " + string(q.RecordType) + ": " + q.Error
+		}
+	}
+
+	best, bestN := DNSFailureClass(""), 0
+	for class, n := range counts {
+		if n > bestN {
+			best, bestN = class, n
+		}
+	}
+
+	if best == DNSFailureClass("") {
+		return "", ""
+	}
+
+	return best.HumanLabel(), samples[best]
 }
 
 // boundedAddresses caps and deduplicates reported addresses.

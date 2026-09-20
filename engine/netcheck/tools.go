@@ -98,7 +98,7 @@ func ToolLabel(id ToolID) string {
 	case ToolInternet:
 		return "Internet check"
 	case ToolDNS:
-		return "DNS"
+		return "DNS diagnostic"
 	case ToolTCP:
 		return "TCP"
 	case ToolTLS:
@@ -248,6 +248,11 @@ type ToolResult struct {
 	Measurement ToolMeasurement   `json:"measurement"`
 	Error       string            `json:"error,omitempty"`
 	Details     map[string]string `json:"details,omitempty"`
+
+	// DNS carries the structured DNS-diagnostic evidence (§5) when
+	// this run is a DNS diagnostic (v0.9.8.5) — per-resolver rows
+	// with per-record-type results, transports and failure classes.
+	DNS *DNSDiagnosticReport `json:"dns,omitempty"`
 }
 
 // OK reports whether the tool succeeded.

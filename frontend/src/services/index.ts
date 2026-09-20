@@ -170,6 +170,22 @@ export interface NetCheckResult {
   error?: string;
 }
 
+/**
+ * One staged-diagnostic rung (v0.9.8.5 §4): local link → local IP →
+ * DNS → TCP → TLS → HTTPS → captive portal → direct Internet →
+ * tunnel Internet. Additive evidence that explains the verdict — it
+ * never replaces it.
+ */
+export interface NetCheckStageView {
+  stage: string;
+  status: "ok" | "failed" | "skipped" | "not_checked";
+  latency_ms?: number;
+  measured?: boolean;
+  target?: string;
+  detail?: string;
+  failure_class?: string;
+}
+
 /** The classified connectivity report (engine/netcheck Report). */
 export interface NetCheckReport {
   state: string;
@@ -185,6 +201,9 @@ export interface NetCheckReport {
   proxy?: NetCheckResult | null;
   cancelled: boolean;
   target_count: number;
+  /** v0.9.8.5: the ordered ladder evidence + the first failed rung. */
+  stages?: NetCheckStageView[];
+  failed_stage?: string;
 }
 
 /** Managed core manifest (engine/coremgr Manifest). */
@@ -501,6 +520,8 @@ export interface ToolResultView {
   measurement?: ToolMeasurementView;
   error?: string;
   details?: Record<string, string>;
+  /** v0.9.8.5 (§5): the structured DNS-diagnostic evidence. */
+  dns?: DNSDiagnosticReportView;
 }
 
 /** One tool run request (user-triggered only). */
@@ -509,6 +530,100 @@ export interface ToolRunRequest {
   target?: string;
   timeout_ms?: number;
   tunneled?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// v0.9.8.5 DNS diagnostic views (§5) — per-resolver rows with
+// per-record-type evidence, transports and honest failure classes.
+// ---------------------------------------------------------------------------
+
+/** One (resolver, record type) row of DNS evidence. */
+export interface DNSQueryView {
+  resolver: string;
+  address?: string;
+  transport: string; // system | udp | tcp | none
+  query_name: string;
+  record_type: string; // A | AAAA
+  ok: boolean;
+  status?: number; // DNS RCODE
+  latency_ms?: number;
+  measured?: boolean;
+  answer_count?: number;
+  addresses?: string[];
+  failure_class?: string;
+  error?: string;
+  at: string;
+}
+
+/** One resolver's full row (A + AAAA). */
+export interface DNSResolverResultView {
+  resolver: string;
+  address?: string;
+  transport?: string;
+  ok: boolean;
+  queries: DNSQueryView[];
+  latency_ms?: number;
+}
+
+/** The structured DNS diagnostic report (v0.9.8.5 §5). */
+export interface DNSDiagnosticReportView {
+  name: string;
+  resolvers: DNSResolverResultView[];
+  started_at: string;
+  duration_ms: number;
+  cancelled?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// v0.9.8.5 Network Identity views (§6) — local IP, public IP and
+// ISP/ASN metadata, all measured on explicit user action only.
+// ---------------------------------------------------------------------------
+
+/** One active local address with its interface. */
+export interface LocalAddressView {
+  address: string;
+  interface?: string;
+  family: string; // ipv4 | ipv6
+}
+
+/** The measured local network identity (no traffic leaves the machine). */
+export interface LocalIdentityView {
+  primary_ipv4?: string;
+  primary_ipv6?: string;
+  interface?: string;
+  others?: LocalAddressView[];
+  measured: boolean;
+}
+
+/** The measured public (exit) identity. */
+export interface PublicIdentityView {
+  direct_ip?: string;
+  tunnel_ip?: string;
+  tunnel_match?: boolean;
+  endpoint?: string;
+}
+
+/** ISP / network organization metadata (unavailable → available: false). */
+export interface NetworkMetadataView {
+  organization?: string;
+  asn?: string;
+  country?: string;
+  region?: string;
+  source?: string;
+  available: boolean;
+}
+
+/** The complete Network Identity result (v0.9.8.5 §6). */
+export interface IdentityReportView {
+  local: LocalIdentityView;
+  public: PublicIdentityView;
+  metadata: NetworkMetadataView;
+  path: string; // direct | tunneled
+  provider?: string;
+  checked_at: string;
+  duration_ms: number;
+  cancelled?: boolean;
+  error?: string;
 }
 
 /** ConnectBest outcome (app.ConnectBestResult). */

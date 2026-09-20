@@ -9,12 +9,101 @@ configurations.
 **Project:** FreeIran — A SHEYTAN Digital System
 **Architect:** Parsa Tak / SHEYTAN
 **Repository:** https://github.com/Parsaetak/FreeIran
-**Current version:** 0.9.8.4 (see `VERSION`)
+**Current version:** 0.9.8.5 (see `VERSION`)
 **Status:** production architecture — multi-core protocol runtime with
 managed installation, multi-level node discovery, Ping/URL test modes
 with measured ranking, verified-connection engine with racing,
 environment intelligence, system proxy and TUN mode, unified adaptive
 memory control and kernel-level process supervision
+
+---
+
+## What's new in v0.9.8.5
+
+v0.9.8.5 is a connection-verification and network-diagnostics
+upgrade: the verify gate stops trusting one endpoint, the session's
+stability is measured instead of assumed, the Internet check explains
+WHICH stage failed, the DNS tool becomes a real resolver comparison,
+the Network tab answers "who am I on this network", and a full UI/UX
+audit removes dead styles and duplicate helpers across every tab.
+
+### Multi-target connection verification (quorum)
+
+- `engine/connection/verify.go`: the single-endpoint probe is now a
+  bounded multi-target verification with a documented quorum rule —
+  three independently operated endpoints (Google, Cloudflare, Apple),
+  strict majority required (2 of 3). One unrelated third-party outage
+  can no longer fail an otherwise healthy route, and one lucky
+  endpoint can no longer declare a broken route verified. Per-target
+  evidence (status, latency, transport, failure class) rides on the
+  result; deterministic failures (4xx, refused, TLS interception)
+  never retry, genuinely transient ones (timeout, reset, 5xx) retry
+  exactly once with bounded backoff + jitter.
+- The tester's end-to-end probe now runs the SAME verification model
+  (`engine/tester/core_probe.go` deduplicated onto
+  `connection.VerifyTunnel`) — one gate, not two.
+
+### Stability degradation + recovery (evidence, not assumptions)
+
+- A verified session is periodically RE-verified through the active
+  tunnel (`engine/connection`): one failed recheck marks the snapshot
+  `degraded` but never tears the session down; consecutive failures
+  past the threshold transition to `connection_failed` and hand control
+  to the bounded recovery loop; a success at any point resets the
+  evidence. Provider sessions (Tor/Psiphon) join the same schedule.
+  Snapshots carry `verified_at` and `verify_failures`.
+
+### Staged Internet diagnostics
+
+- `engine/netcheck/stages.go`: the connectivity report now carries
+  the ordered ladder — local link → local IP → DNS → TCP → TLS →
+  HTTPS → captive portal → direct Internet → tunnel Internet — each
+  rung with status, measured latency and a failure class, plus
+  `failed_stage` naming the first broken rung. The seven-state
+  classifier stays authoritative; the ladder explains it.
+
+### DNS diagnostics (resolver comparison)
+
+- `engine/netcheck/dnsdiag.go`: the DNS tool compares the system
+  resolver against a curated public set (Cloudflare, Google, Quad9)
+  for A and AAAA, over UDP with TCP fallback, with honest failure
+  classification (timeout / refused / SERVFAIL / NXDOMAIN / empty /
+  malformed / unreachable / cancelled / invalid). No DNSSEC claims.
+  Safety: name validation before any bytes leave the machine,
+  private-resolver rejection, bounded response sizes, per-query and
+  overall timeouts, full cancellation.
+
+### Network Identity
+
+- `engine/netcheck/identity.go` + the Network tab's new identity card:
+  route-relevant local IPv4/IPv6 (no packets sent — routing-table
+  lookup only) with its interface, the public exit IP (direct and/or
+  through the active tunnel, with match comparison), and ISP/ASN/
+  country metadata from documented keyless sources. Unavailable
+  metadata reports Unknown — never fabricated. Explicit user action
+  only; a 60-second cache prevents hammering the endpoints on page
+  re-renders.
+
+### UI/UX audit (every tab)
+
+- Dead classes removed (`.card.onboarding`, `.provider-card`,
+  `.qc-orb-icon`, `.progress.indeterminate-none`); two referenced-but-
+  undefined styles now properly defined (`.field-grid.two` form grid,
+  `.badge.success-dim`); ghost + danger buttons keep their error color
+  on hover; five Dashboard inline styles replaced by token-driven
+  spacing utilities; duplicate helpers consolidated (`formatBytes`,
+  error description) onto the shared modules.
+- Responsive verification: 9 tabs × 6 viewports (1920×1080, 1440×900,
+  1280×720, 1024×768, 800×600, 480×900) — zero horizontal overflow.
+
+### Housekeeping
+
+- Version 0.9.8.5 everywhere (VERSION, internal/version,
+  frontend/package.json + lock, Windows resources, README, ROADMAP).
+- New test batteries: multi-target quorum/retry (8 tests), manager
+  stability degradation + recovery (2 tests), staged ladder (5 tests),
+  DNS diagnostic matrix (14 tests), network identity (12 tests),
+  frontend Network-page surfaces (7 tests).
 
 ---
 
@@ -1387,7 +1476,7 @@ FreeIran/
 ├── internal/version/      Single source of truth for versioning
 ├── .github/workflows/     CI, release and security pipelines
 ├── docs/                  Architecture, storage, performance, CI, security, dev
-├── VERSION                Application version (0.9.8.4)
+├── VERSION                Application version (0.9.8.5)
 └── worklog.md             Engineering worklog
 ```
 

@@ -5,8 +5,8 @@
 **Architect / Project Originator:** Parsa Tak / SHEYTAN  
 **Primary platforms:** Windows + Android  
 **Primary implementation language:** Go  
-**Current phase:** v0.9.5 — repository integrity release (v0.9.4 CI regression actually fixed, stale artifacts removed, full verification re-run)  
-**Last known project date:** 2026-09-13  
+**Current phase:** v0.9.8.5 — multi-target verification, staged diagnostics, DNS diagnostics, network identity  
+**Last known project date:** 2026-09-20  
 **Purpose of this file:** Portable handoff document for any AI coding agent continuing FreeIran without relying on previous chat history.
 
 ---
@@ -3912,6 +3912,95 @@ Baseline: `a2989e590164d0cb7855338704dfe4071b64a182` (v0.9.8.2).
 
 
 ---
+
+## v0.9.8.5 — Multi-target verification, stability degradation, staged diagnostics, DNS diagnostics, network identity
+
+### Root causes (identified against the v0.9.8.4 baseline)
+
+- Connection verification trusted ONE HTTPS endpoint: a single
+  unrelated third-party outage failed an otherwise healthy route, and
+  a single lucky endpoint could verify a broken route.
+- The post-connect monitor checked only PROCESS health: a dead path
+  behind a live core stayed "connected_verified" forever.
+- The tester's end-to-end probe carried a second, weaker copy of the
+  verification logic instead of reusing the engine's gate.
+- The Internet check reported WHICH CLASS failed (seven states) but
+  not WHICH STAGE, and produced one generic failure message.
+- The DNS tool resolved one name through one resolver — no A/AAAA
+  distinction, no resolver comparison, no transport, no failure
+  classification.
+- No surface answered "what is my local IP / public IP / ISP".
+- UI audit findings: referenced-but-undefined styles
+  (.field-grid.two, .badge.success-dim), dead classes
+  (.card.onboarding, .provider-card, .qc-orb-icon,
+  .progress.indeterminate-none), ghost-danger hover losing the error
+  color, five Dashboard inline styles, duplicated helpers
+  (formatBytes, error description).
+
+### Implementation
+
+- engine/connection/verify.go: bounded multi-target verification —
+  DefaultVerifyTargets = three independent operators (gstatic,
+  Cloudflare, Apple), quorum = strict majority (2 of 3), MaxVerifyTargets
+  = 4; per-target evidence; ONE bounded transient retry
+  (timeout/reset/proxy-handshake/5xx; 4xx/refused/TLS never retry)
+  with backoff + jitter; FailureClass classification preserved.
+- engine/connection/connection.go + provider.go: stability model —
+  VerifyInterval (30s) / VerifyGrace (8s) / VerifyFailureThreshold (3)
+  re-verification of every connected_verified session (provider
+  sessions included); first failed recheck → snapshot
+  verification="degraded" (session stands); threshold →
+  connection_failed + bounded recovery; snapshots carry verified_at /
+  verify_failures; VerifyConnected unifies core + provider endpoints.
+- engine/tester/core_probe.go: the end-to-end probe now calls
+  connection.VerifyTunnel (one verification model).
+- engine/netcheck/stages.go: staged ladder (local link → local IP →
+  DNS → TCP → TLS → HTTPS → captive portal → direct → tunnel) with
+  per-stage status/latency/failure-class + failed_stage; the
+  seven-state classifier remains authoritative.
+- engine/netcheck/dnsdiag.go: DNS diagnostic — system vs curated
+  resolvers (Cloudflare/Google/Quad9), A + AAAA, RFC 1035 wire client
+  (UDP→TCP fallback), failure classes, query-name validation,
+  private-resolver rejection, bounded responses; tunneled runs route
+  queries through the tunnel and replace the system row with the
+  curated set.
+- engine/netcheck/identity.go: Network Identity — route-relevant
+  local IPv4/IPv6 (connected-UDP lookups, no packets), public exit IP
+  (shared identity endpoints, direct + tunnel with match), ISP/ASN/
+  country from documented keyless sources (ipinfo.io, ipwho.is),
+  Unknown-when-unavailable; engine/app/internettools.go exposes it
+  (explicit user action only, 60s same-question cache, bounded
+  concurrency).
+- Frontend: NetworkIdentity binding + view types; Network tab gains
+  the identity card (top of page), the Connection stages ladder and
+  the DNS per-resolver evidence; UI audit fixes as listed above;
+  shared-design-system CSS additions only.
+- Version 0.9.8.5 everywhere; PE .syso resources regenerated
+  (go-winres) with the new version; embedded frontend dist rebuilt.
+
+### Verification (all executed)
+
+- gofmt clean; go vet ./engine/... ./system/... ./internal/... PASS;
+  go build PASS; go test -count=1 (33 packages, 733 test functions,
+  zero failures) and go test -race PASS; benchmark smoke PASS.
+- Windows cross-build (GOOS=windows GOARCH=amd64 CGO_ENABLED=0) PASS;
+  the linked binary verified GUI-subsystem (PE Subsystem=2) with the
+  .rsrc section present (icon + version + manifest).
+- Native layer: make -C native test PASS; native_accel build + tests
+  + benchmarks PASS.
+- Frontend: npm ci (0 vulnerabilities), typecheck PASS, 121/121 tests
+  (114 baseline + 7 new; zero deletions — regression-verified against
+  HEAD), production build PASS, embedded assets staged.
+- Responsive audit: 9 tabs × 6 viewports (1920×1080, 1440×900,
+  1280×720, 1024×768, 800×600, 480×900) rendered in a browser —
+  zero horizontal overflow.
+- NOT verified in this environment (Linux sandbox): interactive
+  Windows GUI runtime. Compensating checks: the engine lifecycle
+  paths (connect → verify → degrade → recover → teardown, no orphan
+  processes) run in the Go test matrix with fake cores; the UI
+  contract runs in the jsdom suite; the PE binary was structurally
+  verified. Windows interactive acceptance remains with the
+  maintainer's push→CI→release flow.
 
 ## v0.9.8.4 — CI repair, connection-state integrity, logging profiles
 

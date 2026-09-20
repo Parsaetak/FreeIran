@@ -430,9 +430,7 @@ function QuickOrb({ state }: { state: QuickHeroState }) {
     <div className={`qc-orb-wrap ${state}`} aria-hidden>
       <div className="qc-orb-ring" />
       <div className="qc-orb">
-        <span className="qc-orb-icon">
-          <IconZap size={26} />
-        </span>
+        <IconZap size={26} />
       </div>
     </div>
   );

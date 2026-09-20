@@ -21,7 +21,7 @@ import {
   IconStar,
   IconStop,
 } from "../components/Icons";
-import { toast } from "../state/toastStore";
+import { describeError, toast } from "../state/toastStore";
 
 const searchRunner = makeSearchRunner(250);
 
@@ -383,7 +383,7 @@ function TunnelModeCard({ connected, endpoint }: { connected: boolean; endpoint:
         setMode("off");
       }
     } catch (error) {
-      toast("error", "Tunnel mode change failed", describeErrorTunnel(error));
+      toast("error", "Tunnel mode change failed", describeError(error, "unknown error"));
     } finally {
       setBusy(false);
     }
@@ -432,11 +432,6 @@ function TunnelModeCard({ connected, endpoint }: { connected: boolean; endpoint:
       </div>
     </div>
   );
-}
-
-/** describeErrorTunnel normalizes backend rejection messages. */
-function describeErrorTunnel(error: unknown): string {
-  return error instanceof Error ? error.message : String(error ?? "unknown error");
 }
 
 /**

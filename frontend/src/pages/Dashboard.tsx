@@ -369,7 +369,9 @@ function SmartStartPanel({
         </div>
       </div>
 
-      <p className="page-subtitle" style={{ marginBottom: 12 }}>
+      {/* v0.9.8.5 UI audit: token-driven spacing utilities replace the
+          five inline styles this page carried. */}
+      <p className="page-subtitle mb-3">
         One button runs the full flow: environment detection, multi-level discovery,
         testing, ranking by your selected sort mode, connection and connectivity
         verification. Manual selection on the Connection page always overrides
@@ -396,14 +398,12 @@ function SmartStartPanel({
 
       {/* Live stage message */}
       {flowStatus?.message ? (
-        <p className="cell-sub" style={{ marginTop: 8 }}>
-          {flowStatus.message}
-        </p>
+        <p className="cell-sub mt-2">{flowStatus.message}</p>
       ) : null}
 
       {/* Environment evidence */}
       {environment ? (
-        <p className="cell-sub" style={{ marginTop: 4 }}>
+        <p className="cell-sub mt-1">
           <b>Environment:</b> {environment.summary}
           {environment.signals.length > 0 ? ` (${environment.signals.join(", ")})` : ""}
         </p>
@@ -411,7 +411,7 @@ function SmartStartPanel({
 
       {/* Measured result summary */}
       {flowStatus?.last_result ? (
-        <div className="stat-grid" style={{ marginTop: 12 }}>
+        <div className="stat-grid mt-3">
           <StatTile
             label="Valid candidates"
             value={formatNumber(flowStatus.last_result.valid)}
@@ -437,7 +437,7 @@ function SmartStartPanel({
 
       {error ? <div className="error-banner mt-4">{error}</div> : null}
 
-      <div className="toolbar" style={{ marginTop: 12 }}>
+      <div className="toolbar mt-3">
         <button
           type="button"
           className="btn primary lg"
@@ -616,7 +616,7 @@ function OnboardingChecklist({
   }
 
   return (
-    <section className="card onboarding" aria-label="Get started">
+    <section className="card" aria-label="Get started">
       <h3 className="card-title">Get started</h3>
       <ol className="onboarding-steps">
         {steps.map((step, index) => (
