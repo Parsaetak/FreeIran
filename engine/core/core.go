@@ -80,6 +80,13 @@ type RuntimeOptions struct {
 	// runtimes). Empty = resolve through the registry/locator.
 	BinaryPath string
 
+	// BackendVersion is the version of the binary being launched
+	// (v0.9.9). It participates in the generated-config cache
+	// generation so a core update invalidates cached documents for
+	// that backend. Empty = unknown (tests); the cache stays correct,
+	// just keyed without the version component.
+	BackendVersion string
+
 	// StartupTimeout bounds the wait from spawn to listener-ready.
 	// Zero = DefaultStartupTimeout.
 	StartupTimeout time.Duration
@@ -318,55 +325,35 @@ func (i *Instance) coreName() string {
 	return i.core.Name()
 }
 
-// WaitReady blocks until the local listener accepts connections, the
-// process exits first, or the startup timeout elapses.
+// WaitReady blocks until the single startup supervisor (started by
+// Launch) publishes its verdict: the local listener accepted a
+// connection, the process exited first, or the hard startup deadline
+// elapsed.
+//
+// v0.9.9 readiness consolidation: WaitReady no longer starts a second
+// process-wait observer or its own timeout enforcement — that
+// duplicated the Launch supervision path (two Wait observers, two
+// timeout owners). The verdict is produced exactly once by
+// awaitListener and published exactly once through markReady; the
+// timeout outcome's deterministic teardown (bounded stop) also lives
+// in the supervisor, so every consumer observes the same evidence.
+//
+// The caller's ctx is honored for cancellation only: cancelling it
+// returns immediately; the supervisor still publishes its own verdict
+// (and the caller's failure path closes the instance).
 func (i *Instance) WaitReady(ctx context.Context) error {
 	if i == nil {
 		return firerrors.New(firerrors.KindFatal, Subsystem, "wait_ready",
 			"nil instance")
 	}
 
-	timeout := i.opts.WithDefaults().StartupTimeout
-
-	watchCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	// Detect a process death while waiting for readiness.
-	exited := make(chan error, 1)
-
-	go func() {
-		exited <- i.proc.Wait(watchCtx)
-	}()
-
 	select {
 	case <-i.ready:
 		return i.readyErr
 
-	case err := <-exited:
-		if err == context.Canceled || err == watchCtx.Err() {
-			return firerrors.Wrap(err, firerrors.KindRetryable,
-				Subsystem, "wait_ready", "startup cancelled")
-		}
-
-		i.setState(StateCrashed)
-
-		tail := i.logs.RedactedTail(8)
-
-		return firerrors.New(firerrors.KindDependencyUnavailable,
-			Subsystem, "wait_ready",
-			"core %s exited during startup (state %s, logs: %s)",
-			i.CoreName(), i.State(), tail)
-
-	case <-watchCtx.Done():
-		i.setState(StateTimedOut)
-
-		// The process is still alive but not serving: terminate it.
-		_ = i.proc.Stop(i.opts.WithDefaults().GracePeriod)
-
-		return firerrors.New(firerrors.KindDependencyUnavailable,
-			Subsystem, "wait_ready",
-			"core %s did not become ready within %s (state %s, logs: %s)",
-			i.CoreName(), timeout, i.State(), i.logs.RedactedTail(8))
+	case <-ctx.Done():
+		return firerrors.Wrap(ctx.Err(), firerrors.KindRetryable,
+			Subsystem, "wait_ready", "startup cancelled")
 	}
 }
 
@@ -411,6 +398,22 @@ func (i *Instance) Health(ctx context.Context) HealthReport {
 	}
 
 	return report
+}
+
+// WaitProcess blocks until the supervised process exits or ctx is
+// cancelled (v0.9.9 monitor contract: the connection manager watches
+// process death as an EVENT through this method instead of polling
+// Health on a timer; the returned error is the process's exit
+// verdict, or the ctx error on cancellation). Safe for concurrent
+// callers.
+func (i *Instance) WaitProcess(ctx context.Context) error {
+	if i == nil || i.proc == nil {
+		// Nothing to wait for: report an immediate, honest verdict.
+		return firerrors.New(firerrors.KindDependencyUnavailable,
+			Subsystem, "wait_process", "no supervised process")
+	}
+
+	return i.proc.Wait(ctx)
 }
 
 // Alive reports whether the supervised process is still running.
@@ -524,16 +527,16 @@ func Launch(
 			Subsystem, "launch", "invalid configuration")
 	}
 
+	// v0.9.9: the inbound port is resolved exactly once, BEFORE
+	// configuration generation (core.ResolveInboundPort, called by the
+	// adapters' Start), because the generated document embeds it.
+	// Launch no longer carries a second allocation path.
 	port := opts.LocalPort
 
 	if port == 0 {
-		allocated, err := ReserveLocalPort(opts.LocalHost)
-		if err != nil {
-			return nil, firerrors.Wrap(err, firerrors.KindEnvironment,
-				Subsystem, "launch", "reserve local port")
-		}
-
-		port = allocated
+		return nil, firerrors.New(firerrors.KindConfiguration,
+			Subsystem, "launch",
+			"local inbound port must be resolved before launch (core.ResolveInboundPort)")
 	}
 
 	binaryPath := opts.BinaryPath
@@ -604,10 +607,41 @@ func Launch(
 		Status:    "starting",
 	})
 
-	// Observe readiness in the background; WaitReady consumers get
-	// the result through the ready channel.
+	// THE startup supervision path (v0.9.9): one observer runs the
+	// bounded adaptive readiness detection and publishes the verdict
+	// exactly once (markReady). WaitReady consumers receive the result
+	// through the ready channel; the timeout outcome's teardown (a
+	// bounded stop of a process that never opened its listener) is
+	// owned HERE so every consumer observes the same evidence.
 	go func() {
-		readyErr := waitForListener(ctx, instance.listen, opts.StartupTimeout, proc)
+		outcome, readyErr := awaitListener(ctx, instance.listen, opts.StartupTimeout, proc)
+
+		switch outcome {
+		case readinessProcessExited:
+			instance.setState(StateCrashed)
+
+			readyErr = firerrors.New(firerrors.KindDependencyUnavailable,
+				Subsystem, "wait_ready",
+				"core %s exited during startup (logs: %s)",
+				instance.CoreName(), instance.logs.RedactedTail(8))
+
+		case readinessTimedOut:
+			instance.setState(StateTimedOut)
+
+			// The process is still alive but not serving: terminate it
+			// (bounded, deterministic) before publishing the verdict.
+			_ = proc.Stop(opts.WithDefaults().GracePeriod)
+
+			readyErr = firerrors.New(firerrors.KindDependencyUnavailable,
+				Subsystem, "wait_ready",
+				"core %s did not become ready within %s (logs: %s)",
+				instance.CoreName(), opts.StartupTimeout, instance.logs.RedactedTail(8))
+
+		case readinessCancelled:
+			readyErr = firerrors.Wrap(context.Cause(ctx), firerrors.KindRetryable,
+				Subsystem, "wait_ready", "startup cancelled")
+		}
+
 		instance.markReady(readyErr)
 	}()
 

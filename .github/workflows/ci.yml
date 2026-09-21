@@ -43,13 +43,19 @@ jobs:
           grep -q "var Version = \"$version\"" internal/version/version.go ||
             { echo "internal/version/version.go != $version" >&2; exit 1; }
           # winres.json carries the version in several places; every
-          # "0.9.8.x" literal in it must be the current version (a
+          # version literal in it must be the current version (a
           # stale resource made v0.9.8.6/0.9.8.7 ship 0.9.8.5 PE
-          # version metadata).
-          bad=$(grep -oE '0\.9\.[0-9]+(\.[0-9]+)?' build/winres.json |
-            sort -u | grep -vx "$version" || true)
+          # version metadata). The PE metadata legitimately uses the
+          # 4-part form ("$version.0"), so exactly two spellings are
+          # accepted: the VERSION itself and its 4-part zero-patch
+          # expansion — anything else (any other patch, any other
+          # series) fails the job. (v0.9.9: the old single-regex check
+          # hard-coded the 0.9 series and broke on 3-part versions
+          # with a 4-part PE form.)
+          bad=$(grep -oE '[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?' build/winres.json |
+            sort -u | grep -vx "$version" | grep -vx "$version.0" || true)
           if [ -n "$bad" ]; then
-            echo "build/winres.json carries stale version(s): $bad (want $version only)" >&2
+            echo "build/winres.json carries stale version(s): $bad (want $version or $version.0 only)" >&2
             exit 1
           fi
 
@@ -196,17 +202,28 @@ jobs:
       # target, so a clean `git diff` proves no stale bundles and no
       # drift between frontend/dist and cmd/freeiran/frontend/dist.
       #
-      # On top of the git-diff check, the CANONICAL INVENTORY is
-      # enforced directly (index.html, assets/index.js,
-      # assets/index.css, assets/export-worker.js): an old hashed
-      # artifact (assets/index-*.js, assets/app-*.js,
-      # assets/exportWorker-*.js, ...), a missing canonical asset, an
-      # undeclared index.html reference or a duplicate worker fails
-      # the job even when git diff would stay quiet (e.g. a file
+      # PATH CONTEXT (fixed in v0.9.9): npm steps run in frontend/ but
+      # the embed tree lives at the REPO ROOT (cmd/freeiran/frontend/
+      # dist). The check below therefore runs from the repository root
+      # and only the npm invocation is scoped to frontend/ — running
+      # the whole script under the job's `working-directory: frontend`
+      # default made every root-relative path resolve to the
+      # nonexistent frontend/cmd/... tree (CI run 35542123824) and the
+      # `git diff -- <path>` guard passed vacuously because a
+      # nonexistent pathspec never produces a diff.
+      #
+      # The inventory assertions live in frontend/scripts/
+      # embed-inventory.mjs — the ONE shared validation source (the
+      # same module copy-dist.mjs validates with) — invoked here via
+      # validate-embed.mjs. An old hashed artifact, a missing canonical
+      # asset, an undeclared index.html reference or a duplicate worker
+      # fails the job even when git diff would stay quiet (e.g. a file
       # introduced AND committed in the same change).
       - name: Clean-room embed check
+        working-directory: .
         run: |
-          npm run build:embed
+          (cd frontend && npm run build:embed)
+
           if ! git diff --exit-code -- cmd/freeiran/frontend/dist; then
             echo "cmd/freeiran/frontend/dist is stale: the committed embed" >&2
             echo "output differs from a fresh build. Run 'npm run build:embed'" >&2
@@ -215,51 +232,7 @@ jobs:
             exit 1
           fi
 
-          dist=cmd/freeiran/frontend/dist
-          allowlist="index.html assets/index.js assets/index.css assets/export-worker.js"
-
-          actual=$(cd "$dist" && find . -type f | sed 's|^\./||' | sort)
-          expected=$(echo "$allowlist" | tr ' ' '\n' | sort)
-
-          if [ "$actual" != "$expected" ]; then
-            echo "EMBED ALLOWLIST VIOLATION — produced tree:" >&2
-            echo "$actual" | sed 's/^/  /' >&2
-            echo "expected exactly:" >&2
-            echo "$expected" | sed 's/^/  /' >&2
-            echo "Stale or hashed assets are forbidden; see vite.config.ts" >&2
-            exit 1
-          fi
-
-          for f in $allowlist; do
-            if [ ! -s "$dist/$f" ]; then
-              echo "embed asset missing or empty: $f" >&2
-              exit 1
-            fi
-          done
-
-          # Hashed-era artifacts must never return, not even under a
-          # name the exact allowlist would already reject — the
-          # explicit patterns document the forbidden families.
-          if find "$dist/assets" -type f | grep -qE \
-            'assets/(index|app|exportWorker|export-worker)-[A-Za-z0-9_-]+\.(js|css)$'; then
-            echo "hashed asset filename found in the embed tree:" >&2
-            find "$dist/assets" -type f | grep -E \
-              'assets/(index|app|exportWorker|export-worker)-[A-Za-z0-9_-]+\.(js|css)$' | sed 's/^/  /' >&2
-            exit 1
-          fi
-
-          # index.html must reference the canonical stable names and
-          # nothing else.
-          for ref in assets/index.js assets/index.css; do
-            grep -q "$ref" "$dist/index.html" ||
-              { echo "index.html does not reference $ref" >&2; exit 1; }
-          done
-          if grep -qE 'assets/[A-Za-z0-9_-]+-[A-Za-z0-9_-]{8,}\.(js|css)' "$dist/index.html"; then
-            echo "index.html references a hashed asset filename" >&2
-            exit 1
-          fi
-
-          echo "embed allowlist OK: $actual"
+          node frontend/scripts/validate-embed.mjs
 
       - name: Upload dist
         uses: actions/upload-artifact@v7

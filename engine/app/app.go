@@ -600,7 +600,22 @@ func New(opts Options) (*App, error) {
 	return app, nil
 }
 
-// Start begins background work: scheduler, verification, warm-up.
+// Startup priority model (v0.9.9 §12): background work is staged so
+// it cannot unnecessarily compete with the first interactive
+// connection.
+//
+//	Priority 0  interactive connect/disconnect/reconnect + process teardown
+//	Priority 1  UI state publication + readiness-critical discovery
+//	            (the core-registry refresh — Connect cannot select a
+//	            backend before it has run, so it stays immediate)
+//	Priority 2  verification and recovery (bounded already)
+//	Priority 3  cache warming, storage verification, ingestion,
+//	            cleanup — heavy I/O deferred behind backgroundWarmupDelay
+//	            and cancelled with the app lifecycle
+const backgroundWarmupDelay = 3 * time.Second
+
+// Start begins background work: scheduler, verification, warm-up —
+// staged by the priority model above.
 func (a *App) Start() {
 	if a.started.Swap(true) {
 		return
@@ -608,30 +623,36 @@ func (a *App) Start() {
 
 	// Memory Booster 2.0 begins sampling before any workload starts,
 	// so pressure reactions apply from the first ingestion cycle.
+	// (Sampling itself is cheap — an occasional runtime.ReadMemStats —
+	// and stays at priority 1.)
 	if a.memory != nil {
 		a.memory.Start()
 	}
 
 	a.scheduler = scheduler.New(scheduler.Options{
-		Interval:   a.opts.RefreshInterval,
-		Jitter:     a.opts.RefreshJitter,
-		RunOnStart: a.opts.RunIngestionOnStart,
+		Interval:     a.opts.RefreshInterval,
+		Jitter:       a.opts.RefreshJitter,
+		RunOnStart:   a.opts.RunIngestionOnStart,
+		InitialDelay: backgroundWarmupDelay,
 	}, a.runIngestionCycle)
 
 	a.scheduler.Start(a.ctx)
 
 	// v0.9.2: opportunistic cleanup cadence (bounded, cancellable).
+	// Priority 3: the cadence is opportunistic by design; the first
+	// pass additionally waits out the warmup window.
 	go a.cleanupLoop()
 
 	// v0.9.3: automatic recovery watch (bounded attempts, cooldowns,
-	// failure memory; user opt-out via settings).
+	// failure memory; user opt-out via settings). Priority 2.
 	if a.recovery != nil {
 		a.recovery.Start()
 	}
 
-	// Core availability refresh is background work: the registry
-	// stays usable (selection fails gracefully) while discovery is
-	// still running.
+	// Priority 1: core availability refresh runs IMMEDIATELY (cheap:
+	// it reads the core manifests) because interactive connection
+	// depends on it — the registry stays usable (selection fails
+	// gracefully) while discovery is still running.
 	go func() {
 		a.coreRegistry.Refresh(a.ctx)
 
@@ -644,10 +665,16 @@ func (a *App) Start() {
 		}
 	}()
 
-	// Staged startup: verify storage and warm caches in the
-	// background so the UI is interactive immediately.
+	// Priority 3, deferred: storage verification (full-chunk I/O) and
+	// cache warming (store scan) must not compete with the first
+	// interactive connection for disk and CPU. Both remain fully
+	// cancellable (app lifecycle ctx).
 	a.markBoot(BootBackgroundWarm)
 	go func() {
+		if !a.waitForWarmupWindow() {
+			return
+		}
+
 		if err := a.store.VerifyAll(a.ctx, nil); err != nil {
 			a.mu.Lock()
 
@@ -663,7 +690,28 @@ func (a *App) Start() {
 		}
 	}()
 
-	go a.warmCaches()
+	go func() {
+		if !a.waitForWarmupWindow() {
+			return
+		}
+
+		a.warmCaches()
+	}()
+}
+
+// waitForWarmupWindow parks a priority-3 goroutine behind the startup
+// warmup delay (or until the app lifecycle ends first — in which case
+// the work is never started at all).
+func (a *App) waitForWarmupWindow() bool {
+	timer := time.NewTimer(backgroundWarmupDelay)
+	defer timer.Stop()
+
+	select {
+	case <-a.ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 // warmCaches preloads the most recent configurations into the hot

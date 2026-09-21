@@ -317,9 +317,12 @@ func ClassifyVerifyFailure(m config.URLTestMetrics) FailureClass {
 		return FailureTimeout
 	}
 
-	if strings.Contains(strings.ToLower(m.Error), "tls") ||
-		strings.Contains(strings.ToLower(m.Error), "certificate") ||
-		strings.Contains(strings.ToLower(m.Error), "handshake") {
+	// v0.9.9: one lowercase allocation, not three.
+	lower := strings.ToLower(m.Error)
+
+	if strings.Contains(lower, "tls") ||
+		strings.Contains(lower, "certificate") ||
+		strings.Contains(lower, "handshake") {
 		return FailureTLS
 	}
 
@@ -419,9 +422,16 @@ func VerifyTunnel(ctx context.Context, endpoint string, opts VerifyOptions) Veri
 	ctx, cancel := context.WithTimeout(ctx, opts.Timeout)
 	defer cancel()
 
+	// v0.9.9: the SOCKS dialer is immutable per-round configuration
+	// (same endpoint, same budget for every target) — one instance is
+	// shared by all probes instead of one allocation per target per
+	// phase. Target isolation is unchanged: every probe opens its own
+	// connection and owns its own evidence.
+	dialer := &socks5.Dialer{ProxyAddr: endpoint, Timeout: opts.PerTarget}
+
 	// --- Phase 1: probe every target with bounded concurrency ----
 	// (the target set itself is bounded to MaxVerifyTargets).
-	results := probeTargets(ctx, endpoint, targets, opts)
+	results := probeTargets(ctx, dialer, targets, opts)
 
 	succeeded, probes := tally(results)
 	result.Targets = results
@@ -446,7 +456,7 @@ func VerifyTunnel(ctx context.Context, endpoint string, opts VerifyOptions) Veri
 				index[t.URL] = i
 			}
 
-			retried := probeTargets(ctx, endpoint, retries, opts)
+			retried := probeTargets(ctx, dialer, retries, opts)
 
 			// Merge the retry evidence back into the result set.
 			for _, r := range retried {
@@ -544,8 +554,9 @@ func failureMetrics(results []TargetResult) config.URLTestMetrics {
 }
 
 // probeTargets probes the given targets concurrently (bounded by the
-// target-set size itself, which is capped at MaxVerifyTargets).
-func probeTargets(ctx context.Context, endpoint string, targets []string, opts VerifyOptions) []TargetResult {
+// target-set size itself, which is capped at MaxVerifyTargets). The
+// dialer is the round's shared immutable SOCKS configuration.
+func probeTargets(ctx context.Context, dialer *socks5.Dialer, targets []string, opts VerifyOptions) []TargetResult {
 	results := make([]TargetResult, len(targets))
 
 	var wg sync.WaitGroup
@@ -555,7 +566,7 @@ func probeTargets(ctx context.Context, endpoint string, targets []string, opts V
 
 		go func(slot int, targetURL string) {
 			defer wg.Done()
-			results[slot] = probeTarget(ctx, endpoint, targetURL, opts)
+			results[slot] = probeTarget(ctx, dialer, targetURL, opts)
 		}(i, target)
 	}
 
@@ -606,7 +617,7 @@ func tally(results []TargetResult) (succeeded, probes int) {
 }
 
 // probeTarget runs ONE bounded HTTPS probe through the tunnel.
-func probeTarget(ctx context.Context, endpoint, targetURL string, opts VerifyOptions) TargetResult {
+func probeTarget(ctx context.Context, dialer *socks5.Dialer, targetURL string, opts VerifyOptions) TargetResult {
 	result := TargetResult{URL: targetURL, Attempts: 1}
 
 	parsed, err := url.Parse(targetURL)
@@ -638,8 +649,6 @@ func probeTarget(ctx context.Context, endpoint, targetURL string, opts VerifyOpt
 		result.MarkedInvalid("verification budget exhausted")
 		return result
 	}
-
-	dialer := &socks5.Dialer{ProxyAddr: endpoint, Timeout: budget}
 
 	// Tunnel probe: SOCKS CONNECT round-trip (the end-to-end ping
 	// implied by a working tunnel).

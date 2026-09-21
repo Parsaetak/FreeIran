@@ -9,7 +9,7 @@ configurations.
 **Project:** FreeIran — A SHEYTAN Digital System
 **Architect:** Parsa Tak / SHEYTAN
 **Repository:** https://github.com/Parsaetak/FreeIran
-**Current version:** 0.9.8.8 (see `VERSION`)
+**Current version:** 0.9.9 (see `VERSION`)
 **Status:** production architecture — multi-core protocol runtime with
 managed installation, multi-level node discovery, Ping/URL test modes
 with measured ranking, verified-connection engine with racing,
@@ -19,9 +19,123 @@ EXPERIMENTAL and disabled in this release (see "TUN mode" below).
 
 ---
 
+## What's new in v0.9.9
+
+v0.9.9 is a **core-engine execution and runtime upgrade** — the whole
+execution path (select → prepare → generate config → allocate port →
+spawn core → supervise → readiness → verify → publish state → monitor
+→ recover → cleanup) was audited, measured and repaired. No new
+connectivity features; no security boundary weakened; no architecture
+deleted.
+
+### Correct execution path and truthful metrics
+
+- The frontend job's "Clean-room embed check" ran under the job-level
+  `working-directory: frontend`, so every repo-root-relative path it
+  used resolved to the nonexistent `frontend/cmd/...` tree (CI run
+  35542123824) — and the `git diff -- <path>` guard passed vacuously
+  on a nonexistent pathspec. The check now runs from the repository
+  root and the inventory assertions live in ONE shared validation
+  source (`frontend/scripts/embed-inventory.mjs`) used by both the
+  staging script and CI.
+- Every connection-manager field access is mutex-guarded: the
+  startup-crash retry path read `m.state` bare and `Reconnect` read
+  `lastPref` bare (both raced Disconnect/Reconnect transitions);
+  provider failure paths are generation-gated so a superseded session
+  can never clobber a newer session's state.
+- Startup metrics counted once: `core_start` success and the startup
+  timing are recorded exactly once, at readiness (previously both were
+  recorded again at the verification boundary — every successful
+  connection was double-counted).
+
+### Consolidated readiness execution
+
+- ONE authoritative startup supervision path per core launch: the
+  duplicated per-consumer process-wait observers and the redundant
+  "warm" listener probe after readiness are gone. Readiness detection
+  uses a bounded adaptive schedule (immediate probe, then a
+  2/5/10/20/40/80 ms ramp to a 100 ms cadence) with one reusable
+  timer — the fixed 100 ms `time.After` polling loop allocated a
+  fresh timer per iteration. The startup-timeout teardown (bounded
+  stop of a core that never opened its listener) lives in the
+  supervisor, so every consumer observes the same verdict.
+
+### Centralized port resolution
+
+- `core.ResolveInboundPort` is the single execution-stage port
+  resolver: explicit user-selected ports pass through unchanged,
+  ephemeral ports allocate exactly once BEFORE configuration
+  generation (the generated document embeds the final port). The
+  three adapters' duplicate allocation paths and the shared launcher's
+  second allocation path were removed. User-port conflict detection,
+  the ephemeral-port race retry and reconnect port stability are
+  unchanged and regression-tested.
+
+### Recovery and monitor lifecycle
+
+- `RecoveryService.Stop` now cancels the recovery lifecycle context
+  itself and JOINS both the watch loop and any in-flight recovery
+  decision — an application shutdown can no longer race an in-flight
+  recovery Quick Connect, no new recovery attempt can begin after
+  shutdown, and no recovery goroutine survives.
+- Process death is observed as an EVENT through `Instance.WaitProcess`
+  with immediate crash detection; the monitor tick's duplicated
+  `Health` process poll was removed (one lifecycle fact, one watcher,
+  zero-interval detection instead of up to one monitor interval).
+
+### State publication semantics
+
+- The publisher's queue contract now matches its documentation:
+  lifecycle-critical transitions (selecting, preparing, starting_core,
+  waiting_for_ready, verifying, connected_verified, disconnecting,
+  disconnected, connection_failed) are NEVER silently dropped under
+  queue saturation. Overflow compaction merges same-stage pending
+  entries (newest wins) and sheds replaceable telemetry first; memory
+  stays bounded.
+- Snapshot deduplication uses an explicit semantic equality instead of
+  reflection (measured on the real snapshot type: 28 ns / 0 allocs vs
+  424 ns / 2 allocs per comparison).
+- The Wails delivery boundary is bounded and nonblocking
+  (`statepub.BoundedEmitter`): a slow or stalled webview event
+  pipeline can no longer stall the engine's state publication path.
+  No polling was reintroduced.
+
+### Selection, caching and startup priorities
+
+- Quick Connect collects candidate records in ONE bounded store scan
+  (previously: a full bounded scan whose result was discarded as a
+  capacity hint, then an UNBOUNDED second scan) and fresh-tests stale
+  shortlist entries through a fixed 3-worker pool instead of one at a
+  time. Shortlist limit, trust policy, cooldowns and the verification
+  gate are unchanged.
+- The generated-config cache contract is truthful: the invalidation
+  generation now really covers the backend version, and per-launch
+  coordinates (ports) moved into the cache key — one candidate's port
+  change no longer invalidates every other cached document.
+- Heavy background work (storage verification, cache warming, the
+  boot ingestion cycle) is staged behind a short warmup window so it
+  cannot compete with the first interactive connection; the
+  core-registry refresh (readiness-critical) stays immediate.
+- Tor bootstrap completion is EVENT-driven (log scanner closes a ready
+  channel on "Bootstrapped 100%"); Tor/Psiphon endpoint probes ride a
+  shared adaptive schedule instead of fixed 200/250 ms tickers.
+- Tunnel verification shares one immutable SOCKS dialer per
+  verification round; target isolation, bounded concurrency, quorum
+  and transient-retry classification are unchanged.
+
+### CI version-check hardening
+
+- The version-consistency check hard-coded the `0.9` series regex and
+  an exact-match rule that could not reconcile a 3-part VERSION with
+  the legitimate 4-part PE metadata form (`x.y.z.0`). It now accepts
+  exactly `$version` or `$version.0` for any series and still fails
+  on any stale literal.
+
+---
+
 ## What's new in v0.9.8.8
 
-v0.9.8.8 is a **deep cleanup, stable-filenames and repository-hygiene
+v0.9.8.8 was a **deep cleanup, stable-filenames and repository-hygiene
 release** — no new connectivity features, no safety boundary weakened.
 
 ### CI recovered (run 35519469195)
@@ -436,7 +550,7 @@ FreeIran/
 ├── .github/workflows/     CI, release and security pipelines
 ├── docs/                  Architecture, storage, performance, CI, security, dev
 ├── CHANGELOG.md           Release history (moved out of README, v0.9.8.6)
-└── VERSION                Application version (0.9.8.8)
+└── VERSION                Application version (0.9.9)
 ```
 
 ---

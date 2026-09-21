@@ -10,6 +10,10 @@
 //
 // Guarantees (statepub):
 //
+//   - lifecycle-critical transitions are never silently dropped by
+//     the queue valve (v0.9.9: critical/replaceable classification;
+//     only same-stage pending snapshots merge, replaceable telemetry
+//     coalesces under a stalled consumer);
 //   - every real transition is delivered, in order, with no
 //     artificial delay — user-visible lifecycle states
 //     (preparing / starting_core / waiting_for_ready) are never
@@ -22,7 +26,7 @@
 package connection
 
 import (
-	"reflect"
+	"github.com/Parsaetak/FreeIran/internal/statepub"
 )
 
 // Subscribe registers a listener that receives the authoritative
@@ -74,11 +78,71 @@ func (m *Manager) stopPublisher() {
 	m.publisher.Stop()
 }
 
+// snapshotClass classifies connection snapshots for the publisher's
+// overflow policy (v0.9.9):
+//
+//   - CRITICAL — real lifecycle transitions, never silently dropped:
+//     selecting, preparing, starting_core, waiting_for_ready,
+//     verifying, connected_verified, disconnecting, disconnected,
+//     connection_failed;
+//   - REPLACEABLE — the connected (pre-verification) state and pure
+//     telemetry mutations (latency/verification-evidence updates on an
+//     unchanged state) coalesce under a stalled consumer; the newest
+//     full snapshot always carries the authoritative values.
+func snapshotClass(s Snapshot) statepub.Class {
+	switch s.State {
+	case StateSelecting, StatePreparing, StateStartingCore,
+		StateWaitingForReady, StateVerifying, StateConnectedVerified,
+		StateDisconnecting, StateDisconnected, StateConnectionFailed:
+		return statepub.Critical
+	default:
+		return statepub.Replaceable
+	}
+}
+
+// snapshotStage is the coalescing stage of a connection snapshot: two
+// pending snapshots of the same lifecycle state merge (newest wins).
+func snapshotStage(s Snapshot) string {
+	return string(s.State)
+}
+
 // snapshotsEqual is the semantic-equality predicate for connection
-// snapshots: identical content = identical event. DeepEqual covers
-// the state string, core identity, latency/verification evidence and
-// the attempt history — the publisher drops a snapshot only when
-// NOTHING observable changed.
+// snapshots: identical content = identical event. v0.9.9 replaces the
+// hot-path reflect.DeepEqual with an explicit field comparison over
+// exactly the observable value families — state, identity, evidence,
+// telemetry and attempt history — so irrelevant/internal changes can
+// never suppress a real event and reflection costs nothing.
 func snapshotsEqual(a, b Snapshot) bool {
-	return reflect.DeepEqual(a, b)
+	if a.State != b.State ||
+		a.Core != b.Core ||
+		a.CoreVersion != b.CoreVersion ||
+		a.ConfigID != b.ConfigID ||
+		a.ConfigName != b.ConfigName ||
+		a.ConfigDisplay != b.ConfigDisplay ||
+		a.Endpoint != b.Endpoint ||
+		a.LatencyMS != b.LatencyMS ||
+		a.StartedAt != b.StartedAt ||
+		a.LastError != b.LastError ||
+		a.FallbacksUsed != b.FallbacksUsed ||
+		a.CorePID != b.CorePID ||
+		a.CoreReadyMS != b.CoreReadyMS ||
+		a.PingMedianMS != b.PingMedianMS ||
+		a.URLTotalMS != b.URLTotalMS ||
+		a.Verification != b.Verification ||
+		a.VerifiedAt != b.VerifiedAt ||
+		a.VerifyFailures != b.VerifyFailures {
+		return false
+	}
+
+	if len(a.Attempts) != len(b.Attempts) {
+		return false
+	}
+
+	for i := range a.Attempts {
+		if a.Attempts[i] != b.Attempts[i] {
+			return false
+		}
+	}
+
+	return true
 }

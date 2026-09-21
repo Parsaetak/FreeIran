@@ -19,6 +19,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -76,12 +77,23 @@ type recoveryEpisode struct {
 
 // RecoveryService watches the connection state machine and runs the
 // bounded automatic-recovery policy.
+//
+// v0.9.9 lifecycle ownership: the watch loop runs on an explicit
+// lifecycle context, Stop cancels THAT context (so an in-flight
+// recovery attempt is cancelled, not merely unobserved) and JOINS the
+// goroutines — both the loop and any in-flight decision
+// (decide → quickConnectLoop) — before returning. After Stop returns
+// no new recovery attempt can begin and nothing mutates the recovery
+// state anymore.
 type RecoveryService struct {
 	app *App
 
 	mu          sync.Mutex
 	watching    bool
-	stop        chan struct{}
+	ctx         context.Context // lifecycle context (nil until Start)
+	cancel      context.CancelFunc
+	done        chan struct{}        // closed when the watch loop exits
+	inflight    sync.WaitGroup       // joins an in-flight recovery decision
 	episodes    int                  // consecutive exhausted episodes
 	lastEpisode time.Time            // when the last episode ended
 	failures    map[string]time.Time // fingerprint → last failure
@@ -102,9 +114,7 @@ func (r *RecoveryService) Enabled() bool {
 	return !r.app.currentSettings().DisableAutoRecovery
 }
 
-// Start launches the recovery watch loop (idempotent). The stop
-// channel is handed to the loop as a parameter so the goroutine never
-// reads the struct field while Stop closes it (race-free by design).
+// Start launches the recovery watch loop (idempotent).
 func (r *RecoveryService) Start() {
 	r.mu.Lock()
 
@@ -114,47 +124,107 @@ func (r *RecoveryService) Start() {
 	}
 
 	r.watching = true
-	stop := make(chan struct{})
-	r.stop = stop
+	ctx, cancel := context.WithCancel(context.Background())
+	r.ctx = ctx
+	r.cancel = cancel
+	r.done = make(chan struct{})
 
 	r.mu.Unlock()
 
-	go r.loop(stop)
+	go r.loop(ctx, r.done)
 }
 
-// Stop cancels the watch loop (idempotent).
+// Stop cancels the recovery lifecycle and JOINS it (v0.9.9,
+// idempotent): the lifecycle context is cancelled first (an in-flight
+// Quick Connect attempt winds down through the connection engine's
+// own cancellation), then Stop waits for the in-flight recovery
+// decision to finish and for the watch loop goroutine to exit. After
+// Stop returns: no recovery attempt can begin, no recovery goroutine
+// survives, and no recovery state mutation can happen anymore.
 func (r *RecoveryService) Stop() {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 
 	if !r.watching {
+		r.mu.Unlock()
 		return
 	}
 
 	r.watching = false
-	close(r.stop)
+	cancel := r.cancel
+	done := r.done
+
+	r.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+
+	// Join an in-flight recovery decision BEFORE joining the loop: the
+	// decision goroutine is the loop's own call stack, so waiting for
+	// done covers it — but the WaitGroup makes the join explicit and
+	// deterministic for any future decision runner.
+	r.inflight.Wait()
+
+	if done != nil {
+		<-done
+	}
 }
 
 // loop is the watch tick: observe, decide, act — never block the
-// connection state machine longer than one Connect attempt.
-func (r *RecoveryService) loop(stop <-chan struct{}) {
+// connection state machine longer than one Connect attempt. The loop
+// exits when the lifecycle context is cancelled and closes done.
+func (r *RecoveryService) loop(ctx context.Context, done chan struct{}) {
+	defer close(done)
+
 	ticker := time.NewTicker(recoveryWatchInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-stop:
+		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			r.tick(time.Now().UTC())
+			// Join discipline (v0.9.9): a decision that is about to run
+			// is registered in inflight BEFORE the cancellation check,
+			// so a Stop racing this exact window still joins it.
+			r.inflight.Add(1)
+
+			if ctx.Err() != nil {
+				r.inflight.Done()
+				return
+			}
+
+			r.tick(ctx, time.Now().UTC())
+			r.inflight.Done()
 		}
 	}
 }
 
 // tick runs one recovery decision against the live connection
-// snapshot.
-func (r *RecoveryService) tick(now time.Time) {
-	r.decide(now, r.app.connMgr.Snapshot())
+// snapshot, bound to the recovery lifecycle context.
+func (r *RecoveryService) tick(ctx context.Context, now time.Time) {
+	r.decideIn(ctx, now, r.app.connMgr.Snapshot())
+}
+
+// decide is the recovery decision for one observed snapshot, on the
+// service's lifecycle context (or Background when the service was
+// never started — the direct-test path).
+func (r *RecoveryService) decide(now time.Time, snapshot connection.Snapshot) {
+	r.decideIn(r.lifecycleContext(), now, snapshot)
+}
+
+// lifecycleContext returns the lifecycle context (Background for a
+// service that was never started — the deterministic-test path).
+func (r *RecoveryService) lifecycleContext() context.Context {
+	r.mu.Lock()
+	ctx := r.ctx
+	r.mu.Unlock()
+
+	if ctx == nil {
+		return context.Background()
+	}
+
+	return ctx
 }
 
 // decide is the recovery decision for one observed snapshot. It is
@@ -162,8 +232,14 @@ func (r *RecoveryService) tick(now time.Time) {
 // regression-testable deterministically for every connection state —
 // including the transient ones (verifying, disconnecting) that a live
 // watch can only race past.
-func (r *RecoveryService) decide(now time.Time, snapshot connection.Snapshot) {
+func (r *RecoveryService) decideIn(ctx context.Context, now time.Time, snapshot connection.Snapshot) {
 	if !r.Enabled() {
+		return
+	}
+
+	// v0.9.9: a recovery decision never begins after its lifecycle
+	// ended (Stop cancels this context before joining).
+	if ctx.Err() != nil {
 		return
 	}
 
@@ -280,10 +356,25 @@ func (r *RecoveryService) decide(now time.Time, snapshot connection.Snapshot) {
 	// — recovery re-tests stale candidates, re-ranks, connects and
 	// verifies through the exact same path as Quick Connect. The
 	// failure memory applies as exclusions.
-	result, err := r.app.quickConnectLoop(r.app.ctx, excluded, 0)
+	//
+	// v0.9.9: the loop runs on the RECOVERY LIFECYCLE context (not the
+	// bare app context) so Stop cancels an in-flight attempt and joins
+	// this goroutine — a shutdown can no longer race a recovery
+	// attempt, and a cancelled attempt's outcome is discarded below
+	// instead of being recorded into episode bookkeeping that nobody
+	// will read anymore.
+	result, err := r.app.quickConnectLoop(ctx, excluded, 0)
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// Lifecycle ended while the attempt ran: record the learned
+	// failure (harmless, bounded memory) but skip all episode
+	// bookkeeping — the service is stopped and nothing must mutate.
+	if ctx.Err() != nil {
+		r.mu.Unlock()
+		return
+	}
 
 	if err != nil {
 		r.episode.lastError = err.Error()

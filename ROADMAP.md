@@ -16,7 +16,7 @@ The application should feel like a mature desktop connectivity client rather tha
 
 Current main:
 
-* Version: `0.9.8.8`
+* Version: `0.9.9`
 * Platform focus: Windows x64
 * Runtime: Go + Wails + React/TypeScript (toolchain pair pinned:
   `wails/v3 v3.0.0-beta.19` + `@wailsio/runtime 3.0.0-beta.19`,
@@ -29,13 +29,13 @@ Current main:
 * Connection verification: multi-target quorum (2 of 3 operators) with transient retry and evidence-based degradation/recovery
 * Session teardown: deterministic (v0.9.8.6) — monitor join, teardown
   before the terminal state, stale generations discarded
-* UI synchronization: event-driven (v0.9.8.8) — authoritative
+* UI synchronization: event-driven (v0.9.9) — authoritative
   transition paths publish through ONE publisher boundary per stream
   (`internal/statepub`): deduplicated, ordered, zero-delay delivery
   with no artificial coalescing window; fast lifecycle bursts are
   delivered in order and never silently lost; the 2-second ticker
   broadcasts are gone
-* Embedded assets: stable filenames (v0.9.8.8) — `index.html`,
+* Embedded assets: stable filenames (v0.9.9) — `index.html`,
   `assets/index.js`, `assets/index.css`, `assets/export-worker.js`
   produced directly by the build and replaced in place; hashed
   asset names and stale artifacts are CI-forbidden
@@ -59,6 +59,26 @@ Current main:
 * Tunnel modes: System Proxy (WinINet) production; TUN EXPERIMENTAL
   and DISABLED (v0.9.8.6 — not a kill switch)
 * Logging profiles: enabled (Normal / Detailed / Debug)
+
+### v0.9.9 — completed historical work
+
+v0.9.9 is a core-engine execution / runtime upgrade release — NO new
+connectivity feature was advanced. Completed, each verified by an
+executed test battery (unit + `-race` + native + real protocol-core
+smoke + clean-room build): the CI embed-check path-context repair and
+the single shared embed-inventory validation source, the
+connection-manager mutex/generation audit (bare `m.state` and
+`lastPref` reads fixed, provider failure paths generation-gated), the
+single-count startup metrics contract, the consolidated readiness
+supervision with the bounded adaptive probe schedule, the centralized
+port resolution (`core.ResolveInboundPort`), the recovery-service
+lifecycle join (Stop cancels and JOINS an in-flight recovery
+decision), the event-driven process-exit monitor, the
+critical/replaceable statepub queue semantics with the bounded UI
+delivery boundary, the single-pass Quick Connect candidate collection
+with the fixed worker-pool fresh testing, the truthful backend-
+version-aware gen-cache contract, and the startup priority model for
+background work.
 
 ### v0.9.8.8 — completed historical work
 

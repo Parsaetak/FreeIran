@@ -139,8 +139,8 @@ type ModeTester struct {
 	// Options carry the user's mode selection and its tuning.
 	Options ModeOptions
 
-	pinger *PingProbe
-	urler  *URLTester
+	// v0.9.9: the receiver carries no mutable state — Test is safe
+	// for concurrent use with one shared instance.
 }
 
 // NewModeTester creates a mode-driven tester bound to a registry.
@@ -154,13 +154,15 @@ func NewModeTester(registry *core.Registry, opts ModeOptions) *ModeTester {
 // aggregated outcome. Cancellation propagates; partial measurements
 // survive in the outcome.
 func (t *ModeTester) Test(ctx context.Context, cfg config.Config) ModeOutcome {
-	t.pinger = &PingProbe{
+	// v0.9.9: the per-call probe is a LOCAL, not a struct field. It
+	// is rebuilt on every call and never reused, and storing it into
+	// the shared receiver made concurrent Test calls (the Quick
+	// Connect fresh-testing worker pool) race on the field.
+	pinger := &PingProbe{
 		Samples:  t.Options.PingSamples,
 		Timeout:  t.Options.PingTimeout,
 		Interval: t.Options.PingInterval,
 	}
-
-	t.urler = &URLTester{Timeout: t.Options.URLTimeout}
 
 	out := ModeOutcome{
 		Mode:     t.Options.Mode,
@@ -175,7 +177,7 @@ func (t *ModeTester) Test(ctx context.Context, cfg config.Config) ModeOutcome {
 
 	// --- Ping facet: no core required ---
 	if runPing {
-		ping, err := t.pinger.Ping(ctx, cfg.Address, cfg.Port)
+		ping, err := pinger.Ping(ctx, cfg.Address, cfg.Port)
 
 		pingCopy := ping
 		out.Ping = &pingCopy
@@ -303,6 +305,10 @@ func (t *ModeTester) runTunnelFacets(
 
 	dialer := &socks5.Dialer{ProxyAddr: endpoint, Timeout: urlTimeoutOf(t.Options)}
 
+	// v0.9.9: per-call local (was a shared receiver field — the same
+	// concurrent-Test race the ping probe had).
+	urler := &URLTester{Timeout: t.Options.URLTimeout}
+
 	// Probe latency through the tunnel (SOCKS CONNECT RTT) — the
 	// honest end-to-end ping for URL-driven modes.
 	probeStart := time.Now()
@@ -326,7 +332,7 @@ func (t *ModeTester) runTunnelFacets(
 		}
 	}
 
-	metrics := t.urler.Test(ctx, dialer.Dial, urlTargetOf(t.Options))
+	metrics := urler.Test(ctx, dialer.Dial, urlTargetOf(t.Options))
 
 	out.URLTest = &metrics
 

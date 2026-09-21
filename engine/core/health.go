@@ -55,50 +55,144 @@ func probeListener(ctx context.Context, endpoint string) (bool, time.Duration, e
 	return true, time.Since(started), nil
 }
 
-// waitForListener polls a local endpoint until it accepts
-// connections, the process dies, or the timeout elapses.
-func waitForListener(
+// readinessOutcome is the single authoritative verdict of the startup
+// supervision path (v0.9.9): one observer, one verdict, published once.
+type readinessOutcome int
+
+const (
+	// readinessReady: the listener accepted a connection.
+	readinessReady readinessOutcome = iota
+
+	// readinessProcessExited: the supervised process died before the
+	// listener became ready.
+	readinessProcessExited
+
+	// readinessTimedOut: the hard startup deadline elapsed.
+	readinessTimedOut
+
+	// readinessCancelled: the launch context was cancelled.
+	readinessCancelled
+)
+
+// readinessProbeDelays is the adaptive readiness schedule (v0.9.9):
+// probe immediately at spawn, then back off — short delays first, a
+// slightly larger delay each step, bounded at readinessMaxInterval.
+// A local listener that is going to open usually opens within the
+// first few milliseconds; the long tail is covered by the bounded
+// cadence and the hard deadline. No busy-waiting, no per-iteration
+// timer allocations (one reusable timer, reset per step).
+var readinessProbeDelays = []time.Duration{
+	0,
+	2 * time.Millisecond,
+	5 * time.Millisecond,
+	10 * time.Millisecond,
+	20 * time.Millisecond,
+	40 * time.Millisecond,
+	80 * time.Millisecond,
+}
+
+// readinessMaxInterval is the bounded polling cadence reached after
+// the adaptive ramp.
+const readinessMaxInterval = 100 * time.Millisecond
+
+// awaitListener is THE startup supervision path (v0.9.9): it probes
+// the local listener on an adaptive schedule, watches the process for
+// early death through ONE process-wait observer, and returns a single
+// verdict at the hard deadline. Callers publish the verdict exactly
+// once (Instance.markReady) and own the deterministic teardown for
+// the timeout outcome.
+//
+// Contract preserved from the pre-0.9.9 watcher: process-death
+// detection, startup timeout, cancellation, no busy-waiting. Changed:
+// the duplicated per-consumer observers and the fixed 100 ms
+// time.After polling loop are gone.
+func awaitListener(
 	ctx context.Context,
 	endpoint string,
 	timeout time.Duration,
 	proc processWaiter,
-) error {
+) (readinessOutcome, error) {
 	deadline := time.Now().Add(timeout)
 
 	exited := make(chan error, 1)
 
 	go func() { exited <- proc.Wait(ctx) }()
 
-	for {
+	timer := time.NewTimer(0) // fires immediately: first probe is free
+	defer timer.Stop()
+
+	nextDelay := func(attempt int) time.Duration {
+		if attempt < len(readinessProbeDelays) {
+			return readinessProbeDelays[attempt]
+		}
+
+		return readinessMaxInterval
+	}
+
+	for attempt := 0; ; attempt++ {
+		// Probe (the first probe runs immediately, before any wait).
 		ready, _, err := probeListener(ctx, endpoint)
 		if ready {
-			return nil
+			return readinessReady, nil
 		}
+
+		// Wait for the adaptive delay — or an earlier verdict.
+		timer.Reset(nextDelay(attempt))
 
 		select {
 		case err := <-exited:
 			if err == context.Canceled || ctx.Err() != nil {
-				return firerrors.Wrap(ctx.Err(), firerrors.KindRetryable,
-					Subsystem, "listener", "startup cancelled")
+				return readinessCancelled, firerrors.Wrap(ctx.Err(),
+					firerrors.KindRetryable, Subsystem, "listener",
+					"startup cancelled")
 			}
 
-			return firerrors.New(firerrors.KindDependencyUnavailable,
-				Subsystem, "listener",
+			return readinessProcessExited, firerrors.New(
+				firerrors.KindDependencyUnavailable, Subsystem, "listener",
 				"core exited while waiting for %s: %v", endpoint, err)
 
 		case <-ctx.Done():
-			return firerrors.Wrap(ctx.Err(), firerrors.KindRetryable,
-				Subsystem, "listener", "startup cancelled")
+			return readinessCancelled, firerrors.Wrap(ctx.Err(),
+				firerrors.KindRetryable, Subsystem, "listener",
+				"startup cancelled")
 
-		case <-time.After(listenerPollInterval):
+		case <-timer.C:
 			if time.Now().After(deadline) {
-				return firerrors.New(firerrors.KindDependencyUnavailable,
-					Subsystem, "listener",
+				return readinessTimedOut, firerrors.New(
+					firerrors.KindDependencyUnavailable, Subsystem, "listener",
 					"listener %s not ready after %s (last probe: %v)",
 					endpoint, timeout, err)
 			}
 		}
 	}
+}
+
+// ResolveInboundPort is the ONE authoritative execution-stage port
+// resolver (v0.9.9). Call it BEFORE configuration generation so the
+// generated runtime document embeds the final inbound port:
+//
+//   - requested > 0: an explicit (user-selected or test-pinned) port
+//     passes through unchanged; conflict detection stays at the two
+//     existing authorities (the caller's bindability pre-check and the
+//     core's own bind);
+//   - requested == 0: exactly ONE ephemeral allocation happens here.
+//
+// The pre-0.9.9 adapters each carried their own ReserveLocalPort call
+// AND the shared launcher had a second one — duplicated allocation
+// logic that could drift. Adapters now resolve through this function
+// and Launch requires an already-resolved port.
+func ResolveInboundPort(host string, requested int) (int, error) {
+	if requested > 0 {
+		return requested, nil
+	}
+
+	port, err := ReserveLocalPort(host)
+	if err != nil {
+		return 0, firerrors.Wrap(err, firerrors.KindEnvironment,
+			Subsystem, "port", "reserve local port")
+	}
+
+	return port, nil
 }
 
 // processWaiter abstracts the managed-process wait for probing.
@@ -109,9 +203,6 @@ type processWaiter interface {
 const (
 	// listenerProbeTimeout bounds a single listener dial.
 	listenerProbeTimeout = 2 * time.Second
-
-	// listenerPollInterval paces readiness polling.
-	listenerPollInterval = 100 * time.Millisecond
 )
 
 // ReserveLocalPort allocates an ephemeral port for a local inbound.

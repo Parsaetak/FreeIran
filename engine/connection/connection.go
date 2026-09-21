@@ -354,7 +354,15 @@ func New(opts Options) *Manager {
 	// The snapshot publisher starts with the manager; Shutdown stops
 	// it (stopPublisher) after the terminal state transitions — the
 	// final snapshot is drained and delivered before it terminates.
-	m.publisher = statepub.New("connection", snapshotsEqual)
+	//
+	// v0.9.9 queue contract: real lifecycle transitions are CRITICAL —
+	// the overflow valve may merge pending same-stage snapshots but
+	// never silently drops them while coalescable entries exist; the
+	// connected (pre-verification) state and pure telemetry updates
+	// are REPLACEABLE and coalesce under a stalled consumer.
+	m.publisher = statepub.New("connection", snapshotsEqual,
+		statepub.WithClass(snapshotClass),
+		statepub.WithStage(snapshotStage))
 
 	return m
 }
@@ -500,7 +508,15 @@ func (m *Manager) Connect(
 		// FRESH port: the ephemeral reserve window can lose a port to
 		// a concurrent process, which is a transient condition, not a
 		// backend incompatibility.
-		if m.state == StateConnectionFailed && isStartupCrash(lastErr) {
+		//
+		// v0.9.9: m.state is manager state and is read UNDER the lock
+		// like every other field (the pre-0.9.9 code read it bare here,
+		// racing Disconnect/Shutdown/Reconnect state transitions).
+		m.mu.Lock()
+		stateAtRetryDecision := m.state
+		m.mu.Unlock()
+
+		if stateAtRetryDecision == StateConnectionFailed && isStartupCrash(lastErr) {
 			m.mu.Lock()
 			m.port = 0 // force fresh allocation
 			m.mu.Unlock()
@@ -593,6 +609,7 @@ func (m *Manager) attempt(
 
 	opts := core.RuntimeOptions{
 		BinaryPath:     registry.BinaryPath(backend.Name()),
+		BackendVersion: registry.Version(backend.Name()),
 		StartupTimeout: m.opts.StartupTimeout,
 		GracePeriod:    m.opts.GracePeriod,
 		Env:            m.opts.LaunchEnv,
@@ -695,16 +712,21 @@ func (m *Manager) attempt(
 	}
 
 	// --- Connected -------------------------------------------------
+	// v0.9.9 metric semantics (one authoritative event per measurement):
+	//
+	//   core spawned  → AddCoreStart at each launch-outcome site
+	//                   (success recorded ONCE below, at readiness)
+	//   core ready    → AddCoreStart(true) + ObserveCoreStartup HERE —
+	//                   the single authoritative startup timing
+	//   verified      → verification evidence owns that lifecycle step;
+	//                   the startup measurement is never re-recorded
+	//                   (the pre-0.9.9 code double-counted both)
+	coreReadyMS := time.Since(started).Milliseconds()
+
 	if m.opts.Metrics != nil {
 		m.opts.Metrics.AddCoreStart(true)
 		m.opts.Metrics.ObserveCoreStartup(time.Since(started))
 	}
-
-	coreReadyMS := time.Since(started).Milliseconds()
-
-	// Warm the local listener probe (readiness evidence only; the
-	// loopback latency is deliberately NOT stored as network latency).
-	_ = instance.Health(ctx)
 
 	m.mu.Lock()
 
@@ -803,11 +825,9 @@ func (m *Manager) attempt(
 	}
 
 	// --- Verified (or tests-only skip) ------------------------------
-	if m.opts.Metrics != nil {
-		m.opts.Metrics.AddCoreStart(true)
-		m.opts.Metrics.ObserveCoreStartup(time.Since(started))
-	}
-
+	// v0.9.9: no metrics here — core startup was already recorded once
+	// at readiness (see the Connected block); re-recording at the
+	// verification boundary double-counted every successful start.
 	m.mu.Lock()
 
 	if m.generation != gen {
@@ -1006,7 +1026,12 @@ func (m *Manager) Reconnect(ctx context.Context) (Snapshot, error) {
 	m.Disconnect()
 
 	// v0.9.8.3: keep the user's preferred backend across reconnects.
+	// v0.9.9: lastPref is manager state — read it under the lock
+	// (the pre-0.9.9 code read it bare, racing a concurrent Connect).
+	m.mu.Lock()
 	pref := m.lastPref
+	m.mu.Unlock()
+
 	pref.AllowFallback = true
 
 	return m.Connect(ctx, *cfg, pref)
@@ -1274,12 +1299,59 @@ func (m *Manager) startMonitor() {
 	m.monitorCancel = cancel
 	m.monitorDone = done
 	gen := m.generation
+	monitorInstance := m.instance
 	m.mu.Unlock()
 
 	interval := m.opts.MonitorInterval
 
+	// watchDone joins the process-exit watcher: the monitor goroutine
+	// does not close done until the watcher has exited, so stopMonitor
+	// proves BOTH loops have terminated (no goroutine survives).
+	watchDone := make(chan struct{})
+
 	go func() {
-		defer close(done)
+		defer func() {
+			cancel()    // unwind the watcher's Wait (idempotent)
+			<-watchDone // join it
+			close(done)
+		}()
+
+		// --- Immediate process-exit watcher (v0.9.9 §13) ---
+		// Process death is observed as an EVENT through
+		// Instance.WaitProcess instead of being polled by the tick's
+		// Health probe (one lifecycle fact, one watcher, immediate
+		// detection). The tick keeps only the stability-verification
+		// axis. Provider sessions keep their tick health check
+		// (provider engines own their processes and expose no wait
+		// handle).
+		if monitorInstance != nil {
+			go func() {
+				defer close(watchDone)
+
+				err := monitorInstance.WaitProcess(ctx)
+
+				// Cancellation or supersession: the monitor is closing
+				// (or a newer session owns the state machine) — the
+				// watcher must not act.
+				if err == nil || ctx.Err() != nil {
+					return
+				}
+
+				m.mu.Lock()
+
+				if m.generation != gen || !m.state.ConnectedLike() {
+					m.mu.Unlock()
+
+					return
+				}
+
+				m.mu.Unlock()
+
+				m.handleCoreCrash(monitorInstance, gen, "core process exited unexpectedly")
+			}()
+		} else {
+			close(watchDone)
+		}
 
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
@@ -1348,48 +1420,45 @@ func (m *Manager) startMonitor() {
 					continue
 				}
 
-				report := instance.Health(ctx)
-				if !report.ProcessAlive {
-					// Core crashed under our feet: transition.
-					if m.opts.Metrics != nil {
-						m.opts.Metrics.AddCoreCrash()
-					}
-
-					m.mu.Lock()
-
-					if m.generation == tickGen && m.state.ConnectedLike() {
-						m.state = StateConnectionFailed
-						m.lastError = "core process exited unexpectedly"
-						m.instance = nil
-						m.corePID = 0
-						m.stateChanged()
-					}
-
-					m.mu.Unlock()
-
-					// Deterministic cleanup of the crashed
-					// instance's owned files (process dead →
-					// handles releasable; Close is safe on an
-					// exited process). Dropping the instance
-					// without Close — the v0.9.8.5 behaviour —
-					// leaked its temporary runtime directory.
-					_ = instance.Close()
-
-					return
-				}
-
-				m.mu.Lock()
-				// v0.9.7: loopback probe latency is NOT
-				// network latency — the verified end-to-end
-				// measurement stays authoritative.
-				_ = report
-				m.mu.Unlock()
+				// v0.9.9 §13: the tick no longer polls
+				// instance.Health for process death — the
+				// process-exit watcher above detects it
+				// immediately (the pre-0.9.9 tick poll was a
+				// second watcher of the same fact with up to one
+				// interval of latency). The tick's only job for
+				// core sessions is the stability recheck cadence.
 
 				// Stability re-verification for core sessions.
 				m.runStabilityRecheck(ctx, instance.Endpoint(), tickGen)
 			}
 		}
 	}()
+}
+
+// handleCoreCrash performs the generation-gated crash transition and
+// the deterministic cleanup of the crashed instance (process dead →
+// handles releasable; Close is safe on an exited process). Shared by
+// the immediate process-exit watcher (v0.9.9 §13); dropping the
+// instance without Close — the v0.9.8.5 behaviour — leaked its
+// temporary runtime directory.
+func (m *Manager) handleCoreCrash(instance *core.Instance, gen uint64, message string) {
+	if m.opts.Metrics != nil {
+		m.opts.Metrics.AddCoreCrash()
+	}
+
+	m.mu.Lock()
+
+	if m.generation == gen && m.state.ConnectedLike() {
+		m.state = StateConnectionFailed
+		m.lastError = message
+		m.instance = nil
+		m.corePID = 0
+		m.stateChanged()
+	}
+
+	m.mu.Unlock()
+
+	_ = instance.Close()
 }
 
 // runStabilityRecheck performs ONE bounded multi-target recheck of

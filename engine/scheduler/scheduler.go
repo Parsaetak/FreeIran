@@ -31,8 +31,14 @@ type Options struct {
 	// Jitter randomizes each interval by ±Jitter/2 (0 disables).
 	Jitter time.Duration
 
-	// RunOnStart executes one cycle immediately when started.
+	// RunOnStart executes one cycle when started, after InitialDelay.
 	RunOnStart bool
+
+	// InitialDelay defers the RunOnStart cycle (0 = immediate). It is
+	// the scheduling hook for the startup priority model (v0.9.9 §12):
+	// heavy priority-3 work yields the first seconds to interactive
+	// startup without losing the cycle.
+	InitialDelay time.Duration
 }
 
 // Scheduler runs a cycle on an interval.
@@ -162,7 +168,31 @@ func (s *Scheduler) loop(ctx context.Context) {
 	defer close(s.done)
 
 	if s.opts.RunOnStart {
-		s.runCycle(ctx)
+		if s.opts.InitialDelay > 0 {
+			// Priority model (v0.9.9 §12): only the START cycle is
+			// deferred; the periodic cadence below proceeds so short-
+			// interval deployments (tests, aggressive settings) keep
+			// ticking. runCycle is skip-if-busy, so the deferred start
+			// cycle and a due periodic cycle can never overlap.
+			go func() {
+				delay := time.NewTimer(s.opts.InitialDelay)
+				defer delay.Stop()
+
+				select {
+				case <-ctx.Done():
+					return
+				case <-delay.C:
+				}
+
+				if ctx.Err() != nil {
+					return
+				}
+
+				s.runCycle(ctx)
+			}()
+		} else {
+			s.runCycle(ctx)
+		}
 	}
 
 	for {

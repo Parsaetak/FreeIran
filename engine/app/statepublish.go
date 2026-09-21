@@ -25,9 +25,8 @@
 package app
 
 import (
-	"reflect"
-
 	"github.com/Parsaetak/FreeIran/engine/connection"
+	"github.com/Parsaetak/FreeIran/engine/pipeline"
 	"github.com/Parsaetak/FreeIran/internal/statepub"
 )
 
@@ -142,10 +141,66 @@ func (a *App) stopPublishers() {
 }
 
 // appStateEqual is the semantic-equality predicate for AppState
-// snapshots: identical content = identical event. reflect.DeepEqual
-// compares the value families that matter (status, boot phase,
-// storage stats, ingestion stats) — the publisher drops a snapshot
-// only when NOTHING observable changed.
+// snapshots: identical content = identical event. v0.9.9 replaces the
+// hot-path reflect.DeepEqual with an explicit comparison of the
+// observable value families (status, identity, boot phase, counts,
+// storage and ingestion stats) — the publisher drops a snapshot only
+// when NOTHING observable changed.
 func appStateEqual(a, b AppState) bool {
-	return reflect.DeepEqual(a, b)
+	if a.Status != b.Status ||
+		a.Version != b.Version ||
+		a.Identity != b.Identity ||
+		a.StartedAt != b.StartedAt ||
+		a.ConfigCount != b.ConfigCount ||
+		a.IngestionRunning != b.IngestionRunning ||
+		a.NativeAcceler != b.NativeAcceler ||
+		a.BootPhase != b.BootPhase ||
+		len(a.BootTimings) != len(b.BootTimings) {
+		return false
+	}
+
+	for k, v := range a.BootTimings {
+		if bv, ok := b.BootTimings[k]; !ok || bv != v {
+			return false
+		}
+	}
+
+	if a.Storage != b.Storage {
+		return false
+	}
+
+	if (a.LastIngestion == nil) != (b.LastIngestion == nil) {
+		return false
+	}
+
+	if a.LastIngestion != nil && !pipelineStatsEqual(*a.LastIngestion, *b.LastIngestion) {
+		return false
+	}
+
+	return true
+}
+
+// pipelineStatsEqual compares ingestion stats semantically
+// (PerSource is compared element-wise; a nil slice and an empty slice
+// are the same observation).
+func pipelineStatsEqual(a, b pipeline.Stats) bool {
+	if a.SourcesTotal != b.SourcesTotal ||
+		a.SourcesOK != b.SourcesOK ||
+		a.SourcesFailed != b.SourcesFailed ||
+		a.SourcesUnchanged != b.SourcesUnchanged ||
+		a.Discovered != b.Discovered ||
+		a.Duplicates != b.Duplicates ||
+		a.Persisted != b.Persisted ||
+		a.Invalid != b.Invalid ||
+		len(a.PerSource) != len(b.PerSource) {
+		return false
+	}
+
+	for i := range a.PerSource {
+		if a.PerSource[i] != b.PerSource[i] {
+			return false
+		}
+	}
+
+	return true
 }

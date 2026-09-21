@@ -94,7 +94,10 @@ func (m *Manager) ConnectProvider(
 		_ = prov.Stop(stopCtx)
 		cancel()
 
-		return m.fail(fmt.Errorf("provider %s failed to start: %w", prov.Name(), startErr))
+		// v0.9.9: the start is awaitable — a session boundary may have
+		// completed while it ran; the stale failure must not clobber a
+		// newer session's state (failAt is generation-gated).
+		return m.failAt(gen, fmt.Errorf("provider %s failed to start: %w", prov.Name(), startErr))
 	}
 
 	// --- ESTABLISH ROUTE ----------------------------------------------
@@ -115,7 +118,8 @@ func (m *Manager) ConnectProvider(
 		_ = prov.Stop(stopCtx)
 		cancel()
 
-		return m.fail(fmt.Errorf("provider %s exposes no local SOCKS endpoint", prov.Name()))
+		// v0.9.9: generation-gated (see the start-failure note above).
+		return m.failAt(gen, fmt.Errorf("provider %s exposes no local SOCKS endpoint", prov.Name()))
 	}
 
 	info := prov.Info()
@@ -190,8 +194,14 @@ func (m *Manager) ConnectProvider(
 	if !result.OK {
 		// A provider that cannot reach the Internet is disconnected
 		// deterministically (verification failure, honestly reported).
+		//
+		// v0.9.9: every mutation below is generation-gated — a session
+		// boundary that completed while the verification ran owns the
+		// state machine now; the stale session must only reap its own
+		// provider, never mutate the newer session.
 		m.mu.Lock()
 		provSession := m.provider
+		stale := m.generation != gen
 		m.mu.Unlock()
 
 		if provSession != nil {
@@ -201,11 +211,18 @@ func (m *Manager) ConnectProvider(
 		}
 
 		m.mu.Lock()
-		m.provider = nil
-		m.stateChanged()
+		if m.generation == gen {
+			m.provider = nil
+			m.stateChanged()
+		}
 		m.mu.Unlock()
 
-		return m.fail(fmt.Errorf("provider %s verification failed: %s",
+		if stale {
+			return m.failAt(gen, fmt.Errorf(
+				"session ended during provider %s verification (result discarded)", prov.Name()))
+		}
+
+		return m.failAt(gen, fmt.Errorf("provider %s verification failed: %s",
 			prov.Name(), result.Describe()))
 	}
 

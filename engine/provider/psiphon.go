@@ -553,8 +553,10 @@ func (e *PsiphonEngine) awaitReady(ctx context.Context, timeout time.Duration, s
 	dctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 
-	ticker := time.NewTicker(250 * time.Millisecond)
-	defer ticker.Stop()
+	// v0.9.9: the shared adaptive probe schedule replaces the fixed
+	// 250 ms ticker — immediate first probe, bounded cadence after.
+	schedule := newProbeSchedule()
+	defer schedule.stop()
 
 	for {
 		select {
@@ -565,7 +567,7 @@ func (e *PsiphonEngine) awaitReady(ctx context.Context, timeout time.Duration, s
 
 			return fmt.Errorf("local proxies not ready within %s (client output: %s)",
 				timeout, e.scannerTail())
-		case <-ticker.C:
+		case <-schedule.C():
 			if e.psiphonExited() {
 				return fmt.Errorf("psiphon exited during startup: %s", e.scannerTail())
 			}
@@ -573,6 +575,8 @@ func (e *PsiphonEngine) awaitReady(ctx context.Context, timeout time.Duration, s
 			if endpointAccepts(dctx, socksPort) && endpointAccepts(dctx, httpPort) {
 				return nil
 			}
+
+			schedule.next()
 		}
 	}
 }

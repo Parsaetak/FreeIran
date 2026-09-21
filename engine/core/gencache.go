@@ -9,14 +9,23 @@ import (
 // GenCache temporarily memoizes backend-generated runtime
 // configurations for identical normalized inputs.
 //
-// Key:   fingerprint | backend | backend version | runtime options
-// Value: RuntimeConfig document
+// Key (v0.9.9): fingerprint | backend | listen host | SOCKS port |
+// HTTP port — everything that varies PER generated document without
+// invalidating other entries (a new candidate or port change costs a
+// new key, not a wholesale reset).
+//
+// Generation (v0.9.9): backend name | binary path | backend version —
+// the inputs that change what the BACKEND produces for every
+// document at once. The generation counter was documented as
+// "backend-version-aware" while the hash actually covered only the
+// backend name, binary path and listen addresses; the version is now
+// a real input, and per-port churn no longer invalidates the entire
+// cache.
 //
 // The cache is memory-only (never persisted), bounded and
 // time-limited, because documents carry credentials: nothing is
-// cached indefinitely. The generation counter encodes the backend
-// version and runtime options, so any change invalidates every entry
-// at once.
+// cached indefinitely; Clear drops everything (shutdown, cache
+// maintenance).
 type GenCache struct {
 	mu         sync.Mutex
 	entries    map[string]genEntry
@@ -48,11 +57,14 @@ func NewGenCache() *GenCache {
 	}
 }
 
-// GenerationFor folds backend identity and runtime options into the
-// invalidation generation: any change fully invalidates the cache.
-func GenerationFor(backendName, binaryPath string, opts RuntimeOptions) uint64 {
-	return fnv64(fmt.Sprintf("%s|%s|%s|%d|%d",
-		backendName, binaryPath, opts.LocalHost, opts.LocalPort, opts.HTTPPort))
+// GenerationFor folds the backend identity into the invalidation
+// generation: a new backend binary (path or VERSION) invalidates
+// every cached document at once. Inputs that only vary per candidate
+// or per launch (listen host, ports) belong in the KEY
+// (GenCacheKey), not here — changing them must not reset entries for
+// other candidates.
+func GenerationFor(backendName, binaryPath, backendVersion string) uint64 {
+	return fnv64(backendName + "|" + binaryPath + "|" + backendVersion)
 }
 
 // Get returns a cached document for the key when the generation
@@ -158,8 +170,12 @@ func fnv64(data string) uint64 {
 	return hash
 }
 
-// GenCacheKey builds the cache key from a configuration fingerprint
-// and backend identity.
-func GenCacheKey(fingerprint, backendName string) string {
-	return fmt.Sprintf("%s|%s", fingerprint, backendName)
+// GenCacheKey builds the cache key from every per-document input:
+// the configuration fingerprint, the backend identity and the listen
+// coordinates the generated document will embed. Two launches that
+// differ only in ports produce different KEYS while sharing the
+// generation — no cross-candidate invalidation.
+func GenCacheKey(fingerprint, backendName, localHost string, localPort, httpPort int) string {
+	return fmt.Sprintf("%s|%s|%s|%d|%d",
+		fingerprint, backendName, localHost, localPort, httpPort)
 }

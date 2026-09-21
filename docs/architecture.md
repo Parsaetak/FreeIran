@@ -46,7 +46,12 @@ Design rules:
 BOOT
  ↓ minimal system init (directories, layout)
  ↓ store open: metadata + index only   ← UI can bind here
- ↓ app.Start(): scheduler + background verification + cache warm-up
+ ↓ app.Start(): priority-staged background work (v0.9.9):
+ │    immediate  — memory sampling, core-registry refresh,
+ │                recovery watch, scheduler cadence
+ │    +3 s window — storage verification, cache warm-up, the boot
+ │                ingestion cycle (heavy I/O cannot compete with the
+ │                first interactive connection; fully cancellable)
  ↓ UI READY (status: ready)
  ↓ scheduled source refresh (jittered interval, skip-if-busy)
  ↓ background testing (TCP reachability probe)
@@ -64,12 +69,17 @@ transition, ingestion start/finish, shutdown, every connection
 state-machine mutation) pushes its snapshot into a publisher
 (`internal/statepub`) that (1) drops semantically identical
 snapshots, (2) delivers every real change in publication order with
-ZERO artificial delay — user-visible lifecycle transitions
-(selecting → preparing → starting_core → …) are never silently
-coalesced away — through a bounded in-memory queue, and (3) stops
-synchronously during `App.Shutdown` after draining pending
-snapshots, so the final terminal state is delivered and no emit
-callback can fire into a closing UI runtime. The connection manager
+ZERO artificial delay through a bounded in-memory queue, (3) never
+silently drops lifecycle-critical transitions under queue saturation
+— each snapshot carries a critical/replaceable class; overflow
+compaction merges same-stage pending entries and sheds replaceable
+telemetry first — and (4) stops synchronously during `App.Shutdown`
+after draining pending snapshots, so the final terminal state is
+delivered and no emit callback can fire into a closing UI runtime.
+The composition root bridges the streams into the UI runtime through
+a bounded, nonblocking emitter (`statepub.BoundedEmitter`): a slow
+webview event pipeline coalesces to the newest snapshot instead of
+stalling the engine's publication path. The connection manager
 owns its snapshot publisher (`Subscribe` registers a listener and
 converges it with the current snapshot); the composition root
 registers the UI bridges directly. The publishers are dedup +
@@ -296,10 +306,17 @@ considered backend.
 `created → starting → running → stopping → stopped` with error states
 `start_failed / crashed / unhealthy / timed_out`. The shared launcher
 writes the generated runtime configuration into a 0600 file inside a
-0700 temporary directory, spawns the core with redacting output
-capture, and polls the local listener for readiness. Close stops the
-process FIRST (Windows file-lock discipline), then removes the
-temporary files with bounded retry.
+0700 temporary directory and spawns the core with redacting output
+capture. Readiness is ONE authoritative supervision path (v0.9.9):
+`awaitListener` probes the local listener on a bounded adaptive
+schedule (immediate probe, then a short ramp to a 100 ms cadence),
+watches the process for early death through a single wait observer,
+and publishes the verdict exactly once; the startup timeout's bounded
+teardown lives there too. The inbound port is resolved exactly once,
+BEFORE configuration generation, through `core.ResolveInboundPort`
+(explicit ports pass through; ephemeral ports allocate once). Close
+stops the process FIRST (Windows file-lock discipline), then removes
+the temporary files with bounded retry.
 
 **Health** (`core.HealthReport`): process health and network health
 are separate axes — `process_alive` + `listener_ready` + latency.

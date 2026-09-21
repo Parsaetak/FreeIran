@@ -1,7 +1,7 @@
 {
   "name": "freeiran-frontend",
   "private": true,
-  "version": "0.9.8.8",
+  "version": "0.9.9",
   "type": "module",
   "description": "FreeIran desktop UI (Wails v3)",
   "scripts": {

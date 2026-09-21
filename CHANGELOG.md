@@ -3,6 +3,100 @@
 Release history for FreeIran. The newest release is documented in the
 [README](README.md); everything older lives here, newest first.
 
+## v0.9.9 — core engine execution, runtime performance and deep functional upgrade
+
+The core-engine/runtime release. Every change below was verified by
+the repository's own test matrix (unit + `-race` + native + real
+protocol-core smoke + clean-room build); see the release notes for
+the verification details.
+
+Execution and correctness:
+
+- CI embed validation runs from the repository root (the frontend
+  job's `working-directory` default made every root-relative path in
+  the "Clean-room embed check" resolve to the nonexistent
+  `frontend/cmd/...` tree — CI run 35542123824 — and the
+  `git diff -- <path>` guard passed vacuously on a nonexistent
+  pathspec). The inventory assertions now live in ONE shared
+  validation source (`frontend/scripts/embed-inventory.mjs`) used by
+  both the staging script and CI.
+- Connection manager: every manager-field access is mutex-guarded
+  (the startup-crash retry path read `m.state` bare; `Reconnect` read
+  `lastPref` bare); provider failure paths are generation-gated so a
+  superseded session can never clobber a newer session's state.
+- Startup metrics counted once: `core_start` success and the startup
+  timing are recorded exactly once, at readiness (the pre-0.9.9 code
+  double-counted both at readiness AND at the verification boundary).
+
+Readiness and process execution:
+
+- ONE authoritative startup supervision path: the duplicated
+  per-consumer process-wait observers are gone; readiness detection
+  uses a bounded adaptive schedule (immediate probe → 2/5/10/20/40/80
+  ms ramp → 100 ms cadence) with one reusable timer instead of the
+  fixed 100 ms `time.After` polling loop; the startup timeout's
+  bounded teardown lives in the supervisor.
+- Port resolution centralized: `core.ResolveInboundPort` is the one
+  execution-stage resolver (explicit ports pass through, ephemeral
+  ports allocate exactly once before configuration generation); the
+  adapters' duplicate allocation paths and the launcher's second
+  allocation path were removed.
+- Recovery lifecycle: `RecoveryService.Stop` cancels the recovery
+  context itself and JOINS both the watch loop and any in-flight
+  recovery decision — a shutdown can no longer race an in-flight
+  Quick Connect recovery attempt, and no recovery goroutine survives
+  app shutdown.
+- Monitor loop: process death is observed as an EVENT
+  (`Instance.WaitProcess`) with immediate crash detection; the tick's
+  duplicated `Health` process poll was removed (one lifecycle fact,
+  one watcher).
+
+State publication:
+
+- The publisher's queue contract is truthful about lifecycle
+  transitions: critical lifecycle states (selecting, preparing,
+  starting_core, waiting_for_ready, verifying, connected_verified,
+  disconnecting, disconnected, connection_failed) are never silently
+  dropped under queue saturation — overflow compaction merges
+  same-stage pending entries and sheds replaceable telemetry first.
+- Snapshot dedup uses an explicit semantic equality (measured:
+  28 ns/op, 0 allocs/op vs 424 ns/op, 2 allocs/op for the previous
+  `reflect.DeepEqual` on the same snapshot).
+- The Wails delivery boundary is bounded and nonblocking
+  (`statepub.BoundedEmitter`): a slow webview event pipeline can no
+  longer stall the engine's state publication path.
+
+Selection and caching:
+
+- Quick Connect collects candidate records in ONE bounded store scan
+  (the pre-0.9.9 code ran a full bounded scan whose result was
+  discarded, then an UNBOUNDED second scan) and fresh-tests stale
+  shortlist entries through a fixed 3-worker pool instead of
+  sequentially.
+- The generated-config cache contract is truthful: the invalidation
+  generation really covers the backend VERSION now, and per-launch
+  coordinates (ports) moved into the cache KEY so one candidate's
+  port change no longer invalidates every other cached document.
+
+Startup priority model:
+
+- Heavy background work (storage verification, cache warming, the
+  boot ingestion cycle) is staged behind a 3 s warmup window so it
+  cannot compete with the first interactive connection; the
+  core-registry refresh (readiness-critical) stays immediate and the
+  scheduler gained an `InitialDelay` option.
+
+Providers and verification:
+
+- Tor bootstrap completion is EVENT-driven (the log scanner closes a
+  ready channel on "Bootstrapped 100%") and the Tor/Psiphon endpoint
+  probes ride a shared adaptive schedule instead of fixed 200/250 ms
+  tickers.
+- Tunnel verification shares one immutable SOCKS dialer per
+  verification round; verification semantics (target isolation,
+  bounded concurrency, quorum, transient-retry classification) are
+  unchanged.
+
 ## v0.9.8.8 — deep cleanup, stable filenames and repository hygiene
 
 See [README — What's new in v0.9.8.8](README.md#whats-new-in-v0988)

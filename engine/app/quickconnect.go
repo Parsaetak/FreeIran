@@ -28,6 +28,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/Parsaetak/FreeIran/engine/config"
@@ -85,17 +86,26 @@ type qcRecord struct {
 	cfg config.Config
 }
 
-// collectCandidateRecords performs the same bounded store scan as
-// collectCandidates but keeps the full configuration records (test
-// history, LastSuccessAt, FailureStreak, TestedAt) so the fresh-
-// selection loop can reason about evidence freshness. The scan bound
-// and the source-reliability semantics are identical.
+// collectCandidateRecords performs ONE bounded store scan that keeps
+// the full configuration records (configuration, stable ID, test
+// history, LastSuccessAt, FailureStreak, TestedAt, source and trust
+// state) so the fresh-selection loop can reason about evidence
+// freshness.
+//
+// v0.9.9: the pre-0.9.9 implementation ran collectCandidates FIRST (a
+// full bounded scan whose result was used only as a capacity hint)
+// and then scanned the store AGAIN — twice the JSON decoding and
+// chunk reads per Quick Connect, and its own scan had no bound at
+// all. The single pass below carries the same candidateScanLimit
+// bound as every other candidate scan.
 func (a *App) collectCandidateRecords(ctx context.Context) []qcRecord {
-	candidates := a.collectCandidates(ctx)
-
-	records := make([]qcRecord, 0, len(candidates))
+	records := make([]qcRecord, 0, 64)
 
 	err := a.store.Iterate(ctx, func(key string, raw []byte) error {
+		if len(records) >= candidateScanLimit {
+			return errCandidateLimit
+		}
+
 		var cfg config.Config
 
 		if err := json.Unmarshal(raw, &cfg); err != nil {
@@ -426,10 +436,26 @@ func (a *App) buildQuickConnectShortlist(
 	return merged
 }
 
+// qcTestWorkers is the fixed size of the fresh-testing worker pool
+// (v0.9.9). Quick Connect must never spawn one goroutine per
+// candidate: each in-flight test launches a REAL protocol-core
+// process, so the pool bound is the bound on concurrent cores (and on
+// the network/CPU load Quick Connect can cause). Three workers keep
+// the retest phase of an 8-candidate shortlist within ~3 serial
+// rounds without ever multiplying process launches.
+const qcTestWorkers = 3
+
 // freshTestShortlist re-measures candidates whose evidence is stale
-// or missing (bounded by the retest budget). It persists fresh
-// measurements and returns how many records were refreshed. This is
-// the SAME tester the discovery start flow uses — one testing system.
+// or missing (bounded by the retest budget AND by the fixed worker
+// pool). It persists fresh measurements and returns how many records
+// were refreshed. This is the SAME tester the discovery start flow
+// uses — one testing system.
+//
+// v0.9.9: the pre-0.9.9 implementation tested the stale shortlist
+// strictly sequentially; the bounded pool overlaps those launches
+// without changing the per-candidate semantics (same tester, same
+// persistence, same budget, deterministic cancellation — a cancelled
+// ctx abandons the remaining queue).
 func (a *App) freshTestShortlist(ctx context.Context, records []qcRecord) int {
 	if len(records) == 0 {
 		return 0
@@ -457,29 +483,61 @@ func (a *App) freshTestShortlist(ctx context.Context, records []qcRecord) int {
 	mode := a.currentTestMode()
 	modeTester := tester.NewModeTester(a.coreRegistry, mode.Options)
 
-	tested := 0
+	var (
+		mu     sync.Mutex
+		tested int
+		wg     sync.WaitGroup
+	)
 
-	for i := range stale {
-		if testCtx.Err() != nil {
-			break
-		}
+	queue := make(chan config.Config, len(stale))
 
-		cfg := stale[i]
+	for _, cfg := range stale {
+		queue <- cfg
+	}
 
-		out := modeTester.TestAndApplyMode(testCtx, &cfg)
+	close(queue)
 
-		if out.Ping != nil || out.URLTest != nil || cfg.TestedAt != 0 {
-			if raw, err := json.Marshal(&cfg); err == nil {
-				if err := a.store.Upsert(cfg.Fingerprint(), raw); err == nil {
-					tested++
-				}
+	persist := func(cfg config.Config) {
+		if raw, err := json.Marshal(&cfg); err == nil {
+			if err := a.store.Upsert(cfg.Fingerprint(), raw); err == nil {
+				mu.Lock()
+				tested++
+				mu.Unlock()
 			}
 		}
 	}
 
+	workers := qcTestWorkers
+	if len(stale) < workers {
+		workers = len(stale)
+	}
+
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			for cfg := range queue {
+				if testCtx.Err() != nil {
+					continue // drain the queue; remaining work is abandoned
+				}
+
+				out := modeTester.TestAndApplyMode(testCtx, &cfg)
+
+				if out.Ping != nil || out.URLTest != nil || cfg.TestedAt != 0 {
+					persist(cfg)
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+
 	if tested > 0 {
 		a.logger.Info("connection", "quick_connect_retested",
-			"fresh-tested %d of %d shortlist candidates", tested, len(stale))
+			"fresh-tested %d of %d shortlist candidates (%d workers)",
+			tested, len(stale), workers)
 	}
 
 	return tested

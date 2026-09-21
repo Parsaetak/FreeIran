@@ -131,8 +131,8 @@ func capabilityError(cfg config.Config, caps core.Capabilities) error {
 func (b *Backend) BuildConfig(cfg config.Config, opts core.RuntimeOptions) (core.RuntimeConfig, error) {
 	cfg.Normalize()
 
-	cacheKey := core.GenCacheKey(cfg.Fingerprint(), "sing-box")
-	generation := core.GenerationFor("sing-box", opts.BinaryPath, opts)
+	cacheKey := core.GenCacheKey(cfg.Fingerprint(), "sing-box", opts.LocalHost, opts.LocalPort, opts.HTTPPort)
+	generation := core.GenerationFor("sing-box", opts.BinaryPath, opts.BackendVersion)
 
 	if !opts.DisableGenCache {
 		if doc, ok := b.genCache.Get(cacheKey, generation); ok {
@@ -174,17 +174,15 @@ func (b *Backend) Start(
 
 	opts = opts.WithDefaults()
 
-	// Ephemeral ports are allocated BEFORE generation: the runtime
-	// document embeds the final inbound port.
-	if opts.LocalPort == 0 {
-		port, err := core.ReserveLocalPort(opts.LocalHost)
-		if err != nil {
-			return nil, firerrors.Wrap(err, firerrors.KindEnvironment,
-				Subsystem, "start", "reserve local port")
-		}
-
-		opts.LocalPort = port
+	// v0.9.9: the inbound port is resolved through the ONE
+	// authoritative execution-stage resolver, BEFORE generation (the
+	// runtime document embeds the final inbound port).
+	port, err := core.ResolveInboundPort(opts.LocalHost, opts.LocalPort)
+	if err != nil {
+		return nil, err
 	}
+
+	opts.LocalPort = port
 
 	doc, err := b.BuildConfig(cfg, opts)
 	if err != nil {

@@ -29,6 +29,7 @@ import (
 	"github.com/Parsaetak/FreeIran/engine/coremgr"
 	"github.com/Parsaetak/FreeIran/internal/appicon"
 	"github.com/Parsaetak/FreeIran/internal/logging"
+	"github.com/Parsaetak/FreeIran/internal/statepub"
 	"github.com/Parsaetak/FreeIran/internal/version"
 	"github.com/Parsaetak/FreeIran/system"
 )
@@ -132,13 +133,33 @@ func main() {
 	// Registration happens BEFORE Start() so no transition is
 	// missed, and each registration immediately publishes the
 	// current snapshot for initial convergence.
-	applicationInstance.SetStateListener(func(state app.AppState) {
-		wailsApp.Event.Emit("freeiran:state", state)
-	})
+	//
+	// v0.9.9 delivery boundary: the callbacks hand snapshots to
+	// bounded emitters instead of emitting inline on the publisher's
+	// delivery goroutine. A slow or stalled webview event pipeline
+	// can no longer stall the engine's state publication path — the
+	// emitter coalesces to the newest snapshot under saturation
+	// (full-state semantics: newest supersedes; the UI converges on
+	// resume) and the engine keeps publishing. No polling, no
+	// unbounded buffering.
+	stateEmitter := statepub.NewBoundedEmitter("ui-state",
+		func(state app.AppState) { wailsApp.Event.Emit("freeiran:state", state) })
 
-	applicationInstance.SetConnectionListener(func(snapshot connection.Snapshot) {
-		wailsApp.Event.Emit("freeiran:connection", snapshot)
-	})
+	connEmitter := statepub.NewBoundedEmitter("ui-connection",
+		func(snapshot connection.Snapshot) {
+			wailsApp.Event.Emit("freeiran:connection", snapshot)
+		})
+
+	// The emitters stop when main returns (after wailsApp.Run() has
+	// finished and the OnShutdown hook has torn the engine down):
+	// draining/joining them guarantees no emit callback outlives the
+	// process's UI runtime and no pump goroutine survives.
+	defer stateEmitter.Stop()
+	defer connEmitter.Stop()
+
+	applicationInstance.SetStateListener(stateEmitter.Submit)
+
+	applicationInstance.SetConnectionListener(connEmitter.Submit)
 
 	// Background work starts after the publishers are wired: every
 	// state change it produces is observed event-driven.
@@ -147,9 +168,16 @@ func main() {
 	// v0.9.0: forward Managed Core Manager install progress to the
 	// UI as events — the one-click Install path reports download,
 	// verification and smoke-test stages live (§9).
-	applicationInstance.SetCoreProgressListener(func(progress coremgr.InstallProgress) {
-		wailsApp.Event.Emit("freeiran:coreprogress", progress)
-	})
+	// v0.9.9: install progress rides the same bounded boundary
+	// (monotonic progress; the newest snapshot is the informative one).
+	progressEmitter := statepub.NewBoundedEmitter("ui-coreprogress",
+		func(progress coremgr.InstallProgress) {
+			wailsApp.Event.Emit("freeiran:coreprogress", progress)
+		})
+
+	defer progressEmitter.Stop()
+
+	applicationInstance.SetCoreProgressListener(progressEmitter.Submit)
 
 	// v0.9.6: forward adaptive start-flow progress (detect → discover →
 	// test → rank → connect → verify) to the UI as events — real stage

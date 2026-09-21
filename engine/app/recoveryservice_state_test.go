@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -214,7 +215,7 @@ func TestRecoveryRequiresActualVerification(t *testing.T) {
 	recovery.failures[deadID] = now
 	recovery.mu.Unlock()
 
-	recovery.tick(now)
+	recovery.tick(context.Background(), now)
 
 	snapshot := application.connMgr.Snapshot()
 

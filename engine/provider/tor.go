@@ -58,6 +58,11 @@ type TorEngine struct {
 	scanner   *lineScanner
 	lastError string
 
+	// bootstrapReady is closed by the log-line scanner the moment the
+	// "Bootstrapped 100%" line is observed (v0.9.9: event-driven
+	// readiness instead of flag polling). Recreated on every Start.
+	bootstrapReady chan struct{}
+
 	// options configure the NEXT start.
 	options TorOptions
 }
@@ -576,6 +581,7 @@ func (e *TorEngine) Start(ctx context.Context) error {
 	e.endpoint = Endpoint{Network: "socks5", Host: "127.0.0.1", Port: port}
 	e.startedAt = time.Now().UTC()
 	e.bootstrap = BootstrapInfo{Active: true, UpdatedAt: time.Now().UTC()}
+	e.bootstrapReady = make(chan struct{})
 	e.lastError = ""
 	e.mu.Unlock()
 
@@ -614,14 +620,23 @@ func (e *TorEngine) Start(ctx context.Context) error {
 // 100%" log line or the SOCKS listener accepting connections —
 // whichever is observed first. Progress comes only from real log
 // lines, never timers.
+//
+// v0.9.9 execution model: bootstrap completion is EVENT-driven — the
+// log-line scanner closes bootstrapReadyCh the moment it observes the
+// 100% line, so the wait loop no longer discovers that fact by
+// polling a flag on a fixed 200 ms ticker. The endpoint probe rides
+// the shared adaptive probe schedule (immediate first probe, bounded
+// cadence afterwards).
 func (e *TorEngine) awaitBootstrap(ctx context.Context, timeout time.Duration, port int) error {
 	deadline := time.Now().Add(timeout)
 
 	dctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 
-	ticker := time.NewTicker(200 * time.Millisecond)
-	defer ticker.Stop()
+	readyCh := e.bootstrapReadyCh() // closed by the scanner on 100%
+
+	schedule := newProbeSchedule()
+	defer schedule.stop()
 
 	for {
 		select {
@@ -631,13 +646,13 @@ func (e *TorEngine) awaitBootstrap(ctx context.Context, timeout time.Duration, p
 			}
 
 			return fmt.Errorf("bootstrap not observed within %s", timeout)
-		case <-ticker.C:
+
+		case <-readyCh:
+			return nil
+
+		case <-schedule.C():
 			if e.processExited() {
 				return fmt.Errorf("tor exited during startup: %s", e.scanner.tail(4))
-			}
-
-			if e.bootstrapComplete() {
-				return nil
 			}
 
 			// The endpoint accepting a SOCKS handshake is Tor's own
@@ -645,6 +660,8 @@ func (e *TorEngine) awaitBootstrap(ctx context.Context, timeout time.Duration, p
 			if socksEndpointAccepts(dctx, port) {
 				return nil
 			}
+
+			schedule.next()
 		}
 	}
 }
@@ -661,6 +678,16 @@ func (e *TorEngine) bootstrapComplete() bool {
 	defer e.mu.Unlock()
 
 	return e.bootstrap.Complete
+}
+
+// bootstrapReadyCh returns the completion event channel (a nil
+// channel never fires, so a missing scanner keeps the probe schedule
+// authoritative).
+func (e *TorEngine) bootstrapReadyCh() <-chan struct{} {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	return e.bootstrapReady
 }
 
 // ingestBootstrapLine parses one Tor notice-log line; called from
@@ -696,6 +723,16 @@ func (e *TorEngine) ingestBootstrapLine(line string) {
 				Tag:       tag,
 				Complete:  progress >= 100,
 				UpdatedAt: time.Now().UTC(),
+			}
+
+			// v0.9.9: publish the completion as an EVENT — the
+			// awaiting bootstrap loop stops polling.
+			if progress >= 100 && e.bootstrapReady != nil {
+				select {
+				case <-e.bootstrapReady:
+				default:
+					close(e.bootstrapReady)
+				}
 			}
 
 			e.mu.Unlock()

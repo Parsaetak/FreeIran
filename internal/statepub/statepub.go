@@ -19,12 +19,20 @@
 //     (selecting → preparing → starting_core → …) are user-visible
 //     semantics and must never be silently dropped by a coalescing
 //     window;
-//   - memory is bounded: the pending queue holds at most maxQueue
-//     snapshots. Overflow (a stalled consumer with hundreds of
-//     outstanding transitions) drops the OLDEST pending snapshot to
-//     admit the newest — order and newest are preserved, and with
-//     real state transitions being milliseconds apart the valve is
-//     unreachable in practice;
+//   - memory is bounded AND lifecycle-critical transitions are never
+//     silently dropped (v0.9.9): every snapshot carries a Class.
+//     REPLACEABLE snapshots (high-frequency telemetry, superseded
+//     intermediates) may be coalesced or dropped under queue
+//     pressure; CRITICAL snapshots (real lifecycle transitions) are
+//     only ever merged with a pending snapshot of the SAME stage
+//     (newest wins — the distinct stages still arrive, in order).
+//     Overflow admission compacts the pending queue in that order.
+//     The absolute last resort — a queue consisting solely of
+//     distinct critical stages beyond maxQueue — drops the oldest
+//     entry to keep the bound honest; for a bounded state machine
+//     (a handful of distinct stages per session) that case is
+//     unreachable by construction. Without a classifier every
+//     snapshot is Replaceable (the historical drop-oldest valve);
 //   - Stop is synchronous and idempotent. Pending snapshots published
 //     before Stop are drained and delivered FIRST — a terminal
 //     shutdown state always reaches the subscribers — and after Stop
@@ -42,9 +50,55 @@ import (
 // maxQueue bounds the pending transition queue. Real state
 // transitions are milliseconds apart (process spawn, port wait,
 // verification round-trip), so 256 outstanding snapshots imply a
-// stalled consumer; the overflow valve then keeps the newest
-// transition and the delivery order of the rest.
+// stalled consumer; the overflow valve then compacts the queue —
+// coalescing same-stage entries and shedding replaceable ones —
+// while keeping the newest transition and the delivery order of the
+// rest.
 const maxQueue = 256
+
+// Class classifies a snapshot for the overflow admission policy.
+type Class uint8
+
+const (
+	// Replaceable: the snapshot may be coalesced or dropped under
+	// queue pressure (high-frequency telemetry, superseded
+	// intermediates). Publishers without a classifier mark every
+	// snapshot Replaceable.
+	Replaceable Class = iota
+
+	// Critical: a real lifecycle transition. Never silently dropped
+	// while replaceable or same-stage pending entries exist (see the
+	// package contract above).
+	Critical
+)
+
+// queueItem is one pending snapshot plus its overflow classification.
+type queueItem[T any] struct {
+	snapshot T
+	class    Class
+	stage    string
+}
+
+// Option configures a Publisher.
+type Option[T any] func(*publisherOptions[T])
+
+type publisherOptions[T any] struct {
+	classify func(T) Class
+	stage    func(T) string
+}
+
+// WithClass installs the overflow classifier: snapshots for which fn
+// returns Critical are lifecycle transitions the valve must preserve.
+func WithClass[T any](fn func(T) Class) Option[T] {
+	return func(o *publisherOptions[T]) { o.classify = fn }
+}
+
+// WithStage installs the stage function used to merge pending
+// snapshots of the SAME lifecycle stage (newest wins). Optional:
+// without it, no pending merging happens.
+func WithStage[T any](fn func(T) string) Option[T] {
+	return func(o *publisherOptions[T]) { o.stage = fn }
+}
 
 // Publisher delivers deduplicated, ordered snapshots of type T to its
 // subscribers on a single internal goroutine — never on the
@@ -60,10 +114,15 @@ type Publisher[T any] struct {
 	// mu guards the pending queue and the stopped flag. The queue is
 	// FIFO: snapshots are delivered in publication order.
 	mu      sync.Mutex
-	queue   []T
+	queue   []queueItem[T]
 	last    T // newest submitted snapshot (dedup reference)
 	hasLast bool
 	stopped bool
+
+	// overflow classification (v0.9.9): classify/stage may be nil
+	// (everything Replaceable, no pending merging).
+	classify func(T) Class
+	stage    func(T) string
 
 	// signal wakes the delivery goroutine (buffered, capacity 1: a
 	// second Publish while one signal is pending needs no second
@@ -79,13 +138,22 @@ type Publisher[T any] struct {
 // changed). The delivery goroutine starts immediately; pair New with
 // Stop (the composition root stops publishers before the UI runtime
 // is destroyed).
-func New[T any](name string, equal func(a, b T) bool) *Publisher[T] {
+func New[T any](name string, equal func(a, b T) bool, opts ...Option[T]) *Publisher[T] {
+	applied := publisherOptions[T]{}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&applied)
+		}
+	}
+
 	p := &Publisher[T]{
-		name:   name,
-		equal:  equal,
-		signal: make(chan struct{}, 1),
-		quit:   make(chan struct{}),
-		done:   make(chan struct{}),
+		name:     name,
+		equal:    equal,
+		classify: applied.classify,
+		stage:    applied.stage,
+		signal:   make(chan struct{}, 1),
+		quit:     make(chan struct{}),
+		done:     make(chan struct{}),
 	}
 
 	go p.loop()
@@ -148,14 +216,34 @@ func (p *Publisher[T]) Publish(snapshot T) {
 		return
 	}
 
+	item := queueItem[T]{snapshot: snapshot}
+	if p.classify != nil {
+		item.class = p.classify(snapshot)
+
+		if p.stage != nil {
+			item.stage = p.stage(snapshot)
+		}
+	}
+
 	if len(p.queue) >= maxQueue {
-		// Overflow valve: keep the newest snapshot and the order of
-		// the rest by dropping the OLDEST pending entry (see
-		// maxQueue).
-		copy(p.queue, p.queue[1:])
-		p.queue[len(p.queue)-1] = snapshot
+		// Overflow valve (v0.9.9): compact instead of blind
+		// drop-oldest — merge same-stage entries, then shed
+		// replaceable ones — so lifecycle transitions survive a
+		// stalled consumer (see the package contract).
+		p.compactLocked()
+
+		if len(p.queue) >= maxQueue {
+			// Absolute last resort: the queue still holds only
+			// distinct critical stages beyond the bound. Drop the
+			// OLDEST entry to preserve the bound and the newest
+			// snapshot.
+			copy(p.queue, p.queue[1:])
+			p.queue[len(p.queue)-1] = item
+		} else {
+			p.queue = append(p.queue, item)
+		}
 	} else {
-		p.queue = append(p.queue, snapshot)
+		p.queue = append(p.queue, item)
 	}
 
 	p.last = snapshot
@@ -232,13 +320,63 @@ func (p *Publisher[T]) drain() {
 			return
 		}
 
-		snapshot := p.queue[0]
+		item := p.queue[0]
 		p.queue = p.queue[1:]
 
 		p.mu.Unlock()
 
-		p.dispatch(snapshot)
+		p.dispatch(item.snapshot)
 	}
+}
+
+// compactLocked makes room in the pending queue WITHOUT silently
+// dropping lifecycle transitions (caller holds p.mu):
+//
+//  1. merge consecutive pending snapshots of the SAME stage (newest
+//     wins) — repeated re-publication of one stage collapses;
+//  2. shed REPLACEABLE entries, oldest first, until one slot is free.
+//
+// Critical stages keep their relative order and (barring the absolute
+// last resort in Publish) are all preserved.
+func (p *Publisher[T]) compactLocked() {
+	// 1. merge consecutive same-stage entries.
+	if p.stage != nil && len(p.queue) > 1 {
+		merged := make([]queueItem[T], 0, len(p.queue))
+
+		for _, item := range p.queue {
+			if n := len(merged); n > 0 &&
+				merged[n-1].stage != "" && merged[n-1].stage == item.stage {
+				merged[n-1] = item // newest of the stage wins
+
+				continue
+			}
+
+			merged = append(merged, item)
+		}
+
+		p.queue = merged
+	}
+
+	if len(p.queue) < maxQueue {
+		return
+	}
+
+	// 2. shed replaceable entries, oldest first.
+	shed := len(p.queue) - maxQueue + 1 // free at least one slot
+
+	kept := make([]queueItem[T], 0, len(p.queue))
+
+	for _, item := range p.queue {
+		if shed > 0 && item.class == Replaceable {
+			shed--
+
+			continue
+		}
+
+		kept = append(kept, item)
+	}
+
+	p.queue = kept
 }
 
 // dispatch runs every registered listener with the snapshot, outside

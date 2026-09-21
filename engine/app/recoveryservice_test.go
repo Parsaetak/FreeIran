@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -70,7 +71,7 @@ func TestRecoverySwitchesToNextCandidate(t *testing.T) {
 	recovery.failures[deadID] = now // the dead candidate is cooling down
 	recovery.mu.Unlock()
 
-	recovery.tick(now)
+	recovery.tick(context.Background(), now)
 
 	snapshot := application.connMgr.Snapshot()
 
@@ -117,7 +118,7 @@ func TestRecoveryBoundedAttempts(t *testing.T) {
 	// Episode 1: three attempts (each fails: nothing viable), with
 	// the backoff schedule between them. The tick that finds
 	// attempts == maxAttempts declares the episode exhausted.
-	recovery.tick(now)
+	recovery.tick(context.Background(), now)
 
 	for attempt := 1; attempt <= recoveryMaxAttempts; attempt++ {
 		status := recovery.Status()
@@ -132,7 +133,7 @@ func TestRecoveryBoundedAttempts(t *testing.T) {
 
 		// Advance past this attempt's backoff (10s * 2^(attempt-1)).
 		now = now.Add(recoveryBackoff*time.Duration(1<<uint(attempt-1)) + time.Second)
-		recovery.tick(now)
+		recovery.tick(context.Background(), now)
 	}
 
 	// The final tick exhausted the episode: idle now, episode
@@ -146,7 +147,7 @@ func TestRecoveryBoundedAttempts(t *testing.T) {
 	// exhausted episodes. A tick shortly after exhaustion re-arms
 	// (episodes < max), the second episode exhausts the budget.
 	now = now.Add(time.Minute)
-	recovery.tick(now)
+	recovery.tick(context.Background(), now)
 
 	if status := recovery.Status(); !status.EpisodeActive {
 		t.Fatalf("episode 2 must re-arm within the budget: %+v", status)
@@ -160,7 +161,7 @@ func TestRecoveryBoundedAttempts(t *testing.T) {
 		}
 
 		now = now.Add(recoveryBackoff*time.Duration(1<<uint(attempt-1)) + time.Second)
-		recovery.tick(now)
+		recovery.tick(context.Background(), now)
 	}
 
 	if status := recovery.Status(); status.EpisodeActive {
@@ -170,7 +171,7 @@ func TestRecoveryBoundedAttempts(t *testing.T) {
 	// After the budget is spent: ticks stay idle until the idle
 	// reset (or user action).
 	now = now.Add(10 * time.Minute)
-	recovery.tick(now)
+	recovery.tick(context.Background(), now)
 
 	if status := recovery.Status(); status.EpisodeActive {
 		t.Fatalf("recovery re-armed beyond the episode bound: %+v", status)
@@ -197,7 +198,7 @@ func TestRecoveryDisabledBySettings(t *testing.T) {
 		t.Fatal("recovery must honour the opt-out")
 	}
 
-	recovery.tick(time.Now().UTC())
+	recovery.tick(context.Background(), time.Now().UTC())
 
 	if status := recovery.Status(); status.EpisodeActive {
 		t.Fatalf("disabled recovery must not act: %+v", status)
@@ -230,7 +231,7 @@ func TestRecoveryExcludesCooledCandidates(t *testing.T) {
 	recovery.failures[onlyID] = now
 	recovery.mu.Unlock()
 
-	recovery.tick(now)
+	recovery.tick(context.Background(), now)
 
 	// Nothing viable → the attempt failed honestly; the episode is
 	// active with an error, and the cooled candidate was NOT connected.
