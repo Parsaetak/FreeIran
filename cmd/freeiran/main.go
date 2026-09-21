@@ -124,6 +124,10 @@ func main() {
 			// evidence-based source reliability dashboard (v0.7
 			// roadmap work completed on the existing architecture).
 			application.NewService(app.NewCollectionService(applicationInstance)),
+			// v0.9.11: Connection Profiles (P2 §18) — named connection
+			// preference sets over the EXISTING settings + connection
+			// engine; activation runs through the one settings path.
+			application.NewService(app.NewProfileService(applicationInstance)),
 		},
 		Assets: application.AssetOptions{
 			Handler: versionedAssetCache(application.BundledAssetFileServer(assets)),

@@ -4,6 +4,7 @@ import { useQuickConnectStore } from "../state/quickConnectStore";
 import { useStartFlowStore } from "../state/startflowStore";
 import { useSettingsStore, effectiveReducedMotion } from "../state/settingsStore";
 import { useProviderStore, PROVIDER_MODE_LABELS, type ProviderMode } from "../state/providerStore";
+import { useProfilesStore, PROFILE_MODE_LABELS, type ProfileMode } from "../state/profilesStore";
 import { call, providerService } from "../services";
 import type { Page } from "../types/ui";
 import { formatLatency, truncate } from "../utilities/format";
@@ -102,13 +103,16 @@ export function QuickConnectPage({ onNavigate }: { onNavigate: (page: Page) => v
   const setProviderMode = useProviderStore((state) => state.setMode);
   const loadProviders = useProviderStore((state) => state.load);
 
-  // Candidates + provider state load once per mount; the backend
+  // Candidates + provider + profiles load once per mount; the backend
   // caches the ranking pass, so these are bounded calls — never
   // polls.
+  const loadProfiles = useProfilesStore((state) => state.load);
+
   useEffect(() => {
     void loadCandidates();
     void loadProviders();
-  }, [loadCandidates, loadProviders]);
+    void loadProfiles();
+  }, [loadCandidates, loadProviders, loadProfiles]);
 
   /** Installed availability per provider mode (honest: only what the runtime reports). */
   const providerAvailability = useMemo(() => {
@@ -298,6 +302,10 @@ export function QuickConnectPage({ onNavigate }: { onNavigate: (page: Page) => v
         </div>
 
         {heroState !== "connected" && (
+          <ProfileSelector disabled={inFlight} />
+        )}
+
+        {heroState !== "connected" && (
           <ProviderModeSelector
             mode={providerMode}
             onModeChange={(mode) => void setProviderMode(mode)}
@@ -450,6 +458,329 @@ async function runProviderRoute(operation: () => Promise<unknown>): Promise<void
   await call(operation).catch(() => undefined);
 
   void useConnectionStore.getState().refresh().catch(() => undefined);
+}
+
+/**
+ * v0.9.11 Connection Profiles selector (P2 §18): a lightweight row of
+ * profile chips above the provider selector — selecting a profile
+ * applies its preferences on the backend through the ONE settings
+ * path and re-syncs the page from the returned authoritative state
+ * (the provider chips and the configuration preselection follow).
+ *
+ * The default interaction stays simple: chips select, everything else
+ * (create / edit / rename / duplicate / delete / set default) lives
+ * behind the "Manage profiles" advanced section. No profile data is
+ * invented here — chips render only what the backend returned, and
+ * the whole surface disappears when no profile exists.
+ */
+function ProfileSelector({ disabled }: { disabled: boolean }) {
+  const profiles = useProfilesStore((state) => state.profiles);
+  const active = useProfilesStore((state) => state.active);
+  const loaded = useProfilesStore((state) => state.loaded);
+  const loading = useProfilesStore((state) => state.loading);
+  const error = useProfilesStore((state) => state.error);
+  const setActiveProfile = useProfilesStore((state) => state.setActive);
+
+  if (loading && !loaded) return null; // first paint: no invented state
+
+  if (loaded && profiles.length === 0) return null; // feature stays invisible until used
+
+  /** Activate a profile and re-sync the page's mode/selection state. */
+  const onActivate = (profileID: string, configID?: string) => {
+    void (async () => {
+      try {
+        await setActiveProfile(profileID);
+
+        // The backend applied the profile's preferences: re-read the
+        // provider mode and preselect the profile's configuration so
+        // the whole page reflects the authoritative state immediately.
+        await useProviderStore.getState().load();
+
+        if (configID) {
+          useQuickConnectStore.getState().select(configID);
+        }
+      } catch {
+        // The store recorded the error; the alert below renders it.
+      }
+    })();
+  };
+
+  return (
+    <div className="qc-profiles">
+      <div className="qc-profile-chips" role="radiogroup" aria-label="Connection profile">
+        {profiles.map((profile) => {
+          const isActive = active?.id === profile.id;
+
+          return (
+            <button
+              key={profile.id}
+              type="button"
+              role="radio"
+              aria-checked={isActive}
+              className={`qc-mode-chip qc-profile-chip ${isActive ? "active" : ""}`}
+              disabled={disabled}
+              title={
+                profile.default
+                  ? `${profile.name} (startup profile)`
+                  : profile.name
+              }
+              onClick={() => onActivate(profile.id, profile.config_id || undefined)}
+            >
+              {profile.name}
+              {profile.default && <span className="qc-profile-default" title="Startup profile">★</span>}
+            </button>
+          );
+        })}
+      </div>
+
+      {error && (
+        <div className="qc-picker-note" role="alert">
+          Profiles could not be updated: {error}
+        </div>
+      )}
+
+      <ProfileManager disabled={disabled} onActivate={onActivate} />
+    </div>
+  );
+}
+
+/** Local editor form state for the profile manager. */
+interface ProfileDraft {
+  id: string | null;
+  name: string;
+  mode: ProfileMode;
+  socks: string;
+  http: string;
+}
+
+function draftFromProfile(
+  id: string | null,
+  profile?: { name: string; mode: ProfileMode; local_socks_port?: number; local_http_port?: number },
+): ProfileDraft {
+  return {
+    id,
+    name: profile?.name ?? "",
+    mode: profile?.mode ?? "auto",
+    socks: profile?.local_socks_port ? String(profile.local_socks_port) : "",
+    http: profile?.local_http_port ? String(profile.local_http_port) : "",
+  };
+}
+
+/**
+ * Profile manager (advanced section): create / edit (rename) /
+ * duplicate / delete / set default. Every action goes through the
+ * profiles store → backend → authoritative refresh; nothing is
+ * stored client-side. No credential fields exist anywhere in a
+ * profile.
+ */
+function ProfileManager({
+  disabled,
+  onActivate,
+}: {
+  disabled: boolean;
+  onActivate: (profileID: string, configID?: string) => void;
+}) {
+  const profiles = useProfilesStore((state) => state.profiles);
+  const active = useProfilesStore((state) => state.active);
+  const create = useProfilesStore((state) => state.create);
+  const update = useProfilesStore((state) => state.update);
+  const duplicate = useProfilesStore((state) => state.duplicate);
+  const remove = useProfilesStore((state) => state.remove);
+  const setDefault = useProfilesStore((state) => state.setDefault);
+
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState<ProfileDraft | null>(null);
+  const [localError, setLocalError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const onSave = () => {
+    if (!draft || busy) return;
+
+    const spec = {
+      name: draft.name,
+      mode: draft.mode,
+      local_socks_port: draft.socks ? Number(draft.socks) : 0,
+      local_http_port: draft.http ? Number(draft.http) : 0,
+    };
+
+    setBusy(true);
+    setLocalError(null);
+
+    void (async () => {
+      try {
+        if (draft.id) {
+          await update(draft.id, spec);
+        } else {
+          await create(spec);
+        }
+
+        setDraft(null);
+      } catch (err) {
+        setLocalError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setBusy(false);
+      }
+    })();
+  };
+
+  const onAction = (action: () => Promise<unknown>) => {
+    if (busy) return;
+
+    setBusy(true);
+    setLocalError(null);
+
+    void (async () => {
+      try {
+        await action();
+      } catch (err) {
+        setLocalError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setBusy(false);
+      }
+    })();
+  };
+
+  return (
+    <details className="qc-profiles-manage" open={open} onToggle={(event) => setOpen((event.target as HTMLDetailsElement).open)}>
+      <summary>Manage profiles</summary>
+
+      <ul className="qc-profile-list">
+        {profiles.map((profile) => (
+          <li key={profile.id} className="qc-profile-row" data-active={active?.id === profile.id ? "true" : undefined}>
+            <span className="qc-profile-name">
+              {profile.name}
+              {profile.default && <span className="qc-profile-default" title="Startup profile">★</span>}
+              {active?.id === profile.id && <span className="badge success">Active</span>}
+            </span>
+            <span className="qc-profile-meta">
+              {PROFILE_MODE_LABELS[profile.mode]}
+              {profile.local_socks_port ? ` · SOCKS ${profile.local_socks_port}` : ""}
+              {profile.local_http_port ? ` · HTTP ${profile.local_http_port}` : ""}
+            </span>
+            <span className="qc-profile-actions">
+              {(!active || active.id !== profile.id) && (
+                <button
+                  type="button"
+                  className="linklike"
+                  disabled={disabled || busy}
+                  onClick={() => onActivate(profile.id, profile.config_id || undefined)}
+                >
+                  Use
+                </button>
+              )}
+              <button
+                type="button"
+                className="linklike"
+                disabled={disabled || busy}
+                onClick={() => onAction(() => setDefault(profile.id))}
+              >
+                {profile.default ? "Default" : "Set default"}
+              </button>
+              <button
+                type="button"
+                className="linklike"
+                disabled={disabled || busy}
+                onClick={() => setDraft(draftFromProfile(profile.id, profile))}
+              >
+                Rename / edit
+              </button>
+              <button
+                type="button"
+                className="linklike"
+                disabled={disabled || busy}
+                onClick={() => onAction(() => duplicate(profile.id))}
+              >
+                Duplicate
+              </button>
+              <button
+                type="button"
+                className="linklike danger"
+                disabled={disabled || busy}
+                onClick={() => onAction(() => remove(profile.id))}
+              >
+                Delete
+              </button>
+            </span>
+          </li>
+        ))}
+      </ul>
+
+      {draft ? (
+        <div className="qc-profile-form">
+          <label>
+            Name
+            <input
+              value={draft.name}
+              maxLength={64}
+              onChange={(event) => setDraft({ ...draft, name: event.target.value })}
+            />
+          </label>
+          <label>
+            Mode
+            <select
+              value={draft.mode}
+              onChange={(event) => setDraft({ ...draft, mode: event.target.value as ProfileMode })}
+            >
+              <option value="auto">Auto</option>
+              <option value="configs">Configurations</option>
+              <option value="tor">Tor</option>
+              <option value="psiphon">Psiphon</option>
+            </select>
+          </label>
+          <label>
+            SOCKS port
+            <input
+              type="number"
+              min={0}
+              value={draft.socks}
+              placeholder="auto"
+              onChange={(event) => setDraft({ ...draft, socks: event.target.value })}
+            />
+          </label>
+          <label>
+            HTTP port
+            <input
+              type="number"
+              min={0}
+              value={draft.http}
+              placeholder="auto"
+              onChange={(event) => setDraft({ ...draft, http: event.target.value })}
+            />
+          </label>
+          <div className="qc-profile-form-actions">
+            <button type="button" className="btn primary" disabled={busy} onClick={onSave}>
+              {draft.id ? "Save changes" : "Create profile"}
+            </button>
+            <button type="button" className="linklike" disabled={busy} onClick={() => setDraft(null)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="qc-profile-form-actions">
+          <button
+            type="button"
+            className="linklike"
+            disabled={disabled || busy}
+            onClick={() => setDraft(draftFromProfile(null))}
+          >
+            New profile
+          </button>
+        </div>
+      )}
+
+      {localError && (
+        <div className="qc-picker-note" role="alert">
+          {localError}
+        </div>
+      )}
+
+      <p className="qc-picker-note">
+        Profiles are saved sets of connection preferences. Activating one applies its preferences — every
+        connection still runs the full verified engine flow, and no credentials are ever stored in a profile.
+      </p>
+    </details>
+  );
 }
 
 /**

@@ -1222,7 +1222,12 @@ After the core reliability work is complete:
 * route diagnostics
 * DNS strategy
 * proxy chain support
-* connection profiles
+* ~~connection profiles~~ — DONE in v0.9.11 (P2 §18): named
+  connection-preference sets in one versioned workspace sidecar,
+  activation through the ONE settings path, profiles reference
+  configuration IDs, no credentials, no second networking flow and no
+  bypass of verification/trust/recovery. Import/export profiles
+  remains future work.
 * import/export profiles
 * environment-aware route selection
 * richer provider diagnostics

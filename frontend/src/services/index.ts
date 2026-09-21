@@ -27,6 +27,10 @@ import * as toolsService from "../../bindings/github.com/Parsaetak/FreeIran/engi
 // v0.9.10: favorites, user groups and the evidence-based source
 // reliability dashboard (machine-generated bindings).
 import * as collectionService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/collectionservice.js";
+// v0.9.11: Connection Profiles — hand-maintained ByName binding (the
+// wails3 generator cannot run on the current host; the contract test
+// verifies every method name against the Go service).
+import * as profileService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/profileservice.js";
 import * as loggingModels from "../../bindings/github.com/Parsaetak/FreeIran/internal/logging/models.js";
 
 export {
@@ -46,6 +50,7 @@ export {
   providerService,
   toolsService,
   collectionService,
+  profileService,
   loggingModels,
 };
 
@@ -72,6 +77,8 @@ export type LogEntry = import("../../bindings/github.com/Parsaetak/FreeIran/inte
 export type LogFilter = import("../../bindings/github.com/Parsaetak/FreeIran/engine/app/models.js").LogFilter;
 export type LogPage = import("../../bindings/github.com/Parsaetak/FreeIran/engine/app/models.js").LogPage;
 export type Settings = import("../../bindings/github.com/Parsaetak/FreeIran/engine/app/models.js").Settings;
+export type ProfileView = import("../../bindings/github.com/Parsaetak/FreeIran/engine/app/profiletypes.js").ProfileView;
+export type ProfileSpec = import("../../bindings/github.com/Parsaetak/FreeIran/engine/app/profiletypes.js").ProfileSpec;
 
 /**
  * Wraps a binding call so UI code receives a single, readable error.

@@ -59,6 +59,8 @@ func registeredServices(t *testing.T) map[string]any {
 		// v0.9.10: favorites, user groups and the source
 		// reliability dashboard.
 		"github.com/Parsaetak/FreeIran/engine/app.CollectionService": NewCollectionService(a),
+		// v0.9.11: Connection Profiles (P2 §18).
+		"github.com/Parsaetak/FreeIran/engine/app.ProfileService": NewProfileService(a),
 	}
 }
 

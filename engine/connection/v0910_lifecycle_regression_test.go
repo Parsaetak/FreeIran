@@ -23,11 +23,20 @@
 // disconnect, is replaced cleanly by reconnect, cleans up after failed
 // startups and crashes, releases the session context at every session
 // boundary, and leaves neither processes nor goroutines behind.
+//
+// v0.9.11: every lifetime assertion uses the CROSS-PLATFORM
+// sessionEvidence oracle (kernel pid liveness + listener-serving
+// evidence + platform image evidence). The pre-0.9.11 oracle returned
+// a fake 0 on Windows, which made the three previously-failing tests
+// (TestConnectSurvivesOperationContextCancellation,
+// TestConnectSurvivesOperationContextDeadline,
+// TestReconnectReplacesPreviousSessionProcess) false-fail on the
+// Windows job of CI run 35571120221. The assertions below carry REAL
+// evidence on Windows — no skips, no fake values.
 package connection_test
 
 import (
 	"context"
-	"os"
 	"runtime"
 	"testing"
 	"time"
@@ -58,7 +67,7 @@ func v0910Manager(t *testing.T, dir string, registry *core.Registry) *connection
 // the core was bound to this context through exec.CommandContext and
 // died the moment cancel() ran.
 func TestConnectSurvivesOperationContextCancellation(t *testing.T) {
-	dir, _, registry := hungCoreEnv(t)
+	dir, exePath, registry := hungCoreEnv(t)
 
 	manager := v0910Manager(t, dir, registry)
 	defer manager.Shutdown()
@@ -74,10 +83,9 @@ func TestConnectSurvivesOperationContextCancellation(t *testing.T) {
 		t.Fatalf("state = %s, want connected", snapshot.State)
 	}
 
+	ev := sessionEvidenceFrom(t, snapshot)
+
 	pid := snapshot.CorePID
-	if pid == 0 {
-		t.Fatal("connected snapshot carries no core pid")
-	}
 
 	// The operation context dies — exactly what happens when the
 	// service layer's `defer cancel()` runs after Connect returns.
@@ -93,10 +101,12 @@ func TestConnectSurvivesOperationContextCancellation(t *testing.T) {
 			"(the session must survive its operation context)", state)
 	}
 
-	if alive := procsRunningFrom(t, dir); alive != 1 {
-		t.Fatalf("core processes running after operation-context cancellation = %d, want 1 "+
-			"(the persistent core must stay alive)", alive)
-	}
+	// REAL ownership evidence on every platform: the recorded pid is
+	// alive, the listener still serves and the platform image
+	// evidence agrees (Linux /proc scan; Windows image lock).
+	waitFor(t, 10*time.Second, "the persistent core to stay alive after operation-context cancellation", func() bool {
+		return ev.alive(t, dir, exePath)
+	})
 
 	if nowPid := manager.Snapshot().CorePID; nowPid != pid {
 		t.Fatalf("core pid changed from %d to %d after operation-context cancellation", pid, nowPid)
@@ -109,9 +119,9 @@ func TestConnectSurvivesOperationContextCancellation(t *testing.T) {
 		t.Fatalf("state after disconnect = %s, want disconnected", state)
 	}
 
-	waitFor(t, 10*time.Second, "core process to terminate after disconnect", func() bool {
-		return procsRunningFrom(t, dir) == 0
-	})
+	ev.deadWait(t, dir, 0, false)
+
+	assertTeardownComplete(t, dir, exePath)
 
 	if ctx := manager.SessionContext(); ctx != nil {
 		t.Fatal("session context must be released after disconnect")
@@ -122,7 +132,7 @@ func TestConnectSurvivesOperationContextCancellation(t *testing.T) {
 // the timeout flavour of the bug: the 60-second Quick Connect attempt
 // deadline expiring must not kill an established session.
 func TestConnectSurvivesOperationContextDeadline(t *testing.T) {
-	dir, _, registry := hungCoreEnv(t)
+	dir, exePath, registry := hungCoreEnv(t)
 
 	manager := v0910Manager(t, dir, registry)
 	defer manager.Shutdown()
@@ -136,6 +146,8 @@ func TestConnectSurvivesOperationContextDeadline(t *testing.T) {
 		t.Fatalf("connect: %v", err)
 	}
 
+	ev := sessionEvidenceFrom(t, snapshot)
+
 	pid := snapshot.CorePID
 
 	// Wait until the operation deadline is comfortably in the past.
@@ -146,9 +158,9 @@ func TestConnectSurvivesOperationContextDeadline(t *testing.T) {
 		t.Fatalf("state after operation deadline = %s, want connected", state)
 	}
 
-	if alive := procsRunningFrom(t, dir); alive != 1 {
-		t.Fatalf("core processes running after operation deadline = %d, want 1", alive)
-	}
+	waitFor(t, 10*time.Second, "the persistent core to stay alive after the operation deadline", func() bool {
+		return ev.alive(t, dir, exePath)
+	})
 
 	if nowPid := manager.Snapshot().CorePID; nowPid != pid {
 		t.Fatalf("core pid changed from %d to %d after the operation deadline", pid, nowPid)
@@ -156,16 +168,24 @@ func TestConnectSurvivesOperationContextDeadline(t *testing.T) {
 
 	manager.Disconnect()
 
-	waitFor(t, 10*time.Second, "core process to terminate after disconnect", func() bool {
-		return procsRunningFrom(t, dir) == 0
-	})
+	ev.deadWait(t, dir, 0, false)
+
+	assertTeardownComplete(t, dir, exePath)
 }
 
 // TestReconnectReplacesPreviousSessionProcess proves clean session
 // replacement: after a reconnect the previous core process is gone,
 // exactly one new process serves the new session, and nothing leaks.
+//
+// Evidence is platform-real: the OLD pid reports dead (kernel), the
+// NEW session's pid is alive and serves its listener, and on Linux
+// the /proc image scan converges to exactly ONE process from the
+// staging directory. On Windows the staged image legitimately stays
+// locked by the NEW session (same executable path), so replacement
+// ownership is proven by the pid transition plus the new session's
+// serving evidence.
 func TestReconnectReplacesPreviousSessionProcess(t *testing.T) {
-	dir, _, registry := hungCoreEnv(t)
+	dir, exePath, registry := hungCoreEnv(t)
 
 	manager := v0910Manager(t, dir, registry)
 	defer manager.Shutdown()
@@ -175,7 +195,7 @@ func TestReconnectReplacesPreviousSessionProcess(t *testing.T) {
 		t.Fatalf("connect #1: %v", err)
 	}
 
-	firstPID := first.CorePID
+	firstEv := sessionEvidenceFrom(t, first)
 
 	second, err := manager.Reconnect(context.Background())
 	if err != nil {
@@ -186,22 +206,30 @@ func TestReconnectReplacesPreviousSessionProcess(t *testing.T) {
 		t.Fatalf("reconnected state = %s, want connected", second.State)
 	}
 
-	if second.CorePID == 0 || second.CorePID == firstPID {
+	if second.CorePID == 0 || second.CorePID == firstEv.pid {
 		t.Fatalf("reconnect pid = %d (previous %d): a NEW process must serve the new session",
-			second.CorePID, firstPID)
+			second.CorePID, firstEv.pid)
 	}
 
-	// Exactly one process may remain: the previous session's core was
-	// replaced deterministically, not abandoned.
-	waitFor(t, 10*time.Second, "the replaced core process to terminate", func() bool {
-		return procsRunningFrom(t, dir) == 1
+	secondEv := sessionEvidenceFrom(t, second)
+
+	// The NEW session must be a real, serving process.
+	waitFor(t, 10*time.Second, "the replacement session's core to be alive and serving", func() bool {
+		return secondEv.alive(t, dir, exePath)
 	})
+
+	// The previous session's core must be deterministically gone —
+	// not abandoned. On Linux the /proc scan converges to exactly
+	// one process (the new session's); on Windows the old pid
+	// reports dead (the listener check is skipped there: the
+	// replacement may rebind the same port, by design).
+	firstEv.deadWait(t, dir, 1, true)
 
 	manager.Disconnect()
 
-	waitFor(t, 10*time.Second, "every core process to terminate after disconnect", func() bool {
-		return procsRunningFrom(t, dir) == 0
-	})
+	secondEv.deadWait(t, dir, 0, false)
+
+	assertTeardownComplete(t, dir, exePath)
 }
 
 // TestOperationCancelledDuringStartupLeavesNoProcess proves the
@@ -238,16 +266,12 @@ func TestOperationCancelledDuringStartupLeavesNoProcess(t *testing.T) {
 		t.Fatalf("failed snapshot carries core_pid %d, want 0", snapshot.CorePID)
 	}
 
-	waitFor(t, 15*time.Second, "the abandoned startup process to be torn down", func() bool {
-		return procsRunningFrom(t, dir) == 0
-	})
+	// Bounded teardown proof with real platform evidence (Linux:
+	// /proc image scan; Windows: image file becomes deletable).
+	assertTeardownComplete(t, dir, exePath)
 
 	if leftovers := runConfigLeftovers(t, before); len(leftovers) > 0 {
 		t.Fatalf("temporary runtime directories survived the cancelled startup: %v", leftovers)
-	}
-
-	if err := os.Remove(exePath); err != nil {
-		t.Fatalf("staged executable is not deletable after the cancelled startup: %v", err)
 	}
 
 	if ctx := manager.SessionContext(); ctx != nil {
@@ -275,6 +299,13 @@ func TestCrashEndsSessionAndReleasesRuntimeContext(t *testing.T) {
 		if snapshot.State != connection.StateConnectionFailed {
 			t.Fatalf("connect state = %s, want connection_failed (crash inside the startup window)", snapshot.State)
 		}
+	} else {
+		// Record the live session's evidence so the crash
+		// transition is provable on every platform.
+		if ev := sessionEvidenceFrom(t, snapshot); !ev.alive(t, dir, exePath) {
+			t.Fatalf("session evidence broken before the crash: pid %d not alive or listener not serving",
+				ev.pid)
+		}
 	}
 
 	waitFor(t, 15*time.Second, "connection_failed after the mid-session crash", func() bool {
@@ -285,16 +316,10 @@ func TestCrashEndsSessionAndReleasesRuntimeContext(t *testing.T) {
 		t.Fatal("session context must be released when the session crashes")
 	}
 
-	waitFor(t, 15*time.Second, "the crashed core process to be reaped", func() bool {
-		return procsRunningFrom(t, dir) == 0
-	})
+	assertTeardownComplete(t, dir, exePath)
 
 	if leftovers := runConfigLeftovers(t, before); len(leftovers) > 0 {
 		t.Fatalf("temporary runtime directories survived the crash teardown: %v", leftovers)
-	}
-
-	if err := os.Remove(exePath); err != nil {
-		t.Fatalf("staged executable is not deletable after the crash teardown: %v", err)
 	}
 }
 
@@ -303,7 +328,7 @@ func TestCrashEndsSessionAndReleasesRuntimeContext(t *testing.T) {
 // provider sessions) — the monitor, the process-exit watcher and the
 // publisher goroutines must all join at every session boundary.
 func TestConnectDisconnectCyclesLeaveNoGoroutineLeaks(t *testing.T) {
-	dir, _, registry := hungCoreEnv(t)
+	dir, exePath, registry := hungCoreEnv(t)
 
 	manager := v0910Manager(t, dir, registry)
 	defer manager.Shutdown()
@@ -320,10 +345,15 @@ func TestConnectDisconnectCyclesLeaveNoGoroutineLeaks(t *testing.T) {
 
 	baseline := runtime.NumGoroutine()
 
+	var lastEv sessionEvidence
+
 	for cycle := 0; cycle < 3; cycle++ {
-		if _, err := manager.Connect(context.Background(), vlessTestConfig(), core.Preferences{}); err != nil {
+		snapshot, err := manager.Connect(context.Background(), vlessTestConfig(), core.Preferences{})
+		if err != nil {
 			t.Fatalf("cycle %d connect: %v", cycle, err)
 		}
+
+		lastEv = sessionEvidenceFrom(t, snapshot)
 
 		manager.Disconnect()
 	}
@@ -336,9 +366,11 @@ func TestConnectDisconnectCyclesLeaveNoGoroutineLeaks(t *testing.T) {
 			"(a session goroutine — monitor, watcher or publisher — leaked)", baseline, after)
 	}
 
-	waitFor(t, 10*time.Second, "all core processes to terminate", func() bool {
-		return procsRunningFrom(t, dir) == 0
-	})
+	// The last session's process must be gone and its listener closed
+	// (real platform evidence; on Linux the /proc scan converges to 0).
+	lastEv.deadWait(t, dir, 0, false)
+
+	assertTeardownComplete(t, dir, exePath)
 }
 
 // settleGoroutines waits (bounded) for transient goroutines to exit so

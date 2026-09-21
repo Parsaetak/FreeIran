@@ -216,6 +216,10 @@ type App struct {
 	// (collections.go — one versioned sidecar, stable IDs).
 	collections collectionsState
 
+	// v0.9.11: Connection Profiles (profiles.go — one versioned
+	// sidecar, stable IDs, activation through the one settings path).
+	profiles profilesState
+
 	// v0.9.10: source-reliability report cache (sourcereliability.go)
 	// + when the last ingestion cycle finished (evidence timestamp).
 	reliability     reliabilityCache
@@ -591,6 +595,11 @@ func New(opts Options) (*App, error) {
 
 	app.settings = app.loadSettings()
 	app.applySettings(app.settings)
+
+	// v0.9.11 Connection Profiles: load the sidecar and apply the
+	// startup (default) profile in memory — through the one settings
+	// path, before any service can read the settings snapshot.
+	app.initProfiles()
 
 	logger.Log(logging.Record{
 		Level:      logging.LevelInfo,

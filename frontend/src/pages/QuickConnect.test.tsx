@@ -19,6 +19,7 @@ import { useQuickConnectStore } from "../state/quickConnectStore";
 import { useStartFlowStore } from "../state/startflowStore";
 import { useSettingsStore } from "../state/settingsStore";
 import { useProviderStore, type ProviderMode } from "../state/providerStore";
+import { useProfilesStore } from "../state/profilesStore";
 import type { CandidateView } from "../services";
 
 const mocks = vi.hoisted(() => ({
@@ -31,6 +32,16 @@ const mocks = vi.hoisted(() => ({
   ProviderSetMode: vi.fn(),
   ProviderConnect: vi.fn(),
   ProviderConnectAuto: vi.fn(),
+  ProfileList: vi.fn(),
+  ProfileActive: vi.fn(),
+  ProfileSetActive: vi.fn(),
+  ProfileCreate: vi.fn(),
+  ProfileUpdate: vi.fn(),
+  ProfileRename: vi.fn(),
+  ProfileDuplicate: vi.fn(),
+  ProfileDelete: vi.fn(),
+  ProfileSetDefault: vi.fn(),
+  ProfileClearDefault: vi.fn(),
   Tools: vi.fn(),
   RunTool: vi.fn(),
   LiveTunnel: vi.fn(),
@@ -73,6 +84,20 @@ vi.mock("../services", () => ({
     SetMode: mocks.ProviderSetMode,
     Connect: mocks.ProviderConnect,
     ConnectAuto: mocks.ProviderConnectAuto,
+  },
+  // v0.9.11: Connection Profiles surface (consumed by the REAL
+  // profiles store through this same mocked module).
+  profileService: {
+    List: mocks.ProfileList,
+    Active: mocks.ProfileActive,
+    SetActive: mocks.ProfileSetActive,
+    Create: mocks.ProfileCreate,
+    Update: mocks.ProfileUpdate,
+    Rename: mocks.ProfileRename,
+    Duplicate: mocks.ProfileDuplicate,
+    Delete: mocks.ProfileDelete,
+    SetDefault: mocks.ProfileSetDefault,
+    ClearDefault: mocks.ProfileClearDefault,
   },
   toolsService: {
     Tools: mocks.Tools,
@@ -171,6 +196,13 @@ function resetStores() {
       loading: false,
       error: null,
     });
+    useProfilesStore.setState({
+      profiles: [],
+      active: null,
+      loaded: false,
+      loading: false,
+      error: null,
+    });
   });
 }
 
@@ -188,6 +220,18 @@ beforeEach(() => {
   mocks.ProviderMode.mockResolvedValue("auto");
   mocks.ProviderList.mockResolvedValue([]);
   mocks.ProviderSetMode.mockImplementation(async (mode: string) => mode);
+  // v0.9.11: no profiles by default — the profile surface stays
+  // hidden until the backend reports at least one profile.
+  mocks.ProfileList.mockResolvedValue([]);
+  mocks.ProfileActive.mockResolvedValue([null, false]);
+  mocks.ProfileSetActive.mockImplementation(async (id: string) => ({
+    id,
+    name: `profile-${id}`,
+    mode: "auto",
+    config_available: false,
+    active: true,
+    default: false,
+  }));
   mocks.Tools.mockResolvedValue([]);
   mocks.LiveTunnel.mockResolvedValue({ active: false });
 });

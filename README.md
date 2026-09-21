@@ -9,7 +9,7 @@ configurations.
 **Project:** FreeIran — A SHEYTAN Digital System
 **Architect:** Parsa Tak / SHEYTAN
 **Repository:** https://github.com/Parsaetak/FreeIran
-**Current version:** 0.9.10 (see `VERSION`)
+**Current version:** 0.9.11 (see `VERSION`)
 **Status:** production architecture — multi-core protocol runtime with
 managed installation, multi-level node discovery, Ping/URL test modes
 with measured ranking, verified-connection engine with racing,
@@ -18,6 +18,132 @@ memory control and kernel-level process supervision. TUN mode is
 EXPERIMENTAL and disabled in this release (see "TUN mode" below).
 
 ---
+
+## What's new in v0.9.11
+
+v0.9.11 is a **full engineering closure of the v0.9.10 connection-lifecycle
+work plus the first P2 roadmap feature** — the Windows test-oracle defect
+behind CI run 35571120221 is fixed at its root, the archive sanitizer is
+now genuinely host-independent (a real cross-platform security defect the
+Windows run surfaced on audit), and **Connection Profiles** ship on the
+existing settings + connection engine. No architecture replaced; no
+verification, trust or recovery policy relaxed.
+
+### The Windows lifecycle oracle (fixed, no skips, no fake values)
+
+The v0.9.10 lifecycle regression tests were CORRECT — but the test oracle
+under them was not cross-platform: `procsRunningFrom()` returned a fake 0
+on every non-Linux platform while the new tests required 1, so
+`TestConnectSurvivesOperationContextCancellation`,
+`TestConnectSurvivesOperationContextDeadline` and
+`TestReconnectReplacesPreviousSessionProcess` false-failed on Windows
+(CI run 35571120221, job "Windows tests and desktop build", step
+"Run Go tests" — the only failing step; the runtime smoke test and the
+desktop build never ran).
+
+The oracle is now genuinely cross-platform, with REAL evidence on every
+platform:
+
+- kernel process liveness of the recorded PID (`system.ProcessAlive`:
+  OpenProcess/GetExitCodeProcess on Windows, kill(0)/EPERM on Unix);
+- the session's local listener still accepting TCP connections
+  (serving evidence — a live process whose listener is gone is not a
+  serving session, and a port squatter without the process is not the
+  session either);
+- Linux: the `/proc/<pid>/exe` image scan (kept, now Linux-only BY
+  CONTRACT — calling it on another platform fails the test loudly);
+- Windows: the running image's executable-file lock (deletion must fail
+  while the core is alive and must succeed again after teardown —
+  bounded polls, never skips).
+
+Session replacement is proven by the PID transition (old PID reports
+dead, new PID alive and serving); on Linux the image scan additionally
+converges to exactly one process. The session-lifetime guarantees
+proved are unchanged: operation cancellation and deadline survival,
+explicit disconnect, reconnect replacement, failed-startup teardown,
+mid-session crash teardown, runtime-context release at every session
+boundary, and no monitor/provider/core goroutine leaks.
+
+### safearchive: host-independent path security (fail-closed on every platform)
+
+The pre-0.9.11 sanitizer ran the host's `filepath.Clean()` over archive
+entry names BEFORE validating them, so its verdicts depended on the host
+OS: on Windows, a POSIX-absolute entry such as `/etc/passwd-clone`
+became backslash-rooted and slipped past the absolute-entry test — the
+last-resort containment check still caught it, but the documented
+reject-on-sight contract silently did not hold, and several entry
+classes were not rejected at all. v0.9.11 validates entry names in
+ARCHIVE space (lexically, '/'-separated) before any host conversion and
+finishes with an OS-aware `filepath.Rel` containment check
+(case-insensitive on Windows). Rejected on every platform, identically:
+POSIX-absolute, Windows-rooted, drive-absolute and drive-relative forms;
+UNC (`//server/share`, `\\server\share`); device namespaces
+(`\\?\`, `\\.\`, `\??\`); ALL colon usage (alternate data
+streams); traversal above the root; reserved device names (CON, NUL,
+COM1-9, LPT1-9, with or without extension); components with trailing
+dots/spaces (Windows write-collision quirk); NUL/control characters;
+oversized components. Zip entries with ANY non-regular type bit
+(symlink/device/FIFO/socket) are rejected; tar specials and unknown
+flags stay rejected.
+
+Two fail-closed contract repairs came out of the same audit: a
+legitimate EMPTY entry (declared size 0) no longer produces a false
+"ended after 0 of 1073741824 declared bytes" rejection, and a zip entry
+whose stream carries MORE data than its header declares is rejected
+instead of being silently truncated into a corrupted-but-reported-
+successful file. The full archive-security matrix (both formats and all
+name classes above) runs in the regression suite and is
+platform-independent by construction.
+
+### Connection Profiles (P2 roadmap feature)
+
+One new feature, built on the existing architecture: a profile is a
+persistent, NAMED SET OF CONNECTION PREFERENCES (Home / Work / Travel /
+Privacy) — never a second configuration store and never a second
+networking flow.
+
+- A profile carries only preferences the engine already supports: the
+  Quick Connect mode (Auto / Configurations / Tor / Psiphon), an
+  optional selected configuration ID, an optional preferred core,
+  preferred SOCKS/HTTP ports, and the existing recovery preference.
+  No credentials or secrets are ever stored.
+- Persistence is ONE small versioned, atomically written sidecar
+  (`config/profiles.json`) with stable profile IDs, deterministic
+  ordering, the same defensive decode as the collections sidecar, and
+  a documented forward-migration point (a future schema version is
+  never rewritten by an older binary).
+- Profiles REFERENCE configuration IDs: deleting a profile never
+  touches configurations; a configuration that disappears is reported
+  honestly (available=false), its profile reference is pruned at boot,
+  and activating a configs profile with a dangling reference fails
+  loudly instead of silently connecting elsewhere.
+- Activation passes through the ONE settings path
+  (validate → persist → apply → the live connection manager) — the
+  live manager observes new ports immediately — and every connection
+  still runs the existing verified flows. A profile can NEVER bypass
+  route trust, configuration validation, testing, verification,
+  recovery safeguards or provider installation safety: activation is a
+  preference change, not a connection.
+- UI: a lightweight profile chip row on the Quick Connect surface;
+  create / edit / rename / duplicate / delete / set default live
+  behind a "Manage profiles" advanced section. The surface stays
+  hidden until the backend reports at least one profile, and every
+  action re-renders from the authoritative backend response.
+
+### Validation (executed for this release; scope stated exactly)
+
+gofmt, `go vet`, the full unit suite and the full `-race` suite across
+every Go package, benchmark smoke, native C++ build + tests +
+cross-language tests, frontend typecheck + unit tests + production
+build + embed inventory validation, windows/amd64 cross-compile of the
+desktop binary AND of the test binaries for every changed package, the
+Windows PE resource regenerated from the synced winres source, and the
+clean-room build from the final tree. The Windows CI job could not be
+re-run without pushing (see the delivery note in the changelog): the
+Windows lifecycle and archive-security regressions were re-designed to
+carry REAL Windows evidence and compile for windows/amd64, but a green
+Windows CI run remains a POST-PUSH verification, stated nowhere as
+already done.
 
 ## What's new in v0.9.10
 
@@ -126,6 +252,18 @@ package, benchmark smoke, frontend typecheck + tests + production
 build, embed inventory, native C++ build + tests + cross-language
 tests, Windows/amd64 cross-compile, and the clean-room build from the
 final tree.
+
+**Errata (v0.9.11):** the release's own CI run 35571120221 had one
+failing job — "Windows tests and desktop build" failed at the
+"Run Go tests" step (the runtime smoke test and the desktop build
+never ran). The three failures were a TEST-ORACLE defect (see the
+v0.9.11 notes): the lifecycle regression tests themselves were
+correct and the v0.9.10 architecture held on Linux (unit + race +
+native + frontend + real-core smoke all passed in the same run).
+This section's original list was accurate about what ran, but the
+release narrative did not state that the Windows job was red at the
+time of writing — corrected here so no historical claim exceeds the
+evidence.
 
 ---
 
@@ -660,7 +798,7 @@ FreeIran/
 ├── .github/workflows/     CI, release and security pipelines
 ├── docs/                  Architecture, storage, performance, CI, security, dev
 ├── CHANGELOG.md           Release history (moved out of README, v0.9.8.6)
-└── VERSION                Application version (0.9.10)
+└── VERSION                Application version (0.9.11)
 ```
 
 ---
@@ -726,6 +864,8 @@ interrupted run is safely re-runnable.
       mode shipped in v0.6 was DISABLED in v0.9.8.6 — its backend was
       not transactional and its Wintun acquisition was unverifiable)
 - [x] v0.7 — UI polish, source reliability dashboards, config grouping (completed in v0.9.10)
+- [x] v0.9.11 — Windows lifecycle oracle repair, host-independent archive
+      security, Connection Profiles (first P2 roadmap feature)
 - [ ] v1.0 — Stable releases, security review, reproducible builds
 
 ---

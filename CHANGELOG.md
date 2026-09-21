@@ -3,6 +3,123 @@
 Release history for FreeIran. The newest release is documented in the
 [README](README.md); everything older lives here, newest first.
 
+## v0.9.11 — Windows lifecycle closure, host-independent archive security, Connection Profiles
+
+Full engineering closure of v0.9.10 plus the first P2 roadmap feature.
+Every claim below is bounded by what was actually executed for this
+release (see the Validation section in the README and the delivery
+note at the end of this entry).
+
+Connection lifetime — the Windows test-oracle root cause (CI run
+35571120221, job "Windows tests and desktop build", step "Run Go
+tests"):
+
+- The v0.9.10 lifecycle regression tests were correct; the oracle
+  under them was not: `procsRunningFrom()` returned a fake 0 on every
+  non-Linux platform while the tests required 1, false-failing
+  TestConnectSurvivesOperationContextCancellation,
+  TestConnectSurvivesOperationContextDeadline and
+  TestReconnectReplacesPreviousSessionProcess on Windows and driving
+  the reconnect assertion to its timeout.
+- The oracle is now genuinely cross-platform: kernel PID liveness
+  (system.ProcessAlive) + listener-serving evidence on every
+  platform; the /proc image scan on Linux (Linux-only BY CONTRACT —
+  non-Linux calls fail the test loudly); the Windows image file lock
+  as real liveness/teardown evidence (bounded polls, never skips, no
+  fake values). Replacement is proven by the PID transition plus the
+  new session's serving evidence.
+- All nine lifetime guarantees re-proved by the rewritten batteries:
+  operation cancellation/deadline survival, explicit disconnect,
+  reconnect replacement, failed-startup teardown, mid-session crash
+  teardown, session-context release at every boundary, no goroutine
+  leaks.
+
+safearchive — host-independent validation (fail-closed identically on
+every platform):
+
+- Entry names are validated in ARCHIVE space (lexically,
+  '/'-separated) BEFORE any host path conversion; the containment
+  decision is OS-aware (filepath.Rel, case-insensitive on Windows).
+  The pre-0.9.11 sanitizer ran the host filepath.Clean() first, so on
+  Windows a POSIX-absolute entry ("/etc/passwd-clone") became
+  backslash-rooted, slipped past the absolute-entry test and was only
+  saved by the last-resort containment check — the documented
+  reject-on-sight contract silently did not hold off-Linux.
+- The rejection matrix is now host-independent and complete:
+  POSIX/Windows absolute, drive-absolute/drive-relative, UNC,
+  \\?\ / \\.\ / \??\ device namespaces, ALL colon usage
+  (alternate data streams), traversal above the root, reserved device
+  names (with/without extension), trailing dot/space components,
+  NUL/control characters, oversized components; zip entries with any
+  non-regular type bit rejected (previously only the symlink bit was
+  checked); tar specials and unknown flags unchanged.
+- Two fail-closed contract repairs: legitimate EMPTY entries no
+  longer false-reject ("ended after 0 of 1073741824 declared bytes"
+  — every archive with an empty file was rejected), and zip entries
+  carrying MORE data than declared are REJECTED instead of silently
+  truncated into a corrupted "success".
+- The full cross-platform matrix (zip / tar / tar.gz, all hostile
+  name classes, oversized entries/totals, truncated archives, lying
+  headers, special type bits, empty entries) lives in
+  internal/safearchive as platform-independent tests.
+
+Connection Profiles (P2 §18 — the ONE new roadmap feature):
+
+- Versioned, atomically written sidecar (config/profiles.json) with
+  stable p-N IDs, deterministic ordering, defensive decode and a
+  documented forward-migration point (a future schema is never
+  rewritten). Profiles store ONLY existing supported preferences:
+  Quick Connect mode, optional configuration ID, optional preferred
+  core, preferred SOCKS/HTTP ports, the existing recovery preference
+  (tri-state). No credentials.
+- Store isolation: profiles reference configuration IDs; deleting a
+  profile never touches configurations; a deleted configuration is
+  reported honestly (available=false), pruned at boot, and activating
+  a dangling configs profile fails loudly.
+- Activation through the ONE settings path (persistSettings →
+  validateSettings → applySettings → live manager; ports land on the
+  manager immediately). Connections always run the existing verified
+  flows: profiles can never bypass route trust, validation, testing,
+  verification, recovery or provider installation safety — activation
+  never starts a session.
+- Startup profiles: SetDefault marks the profile applied in memory at
+  every boot (settings.json is never rewritten behind the user).
+- UI: lightweight profile chips on Quick Connect + a "Manage
+  profiles" advanced section (create / rename-edit / duplicate /
+  delete / set default); the surface stays hidden until at least one
+  profile exists; every action re-renders from the authoritative
+  backend response.
+- Bindings: the wails3 generator cannot run on the release host (no
+  GUI toolchain), so ProfileService ships as a hand-maintained ByName
+  binding in the documented contract format — every method name is
+  verified against the Go service by the bindings contract test, and
+  regenerating on a GUI toolchain host will replace it with the
+  machine-generated equivalent.
+
+Windows supervision + session-context re-audit (no product change
+required, evidence recorded): the three-tier job binding strategy,
+kill-on-close semantics, WaitDelay pipe bound, CREATE_NO_WINDOW flag
+set, process-tree fallback, managed-process manifest and
+ProcessAlive primitive were re-reviewed against the v0.9.10
+session-context architecture; no Windows-specific lifetime
+regression was found, so the unified supervisor is untouched (no
+provider-specific Windows process management added).
+
+State-integrity audit of the new surface: profiles activate
+backend-first and re-render from authoritative responses; the Quick
+Connect surface performs three bounded once-per-mount loads (no
+polls), one SetActive + one refresh per activation, and no new
+event listeners; connected/ready/healthy states remain gated exactly
+as before (a profile activation never displays a connection state).
+
+Delivery note: the repository's Windows CI job could not be re-run
+without pushing (the delivery contract forbids pushing). The Windows
+evidence for this release is: every package and test binary compiles
+for windows/amd64, the lifecycle/archive regressions carry real
+Windows evidence, and the PE resource was regenerated from the
+synced winres source. A green Windows CI run is the first
+post-push verification and is claimed nowhere as already done.
+
 ## v0.9.10 — connection-lifetime architecture repair + beginner-first product release
 
 The connection-lifecycle root-cause release. Every change below was
@@ -11,6 +128,15 @@ every package + native + fake-core lifecycle batteries + frontend
 typecheck/tests/build + Windows cross-compile + clean-room build), and
 the lifecycle proofs were additionally verified to FAIL on the v0.9.9
 tree (before/after evidence).
+
+**Errata (v0.9.11):** the release CI run 35571120221 still had the
+"Windows tests and desktop build" job failing at its "Run Go tests"
+step — a test-oracle defect (non-Linux `procsRunningFrom` returned a
+fake 0), NOT a product defect; the three failing tests and their
+platform-real replacement oracle are documented in the v0.9.11 entry
+above. The Windows smoke/build steps of that run never executed. The
+original matrix list named exactly what was executed and did not
+include a green Windows run — the narrative now says so explicitly.
 
 Connection lifetime (the v0.9.9 flaky-recovery root cause):
 
