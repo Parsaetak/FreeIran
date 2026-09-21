@@ -408,3 +408,86 @@ describe("stale-operation protection (v0.9.8.4)", () => {
     expect(useConnectionStore.getState().snapshot).toBeNull();
   });
 });
+
+/**
+ * v0.9.12 — busy ownership on authoritative events.
+ *
+ * The backend Connect/Reconnect calls are long-running and the state
+ * machine publishes real transitions WHILE they run. Each broadcast
+ * invalidates the outstanding operation; the release contract proved
+ * below is that the invalidated operation ALSO loses busy ownership —
+ * otherwise every real connect resolved stale with busy=true stuck
+ * and Connect/Disconnect/Reconnect stayed disabled until restart.
+ */
+describe("busy ownership on authoritative events (v0.9.12)", () => {
+  it("an authoritative event during a blocking connect releases busy", async () => {
+    const slow = deferred<ConnectionSnapshot>();
+
+    mocks.Connect.mockImplementationOnce(() => slow.promise);
+
+    const connecting = useConnectionStore.getState().connect("cfg-a");
+
+    expect(useConnectionStore.getState().busy).toBe(true);
+
+    // The machine transitions while Connect is still running: the
+    // broadcast is newer evidence than the unresolved promise.
+    act(() => {
+      useConnectionStore.getState().ingestEvent(
+        snapshot("connected", { config_id: "cfg-a" }),
+      );
+    });
+
+    expect(useConnectionStore.getState().busy).toBe(false);
+    expect(useConnectionStore.getState().snapshot?.state).toBe("connected");
+
+    // The stale promise resolves afterwards: it must not overwrite
+    // the authoritative snapshot (and busy stays released).
+    slow.resolve(snapshot("connected_verified", { config_id: "cfg-a" }));
+    await act(async () => {
+      await connecting;
+    });
+
+    expect(useConnectionStore.getState().snapshot?.state).toBe("connected");
+    expect(useConnectionStore.getState().busy).toBe(false);
+  });
+
+  it("an authoritative event during a failing connect releases busy", async () => {
+    const failing = deferred<never>();
+
+    mocks.Connect.mockImplementationOnce(() => failing.promise);
+
+    const connecting = useConnectionStore.getState().connect("cfg-a");
+
+    expect(useConnectionStore.getState().busy).toBe(true);
+
+    act(() => {
+      useConnectionStore.getState().ingestEvent(
+        snapshot("connection_failed", { last_error: "dial failed" }),
+      );
+    });
+
+    expect(useConnectionStore.getState().busy).toBe(false);
+    expect(useConnectionStore.getState().snapshot?.state).toBe("connection_failed");
+
+    // A subsequent operation can start immediately (the leak used to
+    // make this impossible: busy stayed true forever).
+    mocks.Disconnect.mockResolvedValueOnce(snapshot("disconnected"));
+
+    await act(async () => {
+      await useConnectionStore.getState().disconnect();
+    });
+
+    expect(useConnectionStore.getState().busy).toBe(false);
+    expect(useConnectionStore.getState().snapshot?.state).toBe("disconnected");
+
+    // The original failing promise rejects into the stale guard: it
+    // must not corrupt the newer state.
+    failing.reject(new Error("dial failed"));
+    await act(async () => {
+      await connecting;
+    });
+
+    expect(useConnectionStore.getState().snapshot?.state).toBe("disconnected");
+    expect(useConnectionStore.getState().busy).toBe(false);
+  });
+});

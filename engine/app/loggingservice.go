@@ -308,6 +308,11 @@ func (s *SettingsService) Get() Settings {
 
 // Save validates, persists and applies new settings. The saved value
 // is returned so the UI can reconcile.
+//
+// v0.9.12: Save and persistSettings share ONE write mutex — the whole
+// read→validate→write→memory-update cycle is serialized, so
+// concurrent settings writers can never interleave and leave memory
+// and disk diverging.
 func (s *SettingsService) Save(settings Settings) (Settings, error) {
 	if err := validateSettings(settings); err != nil {
 		return s.app.currentSettings(), err
@@ -317,6 +322,9 @@ func (s *SettingsService) Save(settings Settings) (Settings, error) {
 	if err != nil {
 		return s.app.currentSettings(), fmt.Errorf("app: encode settings: %w", err)
 	}
+
+	s.app.settingsWrite.Lock()
+	defer s.app.settingsWrite.Unlock()
 
 	if err := system.WriteFileAtomic(s.app.settingsPath(), raw, 0o600); err != nil {
 		return s.app.currentSettings(), fmt.Errorf("app: persist settings: %w", err)

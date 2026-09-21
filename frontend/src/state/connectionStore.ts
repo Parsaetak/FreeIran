@@ -30,7 +30,10 @@ import {
  * refresh can never overwrite newer state, a stale error can never
  * replace the current one, and disconnect/reconnect/unmount
  * invalidate everything still in flight. The busy flag follows the
- * same ownership rule: only the newest operation may clear it.
+ * same ownership rule — v0.9.12: an operation invalidated by an
+ * authoritative EVENT also loses busy ownership (the event releases
+ * it), because no operation can ever apply its own completion after
+ * the machine already broadcast the newer state.
  */
 
 export type ConnectionState =
@@ -130,11 +133,22 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
    * Authoritative state-machine broadcast: always applied, and it
    * invalidates every outstanding operation result — the event is
    * newer evidence than any promise that has not resolved yet.
+   *
+   * v0.9.12 — busy ownership transfers to the event: an in-flight
+   * operation's own completion can no longer apply (its generation
+   * is stale the moment this event lands), so it must not keep
+   * owning the busy flag. The backend Connect/Reconnect calls are
+   * long-running and the machine publishes real transitions WHILE
+   * they run — without the release here, every such operation
+   * resolved stale and left busy=true forever, disabling Connect,
+   * Disconnect and Reconnect until restart (the v0.9.11 UI defect).
+   * The dropped result loses nothing: the authoritative snapshot
+   * carries the machine's own state and LastError.
    */
   ingestEvent: (snapshot) => {
     operationGeneration = nextGeneration();
 
-    set({ snapshot });
+    set({ snapshot, busy: false });
   },
 
   connect: async (configID) => {

@@ -54,9 +54,22 @@ type TorEngine struct {
 	process   *system.ManagedProcess
 	endpoint  Endpoint
 	startedAt time.Time
-	bootstrap BootstrapInfo
 	scanner   *lineScanner
 	lastError string
+
+	// runGen is the CURRENT run's generation number. It is bumped at
+	// every Start and stamped on every asynchronous event source
+	// (the log-line scanner sink) of that run (v0.9.12).
+	runGen uint64
+
+	// run is the monotonic, generation-scoped lifecycle state of the
+	// current run (v0.9.12). It is the ONE authority for published
+	// bootstrap progress and readiness: the scanner may only raise
+	// progress (late lower-% events are dropped), the readiness
+	// verdict is published exactly once per run, and Stop/failure
+	// closes the event gate — no late asynchronous event can regress
+	// or resurrect state (the v0.9.11 Tor lifecycle defect).
+	run runState
 
 	// runCancel cancels the CURRENT run's runtime context — the
 	// context that owns the Tor process's LIFETIME (v0.9.10). The
@@ -67,8 +80,10 @@ type TorEngine struct {
 	runCancel context.CancelFunc
 
 	// bootstrapReady is closed by the log-line scanner the moment the
-	// "Bootstrapped 100%" line is observed (v0.9.9: event-driven
-	// readiness instead of flag polling). Recreated on every Start.
+	// "Bootstrapped 100%" line is OBSERVED for the CURRENT run
+	// (v0.9.9: event-driven readiness instead of flag polling;
+	// v0.9.12: generation-gated — a stale scanner can no longer
+	// signal a run it does not belong to). Recreated on every Start.
 	bootstrapReady chan struct{}
 
 	// options configure the NEXT start.
@@ -563,8 +578,21 @@ func (e *TorEngine) Start(ctx context.Context) error {
 
 	e.mu.Unlock()
 
+	// v0.9.12 — RUN GENERATION: this run owns every asynchronous
+	// event its scanner emits. The sink is bound to the generation
+	// here, before the process exists, so even an in-flight line
+	// delivered during Stop/restart is identified as stale and
+	// discarded (stale event must never mutate current state).
+	e.mu.Lock()
+	e.runGen++
+	gen := e.runGen
+	e.run.begin(gen)
+	e.mu.Unlock()
+
 	scanner := newLineScanner(512)
-	scanner.setSink(e.ingestBootstrapLine)
+	scanner.setSink(func(line string) {
+		e.ingestBootstrapLine(gen, line)
+	})
 
 	// v0.9.10 — runtime-context separation (the provider-side fix of
 	// the v0.9.9 connection-lifecycle defect): the Tor process is
@@ -599,7 +627,6 @@ func (e *TorEngine) Start(ctx context.Context) error {
 	e.scanner = scanner
 	e.endpoint = Endpoint{Network: "socks5", Host: "127.0.0.1", Port: port}
 	e.startedAt = time.Now().UTC()
-	e.bootstrap = BootstrapInfo{Active: true, UpdatedAt: time.Now().UTC()}
 	e.bootstrapReady = make(chan struct{})
 	e.lastError = ""
 	e.mu.Unlock()
@@ -613,14 +640,15 @@ func (e *TorEngine) Start(ctx context.Context) error {
 	if readyErr != nil {
 		// Deterministic shutdown — never leave an orphan.
 		_ = proc.Stop(5 * time.Second)
-		runCancel() // the run is over: release its runtime context
+		runCancel()     // the run is over: release its runtime context
+		scanner.close() // and its event stream
 
 		e.mu.Lock()
 		e.process = nil
 		e.runCancel = nil
 		e.endpoint = Endpoint{}
 		e.lastError = readyErr.Error()
-		e.bootstrap = BootstrapInfo{Active: false, Tag: "failed", UpdatedAt: time.Now().UTC()}
+		e.run.markFailed("failed") // ends the run: the event gate closes
 		e.mu.Unlock()
 
 		_ = e.binary.MarkState(StateFailed, "bootstrap", readyErr.Error())
@@ -629,8 +657,19 @@ func (e *TorEngine) Start(ctx context.Context) error {
 	}
 
 	e.mu.Lock()
+
+	// A concurrent Stop between awaitBootstrap returning and this
+	// lock owns the run now — never publish a verdict for a run that
+	// no longer exists.
+	if !e.run.owns(gen) {
+		e.mu.Unlock()
+
+		return fmt.Errorf("tor run superseded during bootstrap")
+	}
+
+	e.run.observeEndpointReady() // endpoint verified by the supervisor
+	e.run.publishReady()         // the ONE immutable verdict of this run
 	e.endpoint.Verified = true
-	e.bootstrap = BootstrapInfo{Active: false, Complete: true, Progress: 100, Tag: "Done", UpdatedAt: time.Now().UTC()}
 	e.mu.Unlock()
 
 	_ = e.binary.MarkState(StateReady, "", "")
@@ -638,24 +677,37 @@ func (e *TorEngine) Start(ctx context.Context) error {
 	return nil
 }
 
-// awaitBootstrap waits for Tor's own signals: the "Bootstrapped
-// 100%" log line or the SOCKS listener accepting connections —
-// whichever is observed first. Progress comes only from real log
-// lines, never timers.
+// awaitBootstrap is the READINESS SUPERVISOR (v0.9.12): it owns the
+// readiness verdict; the scanner only owns observed progress.
 //
-// v0.9.9 execution model: bootstrap completion is EVENT-driven — the
-// log-line scanner closes bootstrapReadyCh the moment it observes the
-// 100% line, so the wait loop no longer discovers that fact by
-// polling a flag on a fixed 200 ms ticker. The endpoint probe rides
-// the shared adaptive probe schedule (immediate first probe, bounded
-// cadence afterwards).
+// Readiness contract (the documented provider contract, §8/§9):
+//
+//	spawn → observe process alive → observe bootstrap progress
+//	      → observe "Bootstrapped 100%" → verify SOCKS endpoint
+//	      → publish READY (exactly once, immutable for the run)
+//
+// The endpoint probe is EVIDENCE, never the verdict: when the SOCKS
+// listener accepts before the 100% line — Tor opens its listener
+// early — the run records endpoint_ready and keeps waiting for the
+// scanner to observe actual bootstrap completion. This is the exact
+// defect class that produced the v0.9.11 restart regression: the
+// old probe returned readiness early, Start() then manufactured
+// Complete=true, and the still-draining scanner overwrote it with a
+// later lower-% line. Under the run-state model that regression is
+// unrepresentable: progress is monotonic, the verdict is one-way,
+// and Start() no longer writes bootstrap state at all.
 func (e *TorEngine) awaitBootstrap(ctx context.Context, timeout time.Duration, port int) error {
 	deadline := time.Now().Add(timeout)
 
 	dctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 
-	readyCh := e.bootstrapReadyCh() // closed by the scanner on 100%
+	// Closed by the scanner the moment it OBSERVES "Bootstrapped
+	// 100%" for this run (generation-gated). Once received, the
+	// channel is set to nil — a closed channel would otherwise busy-
+	// spin the select while the endpoint verification is still
+	// probing.
+	readyCh := e.bootstrapReadyCh()
 
 	schedule := newProbeSchedule()
 	defer schedule.stop()
@@ -667,20 +719,33 @@ func (e *TorEngine) awaitBootstrap(ctx context.Context, timeout time.Duration, p
 				return ctx.Err()
 			}
 
-			return fmt.Errorf("bootstrap not observed within %s", timeout)
+			return e.bootstrapTimeoutError(timeout)
 
 		case <-readyCh:
-			return nil
+			// Scanner authority: bootstrap 100% OBSERVED. The
+			// verdict still requires the declared endpoint
+			// verification.
+			readyCh = nil
+
+			if socksEndpointAccepts(dctx, port) {
+				return nil
+			}
+
+			schedule.next()
 
 		case <-schedule.C():
 			if e.processExited() {
 				return fmt.Errorf("tor exited during startup: %s", e.scanner.tail(4))
 			}
 
-			// The endpoint accepting a SOCKS handshake is Tor's own
-			// readiness signal even before the 100% log line.
 			if socksEndpointAccepts(dctx, port) {
-				return nil
+				// EVIDENCE ONLY (endpoint open ≠ verified
+				// tunnel): recorded for honest diagnostics, but
+				// the readiness verdict still waits for the
+				// scanner's 100% observation.
+				e.mu.Lock()
+				e.run.observeEndpointReady()
+				e.mu.Unlock()
 			}
 
 			schedule.next()
@@ -688,18 +753,34 @@ func (e *TorEngine) awaitBootstrap(ctx context.Context, timeout time.Duration, p
 	}
 }
 
+// bootstrapTimeoutError renders the deadline failure with the honest
+// evidence the run accumulated (observed progress, endpoint
+// evidence) instead of a bare timeout string.
+func (e *TorEngine) bootstrapTimeoutError(timeout time.Duration) error {
+	e.mu.Lock()
+	progress := e.run.progress
+	tag := e.run.tag
+	endpointReady := e.run.endpointReady
+	e.mu.Unlock()
+
+	evidence := fmt.Sprintf("bootstrap not observed within %s (last evidence: %d%%", timeout, progress)
+
+	if tag != "" {
+		evidence += " " + tag
+	}
+
+	if endpointReady {
+		evidence += "; socks endpoint accepting (readiness still requires bootstrap 100%)"
+	}
+
+	return fmt.Errorf("%s)", evidence)
+}
+
 func (e *TorEngine) processExited() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	return e.process == nil || !e.process.Running()
-}
-
-func (e *TorEngine) bootstrapComplete() bool {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	return e.bootstrap.Complete
 }
 
 // bootstrapReadyCh returns the completion event channel (a nil
@@ -713,8 +794,18 @@ func (e *TorEngine) bootstrapReadyCh() <-chan struct{} {
 }
 
 // ingestBootstrapLine parses one Tor notice-log line; called from
-// the shared line scanner.
-func (e *TorEngine) ingestBootstrapLine(line string) {
+// the run's line scanner with the generation the scanner belongs to
+// (v0.9.12).
+//
+// EVENT GATE: a line that does not belong to the current run (a
+// scanner draining an old run across a stop/restart) or that arrives
+// after the run ended is discarded — a stale event never mutates
+// current lifecycle state. Progress is folded in MONOTONICALLY: a
+// late lower-% line cannot regress the highest observed progress.
+// The 100% observation closes this run's bootstrapReady channel
+// exactly once — the scanner's authority, consumed by the readiness
+// supervisor.
+func (e *TorEngine) ingestBootstrapLine(gen uint64, line string) {
 	if !strings.Contains(line, "Bootstrapped") {
 		return
 	}
@@ -739,17 +830,23 @@ func (e *TorEngine) ingestBootstrapLine(line string) {
 
 			e.mu.Lock()
 
-			e.bootstrap = BootstrapInfo{
-				Active:    progress < 100,
-				Progress:  progress,
-				Tag:       tag,
-				Complete:  progress >= 100,
-				UpdatedAt: time.Now().UTC(),
+			if !e.run.owns(gen) {
+				// Stale event (old run, or run already
+				// stopped/failed): the one invariant — stale
+				// events never mutate current lifecycle state.
+				e.mu.Unlock()
+
+				return
 			}
 
+			e.run.observeProgress(progress, tag)
+
 			// v0.9.9: publish the completion as an EVENT — the
-			// awaiting bootstrap loop stops polling.
-			if progress >= 100 && e.bootstrapReady != nil {
+			// readiness supervisor stops waiting. v0.9.12: only
+			// the scanner's own 100% observation for the CURRENT
+			// run can close the channel; the verdict itself is
+			// published by the supervisor (never here).
+			if e.run.progress >= 100 && e.bootstrapReady != nil {
 				select {
 				case <-e.bootstrapReady:
 				default:
@@ -774,7 +871,13 @@ func (e *TorEngine) Stop(ctx context.Context) error {
 	e.scanner = nil
 	e.runCancel = nil
 	e.endpoint = Endpoint{}
-	e.bootstrap = BootstrapInfo{}
+
+	// v0.9.12: the run ENDS here — the event gate closes before the
+	// process even dies, so a scanner line still in flight (buffered
+	// in the pipe, mid-Write, or already inside the sink) is
+	// discarded instead of mutating state after stop. Last-run
+	// evidence (progress/tag) stays visible via run.snapshot().
+	e.run.end()
 	e.mu.Unlock()
 
 	if proc == nil {
@@ -808,11 +911,11 @@ func (e *TorEngine) Stop(ctx context.Context) error {
 func (e *TorEngine) State() LifecycleState {
 	e.mu.Lock()
 	running := e.process != nil && e.process.Running()
-	bootstrap := e.bootstrap
+	ready := e.run.ready() // the run's IMMUTABLE verdict (v0.9.12)
 	e.mu.Unlock()
 
 	if running {
-		if bootstrap.Complete {
+		if ready {
 			return StateReady
 		}
 
@@ -848,7 +951,7 @@ func (e *TorEngine) Info() Info {
 	}
 
 	endpoints := endpointCopy(e.endpoint)
-	bootstrap := e.bootstrap
+	bootstrap := e.run.snapshot() // monotonic run view (v0.9.12)
 	startedAt := e.startedAt
 	e.mu.Unlock()
 

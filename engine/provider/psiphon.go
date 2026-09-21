@@ -81,9 +81,16 @@ type PsiphonEngine struct {
 	endpoints []Endpoint
 	scanner   *lineScanner
 	startedAt time.Time
-	bootstrap BootstrapInfo
 	options   PsiphonOptions
 	lastError string
+
+	// runGen/run (v0.9.12): the SAME monotonic, generation-scoped
+	// run-state model Tor uses — one model for every provider. The
+	// scanner of a run can never mutate a newer run, a late event
+	// after Stop can never resurrect state, and the readiness
+	// verdict is published exactly once per run.
+	runGen uint64
+	run    runState
 
 	// runCancel cancels the CURRENT run's runtime context — the
 	// context that owns the Psiphon process's LIFETIME (v0.9.10). The
@@ -488,8 +495,19 @@ func (e *PsiphonEngine) Start(ctx context.Context) error {
 
 	e.mu.Unlock()
 
+	// v0.9.12 — RUN GENERATION (same model as Tor): the scanner's
+	// events belong to exactly one run; Stop/restart invalidates
+	// them.
+	e.mu.Lock()
+	e.runGen++
+	gen := e.runGen
+	e.run.begin(gen)
+	e.mu.Unlock()
+
 	scanner := newLineScanner(512)
-	scanner.setSink(e.ingestTunnelLine)
+	scanner.setSink(func(line string) {
+		e.ingestTunnelLine(gen, line)
+	})
 
 	// v0.9.10 — runtime-context separation (the provider-side fix of
 	// the v0.9.9 connection-lifecycle defect): the Psiphon process is
@@ -527,7 +545,6 @@ func (e *PsiphonEngine) Start(ctx context.Context) error {
 		{Network: "http", Host: "127.0.0.1", Port: httpPort},
 	}
 	e.startedAt = time.Now().UTC()
-	e.bootstrap = BootstrapInfo{Active: true, UpdatedAt: time.Now().UTC()}
 	e.lastError = ""
 	e.mu.Unlock()
 
@@ -540,13 +557,14 @@ func (e *PsiphonEngine) Start(ctx context.Context) error {
 	if readyErr != nil {
 		_ = proc.Stop(5 * time.Second) // never leave orphans
 		runCancel()                    // the run is over: release its runtime context
+		scanner.close()                // and its event stream
 
 		e.mu.Lock()
 		e.process = nil
 		e.runCancel = nil
 		e.endpoints = nil
 		e.lastError = readyErr.Error()
-		e.bootstrap = BootstrapInfo{Tag: "failed", UpdatedAt: time.Now().UTC()}
+		e.run.markFailed("failed") // ends the run: the event gate closes
 		e.mu.Unlock()
 
 		_ = e.binary.MarkState(StateFailed, "negotiate", readyErr.Error())
@@ -555,11 +573,27 @@ func (e *PsiphonEngine) Start(ctx context.Context) error {
 	}
 
 	e.mu.Lock()
+
+	// A concurrent Stop between awaitReady returning and this lock
+	// owns the run now — never publish a verdict for a run that no
+	// longer exists.
+	if !e.run.owns(gen) {
+		e.mu.Unlock()
+
+		return fmt.Errorf("psiphon run superseded during negotiation")
+	}
+
+	// v0.9.12: the readiness verdict — both local proxy endpoints
+	// were probed and accepted (the documented Psiphon contract:
+	// "tunnels up") — is published EXACTLY ONCE and stays immutable
+	// for the run. No later scanner event can revoke it.
+	e.run.observeEndpointReady()
+	e.run.publishReady()
+
 	for i := range e.endpoints {
 		e.endpoints[i].Verified = true
 	}
 
-	e.bootstrap = BootstrapInfo{Complete: true, Progress: 100, Tag: "tunnels up", UpdatedAt: time.Now().UTC()}
 	e.mu.Unlock()
 
 	_ = e.binary.MarkState(StateReady, "", "")
@@ -625,19 +659,25 @@ func (e *PsiphonEngine) scannerTail() string {
 
 // ingestTunnelLine reflects the client's own tunnel-up output when
 // it emits any (e.g. lines mentioning "tunnels" or "up").
-func (e *PsiphonEngine) ingestTunnelLine(line string) {
+//
+// v0.9.12 EVENT GATE: the line carries the generation of the scanner
+// it arrived on; a stale line (old run, or the run already
+// stopped/failed) is discarded — it can never mutate current state.
+// The recorded progress is monotonic evidence; the readiness verdict
+// itself is published only by Start's supervisor.
+func (e *PsiphonEngine) ingestTunnelLine(gen uint64, line string) {
 	lower := strings.ToLower(line)
 
 	if strings.Contains(lower, "tunnels") || strings.Contains(lower, "\"up\"") {
 		e.mu.Lock()
 
-		e.bootstrap = BootstrapInfo{
-			Active:    !e.bootstrap.Complete,
-			Progress:  100,
-			Tag:       "tunnels reported by client",
-			Complete:  e.bootstrap.Complete,
-			UpdatedAt: time.Now().UTC(),
+		if !e.run.owns(gen) {
+			e.mu.Unlock()
+
+			return
 		}
+
+		e.run.observeProgress(100, "tunnels reported by client")
 
 		e.mu.Unlock()
 	}
@@ -655,7 +695,11 @@ func (e *PsiphonEngine) Stop(ctx context.Context) error {
 	e.scanner = nil
 	e.runCancel = nil
 	e.endpoints = nil
-	e.bootstrap = BootstrapInfo{}
+
+	// v0.9.12: the run ENDS here — the event gate closes before the
+	// process dies, so a scanner line still in flight is discarded
+	// instead of mutating state after stop (same model as Tor).
+	e.run.end()
 	e.mu.Unlock()
 
 	if proc == nil {
@@ -689,11 +733,11 @@ func (e *PsiphonEngine) Stop(ctx context.Context) error {
 func (e *PsiphonEngine) State() LifecycleState {
 	e.mu.Lock()
 	running := e.process != nil && e.process.Running()
-	complete := e.bootstrap.Complete
+	ready := e.run.ready() // the run's IMMUTABLE verdict (v0.9.12)
 	e.mu.Unlock()
 
 	if running {
-		if complete {
+		if ready {
 			return StateReady
 		}
 
@@ -729,7 +773,7 @@ func (e *PsiphonEngine) Info() Info {
 	}
 
 	endpoints := append([]Endpoint(nil), e.endpoints...)
-	bootstrap := e.bootstrap
+	bootstrap := e.run.snapshot() // monotonic run view (v0.9.12)
 	e.mu.Unlock()
 
 	info := Info{

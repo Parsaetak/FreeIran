@@ -11,6 +11,13 @@ import (
 )
 
 func (a *App) persistSettings(mutate func(*Settings)) error {
+	// v0.9.12: the whole read→mutate→validate→write→memory-update
+	// cycle holds the shared settings write mutex — concurrent
+	// settings writers (SettingsService.Save) serialize on the same
+	// lock, so last-writer-wins is consistent in memory AND on disk.
+	a.settingsWrite.Lock()
+	defer a.settingsWrite.Unlock()
+
 	settings := a.currentSettings()
 
 	mutate(&settings)

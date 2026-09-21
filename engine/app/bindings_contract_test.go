@@ -23,6 +23,15 @@ package app
 // HERE, before it can break the runtime call surface. The ByID files
 // are verified structurally (their service name must match a
 // registered service type).
+//
+// v0.9.12: the contract is FIELD-EXACT for hand-maintained models.
+// profiletypes.js mirrors the Go structs in profiles.go by hand (the
+// wails3 generator cannot run on the current host) — so CI now
+// reflects over the Go structs and proves the JSDoc @property set,
+// names, and optionality match field-for-field. Silent model drift
+// (a Go field added without updating the binding, a renamed JSON tag,
+// a wrong optional marker) fails the job instead of surfacing as
+// undefined fields in the UI at runtime.
 
 import (
 	"os"
@@ -241,5 +250,126 @@ func repoRoot(t *testing.T) string {
 		}
 
 		dir = parent
+	}
+}
+
+// ---- v0.9.12: field-exact contract for hand-maintained models ------
+
+// jsPropertyPattern captures one JSDoc @property declaration. Both
+// optional-marker spellings occur in the wild and are accepted:
+//
+//	@property {type} name       (required)
+//	@property {type} name=      (optional, Google style)
+//	@property {type=} name      (optional, Closure style)
+var jsPropertyPattern = regexp.MustCompile(`@property \{([^}]+)\} ([a-zA-Z0-9_]+)(=)?`)
+
+// jsPropertyOptional reports whether one @property match marks the
+// field optional (the "=" may live in the type braces or trail the
+// name).
+func jsPropertyOptional(typeExpr, trailing string) bool {
+	return strings.HasSuffix(typeExpr, "=") || trailing == "="
+}
+
+// goStructJSONFields reflects the JSON contract of one Go struct:
+// field name → optional (omitempty tag or pointer type).
+func goStructJSONFields(t reflect.Type) map[string]bool {
+	fields := make(map[string]bool)
+
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+
+		tag := f.Tag.Get("json")
+		if tag == "" || tag == "-" {
+			continue // not part of the JSON contract
+		}
+
+		name := strings.Split(tag, ",")[0]
+
+		optional := strings.Contains(tag, ",omitempty") || f.Type.Kind() == reflect.Pointer
+
+		fields[name] = optional
+	}
+
+	return fields
+}
+
+// jsDocProperties parses one @typedef block from the model file and
+// returns field name → optional.
+func jsDocProperties(content, typedefName string) (map[string]bool, bool) {
+	anchor := "@typedef {Object} " + typedefName
+
+	idx := strings.Index(content, anchor)
+	if idx < 0 {
+		return nil, false
+	}
+
+	// The typedef's properties run from the anchor to the next
+	// @typedef (or end of file).
+	rest := content[idx:]
+
+	if next := strings.Index(rest[len(anchor):], "@typedef"); next >= 0 {
+		rest = rest[:len(anchor)+next]
+	}
+
+	out := make(map[string]bool)
+
+	for _, m := range jsPropertyPattern.FindAllStringSubmatch(rest, -1) {
+		// m[1] = the type expression, m[2] = the field name,
+		// m[3] = a trailing "=" optional marker (may be empty).
+		out[m[2]] = jsPropertyOptional(m[1], m[3])
+	}
+
+	return out, true
+}
+
+// TestProfileBindingModelsMatchGoStructs pins profiletypes.js to the
+// Go structs field-for-field: same JSON names, same optionality. The
+// hand-maintained model stays a VERIFIED mirror instead of an
+// unverified hidden dependency (§12 of the v0.9.12 closure).
+func TestProfileBindingModelsMatchGoStructs(t *testing.T) {
+	root := repoRoot(t)
+
+	raw, err := os.ReadFile(filepath.Join(root,
+		"frontend", "bindings", "github.com", "Parsaetak", "FreeIran", "engine", "app", "profiletypes.js"))
+	if err != nil {
+		t.Fatalf("read profiletypes.js: %v", err)
+	}
+
+	content := string(raw)
+
+	goModels := map[string]reflect.Type{
+		"ProfileView": reflect.TypeOf(ProfileView{}),
+		"ProfileSpec": reflect.TypeOf(ProfileSpec{}),
+	}
+
+	for typedefName, goType := range goModels {
+		jsFields, ok := jsDocProperties(content, typedefName)
+		if !ok {
+			t.Errorf("profiletypes.js: @typedef {Object} %s not found", typedefName)
+
+			continue
+		}
+
+		goFields := goStructJSONFields(goType)
+
+		for name, goOptional := range goFields {
+			jsOptional, present := jsFields[name]
+			if !present {
+				t.Errorf("%s: Go field %q (json %q) is missing from the JS model", typedefName, name, name)
+
+				continue
+			}
+
+			if goOptional != jsOptional {
+				t.Errorf("%s: field %q optionality mismatch: Go optional=%v, JS optional=%v",
+					typedefName, name, goOptional, jsOptional)
+			}
+		}
+
+		for name := range jsFields {
+			if _, ok := goFields[name]; !ok {
+				t.Errorf("%s: JS model declares field %q that does not exist on the Go struct", typedefName, name)
+			}
+		}
 	}
 }

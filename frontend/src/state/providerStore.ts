@@ -10,6 +10,13 @@ import { call, providerService, type ProviderInfoView } from "../services";
 
 export type ProviderMode = "auto" | "configs" | "tor" | "psiphon";
 
+/**
+ * v0.9.12: monotonic generation for the SetMode path — only the
+ * newest call may write the store (out-of-order responses never
+ * settle the wrong mode).
+ */
+let modeGeneration = 0;
+
 interface ProviderStore {
   mode: ProviderMode;
   providers: ProviderInfoView[];
@@ -67,9 +74,25 @@ export const useProviderStore = create<ProviderStore>((set, get) => ({
   },
 
   setMode: async (mode) => {
-    const persisted = await call<string>(() => providerService.SetMode(mode));
+    // v0.9.12: out-of-order SetMode responses must never settle the
+    // wrong mode — only the newest call may write the store.
+    const generation = ++modeGeneration;
 
-    set({ mode: normalizeMode(persisted) });
+    try {
+      const persisted = await call<string>(() => providerService.SetMode(mode));
+
+      if (generation !== modeGeneration) return;
+
+      set({ mode: normalizeMode(persisted) });
+    } catch (err) {
+      // The caller may not handle the rejection: surface the failure
+      // in the store so the UI can render it (never silent).
+      if (generation !== modeGeneration) return;
+
+      set({ error: String(err) });
+
+      throw err;
+    }
   },
 }));
 

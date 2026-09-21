@@ -9,13 +9,96 @@ configurations.
 **Project:** FreeIran — A SHEYTAN Digital System
 **Architect:** Parsa Tak / SHEYTAN
 **Repository:** https://github.com/Parsaetak/FreeIran
-**Current version:** 0.9.11 (see `VERSION`)
+**Current version:** 0.9.12 (see `VERSION`)
 **Status:** production architecture — multi-core protocol runtime with
 managed installation, multi-level node discovery, Ping/URL test modes
 with measured ranking, verified-connection engine with racing,
 environment intelligence, system proxy mode (WinINet), unified adaptive
 memory control and kernel-level process supervision. TUN mode is
 EXPERIMENTAL and disabled in this release (see "TUN mode" below).
+
+---
+
+## What's new in v0.9.12
+
+v0.9.12 is a **full engineering closure of the v0.9.11 state**: the
+failing race gate (`TestTorLifecycleStartBootstrapStopRestart`,
+observed as `restart state = "starting"`) is fixed at its root cause,
+the "stale event must never mutate current lifecycle state" invariant
+is enforced across the provider layer, the hand-maintained profile
+bindings are now verified field-for-field in CI, and the persistence
+layer can no longer silently rewrite a future schema. No tests were
+modified to pass; no security, trust, verification or recovery policy
+relaxed.
+
+### The provider lifecycle root cause (fixed and regression-proved)
+
+Two asynchronous readiness authorities competed inside the Tor
+engine: the endpoint probe could return `Start()` before any
+bootstrap line was observed, after which `Start()` manufactured
+`bootstrap.Complete = true` — while the log-line scanner kept
+draining stdout and its later `Bootstrapped 0..90%` lines overwrote
+`Complete = false`, regressing the published state from `ready` back
+to `starting`. On a loaded CI runner the post-restart assertion
+landed inside that window. The fix is one monotonic,
+generation-scoped run-state model shared by both engines
+(`engine/provider/runstate.go`):
+
+- every run gets a generation; every scanner event carries its
+  generation and is DISCARDED when stale (old run, or run ended);
+- observed bootstrap progress is monotonic — a late lower-% line
+  cannot regress it;
+- the readiness supervisor owns the verdict and follows the
+  documented contract: spawn → process alive → bootstrap progress →
+  `Bootstrapped 100%` observed → SOCKS endpoint verified → publish
+  READY exactly once, immutable for the run. An endpoint accepting
+  before 100% is EVIDENCE, not readiness;
+- `Stop` and failed starts close the event gate before the process
+  dies — no in-flight scanner line can mutate or resurrect state
+  across a restart;
+- `Start()` no longer writes bootstrap state at all.
+
+Tor readiness now means the documented contract (100% observed AND
+endpoint verified), not the endpoint shortcut; the failure path
+reports honest evidence (last progress + endpoint evidence).
+Psiphon follows the same model with its documented endpoints-verified
+contract. The regression battery (`v0912_lifecycle_test.go`) covers
+late-line monotonicity, stale generations, post-stop events,
+cross-restart stale ingest, three full restart cycles with exact
+state assertions, and the readiness-contract pin (a fixture that
+accepts on the endpoint but never reaches 100% must FAIL, never
+publish Ready).
+
+### Contract, persistence and UI-state hardening
+
+- Binding contract: the hand-maintained profile bindings are now
+  verified FIELD-FOR-FIELD in CI (`TestProfileBindingModelsMatchGoStructs`
+  reflects the Go JSON tags against `profiletypes.js`), on top of the
+  existing method-existence verification — silent model drift fails
+  the build instead of surfacing as `undefined` at runtime.
+- Persistence: a future `store.meta` is preserved verbatim (renamed
+  `store.meta.future-preserved`) with the registry rebuilt from
+  chunks, instead of being silently overwritten; profiles/sources/
+  collections sidecars refuse loudly to downgrade a future schema;
+  settings writers share one serialization mutex; the config-order
+  sidecar uses the shared atomic-write path.
+- UI state: an authoritative connection event now releases the busy
+  flag of the operation it invalidates — the previous leak disabled
+  Connect/Disconnect/Reconnect until restart whenever the machine
+  broadcast during a blocking connect. The remaining store mutation
+  paths (profile activation, start-flow status, app-state polls,
+  provider mode) gained generation guards against stale responses.
+
+### Verification (executed)
+
+Normal Go tests, the full CI-scope race suite (plus repeated targeted
+runs of the previously failing test), the C++ native layer with
+`native_accel`, frontend typecheck/tests/production build, the pinned
+real-core smoke suites (V2Ray v5.53.0, Xray v26.3.27, sing-box
+v1.14.0, SHA-256 verified), the `windows/amd64` desktop build
+validation and the clean-room embed check all PASS. The Windows
+test/build job and Windows runtime smoke require a Windows runner and
+remain post-push CI verification (stated nowhere as already done).
 
 ---
 

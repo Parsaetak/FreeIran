@@ -16,7 +16,7 @@ The application should feel like a mature desktop connectivity client rather tha
 
 Current main:
 
-* Version: `0.9.10`
+* Version: `0.9.12`
 * Platform focus: Windows x64
 * Runtime: Go + Wails + React/TypeScript (toolchain pair pinned:
   `wails/v3 v3.0.0-beta.19` + `@wailsio/runtime 3.0.0-beta.19`,
@@ -39,9 +39,14 @@ Current main:
   `assets/index.js`, `assets/index.css`, `assets/export-worker.js`
   produced directly by the build and replaced in place; hashed
   asset names and stale artifacts are CI-forbidden
-* Wails bindings: machine-generated from the pinned toolchain,
-  reproducible (second generation byte-identical), no hand-written
-  shims
+* Wails bindings: machine-generated from the pinned toolchain for the
+  core service surface, reproducible (second generation
+  byte-identical), no hand-written shims — plus the v0.9.11
+  hand-maintained Connection Profiles binding (the wails3 generator
+  cannot run on the current host), which is a CI-VERIFIED mirror: every
+  `$Call.ByName` target is checked against the registered Go service
+  and, since v0.9.12, the model types are verified field-for-field
+  against the Go JSON contract (`TestProfileBindingModelsMatchGoStructs`)
 * Process cleanup: ownership-aware — supervised children carry kernel
   job objects; the managed-process manifest (PID + executable path)
   backs path-verified installer termination; broad image-name kills
@@ -59,6 +64,40 @@ Current main:
 * Tunnel modes: System Proxy (WinINet) production; TUN EXPERIMENTAL
   and DISABLED (v0.9.8.6 — not a kill switch)
 * Logging profiles: enabled (Normal / Detailed / Debug)
+
+### v0.9.12 — completed historical work
+
+v0.9.12 is a provider-lifecycle monotonicity release closing the
+v0.9.11 race-gate failure at its ROOT CAUSE — no verification, trust
+or recovery policy relaxed, no tests modified to pass. Completed, each
+verified by an executed battery (unit + `-race` incl. repeated
+targeted runs of the previously failing test + native + frontend
+suite + pinned real-core smokes + windows/amd64 build validation +
+clean-room embed check): the ONE monotonic generation-scoped run-state
+model shared by the Tor and Psiphon engines (stale events discarded,
+monotonic progress, exactly-once immutable readiness verdict, event
+gate closed on stop/failure), the Tor readiness contract enforced as
+documented (Bootstrapped 100% observed AND endpoint verified — the
+endpoint-early shortcut demoted to recorded EVIDENCE), the
+field-for-field binding-contract verification for hand-maintained
+models, the future-schema preservation guards (store.meta preserved
+verbatim and rebuilt from chunks; profiles/sources/collections saves
+refuse loudly to downgrade), the serialized settings writers, the
+atomic config-order write, the HIGH UI busy-ownership leak fix, and
+generation guards on the remaining store mutation paths.
+
+### v0.9.11 — completed historical work
+
+v0.9.11 closed the Windows test-oracle defect behind CI run
+35571120221 at its root (a genuinely cross-platform process-liveness
+oracle with real Windows evidence — no skips, no fake values) and
+shipped the first P2 roadmap feature, Connection Profiles (named,
+persistent preference sets activated through the ONE settings path),
+plus host-independent fail-closed archive sanitization (archive-space
+validation before any host conversion; complete rejection matrix for
+POSIX/Windows absolute, drive/UNC/device namespaces, ADS, traversal,
+symlink/hardlink/specials, zip/tar bombs, over-delivery and truncated
+archives) and the Windows PE resource version-consistency gate.
 
 ### v0.9.10 — completed historical work
 

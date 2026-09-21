@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -27,6 +28,26 @@ const (
 	metaFormatVersion = 2
 	storeSchema       = 1
 )
+
+// futureMetaError marks a store.meta whose format version is NEWER
+// than this binary understands (v0.9.12 §14: an older binary must
+// never silently rewrite a future schema — the file must be
+// preserved verbatim for the newer binary, never treated as
+// corruption).
+type futureMetaError struct {
+	version int
+}
+
+func (e *futureMetaError) Error() string {
+	return fmt.Sprintf("store meta version %d is newer than this build understands (%d)",
+		e.version, metaFormatVersion)
+}
+
+func isFutureMeta(err error) bool {
+	var future *futureMetaError
+
+	return errors.As(err, &future)
+}
 
 // loadOrRecover restores in-memory state from disk, rebuilding from
 // chunk files when the registry or index are missing or mismatched.
@@ -71,6 +92,20 @@ func (s *Store) loadOrRecover() error {
 
 	case os.IsNotExist(err) || isEmptyMeta(err):
 		// Fresh store or registry loss: rebuild from chunk files.
+		if rebuildErr := s.rebuildFromChunks(); rebuildErr != nil {
+			return rebuildErr
+		}
+
+	case isFutureMeta(err):
+		// FUTURE SCHEMA: preserve the document verbatim under a
+		// versioned name and rebuild the registry from the chunk
+		// files. The store still opens (chunk payloads are the real
+		// data), the future document is never overwritten, and a
+		// newer binary will find it intact.
+		if preserveErr := s.preserveFutureMeta(err); preserveErr != nil {
+			return preserveErr
+		}
+
 		if rebuildErr := s.rebuildFromChunks(); rebuildErr != nil {
 			return rebuildErr
 		}
@@ -158,6 +193,10 @@ func (s *Store) readMeta() (*diskMeta, error) {
 			Subsystem, "open", "decode store metadata")
 	}
 
+	if meta.Version > metaFormatVersion {
+		return nil, &futureMetaError{version: meta.Version}
+	}
+
 	if meta.Version != metaFormatVersion {
 		return nil, firerrors.New(firerrors.KindCorruptData,
 			Subsystem, "open", "unsupported meta version %d",
@@ -165,6 +204,26 @@ func (s *Store) readMeta() (*diskMeta, error) {
 	}
 
 	return &meta, nil
+}
+
+// preserveFutureMeta renames a future-schema store.meta aside under a
+// versioned name (never deleted, never rewritten): a newer binary can
+// recover the full registry document from it.
+func (s *Store) preserveFutureMeta(cause error) error {
+	preserved := s.metaPath() + ".future-preserved"
+
+	if err := os.Rename(s.metaPath(), preserved); err != nil {
+		if os.IsNotExist(err) {
+			return nil // vanished concurrently; nothing to preserve
+		}
+
+		return firerrors.Wrap(err, firerrors.KindEnvironment,
+			Subsystem, "open", "preserve future store.meta")
+	}
+
+	_ = cause // carried for future structured logging
+
+	return nil
 }
 
 func (s *Store) metaPath() string {

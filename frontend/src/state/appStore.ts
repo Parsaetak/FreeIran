@@ -83,6 +83,13 @@ function sameJSON(a: unknown, b: unknown): boolean {
   }
 }
 
+/**
+ * v0.9.12: monotonic poll generation — authoritative app-state events
+ * and newer polls invalidate in-flight ones (a stale poll response
+ * must never regress the displayed backend state).
+ */
+let refreshGeneration = 0;
+
 export const useAppStore = create<AppStore>((set, get) => ({
   status: "loading",
   backend: null,
@@ -92,8 +99,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
   bootTimings: null,
 
   refresh: async () => {
+    // v0.9.12: stale-read guard — a slow poll that fails after the
+    // backend already recovered (or after a newer authoritative
+    // event) must not flip the store to backend_unavailable.
+    const generation = ++refreshGeneration;
+
     try {
       const state = await call(() => appService.State());
+
+      if (generation !== refreshGeneration) return;
 
       set({
         backend: state,
@@ -103,6 +117,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
         ...readBootFields(state),
       });
     } catch (error) {
+      if (generation !== refreshGeneration) return;
+
       set({
         connected: false,
         status: "backend_unavailable",
@@ -112,6 +128,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   ingestEvent: (state: AppState) => {
+    // v0.9.12: an authoritative broadcast invalidates every in-flight
+    // poll (its stale response must never overwrite newer evidence).
+    refreshGeneration++;
+
     // Preserve previous sub-object references when content is
     // unchanged (see sameJSON): reference-keyed consumers only re-run
     // when the underlying evidence actually changed.

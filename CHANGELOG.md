@@ -3,6 +3,181 @@
 Release history for FreeIran. The newest release is documented in the
 [README](README.md); everything older lives here, newest first.
 
+## v0.9.12 — provider lifecycle monotonicity, binding-contract verification, persistence hardening
+
+Full engineering closure of the v0.9.11 state. The failing race gate
+(`engine/provider/TestTorLifecycleStartBootstrapStopRestart`, observed
+as `restart state = "starting"`) is fixed at its ROOT CAUSE, the same
+invariant class is enforced across every asynchronous event source in
+the provider layer, the hand-maintained profile bindings are now
+verified field-for-field in CI, and the persistence layer can no
+longer silently rewrite a future schema. No tests were modified to
+pass; no security, trust, verification, recovery or
+process-supervision rule was relaxed.
+
+### The Tor lifecycle root cause (fixed, regression-proved)
+
+- Two asynchronous readiness authorities competed: the endpoint probe
+  could let `Start()` return before any bootstrap line was observed
+  (the probe schedule fires immediately and real Tor opens its SOCKS
+  listener early), after which `Start()` MANUFACTURED
+  `bootstrap.Complete = true` — while the log-line scanner was still
+  draining stdout. The scanner's later `Bootstrapped 0..90%` lines
+  then overwrote `Complete = false` and `State()` regressed the
+  published lifecycle state from `ready` back to `starting`. On a
+  loaded CI runner the test's post-restart state assertion landed
+  inside that window — exactly the `restart state = "starting"`
+  failure. This was an architecture defect, not test timing.
+- The fix is the ONE monotonic, generation-scoped run-state model
+  (`engine/provider/runstate.go`), now shared by BOTH engines:
+  - every `Start` creates a fresh RUN GENERATION; every asynchronous
+    event (scanner line) carries the generation it belongs to, and a
+    stale event — old run, or run already stopped/failed — is
+    discarded (the invariant: a stale event must never mutate current
+    lifecycle state);
+  - the SCANNER owns observed bootstrap progress, and progress is
+    monotonic within a run: a late lower-% line can no longer regress
+    an observed value;
+  - the READINESS SUPERVISOR owns the verdict, following the
+    documented contract: spawn → observe process alive → observe
+    bootstrap progress → observe `Bootstrapped 100%` → verify the
+    SOCKS endpoint → publish READY exactly once, immutable for the
+    run. An endpoint accepting before 100% is recorded as EVIDENCE
+    (surfaced in the timeout diagnostics and the bootstrap tag), not
+    as readiness;
+  - `Stop` and failed starts END the run before the process even
+    dies, so an in-flight scanner line across a stop/restart boundary
+    is discarded instead of mutating or resurrecting state;
+  - `Start()` no longer writes bootstrap state at all — the
+    manufactured-`Complete` write that enabled the regression is
+    gone.
+- Readiness timing note: Tor `Start()` now returns when the
+  DOCUMENTED contract is satisfied (bootstrap 100% observed AND the
+  endpoint verified), not when the endpoint alone accepts. On real
+  networks this can take longer than the pre-0.9.12 shortcut — that
+  longer wait is the correct behavior, bounded by the existing
+  bootstrap timeout, and the failure path reports honest evidence
+  (last observed progress + endpoint evidence) instead of a bare
+  timeout.
+- Psiphon got the same treatment (same model, one system — no
+  parallel implementations): its readiness verdict (both local proxy
+  endpoints verified, the documented "tunnels up" contract) is
+  published exactly once per run, gated against concurrent Stop, and
+  its scanner events are generation-gated and monotonic.
+- Regression battery added (`engine/provider/v0912_lifecycle_test.go`
+  + `testdata/faketorstall`): progress monotonicity under late
+  lower-% lines; stale-generation and post-end event discarding; a
+  LATE line injected into the live scanner after readiness must not
+  regress state or the published bootstrap view; stale ingest across
+  restart; THREE full restart cycles with exact state assertions
+  (one pass proves nothing for a timing-dependent failure); and the
+  readiness-contract pin — a fixture whose endpoint accepts but which
+  never emits `Bootstrapped 100%` must FAIL the start with endpoint
+  evidence, never publish Ready. The engine-level tests run the real
+  fixture through the full install → start pipeline.
+
+### Audit of every other asynchronous state authority (same invariant class)
+
+- `engine/connection` (monitor loop, process-exit watcher, crash
+  transition, stability recheck): already generation-gated and
+  monotonic from the v0.9.8.6–v0.9.10 work — audited, no changes
+  needed, no defect found.
+- `internal/statepub`: ordered, bounded, class-aware delivery with
+  synchronous drain — audited, no defect found.
+- `system` process supervisor and `internal/safearchive` + the two
+  managed-install pipelines: audited against the full v0.9.12
+  checklists (child flags, job objects, breakaway, tree kill, PID
+  reuse, wait/reap, pipe draining, Stop idempotency, crash
+  detection; traversal/UNC/device/symlink/FIFO/bomb matrices,
+  checksum-before-activation, staged-only execution, user-binary
+  immutability, bounded downloads) — all items verified with file:line
+  evidence; no defect found.
+
+### Frontend/backend contract (§12: hand-maintained bindings are no longer an unverified dependency)
+
+- The wails3 generator cannot run on the current host, so the v0.9.11
+  Connection Profiles bindings are hand-maintained. CI now proves the
+  model contract FIELD-FOR-FIELD:
+  `TestProfileBindingModelsMatchGoStructs` reflects over the Go
+  `ProfileView`/`ProfileSpec` JSON tags and verifies the JSDoc
+  `@property` set, names and optionality of `profiletypes.js` (both
+  optional-marker spellings accepted) — a Go field added without
+  updating the binding, a renamed JSON tag or a wrong optional marker
+  fails the job instead of surfacing as `undefined` at runtime.
+  Combined with the existing `TestFrontendBindingsMatchGoServices`
+  (every `$Call.ByName` target verified against the registered Go
+  service; machine-generated `$Call.ByID` files verified
+  structurally), the binding surface is a VERIFIED mirror.
+
+### Persistence correctness (§14: future-schema and write-integrity hardening)
+
+- store.meta: a FUTURE format version was previously mapped to
+  "corrupt", triggering a silent rebuild that would write a v2
+  registry over a future-schema document. The future version is now
+  distinguished from corruption: the document is preserved VERBATIM as
+  `store.meta.future-preserved` (never deleted, never rewritten) and
+  the registry is rebuilt from the chunk files — the store still
+  opens, and a newer binary recovers the original document intact.
+- profiles.json / sources.json / collections.json: a future schema
+  version now arms a save guard — every mutating write REFUSES loudly
+  ("uses a newer schema; refusing to overwrite") instead of silently
+  downgrading the document. Load behavior (run on defaults/empty,
+  file untouched) is unchanged.
+- settings.json: `SettingsService.Save` and `persistSettings` now
+  share ONE write mutex around the whole read→validate→write→memory
+  cycle — concurrent settings writers could previously interleave and
+  leave memory and disk diverging.
+- config order sidecar: the hand-rolled fixed-`.tmp` rename (no
+  fsync, interleavable tmp name) is replaced by the ONE shared atomic
+  write path (`system.WriteFileAtomic`).
+
+### UI state authority (§13: no optimistic lifecycle state, no stale-store races)
+
+- HIGH defect fixed: an authoritative connection event during a
+  blocking `Connect`/`Reconnect` call invalidated the in-flight store
+  operation WITHOUT releasing its busy ownership — and the backend
+  publishes real transitions DURING those calls, so every real
+  connect resolved stale with `busy=true` stuck, disabling
+  Connect/Disconnect/Reconnect until restart. An authoritative event
+  now releases busy ownership (the dropped result loses nothing: the
+  snapshot carries the machine's own state and LastError). Regression
+  tests pin the event-vs-operation interleaving.
+- Generation guards added to the remaining unguarded store paths:
+  `profilesStore.setActive` (a slow first activation can no longer
+  overwrite a newer activation), `startflowStore` (status reads
+  invalidated by newer events/reads), `appStore` (a slow failed poll
+  can no longer flip a live backend to `backend_unavailable`; events
+  invalidate in-flight polls), `providerStore.setMode`
+  (out-of-order responses can no longer settle the wrong mode;
+  failures surface in the store instead of vanishing).
+
+### Validation (executed for this release, evidence-bounded)
+
+- `gofmt` clean; `go vet` clean on every package that compiles on
+  Linux (the wails GUI dependency chain requires GTK4/webkitgtk dev
+  packages absent from the verification host — identical to the CI
+  split, where the desktop build validates via the
+  `CGO_ENABLED=0 windows/amd64` target, which also passes here).
+- `go test ./engine/... ./internal/... ./system/...`: PASS.
+- `go test -race` (CI scope, `./engine/... ./system/...
+  ./internal/...`): PASS, plus the provider package and the
+  Tor lifecycle test re-run repeatedly (3x targeted, full-package
+  and full-repo race runs) because one pass proves nothing for a
+  timing-dependent failure.
+- Native layer: `make -C native test` PASS; `native_accel` build,
+  cross-language tests and benchmarks PASS.
+- Frontend: typecheck PASS; unit tests 136/136 PASS; production build
+  PASS.
+- Real protocol cores (pinned, SHA-256-verified official archives):
+  V2Ray v5.53.0, Xray v26.3.27, sing-box v1.14.0 — all three adapter
+  smoke suites PASS.
+- Windows desktop build validates via `GOOS=windows GOARCH=amd64
+  CGO_ENABLED=0 go build` PASS.
+- NOT executed on this host (no Windows runner available without
+  pushing): the Windows test/build job and Windows runtime smoke.
+  These remain post-push CI verification and are claimed NOWHERE as
+  done.
+
 ## v0.9.11 — Windows lifecycle closure, host-independent archive security, Connection Profiles
 
 Full engineering closure of v0.9.10 plus the first P2 roadmap feature.

@@ -13,7 +13,7 @@ import "runtime"
 // Build systems override this via:
 //
 //	-ldflags "-X github.com/Parsaetak/FreeIran/internal/version.Version=x.y.z"
-var Version = "0.9.11"
+var Version = "0.9.12"
 
 // Commit is the git commit the binary was built from. CI overrides it
 // with ldflags; local builds report "dev".

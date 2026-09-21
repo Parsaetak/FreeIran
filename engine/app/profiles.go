@@ -122,6 +122,12 @@ type profilesState struct {
 	activeID  string
 	defaultID string
 	nextID    int
+
+	// futureSchema (v0.9.12): the on-disk sidecar was written by a
+	// NEWER binary. The service runs with empty profiles and every
+	// mutating operation REFUSES to save — silently rewriting a
+	// future schema with an older binary is forbidden (§14).
+	futureSchema bool
 }
 
 // profilesPath is the persisted profiles sidecar.
@@ -160,7 +166,10 @@ func (a *App) loadProfiles() {
 
 	if doc.Version > profilesFormatVersion {
 		// Future schema: keep the file on disk for migration by
-		// the newer version; run with empty profiles meanwhile.
+		// the newer version; run with empty profiles meanwhile —
+		// and arm the save guard so no mutation can downgrade
+		// the document behind the user's back.
+		a.profiles.futureSchema = true
 		a.profiles.nextID = 1
 
 		return
@@ -308,6 +317,14 @@ func sortProfilesLocked(profiles []persistedProfile) {
 // saveProfilesLocked persists the sidecar atomically (caller holds
 // profiles.mu).
 func (a *App) saveProfilesLocked() error {
+	if a.profiles.futureSchema {
+		// v0.9.12 §14: never silently rewrite a future schema with an
+		// older binary. The refusal is LOUD — the mutation fails with
+		// this error — and the on-disk document stays intact for the
+		// newer version.
+		return fmt.Errorf("app: profiles sidecar uses a newer schema; refusing to overwrite (run the newer version first)")
+	}
+
 	doc := persistedProfiles{
 		Version:          profilesFormatVersion,
 		Profiles:         a.profiles.profiles,

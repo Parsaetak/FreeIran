@@ -235,6 +235,17 @@ type App struct {
 	seenHashes map[string]string
 	lastStats  *pipeline.Stats
 
+	// sourcesFutureSchema (v0.9.12): sources.json was written by a
+	// NEWER binary — set at load, checked by every save (§14: an
+	// older binary must never silently rewrite a future schema).
+	sourcesFutureSchema bool
+
+	// settingsWrite serializes the settings.json read-mutate-write
+	// cycle across ALL writers (SettingsService.Save and
+	// persistSettings) so concurrent saves can never interleave
+	// and leave memory and disk diverging (v0.9.12 §14).
+	settingsWrite sync.Mutex
+
 	// Event-driven UI synchronization. The application-state
 	// publisher (internal/statepub) is created on the first
 	// SetStateListener registration and stopped synchronously in
@@ -1089,6 +1100,16 @@ func (a *App) loadSources() error {
 		return nil
 	}
 
+	if persisted.Version > sourcesFormatVersion {
+		// FUTURE SCHEMA (v0.9.12 §14): run with defaults, but arm
+		// the save guard — an older binary must never silently
+		// rewrite a future schema. The on-disk document stays
+		// untouched for the newer version.
+		a.sourcesFutureSchema = true
+
+		return nil
+	}
+
 	if persisted.Version != sourcesFormatVersion {
 		return nil
 	}
@@ -1147,6 +1168,13 @@ func normalizePersistedSources(sources []source.Source) []source.Source {
 }
 
 func (a *App) saveSources() error {
+	if a.sourcesFutureSchema {
+		// v0.9.12 §14: never silently rewrite a future schema with an
+		// older binary — the on-disk document stays intact and the
+		// caller's write fails loudly.
+		return fmt.Errorf("app: sources sidecar uses a newer schema; refusing to overwrite (run the newer version first)")
+	}
+
 	a.mu.RLock()
 
 	payload := persistedSources{

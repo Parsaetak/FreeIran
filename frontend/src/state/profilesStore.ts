@@ -13,6 +13,16 @@ import { call, profileService, type ProfileSpec, type ProfileView } from "../ser
 
 export type ProfileMode = "auto" | "configs" | "tor" | "psiphon";
 
+/**
+ * v0.9.12: operation generation for the activation path. Every
+ * setActive captures a token when it starts and applies its result
+ * only while still current — a slow first activation can never
+ * overwrite the active profile of a second, newer activation
+ * (backend state stays authoritative; this guard keeps the DISPLAY
+ * from regressing under out-of-order responses).
+ */
+let activationGeneration = 0;
+
 interface ProfilesStore {
   profiles: ProfileView[];
   active: ProfileView | null;
@@ -89,15 +99,24 @@ export const useProfilesStore = create<ProfilesStore>((set, get) => ({
   },
 
   setActive: async (profileID) => {
+    const generation = ++activationGeneration;
+
     try {
       // Backend first: the returned view is the authoritative state and
       // the UI updates from it immediately (no optimistic local state).
       const applied = await call<ProfileView>(() => profileService.SetActive(profileID));
 
+      // Superseded by a newer activation: never apply.
+      if (generation !== activationGeneration) return;
+
       await get().refresh();
+
+      if (generation !== activationGeneration) return;
 
       set({ active: applied, error: null });
     } catch (err) {
+      if (generation !== activationGeneration) return;
+
       const message = err instanceof Error ? err.message : String(err);
 
       set({ error: message });

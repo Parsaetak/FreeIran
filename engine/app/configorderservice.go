@@ -25,6 +25,7 @@ import (
 
 	"github.com/Parsaetak/FreeIran/engine/config"
 	firerrors "github.com/Parsaetak/FreeIran/engine/errors"
+	"github.com/Parsaetak/FreeIran/system"
 )
 
 // configOrderMax bounds the persisted order list (the store itself is
@@ -93,17 +94,11 @@ func (a *App) saveConfigOrder(order []string) error {
 		return err
 	}
 
-	path := a.configOrderPath()
-
-	tmp := path + ".tmp"
-
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return err
-	}
-
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-
+	// v0.9.12: the ONE shared atomic-write path (temp + fsync +
+	// rename) replaces the hand-rolled fixed-`.tmp` rename — the
+	// fixed name could interleave between concurrent moves and a
+	// crash could leave a torn file behind.
+	if err := system.WriteFileAtomic(a.configOrderPath(), data, 0o600); err != nil {
 		return err
 	}
 

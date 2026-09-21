@@ -55,6 +55,13 @@ function stageIndex(stage: StartFlowStage | string | undefined): number {
   return idx < 0 ? 0 : idx;
 }
 
+/**
+ * v0.9.12: monotonic read generation shared by every refresh() —
+ * authoritative startflow events and newer reads invalidate older
+ * ones (stale event must never regress displayed state).
+ */
+let refreshGeneration = 0;
+
 export const useStartFlowStore = create<StartFlowState>((set, get) => ({
   status: null,
   environment: null,
@@ -63,8 +70,16 @@ export const useStartFlowStore = create<StartFlowState>((set, get) => ({
   lastResult: null,
 
   refresh: async () => {
+    // v0.9.12: stale-read guard — a status read that resolves after a
+    // newer startflow event (or a newer read) must not regress the
+    // displayed stage.
+    const generation = ++refreshGeneration;
+
     try {
       const status = await call(() => discoveryService.StartFlowStatus());
+
+      if (generation !== refreshGeneration) return;
+
       set({ status: status as StartFlowStatus });
     } catch {
       // The backend may not be bound yet; the next refresh retries.
@@ -134,6 +149,9 @@ export function subscribeStartFlow(): () => void {
     (event: { data: StartFlowEvent }) => {
       const ev = event.data;
       if (!ev) return;
+      // v0.9.12: an authoritative event invalidates every in-flight
+      // status read (stale reads must never regress the machine).
+      refreshGeneration++;
       useStartFlowStore.setState((state) => ({
         status: {
           ...(state.status ?? {

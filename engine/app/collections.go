@@ -103,6 +103,11 @@ type collectionsState struct {
 	favorites   []string
 	groups      []persistedUserGroup
 	nextGroupID int
+
+	// futureSchema (v0.9.12): the on-disk sidecar was written by a
+	// NEWER binary — every mutating save REFUSES (§14: an older
+	// binary must never silently rewrite a future schema).
+	futureSchema bool
 }
 
 // collectionsPath is the persisted collections sidecar.
@@ -134,6 +139,14 @@ func (a *App) loadCollections() {
 	var doc persistedCollections
 
 	if err := json.Unmarshal(raw, &doc); err != nil {
+		return
+	}
+
+	if doc.Version > collectionsFormatVersion {
+		// Future schema (v0.9.12 §14): run empty, but arm the save
+		// guard so no mutation can downgrade the document.
+		a.collections.futureSchema = true
+
 		return
 	}
 
@@ -189,6 +202,13 @@ func (a *App) loadCollections() {
 // saveCollectionsLocked persists the sidecar atomically (caller holds
 // collections.mu).
 func (a *App) saveCollectionsLocked() error {
+	if a.collections.futureSchema {
+		// v0.9.12 §14: never silently rewrite a future schema with an
+		// older binary — the refusal is loud and the document stays
+		// intact for the newer version.
+		return fmt.Errorf("app: collections sidecar uses a newer schema; refusing to overwrite (run the newer version first)")
+	}
+
 	doc := persistedCollections{
 		Version:   collectionsFormatVersion,
 		Favorites: a.collections.favorites,
