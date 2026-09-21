@@ -212,6 +212,15 @@ type App struct {
 	qcMu       sync.Mutex
 	qcFailures map[string]time.Time
 
+	// v0.9.10: persistent favorites + user-defined groups
+	// (collections.go — one versioned sidecar, stable IDs).
+	collections collectionsState
+
+	// v0.9.10: source-reliability report cache (sourcereliability.go)
+	// + when the last ingestion cycle finished (evidence timestamp).
+	reliability     reliabilityCache
+	lastIngestionAt int64
+
 	// cfgOrder caches the persisted manual configuration order
 	// (configorderservice.go).
 	cfgOrder configOrderState
@@ -1013,7 +1022,13 @@ func (a *App) runIngestionCycle(ctx context.Context) error {
 		a.lastStats = &statsCopy
 	}
 
+	// v0.9.10: the ingestion cycle produced fresh evidence — the
+	// source-reliability dashboard's cache is stale from here on.
+	a.lastIngestionAt = time.Now().UTC().UnixMilli()
+
 	a.mu.Unlock()
+
+	a.invalidateReliability()
 
 	if saveErr := a.saveSources(); saveErr != nil && err == nil {
 		err = saveErr

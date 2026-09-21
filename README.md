@@ -9,13 +9,123 @@ configurations.
 **Project:** FreeIran — A SHEYTAN Digital System
 **Architect:** Parsa Tak / SHEYTAN
 **Repository:** https://github.com/Parsaetak/FreeIran
-**Current version:** 0.9.9 (see `VERSION`)
+**Current version:** 0.9.10 (see `VERSION`)
 **Status:** production architecture — multi-core protocol runtime with
 managed installation, multi-level node discovery, Ping/URL test modes
 with measured ranking, verified-connection engine with racing,
 environment intelligence, system proxy mode (WinINet), unified adaptive
 memory control and kernel-level process supervision. TUN mode is
 EXPERIMENTAL and disabled in this release (see "TUN mode" below).
+
+---
+
+## What's new in v0.9.10
+
+v0.9.10 is a **connection-lifecycle architecture repair and
+beginner-first product release** — the v0.9.9 flaky recovery tests are
+fixed at their ROOT CAUSE, the last unfinished v0.7 roadmap work
+(source reliability dashboards, configuration grouping, favorites) is
+completed on the existing architecture, and the primary experience is
+reorganized around **Connect → Configurations → Sources**. No security
+boundary weakened; no verification, trust or recovery policy relaxed.
+
+### The connection-lifetime root cause (fixed and regression-proved)
+
+The persistent core/provider process was bound — through
+`exec.CommandContext` — to the CALLER's operation context (the 60
+second Quick Connect attempt, the 60 second service-layer connect, the
+3 minute provider start). Every successful connection was killed the
+moment that context expired or its `defer cancel()` ran; the monitor
+then reported an "unexpected" crash and the bounded recovery loop
+reconnected into the same trap. This is exactly the race behind the
+v0.9.9 `TestRecoveryRequiresActualVerification` /
+`TestRecoverySwitchesToNextCandidate` CI failures.
+
+The v0.9.10 architecture separates the two contexts:
+
+- **Operation context** (what callers pass) bounds candidate
+  selection, preparation, the startup deadline, readiness waiting,
+  verification and the bounded attempts — never the process lifetime.
+- **Session runtime context** (owned by the active session in
+  `engine/connection`) bounds the persistent core process lifetime.
+  It is cancelled ONLY by explicit disconnect, shutdown, session
+  replacement or unrecoverable runtime failure — a successful
+  connection SURVIVES its operation context.
+
+Provider engines (Tor, Psiphon) own the same separation internally:
+the process runs on a per-run runtime context, and `Start(ctx)`
+bounds only the bootstrap/negotiate wait. Session replacement is
+deterministic — a provider session taking over from a running core
+session CLOSES the previous core (the pre-0.9.10 boundary dropped the
+instance reference and orphaned the process). The crash transition is
+now a true session boundary (generation bump + runtime-context
+release), matching the stability-teardown semantics.
+
+Regression-proved with real processes (the deterministic fakecore and
+fake Tor stand-ins), and each proof FAILS on the v0.9.9 tree:
+connect survives operation-context cancellation AND deadline; the core
+stays alive after `Connect` returns; explicit disconnect terminates
+it; reconnect replaces the previous session's process; cancelled and
+failed startups tear down cleanly; crashes release the session
+context; Quick Connect and recovery sessions stay `connected_verified`
+across an observation window; Tor survives its operation context; no
+goroutine leaks across cycles.
+
+### v0.7 roadmap work completed (evidence only, never invented)
+
+- **Source reliability dashboard** (Sources page): per-source fetch
+  evidence, last-refresh pipeline evidence (discovered / duplicates /
+  invalid per source) and a bounded store scan (persisted, tested,
+  working, failed, untested, stale counts, median measured latency,
+  last successful test). Sources removed from the registry keep their
+  evidence visible. Where evidence is insufficient the dashboard says
+  **Not enough data** instead of a score; the report is cached and
+  invalidated by ingestion cycles.
+- **Configuration grouping** (Configs page): built-in evidence groups
+  (All / Favorites / Working / Untested / Fast / Recently tested)
+  computed from measured records, persistent user groups (Work /
+  Personal / Travel / anything) stored by stable IDs in one versioned
+  sidecar (no duplicated configuration storage), and organize-by
+  (source / protocol / status) with live counts — all through the ONE
+  existing server-side filter pipeline.
+- **Favorites / saved routes**: star any configuration; favorites
+  never bypass testing, verification or the route-trust policy.
+
+### Beginner-first product experience
+
+- Navigation is now **Connect → Configurations → Sources**, with every
+  technical/diagnostic surface (Dashboard, Connection, Cores, Network,
+  Diagnostics, Settings) under a secondary **More** section —
+  progressively revealed, never removed, consistent on every page.
+- Quick Connect failures explain themselves: **What happened → What
+  FreeIran is doing → What you can do**, with the raw technical detail
+  behind an expandable section (trust and verification failures keep
+  their full meaning). A **Fix my connection** action runs the
+  adaptive discover → test → rank → connect flow with live progress.
+- Contextual education where confusion is likely (what a configuration
+  is, what verification means, why a core is needed, what favorites
+  do) — small hints, not documentation.
+- The Cores page explains WHY a core is required before asking for an
+  install, and the Connection page gained a compact session status
+  card (verification state, route, recovery activity — a read-only
+  projection of the same bounded recovery service).
+
+### Startup and performance
+
+The six secondary surfaces are code-split (`React.lazy`) and load on
+first visit, shrinking the initial bundle while every loading state
+represents real work. The stable-filename embed contract now covers
+the deterministic page chunks (hash-free, module-named); hashed
+artifacts remain forbidden. Wails bindings were regenerated with the
+pinned toolchain (two consecutive generations byte-identical).
+
+### Validation (all executed, results in the release notes)
+
+Full matrix: gofmt, `go vet`, unit tests, `-race` across every
+package, benchmark smoke, frontend typecheck + tests + production
+build, embed inventory, native C++ build + tests + cross-language
+tests, Windows/amd64 cross-compile, and the clean-room build from the
+final tree.
 
 ---
 
@@ -550,7 +660,7 @@ FreeIran/
 ├── .github/workflows/     CI, release and security pipelines
 ├── docs/                  Architecture, storage, performance, CI, security, dev
 ├── CHANGELOG.md           Release history (moved out of README, v0.9.8.6)
-└── VERSION                Application version (0.9.9)
+└── VERSION                Application version (0.9.10)
 ```
 
 ---
@@ -615,7 +725,7 @@ interrupted run is safely re-runnable.
       sources with metadata, capability-driven failover** (the TUN
       mode shipped in v0.6 was DISABLED in v0.9.8.6 — its backend was
       not transactional and its Wintun acquisition was unverifiable)
-- [ ] v0.7 — UI polish, source reliability dashboards, config grouping
+- [x] v0.7 — UI polish, source reliability dashboards, config grouping (completed in v0.9.10)
 - [ ] v1.0 — Stable releases, security review, reproducible builds
 
 ---

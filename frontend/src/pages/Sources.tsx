@@ -1,10 +1,12 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useSourcesStore } from "../state/stores";
+import { useReliabilityStore } from "../state/collectionsStore";
 import { truncate } from "../utilities/format";
 import { describeError, toast } from "../state/toastStore";
 import { ConfirmDialog, FormDialog } from "../components/Dialog";
 import { EmptyState } from "../components/common";
 import { IconPlus, IconRefresh, IconSources, IconTrash } from "../components/Icons";
+import { formatLatency } from "../utilities/format";
 
 /** Sources page: managed subscription lists with refresh flow. */
 export function SourcesPage() {
@@ -23,6 +25,23 @@ export function SourcesPage() {
   const [removeTarget, setRemoveTarget] = useState<{ id: string; label: string } | null>(null);
   const [removing, setRemoving] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
+
+  // v0.9.10: the evidence-based reliability dashboard — loaded per
+  // mount (the backend serves it cached) and reloaded after each
+  // refresh cycle completes (evidence changed).
+  const reliability = useReliabilityStore((state) => state.report);
+  const reliabilityLoading = useReliabilityStore((state) => state.loading);
+  const loadReliability = useReliabilityStore((state) => state.load);
+
+  useEffect(() => {
+    void loadReliability();
+  }, [loadReliability]);
+
+  useEffect(() => {
+    if (!refreshing && lastIngestion) {
+      void loadReliability();
+    }
+  }, [refreshing, lastIngestion, loadReliability]);
 
   const toggle = async (id: string, enabled: boolean) => {
     setPendingIds((current) => [...current, id]);
@@ -92,6 +111,10 @@ export function SourcesPage() {
       )}
 
       {lastError && <div className="error-banner">{lastError}</div>}
+
+      {/* v0.9.10: source reliability dashboard — measured evidence
+          only; “Not enough data” where evidence is missing. */}
+      <SourceReliabilityCard report={reliability} loading={reliabilityLoading} />
 
       {lastIngestion && !refreshing && (
         <div className="toolbar">
@@ -355,5 +378,147 @@ function AddSourceDialog({
 
       {formError && <div className="error-banner">{formError}</div>}
     </FormDialog>
+  );
+}
+
+/**
+ * v0.9.10 source reliability dashboard: an evidence-based health view
+ * of every source. Numbers come ONLY from the backend's measured
+ * evidence (fetch counters, last refresh pipeline, per-source store
+ * scan); where evidence is insufficient the card says
+ * "Not enough data" instead of inventing a score (§6).
+ */
+function SourceReliabilityCard({
+  report,
+  loading,
+}: {
+  report: import("../../bindings/github.com/Parsaetak/FreeIran/engine/app/models.js").SourceReliabilityReport | null;
+  loading: boolean;
+}) {
+  if (!report && loading) {
+    return (
+      <div className="card flush">
+        <div className="card-header">
+          <h3 className="card-title">Source reliability</h3>
+        </div>
+        <div className="loading-inline">
+          <span className="btn-spinner" aria-hidden /> Measuring source health…
+        </div>
+      </div>
+    );
+  }
+
+  if (!report) return null;
+
+  const overall = report.overall;
+  const enoughData = overall.success_rate_pct >= 0;
+  const lastRefresh = overall.last_refresh_at
+    ? new Date(overall.last_refresh_at).toLocaleString()
+    : "never";
+
+  return (
+    <div className="card flush">
+      <div className="card-header">
+        <h3 className="card-title">Source reliability</h3>
+        <span className="chip mono">{report.sources?.length ?? 0} sources</span>
+      </div>
+
+      <div className="card-body reliability-summary">
+        <div className="reliability-stat">
+          <span className="stat-label">Enabled sources</span>
+          <span className="stat-value">
+            {overall.enabled_sources}/{overall.total_sources}
+          </span>
+          <span className="stat-sub">participate in refresh cycles</span>
+        </div>
+
+        <div className="reliability-stat">
+          <span className="stat-label">Success rate</span>
+          <span className="stat-value">
+            {enoughData ? `${overall.success_rate_pct}%` : "—"}
+          </span>
+          <span className="stat-sub">
+            {enoughData
+              ? `${overall.working_configs} working of ${overall.tested_configs} tested`
+              : "Not enough data — test connections first"}
+          </span>
+        </div>
+
+        <div className="reliability-stat">
+          <span className="stat-label">Median latency</span>
+          <span className="stat-value">
+            {(overall.median_latency_ms ?? 0) > 0 ? formatLatency(overall.median_latency_ms ?? 0) : "—"}
+          </span>
+          <span className="stat-sub">
+            {(overall.median_latency_ms ?? 0) > 0 ? "measured on working routes" : "no measurement yet"}
+          </span>
+        </div>
+
+        <div className="reliability-stat">
+          <span className="stat-label">Configurations</span>
+          <span className="stat-value">{overall.persisted_configs}</span>
+          <span className="stat-sub">
+            {overall.untested_configs} untested · {overall.working_configs} working
+          </span>
+        </div>
+
+        <div className="reliability-stat">
+          <span className="stat-label">Last refresh</span>
+          <span className="stat-value" style={{ fontSize: 12 }}>
+            {overall.last_refresh_state}
+          </span>
+          <span className="stat-sub">{lastRefresh}</span>
+        </div>
+      </div>
+
+      {(report.sources?.length ?? 0) > 0 && (
+        <div role="table" aria-label="Per-source reliability">
+          <div className="src-health-head" role="row">
+            <span role="columnheader">Source</span>
+            <span role="columnheader">Persisted</span>
+            <span role="columnheader">Working</span>
+            <span role="columnheader">Tested</span>
+            <span role="columnheader">Success</span>
+            <span role="columnheader">Median</span>
+            <span role="columnheader">Fetches</span>
+          </div>
+
+          {report.sources.map((entry) => (
+            <div className="src-health-row" role="row" key={entry.id}>
+              <span className="src-name" role="cell" title={entry.id}>
+                {truncate(entry.name || entry.id, 34)}
+                {!entry.enabled && <span className="cell-sub-inline"> (disabled)</span>}
+              </span>
+              <span className="src-cell" role="cell">
+                {entry.persisted_configs || "—"}
+              </span>
+              <span className="src-cell" role="cell">
+                {entry.working_configs || "—"}
+              </span>
+              <span className="src-cell" role="cell">
+                {entry.tested_configs || "—"}
+              </span>
+              <span className={`src-cell ${entry.success_rate_pct < 0 ? "na" : ""}`} role="cell">
+                {entry.success_rate_pct >= 0 ? `${entry.success_rate_pct}%` : "no data"}
+              </span>
+              <span className="src-cell" role="cell">
+                {(entry.median_latency_ms ?? 0) > 0 ? formatLatency(entry.median_latency_ms ?? 0) : "—"}
+              </span>
+              <span
+                className={`src-cell ${entry.fetch_enough_data ? "" : "na"}`}
+                role="cell"
+                title={
+                  entry.fetch_enough_data
+                    ? `${entry.success_count}/${entry.fetch_count} fetches succeeded`
+                    : "never fetched"
+                }
+              >
+                {entry.fetch_enough_data ? `${entry.fetch_success_pct}%` : "—"}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }

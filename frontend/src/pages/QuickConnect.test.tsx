@@ -317,7 +317,7 @@ describe("Quick Connect page", () => {
     render(<QuickConnectPage onNavigate={vi.fn()} />);
 
     expect(screen.getByText("Verifying")).toBeTruthy();
-    expect(screen.getByText("Checking connectivity…")).toBeTruthy();
+    expect(screen.getByText("Checking that real Internet traffic flows…")).toBeTruthy();
   });
 
   // v0.9.8.4 contract: the final successful state is
@@ -379,7 +379,7 @@ describe("Quick Connect page", () => {
 
     // Transitional: the route is up, connectivity is being checked.
     expect(screen.getByText("Verifying")).toBeTruthy();
-    expect(screen.getByText("Checking connectivity…")).toBeTruthy();
+    expect(screen.getByText("Checking that real Internet traffic flows…")).toBeTruthy();
     expect(container.querySelector('.qc-hero[aria-busy="true"]')).toBeTruthy();
 
     // The verified badge must NOT appear: readiness is not proof.
@@ -395,7 +395,7 @@ describe("Quick Connect page", () => {
     render(<QuickConnectPage onNavigate={vi.fn()} />);
 
     expect(screen.getByText("Verifying")).toBeTruthy();
-    expect(screen.getByText("Checking connectivity…")).toBeTruthy();
+    expect(screen.getByText("Checking that real Internet traffic flows…")).toBeTruthy();
   });
 
   it("shows the failed state with an honest message and a retry action", () => {
@@ -406,7 +406,16 @@ describe("Quick Connect page", () => {
     });
 
     expect(screen.getByText("Connection failed")).toBeTruthy();
-    expect(screen.getByText("No usable connection was verified.")).toBeTruthy();
+
+    // v0.9.10: the humanized failure view replaces the flat message —
+    // What happened / What FreeIran is doing / What you can do, with
+    // the raw detail behind an expandable section.
+    expect(screen.getByText("What happened")).toBeTruthy();
+    expect(screen.getByText("What FreeIran is doing")).toBeTruthy();
+    expect(screen.getByText("What you can do")).toBeTruthy();
+
+    // The recovery action is prominent and honest.
+    expect(screen.getByRole("button", { name: /Fix my connection/ })).toBeTruthy();
 
     // Retry is the same single primary action.
     expect(screen.getByRole("button", { name: /CONNECT/ })).toBeTruthy();

@@ -24,6 +24,9 @@ import * as discoveryService from "../../bindings/github.com/Parsaetak/FreeIran/
 // v0.9.3 methods used until the next generator run).
 import * as providerService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/providerservice.js";
 import * as toolsService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/internettoolsservice.js";
+// v0.9.10: favorites, user groups and the evidence-based source
+// reliability dashboard (machine-generated bindings).
+import * as collectionService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/collectionservice.js";
 import * as loggingModels from "../../bindings/github.com/Parsaetak/FreeIran/internal/logging/models.js";
 
 export {
@@ -42,6 +45,7 @@ export {
   discoveryService,
   providerService,
   toolsService,
+  collectionService,
   loggingModels,
 };
 

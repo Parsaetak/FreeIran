@@ -43,6 +43,25 @@ export class SourceResult {
              */
             this["unique"] = 0;
         }
+        if (/** @type {any} */(false)) {
+            /**
+             * Duplicates counts configurations this source contributed
+             * that were already known (v0.9.10 source-reliability
+             * evidence).
+             * @member
+             * @type {number | undefined}
+             */
+            this["duplicates"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * Invalid counts configurations from this source that failed
+             * validation (v0.9.10 source-reliability evidence).
+             * @member
+             * @type {number | undefined}
+             */
+            this["invalid"] = undefined;
+        }
         if (!("unchanged" in $$source)) {
             /**
              * @member

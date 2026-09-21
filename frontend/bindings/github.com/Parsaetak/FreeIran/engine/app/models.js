@@ -272,6 +272,44 @@ export class BackendView {
 }
 
 /**
+ * BuiltinGroupView is the UI projection of one built-in group.
+ */
+export class BuiltinGroupView {
+    /**
+     * Creates a new BuiltinGroupView instance.
+     * @param {Partial<BuiltinGroupView>} [$$source = {}] - The source object to create the BuiltinGroupView.
+     */
+    constructor($$source = {}) {
+        if (!("id" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["id"] = "";
+        }
+        if (!("count" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["count"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new BuiltinGroupView instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {BuiltinGroupView}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new BuiltinGroupView(/** @type {Partial<BuiltinGroupView>} */($$parsedSource));
+    }
+}
+
+/**
  * CacheStats summarizes the cache layers.
  */
 export class CacheStats {
@@ -762,6 +800,18 @@ export class ConfigFilter {
              * @type {string | undefined}
              */
             this["query"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * Group filters by a built-in group ("favorites", "working",
+             * "untested", "fast", "recently_tested"; "all"/"" = everything)
+             * or a user group id ("g-1", ...). v0.9.10: one filter pipeline,
+             * the same evidence fields the ranking engine scores — favorites
+             * and groups never bypass testing or trust.
+             * @member
+             * @type {string | undefined}
+             */
+            this["group"] = undefined;
         }
         if (/** @type {any} */(false)) {
             /**
@@ -1359,6 +1409,53 @@ export class EnqueueItem {
 }
 
 /**
+ * GroupsOverview is the complete group surface for the Configs page:
+ * the built-in evidence groups (live counts) plus the user groups.
+ */
+export class GroupsOverview {
+    /**
+     * Creates a new GroupsOverview instance.
+     * @param {Partial<GroupsOverview>} [$$source = {}] - The source object to create the GroupsOverview.
+     */
+    constructor($$source = {}) {
+        if (!("builtin" in $$source)) {
+            /**
+             * @member
+             * @type {BuiltinGroupView[]}
+             */
+            this["builtin"] = [];
+        }
+        if (!("user" in $$source)) {
+            /**
+             * @member
+             * @type {UserGroupView[]}
+             */
+            this["user"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new GroupsOverview instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {GroupsOverview}
+     */
+    static createFrom($$source = {}) {
+        const $$createField0_0 = $$createType15;
+        const $$createField1_0 = $$createType17;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("builtin" in $$parsedSource) {
+            $$parsedSource["builtin"] = $$createField0_0($$parsedSource["builtin"]);
+        }
+        if ("user" in $$parsedSource) {
+            $$parsedSource["user"] = $$createField1_0($$parsedSource["user"]);
+        }
+        return new GroupsOverview(/** @type {Partial<GroupsOverview>} */($$parsedSource));
+    }
+}
+
+/**
  * LastCleanupTask reports one task of the last cleanup pass.
  */
 export class LastCleanupTask {
@@ -1561,7 +1658,7 @@ export class LogPage {
      * @returns {LogPage}
      */
     static createFrom($$source = {}) {
-        const $$createField0_0 = $$createType15;
+        const $$createField0_0 = $$createType19;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("entries" in $$parsedSource) {
             $$parsedSource["entries"] = $$createField0_0($$parsedSource["entries"]);
@@ -1634,8 +1731,8 @@ export class MemorySnapshot {
      * @returns {MemorySnapshot}
      */
     static createFrom($$source = {}) {
-        const $$createField0_0 = $$createType16;
-        const $$createField1_0 = $$createType17;
+        const $$createField0_0 = $$createType20;
+        const $$createField1_0 = $$createType21;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pressure" in $$parsedSource) {
             $$parsedSource["pressure"] = $$createField0_0($$parsedSource["pressure"]);
@@ -1678,6 +1775,146 @@ export class NetworkIdentityRequest {
     static createFrom($$source = {}) {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new NetworkIdentityRequest(/** @type {Partial<NetworkIdentityRequest>} */($$parsedSource));
+    }
+}
+
+/**
+ * OverallSourceHealth is the cross-source aggregate.
+ */
+export class OverallSourceHealth {
+    /**
+     * Creates a new OverallSourceHealth instance.
+     * @param {Partial<OverallSourceHealth>} [$$source = {}] - The source object to create the OverallSourceHealth.
+     */
+    constructor($$source = {}) {
+        if (!("total_sources" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["total_sources"] = 0;
+        }
+        if (!("enabled_sources" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["enabled_sources"] = 0;
+        }
+        if (!("last_refresh_state" in $$source)) {
+            /**
+             * LastRefreshState describes the most recent ingestion cycle
+             * ("idle" when none has run).
+             * @member
+             * @type {string}
+             */
+            this["last_refresh_state"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * LastRefreshAt is when the last ingestion cycle finished
+             * (Unix ms; 0 = never).
+             * @member
+             * @type {number | undefined}
+             */
+            this["last_refresh_at"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * Pipeline totals from the last ingestion cycle (0 when none ran).
+             * @member
+             * @type {number | undefined}
+             */
+            this["discovered"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {number | undefined}
+             */
+            this["duplicates"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {number | undefined}
+             */
+            this["invalid"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {number | undefined}
+             */
+            this["persisted"] = undefined;
+        }
+        if (!("persisted_configs" in $$source)) {
+            /**
+             * Store evidence (bounded scan).
+             * @member
+             * @type {number}
+             */
+            this["persisted_configs"] = 0;
+        }
+        if (!("tested_configs" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["tested_configs"] = 0;
+        }
+        if (!("working_configs" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["working_configs"] = 0;
+        }
+        if (!("failed_configs" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["failed_configs"] = 0;
+        }
+        if (!("untested_configs" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["untested_configs"] = 0;
+        }
+        if (!("success_rate_pct" in $$source)) {
+            /**
+             * SuccessRatePct is the measured working/tested ratio in percent,
+             * or -1 when fewer than one tested configuration exists (the UI
+             * renders "Not enough data").
+             * @member
+             * @type {number}
+             */
+            this["success_rate_pct"] = 0;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * MedianLatencyMS is the median measured latency of WORKING
+             * configurations (0 = no working configuration was ever measured).
+             * @member
+             * @type {number | undefined}
+             */
+            this["median_latency_ms"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new OverallSourceHealth instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {OverallSourceHealth}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new OverallSourceHealth(/** @type {Partial<OverallSourceHealth>} */($$parsedSource));
     }
 }
 
@@ -1863,6 +2100,94 @@ export class RecoveryStatus {
     static createFrom($$source = {}) {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new RecoveryStatus(/** @type {Partial<RecoveryStatus>} */($$parsedSource));
+    }
+}
+
+/**
+ * RecoveryStatusView is the credential-free recovery projection for
+ * the UI (mirrors app.RecoveryStatus with JSON tags).
+ */
+export class RecoveryStatusView {
+    /**
+     * Creates a new RecoveryStatusView instance.
+     * @param {Partial<RecoveryStatusView>} [$$source = {}] - The source object to create the RecoveryStatusView.
+     */
+    constructor($$source = {}) {
+        if (!("enabled" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["enabled"] = false;
+        }
+        if (!("watching" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["watching"] = false;
+        }
+        if (!("episode_active" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["episode_active"] = false;
+        }
+        if (!("episode_number" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["episode_number"] = 0;
+        }
+        if (!("attempts" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["attempts"] = 0;
+        }
+        if (!("max_attempts" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["max_attempts"] = 0;
+        }
+        if (!("cooled_candidates" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["cooled_candidates"] = 0;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["last_error"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {number | undefined}
+             */
+            this["next_attempt_in_ms"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new RecoveryStatusView instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {RecoveryStatusView}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new RecoveryStatusView(/** @type {Partial<RecoveryStatusView>} */($$parsedSource));
     }
 }
 
@@ -2165,7 +2490,7 @@ export class Settings {
      */
     static createFrom($$source = {}) {
         const $$createField2_0 = $$createType4;
-        const $$createField3_0 = $$createType18;
+        const $$createField3_0 = $$createType22;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("tor_bridge_lines" in $$parsedSource) {
             $$parsedSource["tor_bridge_lines"] = $$createField2_0($$parsedSource["tor_bridge_lines"]);
@@ -2174,6 +2499,236 @@ export class Settings {
             $$parsedSource["tor_transport_plugins"] = $$createField3_0($$parsedSource["tor_transport_plugins"]);
         }
         return new Settings(/** @type {Partial<Settings>} */($$parsedSource));
+    }
+}
+
+/**
+ * SourceHealthEntry is one source's evidence-based health view.
+ */
+export class SourceHealthEntry {
+    /**
+     * Creates a new SourceHealthEntry instance.
+     * @param {Partial<SourceHealthEntry>} [$$source = {}] - The source object to create the SourceHealthEntry.
+     */
+    constructor($$source = {}) {
+        if (!("id" in $$source)) {
+            /**
+             * Identity (from the source registry).
+             * @member
+             * @type {string}
+             */
+            this["id"] = "";
+        }
+        if (!("name" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["name"] = "";
+        }
+        if (!("enabled" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["enabled"] = false;
+        }
+        if (!("trust" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["trust"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["region"] = undefined;
+        }
+        if (!("fetch_count" in $$source)) {
+            /**
+             * Fetch evidence. FetchCount == 0 means the source was never
+             * fetched (FetchEnoughData false — no reliability claim).
+             * @member
+             * @type {number}
+             */
+            this["fetch_count"] = 0;
+        }
+        if (!("success_count" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["success_count"] = 0;
+        }
+        if (!("fetch_enough_data" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["fetch_enough_data"] = false;
+        }
+        if (!("fetch_success_pct" in $$source)) {
+            /**
+             * FetchSuccessPct is measured fetch success in percent (-1 when
+             * FetchCount == 0).
+             * @member
+             * @type {number}
+             */
+            this["fetch_success_pct"] = 0;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * Unix ms
+             * @member
+             * @type {number | undefined}
+             */
+            this["last_success_at"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {number | undefined}
+             */
+            this["last_failure_at"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["last_failure_reason"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * Refresh evidence from the last ingestion cycle (zero values =
+             * the source did not participate in it).
+             * @member
+             * @type {number | undefined}
+             */
+            this["last_refresh_discovered"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {number | undefined}
+             */
+            this["last_refresh_duplicates"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {number | undefined}
+             */
+            this["last_refresh_invalid"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {boolean | undefined}
+             */
+            this["last_refresh_unchanged"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {number | undefined}
+             */
+            this["last_refresh_duration_ms"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["last_refresh_error"] = undefined;
+        }
+        if (!("persisted_configs" in $$source)) {
+            /**
+             * Store evidence (bounded scan of persisted records attributed to
+             * this source by its ID).
+             * @member
+             * @type {number}
+             */
+            this["persisted_configs"] = 0;
+        }
+        if (!("tested_configs" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["tested_configs"] = 0;
+        }
+        if (!("working_configs" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["working_configs"] = 0;
+        }
+        if (!("failed_configs" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["failed_configs"] = 0;
+        }
+        if (!("untested_configs" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["untested_configs"] = 0;
+        }
+        if (!("stale_configs" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["stale_configs"] = 0;
+        }
+        if (!("success_rate_pct" in $$source)) {
+            /**
+             * SuccessRatePct is the measured working/tested ratio in percent,
+             * or -1 when the source has no tested configuration ("Not enough
+             * data").
+             * @member
+             * @type {number}
+             */
+            this["success_rate_pct"] = 0;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * MedianLatencyMS is the median measured latency of this source's
+             * WORKING configurations (0 = none measured).
+             * @member
+             * @type {number | undefined}
+             */
+            this["median_latency_ms"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * LastSuccessfulTestAt is the newest LastSuccessAt among this
+             * source's configurations (Unix ms; 0 = none ever verified).
+             * @member
+             * @type {number | undefined}
+             */
+            this["last_successful_test_at"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SourceHealthEntry instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {SourceHealthEntry}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new SourceHealthEntry(/** @type {Partial<SourceHealthEntry>} */($$parsedSource));
     }
 }
 
@@ -2244,6 +2799,64 @@ export class SourceMetadataUpdate {
             $$parsedSource["protocol_hints"] = $$createField4_0($$parsedSource["protocol_hints"]);
         }
         return new SourceMetadataUpdate(/** @type {Partial<SourceMetadataUpdate>} */($$parsedSource));
+    }
+}
+
+/**
+ * SourceReliabilityReport is the dashboard's top-level document.
+ */
+export class SourceReliabilityReport {
+    /**
+     * Creates a new SourceReliabilityReport instance.
+     * @param {Partial<SourceReliabilityReport>} [$$source = {}] - The source object to create the SourceReliabilityReport.
+     */
+    constructor($$source = {}) {
+        if (!("generated_at" in $$source)) {
+            /**
+             * GeneratedAt is when the evidence was collected (Unix ms).
+             * @member
+             * @type {number}
+             */
+            this["generated_at"] = 0;
+        }
+        if (!("overall" in $$source)) {
+            /**
+             * Overall aggregates across every source. SuccessRatePct is -1
+             * when there is not enough measured data to compute one.
+             * @member
+             * @type {OverallSourceHealth}
+             */
+            this["overall"] = (new OverallSourceHealth());
+        }
+        if (!("sources" in $$source)) {
+            /**
+             * Sources carries one entry per configured source (enabled and
+             * disabled), ordered by name.
+             * @member
+             * @type {SourceHealthEntry[]}
+             */
+            this["sources"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SourceReliabilityReport instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {SourceReliabilityReport}
+     */
+    static createFrom($$source = {}) {
+        const $$createField1_0 = $$createType23;
+        const $$createField2_0 = $$createType25;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("overall" in $$parsedSource) {
+            $$parsedSource["overall"] = $$createField1_0($$parsedSource["overall"]);
+        }
+        if ("sources" in $$parsedSource) {
+            $$parsedSource["sources"] = $$createField2_0($$parsedSource["sources"]);
+        }
+        return new SourceReliabilityReport(/** @type {Partial<SourceReliabilityReport>} */($$parsedSource));
     }
 }
 
@@ -2509,8 +3122,8 @@ export class StartFlowStatus {
      * @returns {StartFlowStatus}
      */
     static createFrom($$source = {}) {
-        const $$createField6_0 = $$createType19;
-        const $$createField7_0 = $$createType21;
+        const $$createField6_0 = $$createType26;
+        const $$createField7_0 = $$createType28;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("environment" in $$parsedSource) {
             $$parsedSource["environment"] = $$createField6_0($$parsedSource["environment"]);
@@ -2980,7 +3593,7 @@ export class TorOptionsView {
      */
     static createFrom($$source = {}) {
         const $$createField0_0 = $$createType4;
-        const $$createField1_0 = $$createType18;
+        const $$createField1_0 = $$createType22;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("bridge_lines" in $$parsedSource) {
             $$parsedSource["bridge_lines"] = $$createField0_0($$parsedSource["bridge_lines"]);
@@ -2989,6 +3602,59 @@ export class TorOptionsView {
             $$parsedSource["transport_plugins"] = $$createField1_0($$parsedSource["transport_plugins"]);
         }
         return new TorOptionsView(/** @type {Partial<TorOptionsView>} */($$parsedSource));
+    }
+}
+
+/**
+ * UserGroupView is the credential-free UI projection of one
+ * user-defined group.
+ */
+export class UserGroupView {
+    /**
+     * Creates a new UserGroupView instance.
+     * @param {Partial<UserGroupView>} [$$source = {}] - The source object to create the UserGroupView.
+     */
+    constructor($$source = {}) {
+        if (!("id" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["id"] = "";
+        }
+        if (!("name" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["name"] = "";
+        }
+        if (!("count" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["count"] = 0;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {number | undefined}
+             */
+            this["created_at"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new UserGroupView instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {UserGroupView}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new UserGroupView(/** @type {Partial<UserGroupView>} */($$parsedSource));
     }
 }
 
@@ -3128,7 +3794,7 @@ export class stagingEntry {
      * @returns {stagingEntry}
      */
     static createFrom($$source = {}) {
-        const $$createField3_0 = $$createType22;
+        const $$createField3_0 = $$createType29;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("provenance" in $$parsedSource) {
             $$parsedSource["provenance"] = $$createField3_0($$parsedSource["provenance"]);
@@ -3152,12 +3818,19 @@ const $$createType10 = CandidateView.createFrom;
 const $$createType11 = coremgr$0.Manifest.createFrom;
 const $$createType12 = system$0.WorkspaceStatus.createFrom;
 const $$createType13 = RecoveryStatus.createFrom;
-const $$createType14 = logging$0.Entry.createFrom;
+const $$createType14 = BuiltinGroupView.createFrom;
 const $$createType15 = $Create.Array($$createType14);
-const $$createType16 = mempressure$0.Snapshot.createFrom;
-const $$createType17 = booster$0.Settings.createFrom;
-const $$createType18 = $Create.Map($Create.Any, $Create.Any);
-const $$createType19 = $Create.Array($Create.Any);
-const $$createType20 = StartFlowResult.createFrom;
-const $$createType21 = $Create.Nullable($$createType20);
-const $$createType22 = discovery$0.Provenance.createFrom;
+const $$createType16 = UserGroupView.createFrom;
+const $$createType17 = $Create.Array($$createType16);
+const $$createType18 = logging$0.Entry.createFrom;
+const $$createType19 = $Create.Array($$createType18);
+const $$createType20 = mempressure$0.Snapshot.createFrom;
+const $$createType21 = booster$0.Settings.createFrom;
+const $$createType22 = $Create.Map($Create.Any, $Create.Any);
+const $$createType23 = OverallSourceHealth.createFrom;
+const $$createType24 = SourceHealthEntry.createFrom;
+const $$createType25 = $Create.Array($$createType24);
+const $$createType26 = $Create.Array($Create.Any);
+const $$createType27 = StartFlowResult.createFrom;
+const $$createType28 = $Create.Nullable($$createType27);
+const $$createType29 = discovery$0.Provenance.createFrom;

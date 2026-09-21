@@ -304,6 +304,45 @@ func (s *ConnectionService) Health() core.HealthReport {
 	return s.app.connMgr.Health(ctx)
 }
 
+// RecoveryStatus surfaces the bounded auto-recovery supervisor's
+// state for the connection status center (v0.9.10 §6): episode
+// activity, attempt counts and the next scheduled attempt. It is a
+// READ-ONLY projection of the SAME recovery service the engine runs
+// (no second recovery system) — the UI may render it, never drive it.
+func (s *ConnectionService) RecoveryStatus() RecoveryStatusView {
+	if s.app.recovery == nil {
+		return RecoveryStatusView{}
+	}
+
+	status := s.app.recovery.Status()
+
+	return RecoveryStatusView{
+		Enabled:          status.Enabled,
+		Watching:         status.Watching,
+		EpisodeActive:    status.EpisodeActive,
+		EpisodeNumber:    status.EpisodeNumber,
+		Attempts:         status.Attempts,
+		MaxAttempts:      status.MaxAttempts,
+		CooledCandidates: status.CooledCandidates,
+		LastError:        status.LastError,
+		NextAttemptInMS:  status.NextAttemptInMS,
+	}
+}
+
+// RecoveryStatusView is the credential-free recovery projection for
+// the UI (mirrors app.RecoveryStatus with JSON tags).
+type RecoveryStatusView struct {
+	Enabled          bool   `json:"enabled"`
+	Watching         bool   `json:"watching"`
+	EpisodeActive    bool   `json:"episode_active"`
+	EpisodeNumber    int    `json:"episode_number"`
+	Attempts         int    `json:"attempts"`
+	MaxAttempts      int    `json:"max_attempts"`
+	CooledCandidates int    `json:"cooled_candidates"`
+	LastError        string `json:"last_error,omitempty"`
+	NextAttemptInMS  int64  `json:"next_attempt_in_ms,omitempty"`
+}
+
 // ConfigDetail is the configuration details view (§17): protocol,
 // endpoint, transport, security, compatible backends, latency, last
 // test, source and status. Credential fields are redacted by

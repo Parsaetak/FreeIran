@@ -109,16 +109,25 @@ export function CoresPage() {
         </div>
       </div>
 
+      {/* v0.9.10 education (§5 Cores + §5 Education): explain WHY a
+          core is required before asking for the install — in one short
+          paragraph, not documentation. */}
       {installable && (
         <div className="callout info">
-          <strong>Get started:</strong> install one core (Xray covers the widest protocol range), then
-          import configurations on the Configurations page. FreeIran walks through
-          <em> Install → Verify → Start using</em> with one click per step.
+          <strong>Why do I need a core?</strong> A configuration is just a
+          recipe; a core is the engine that actually runs it and carries your
+          traffic. Different protocols need different engines —{" "}
+          <b>Xray</b> covers the widest range, so it is the best first install.
+          Downloads come only from each project's official release page, are
+          checksum-verified and smoke-tested before activation.
         </div>
       )}
 
       {cores.length === 0 ? (
-        <EmptyState title="No managed cores" hint="Install a core to start testing and connecting." />
+        <EmptyState
+          title="No cores installed yet"
+          hint="Install Xray to get started — one click, verified download, ready in under a minute."
+        />
       ) : (
         <div className="card-grid">
           {cores.map((view) => (

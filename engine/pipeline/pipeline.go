@@ -105,10 +105,17 @@ type parsed struct {
 
 // SourceResult reports the outcome for one source.
 type SourceResult struct {
-	SourceID    string `json:"source_id"`
-	OK          bool   `json:"ok"`
-	Discovered  int    `json:"discovered"`
-	Unique      int    `json:"unique"`
+	SourceID   string `json:"source_id"`
+	OK         bool   `json:"ok"`
+	Discovered int64  `json:"discovered"`
+	Unique     int64  `json:"unique"`
+	// Duplicates counts configurations this source contributed
+	// that were already known (v0.9.10 source-reliability
+	// evidence).
+	Duplicates int64 `json:"duplicates,omitempty"`
+	// Invalid counts configurations from this source that failed
+	// validation (v0.9.10 source-reliability evidence).
+	Invalid     int64  `json:"invalid,omitempty"`
 	Unchanged   bool   `json:"unchanged"`
 	Error       string `json:"error,omitempty"`
 	DurationMS  int64  `json:"duration_ms"`
@@ -403,6 +410,8 @@ func (p *Pipeline) Run(
 
 			unique := 0
 
+			var srcInvalid, srcDuplicates int64
+
 			for i := range item.configs {
 				cfgPtr := &item.configs[i]
 				cfgPtr.Normalize()
@@ -418,6 +427,7 @@ func (p *Pipeline) Run(
 
 				if err := cfgPtr.Validate(); err != nil {
 					invalid.Add(1)
+					srcInvalid++
 
 					continue
 				}
@@ -428,6 +438,7 @@ func (p *Pipeline) Run(
 
 				if !dedupInsert(shards, cfgPtr.Fingerprint()) {
 					duplicates.Add(1)
+					srcDuplicates++
 
 					continue
 				}
@@ -445,8 +456,10 @@ func (p *Pipeline) Run(
 			perSource = append(perSource, SourceResult{
 				SourceID:   item.src.ID,
 				OK:         true,
-				Discovered: len(item.configs),
-				Unique:     unique,
+				Discovered: int64(len(item.configs)),
+				Unique:     int64(unique),
+				Duplicates: srcDuplicates,
+				Invalid:    srcInvalid,
 				DurationMS: time.Since(started).Milliseconds(),
 			})
 

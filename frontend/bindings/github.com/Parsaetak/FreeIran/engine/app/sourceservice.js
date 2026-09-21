@@ -76,12 +76,24 @@ export function SetEnabled(id, enabled) {
 }
 
 /**
+ * SourceReliability renders the evidence-based source health report
+ * (cached; recomputed at most once per reliabilityCacheTTL or after
+ * an evidence change).
+ * @returns {$CancellablePromise<$models.SourceReliabilityReport | null>}
+ */
+export function SourceReliability() {
+    return $Call.ByID(1732292637).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType5($result);
+    }));
+}
+
+/**
  * SourceStatsList returns the statistics view of all sources.
  * @returns {$CancellablePromise<$models.SourceStatsView[]>}
  */
 export function SourceStatsList() {
     return $Call.ByID(3558031882).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType5($result);
+        return $$createType7($result);
     }));
 }
 
@@ -101,5 +113,7 @@ const $$createType0 = $models.SourceView.createFrom;
 const $$createType1 = $Create.Array($$createType0);
 const $$createType2 = pipeline$0.Stats.createFrom;
 const $$createType3 = $Create.Nullable($$createType2);
-const $$createType4 = source$0.Stats.createFrom;
-const $$createType5 = $Create.Array($$createType4);
+const $$createType4 = $models.SourceReliabilityReport.createFrom;
+const $$createType5 = $Create.Nullable($$createType4);
+const $$createType6 = source$0.Stats.createFrom;
+const $$createType7 = $Create.Array($$createType6);

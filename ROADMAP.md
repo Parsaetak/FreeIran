@@ -16,7 +16,7 @@ The application should feel like a mature desktop connectivity client rather tha
 
 Current main:
 
-* Version: `0.9.9`
+* Version: `0.9.10`
 * Platform focus: Windows x64
 * Runtime: Go + Wails + React/TypeScript (toolchain pair pinned:
   `wails/v3 v3.0.0-beta.19` + `@wailsio/runtime 3.0.0-beta.19`,
@@ -59,6 +59,25 @@ Current main:
 * Tunnel modes: System Proxy (WinINet) production; TUN EXPERIMENTAL
   and DISABLED (v0.9.8.6 — not a kill switch)
 * Logging profiles: enabled (Normal / Detailed / Debug)
+
+### v0.9.10 — completed historical work
+
+v0.9.10 is the connection-lifetime architecture repair + beginner-first
+product release. Completed, each verified by an executed test battery
+(unit + `-race` + fake-core lifecycle batteries + frontend suite +
+clean-room build), with the lifecycle proofs additionally verified to
+FAIL on the v0.9.9 tree: the session runtime-context separation
+(operation context never bounds process lifetime; provider engines own
+per-run runtime contexts; deterministic provider-over-core session
+replacement; crash as a true session boundary), the v0.7 roadmap
+completion (evidence-based source reliability dashboard with
+not-enough-data sentinels, configuration grouping with persistent user
+groups through the one filter pipeline, favorites), the beginner-first
+navigation (Connect → Configurations → Sources + More), the humanized
+failure surface with the Fix-my-connection action, the session status
+card, the why-cores explainer, contextual education hints, and the
+code-split secondary surfaces under the extended stable-filename embed
+contract.
 
 ### v0.9.9 — completed historical work
 

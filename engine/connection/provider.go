@@ -62,12 +62,30 @@ func (m *Manager) ConnectProvider(
 	m.mu.Lock()
 
 	// Session boundary (v0.9.8.6): a new provider session epoch.
+	//
+	// v0.9.10: this is a full SESSION REPLACEMENT — the manager allows
+	// a provider session to take over from a running core-based session
+	// (and vice versa through Connect, which requires the previous
+	// session to have ended). The previous session's resources are
+	// captured here and torn down deterministically BELOW the lock:
+	// the pre-0.9.10 code dropped m.instance/m.provider without closing
+	// them, so the replaced session's core or provider process kept
+	// running forever (an orphan the user could only see in Task
+	// Manager). The replacement teardown happens BEFORE the provider
+	// starts, so a failed provider start never leaves two half-owned
+	// processes behind.
 	m.generation++
 
 	gen := m.generation
 
+	m.beginSessionLocked()
+
+	previousInstance := m.instance
+	previousProvider := m.provider
+
 	m.state = StateSelecting
 	m.cfg = nil
+	m.instance = nil
 	m.provider = nil
 	m.corePID = 0
 	m.lastProvider = prov
@@ -76,15 +94,39 @@ func (m *Manager) ConnectProvider(
 	m.stateChanged()
 	m.mu.Unlock()
 
+	// Deterministic replacement teardown (outside the manager lock):
+	// the superseded session's processes stop exactly as Disconnect
+	// would stop them.
+	if previousInstance != nil {
+		_ = previousInstance.Close()
+	}
+
+	if previousProvider != nil {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_ = previousProvider.prov.Stop(stopCtx)
+		stopCancel()
+	}
+
 	// --- START PROVIDER (includes wait-ready/bootstrap) ---------------
 	m.mu.Lock()
 	m.state = StatePreparing
 	m.stateChanged()
+
+	// v0.9.10: the provider process is launched on the SESSION runtime
+	// context — its lifetime belongs to the active session, not to the
+	// caller's bounded operation context (mirrors the core launch
+	// rule; the provider's own bootstrap/negotiate timeouts bound the
+	// readiness wait).
+	sessCtx := m.sessionCtx
 	m.mu.Unlock()
+
+	if sessCtx == nil {
+		sessCtx = context.Background() // defensive (see attempt)
+	}
 
 	started := time.Now()
 
-	startErr := prov.Start(ctx)
+	startErr := prov.Start(sessCtx)
 
 	coreReady := time.Since(started)
 

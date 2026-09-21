@@ -58,6 +58,14 @@ type TorEngine struct {
 	scanner   *lineScanner
 	lastError string
 
+	// runCancel cancels the CURRENT run's runtime context — the
+	// context that owns the Tor process's LIFETIME (v0.9.10). The
+	// caller's Start(ctx) parameter bounds only the bootstrap wait;
+	// binding the process to it (as pre-0.9.10 did through
+	// exec.CommandContext) killed Tor the moment a short-lived
+	// operation context expired or its defer cancel() ran.
+	runCancel context.CancelFunc
+
 	// bootstrapReady is closed by the log-line scanner the moment the
 	// "Bootstrapped 100%" line is observed (v0.9.9: event-driven
 	// readiness instead of flag polling). Recreated on every Start.
@@ -558,6 +566,14 @@ func (e *TorEngine) Start(ctx context.Context) error {
 	scanner := newLineScanner(512)
 	scanner.setSink(e.ingestBootstrapLine)
 
+	// v0.9.10 — runtime-context separation (the provider-side fix of
+	// the v0.9.9 connection-lifecycle defect): the Tor process is
+	// launched on a RUNTIME context owned by THIS RUN, never on the
+	// caller's operation context. The Start(ctx) parameter bounds only
+	// the bootstrap wait below; the process lives until Stop (or a
+	// failed bootstrap), exactly as the session architecture requires.
+	runCtx, runCancel := context.WithCancel(context.Background())
+
 	spec := system.ProcessSpec{
 		Name:   "tor",
 		Path:   binaryPath,
@@ -566,8 +582,10 @@ func (e *TorEngine) Start(ctx context.Context) error {
 		Stderr: scanner,
 	}
 
-	proc, err := system.Start(ctx, spec)
+	proc, err := system.Start(runCtx, spec)
 	if err != nil {
+		runCancel() // the launch never happened; release the runtime ctx
+
 		e.mu.Lock()
 		e.lastError = err.Error()
 		e.mu.Unlock()
@@ -577,6 +595,7 @@ func (e *TorEngine) Start(ctx context.Context) error {
 
 	e.mu.Lock()
 	e.process = proc
+	e.runCancel = runCancel
 	e.scanner = scanner
 	e.endpoint = Endpoint{Network: "socks5", Host: "127.0.0.1", Port: port}
 	e.startedAt = time.Now().UTC()
@@ -587,15 +606,18 @@ func (e *TorEngine) Start(ctx context.Context) error {
 
 	_ = e.binary.MarkState(StateStarting, "", "")
 
-	// Observe ACTUAL bootstrap state (log lines + endpoint probe).
+	// Observe ACTUAL bootstrap state (log lines + endpoint probe). The
+	// CALLER's ctx (plus the bootstrap timeout) bounds this wait only.
 	readyErr := e.awaitBootstrap(ctx, options.BootstrapTimeout, port)
 
 	if readyErr != nil {
 		// Deterministic shutdown — never leave an orphan.
 		_ = proc.Stop(5 * time.Second)
+		runCancel() // the run is over: release its runtime context
 
 		e.mu.Lock()
 		e.process = nil
+		e.runCancel = nil
 		e.endpoint = Endpoint{}
 		e.lastError = readyErr.Error()
 		e.bootstrap = BootstrapInfo{Active: false, Tag: "failed", UpdatedAt: time.Now().UTC()}
@@ -746,20 +768,32 @@ func (e *TorEngine) Stop(ctx context.Context) error {
 
 	proc := e.process
 	sc := e.scanner
+	runCancel := e.runCancel
 
 	e.process = nil
 	e.scanner = nil
+	e.runCancel = nil
 	e.endpoint = Endpoint{}
 	e.bootstrap = BootstrapInfo{}
 	e.mu.Unlock()
 
 	if proc == nil {
+		if runCancel != nil {
+			runCancel() // no process reference, but never leak the ctx
+		}
+
 		return nil
 	}
 
 	_ = e.binary.MarkState(StateStopping, "", "")
 
 	err := proc.Stop(5 * time.Second)
+
+	// v0.9.10: the run's runtime context dies with the run — the
+	// belt-and-braces lifetime bound behind the deterministic Stop.
+	if runCancel != nil {
+		runCancel()
+	}
 
 	if sc != nil {
 		sc.close()

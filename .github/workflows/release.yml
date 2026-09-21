@@ -519,6 +519,66 @@ jobs:
             Write-Host "$hash  $artifact"
           }
 
+      # v0.9.10 (v1.0 foundation — Reproducibility): the release
+      # manifest records every build INPUT a reproducer needs:
+      # version identity, toolchain versions, the pinned Wails pair,
+      # the deterministic frontend asset inventory with per-asset
+      # SHA-256, the build flags and the artifact digests. This does
+      # NOT claim bit-for-bit reproducibility (never claimed without a
+      # tested proof); it makes the inputs verifiable and drift
+      # detectable.
+      - name: Generate release manifest (verifiable build inputs)
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          $commit = $env:GITHUB_SHA.Substring(0, 8)
+
+          $lines = @("FreeIran v$version — release manifest (build inputs)")
+          $lines += ""
+          $lines += "version:        $version"
+          $lines += "commit:         $commit"
+          $lines += "platform:       windows/amd64"
+          $lines += "built_at:       $((Get-Date).ToUniversalTime().ToString('o'))"
+          $lines += "go:             $(go version)"
+          $lines += "node:           $(node --version)"
+          $lines += "npm:            $(npm --version)"
+          $lines += ""
+          $lines += "toolchain pair (CI-enforced identical):"
+          $lines += "  go.mod:       $(Select-String -Path go.mod -Pattern 'wails/v3 v\S+' | ForEach-Object { $_.Matches[0].Value })"
+          $lines += "  package.json: @wailsio/runtime $(node -e "console.log(require('./frontend/package.json').dependencies['@wailsio/runtime'])")"
+          $lines += ""
+          $lines += "embedded frontend assets (stable filename contract):"
+
+          Get-ChildItem cmd/freeiran/frontend/dist -Recurse -File | Sort-Object FullName | ForEach-Object {
+            $rel = $_.FullName.Substring((Resolve-Path 'cmd/freeiran/frontend/dist').Path.Length + 1).Replace('\','/')
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+            $lines += "  $hash  $rel"
+          }
+
+          $lines += ""
+          $lines += "build flags (deterministic configuration):"
+          $lines += "  go: -trimpath -ldflags `"-s -w -H=windowsgui -X .../internal/version.Version=$version-ci -X .../internal/version.Commit=$commit`""
+          $lines += "  CGO_ENABLED=0 (pure-Go; the optional native_accel tag is NOT part of release builds)"
+          $lines += ""
+          $lines += "artifact digests:"
+
+          foreach ($artifact in @("FreeIran-windows-amd64.zip", "FreeIran-Setup-v$version-windows-amd64.exe")) {
+            if (Test-Path $artifact) {
+              $hash = (Get-FileHash $artifact -Algorithm SHA256).Hash.ToLower()
+              $lines += "  $hash  $artifact"
+            }
+          }
+
+          $lines += ""
+          $lines += "Core/provider binaries are NOT bundled: they are downloaded at first use only"
+          $lines += "from official upstream releases, rejected without an authoritative digest."
+          $lines += ""
+          $lines += "Bit-for-bit reproducibility is NOT claimed; this manifest makes the build"
+          $lines += "inputs verifiable so a rebuild from the same tree can be compared honestly."
+
+          $lines | Set-Content -Path "RELEASE-MANIFEST.txt" -Encoding utf8
+          Get-Content "RELEASE-MANIFEST.txt"
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
@@ -527,6 +587,7 @@ jobs:
             FreeIran-windows-amd64.zip
             FreeIran-Setup-v*-windows-amd64.exe
             FreeIran-*.sha256
+            RELEASE-MANIFEST.txt
             SIGNING-STATUS.txt
           retention-days: 3
 
@@ -806,6 +867,11 @@ jobs:
             exit 1
           fi
 
+          if [ ! -s RELEASE-MANIFEST.txt ]; then
+            echo "RELEASE-MANIFEST.txt missing from the Windows artifacts" >&2
+            exit 1
+          fi
+
           echo "---- Windows signing state ----"
           cat SIGNING-STATUS.txt
 
@@ -828,6 +894,7 @@ jobs:
             FreeIran-linux-amd64.zip
             FreeIran-Setup-v*-windows-amd64.exe
             *.sha256
+            RELEASE-MANIFEST.txt
             SIGNING-STATUS.txt
           body_path: RELEASE-SIGNING.md
           generate_release_notes: true

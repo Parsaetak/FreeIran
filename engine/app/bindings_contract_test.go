@@ -56,6 +56,9 @@ func registeredServices(t *testing.T) map[string]any {
 		"github.com/Parsaetak/FreeIran/engine/app.DiscoveryService":     NewDiscoveryService(a),
 		"github.com/Parsaetak/FreeIran/engine/app.ProviderService":      NewProviderService(a),
 		"github.com/Parsaetak/FreeIran/engine/app.InternetToolsService": NewInternetToolsService(a),
+		// v0.9.10: favorites, user groups and the source
+		// reliability dashboard.
+		"github.com/Parsaetak/FreeIran/engine/app.CollectionService": NewCollectionService(a),
 	}
 }
 

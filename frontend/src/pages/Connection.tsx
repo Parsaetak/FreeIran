@@ -279,6 +279,12 @@ export function ConnectionPage() {
 
       <BestCandidateCard disabled={uiState === "connecting" || connected || busy} />
 
+      {/* v0.9.10 status center (§6 Connection status): verification
+          state, session health and recovery activity — one compact,
+          understandable strip, no polling (loads with the page and on
+          connection state changes). */}
+      <SessionStatusCard snapshot={snapshot} connected={connected} />
+
       {error && (
         <div className="error-banner">
           <div>
@@ -783,6 +789,148 @@ function CoreCard({ backend, preferred }: { backend: BackendView; preferred: boo
       {backend.status !== "available" && !backend.note && (
         <div className="core-fact dim">
           Install {backend.name} into the managed cores directory or PATH.
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * v0.9.10 session status card: the lightweight, understandable status
+ * center (§6) — verification state, session health and recovery
+ * activity in one place. Loaded on mount and whenever the connection
+ * state settles; no polling loops (the connection store's events are
+ * the authoritative update signal).
+ */
+function SessionStatusCard({
+  snapshot,
+  connected,
+}: {
+  snapshot: import("../../bindings/github.com/Parsaetak/FreeIran/engine/connection/models.js").Snapshot | null;
+  connected: boolean;
+}) {
+  const [recovery, setRecovery] = useState<import("../../bindings/github.com/Parsaetak/FreeIran/engine/app/models.js").RecoveryStatusView | null>(null);
+
+  const state = snapshot?.state ?? "";
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const load = () => {
+      void call(() => connectionService.RecoveryStatus())
+        .then((status) => {
+          if (!cancelled) setRecovery(status ?? null);
+        })
+        .catch(() => {
+          /* best-effort surface */
+        });
+    };
+
+    load();
+
+    // Re-check when the machine settles into a terminal state (the
+    // recovery supervisor acts on those transitions).
+    if (state === "connection_failed" || state === "connected_verified") {
+      const timer = window.setTimeout(load, 1200);
+
+      return () => {
+        cancelled = true;
+        window.clearTimeout(timer);
+      };
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [state]);
+
+  const extras = (snapshot ?? {}) as Record<string, unknown>;
+  const verification = String(extras["verification"] ?? "none");
+  const verifyFailures = Number(extras["verify_failures"] ?? 0);
+  const verifiedAt = Number(extras["verified_at"] ?? 0);
+
+  const verificationView = (() => {
+    switch (verification) {
+      case "usable":
+        return {
+          label: "Verified",
+          detail: verifiedAt ? `verified ${new Date(verifiedAt).toLocaleTimeString()}` : "verified",
+          badge: "success",
+        };
+      case "degraded":
+        return {
+          label: "Degraded",
+          detail: `${verifyFailures} failed recheck${verifyFailures === 1 ? "" : "s"} — recovery is watching`,
+          badge: "warn",
+        };
+      case "failed":
+        return { label: "Failed verification", detail: "the route could not carry traffic", badge: "error" };
+      default:
+        return {
+          label: connected ? "Verifying…" : "Not verified",
+          detail: connected ? "checking real Internet traffic" : "no active session",
+          badge: "neutral",
+        };
+    }
+  })();
+
+  const recoveryActive = recovery?.episode_active === true;
+
+  return (
+    <div className="card flush" aria-label="Session status">
+      <div className="card-header">
+        <h3 className="card-title eyebrow">Session status</h3>
+        {recovery && (
+          <span
+            className={`badge ${recoveryActive ? "warn" : "neutral"}`}
+            title="The bounded automatic-recovery supervisor"
+          >
+            {recovery.enabled ? (recoveryActive ? "recovery active" : "recovery watching") : "recovery off"}
+          </span>
+        )}
+      </div>
+
+      <div className="card-body reliability-summary">
+        <div className="reliability-stat">
+          <span className="stat-label">Verification</span>
+          <span className="stat-value" style={{ fontSize: 14 }}>
+            <span className={`badge ${verificationView.badge}`}>{verificationView.label}</span>
+          </span>
+          <span className="stat-sub">{verificationView.detail}</span>
+        </div>
+
+        <div className="reliability-stat">
+          <span className="stat-label">Route</span>
+          <span className="stat-value" style={{ fontSize: 14 }}>
+            {snapshot?.core || snapshot?.config_display || "—"}
+          </span>
+          <span className="stat-sub">
+            {snapshot?.endpoint ? `through ${snapshot.endpoint}` : "no active route"}
+          </span>
+        </div>
+
+        <div className="reliability-stat">
+          <span className="stat-label">Recovery</span>
+          <span className="stat-value" style={{ fontSize: 14 }}>
+            {recoveryActive
+              ? `attempt ${recovery?.attempts ?? 0}/${recovery?.max_attempts ?? 0}`
+              : recovery?.enabled
+                ? "idle"
+                : "off"}
+          </span>
+          <span className="stat-sub">
+            {recoveryActive
+              ? recovery?.next_attempt_in_ms
+                ? `next attempt in ${Math.ceil(recovery.next_attempt_in_ms / 1000)}s`
+                : "attempting now"
+              : "the engine reconnects automatically after failures"}
+          </span>
+        </div>
+      </div>
+
+      {recoveryActive && recovery?.last_error && (
+        <div className="error-banner flush-bottom">
+          Last recovery attempt failed: {truncate(recovery.last_error, 160)}
         </div>
       )}
     </div>

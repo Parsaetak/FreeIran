@@ -373,6 +373,13 @@ type ConfigFilter struct {
 	// Query is a case-insensitive substring over address/name.
 	Query string `json:"query,omitempty"`
 
+	// Group filters by a built-in group ("favorites", "working",
+	// "untested", "fast", "recently_tested"; "all"/"" = everything)
+	// or a user group id ("g-1", ...). v0.9.10: one filter pipeline,
+	// the same evidence fields the ranking engine scores — favorites
+	// and groups never bypass testing or trust.
+	Group string `json:"group,omitempty"`
+
 	// SortBy is one of: "fingerprint", "latency", "tested_at",
 	// "protocol", "source", "address" (default "fingerprint").
 	SortBy string `json:"sort_by,omitempty"`
@@ -405,7 +412,7 @@ func (s *DataService) ListConfigsFiltered(filter ConfigFilter, offset, limit int
 
 	matches := make([]config.Config, 0, 256)
 
-	err := s.app.store.Iterate(ctx, func(key string, value []byte) error {
+	if err := s.app.store.Iterate(ctx, func(key string, value []byte) error {
 		if len(matches) >= maxFilteredMatches {
 			return context.Canceled
 		}
@@ -415,16 +422,14 @@ func (s *DataService) ListConfigsFiltered(filter ConfigFilter, offset, limit int
 			return nil // skip undecodable record; never crash the UI
 		}
 
-		if !filterMatches(filter, cfg, query) {
+		if !s.filterMatches(filter, cfg, query) {
 			return nil
 		}
 
 		matches = append(matches, cfg)
 
 		return nil
-	})
-
-	if err != nil && err != context.Canceled {
+	}); err != nil && err != context.Canceled {
 		return nil, err
 	}
 
@@ -456,8 +461,10 @@ func (s *DataService) ListConfigsFiltered(filter ConfigFilter, offset, limit int
 	return page, nil
 }
 
-// filterMatches applies the filter predicate.
-func filterMatches(filter ConfigFilter, cfg config.Config, query string) bool {
+// filterMatches applies the filter predicate (a DataService method so
+// the v0.9.10 Group filter can consult the app's collections without
+// globals or duplicated pipelines).
+func (s *DataService) filterMatches(filter ConfigFilter, cfg config.Config, query string) bool {
 	if filter.Protocol != "" && string(cfg.Type) != filter.Protocol {
 		return false
 	}
@@ -485,6 +492,10 @@ func filterMatches(filter ConfigFilter, cfg config.Config, query string) bool {
 		return false
 	}
 
+	if filter.Group != "" && !s.groupMatches(filter.Group, cfg) {
+		return false
+	}
+
 	if query != "" &&
 		!strings.Contains(strings.ToLower(cfg.Address), query) &&
 		!strings.Contains(strings.ToLower(cfg.Name), query) {
@@ -492,6 +503,73 @@ func filterMatches(filter ConfigFilter, cfg config.Config, query string) bool {
 	}
 
 	return true
+}
+
+// groupMatches evaluates the v0.9.10 Group filter for one record
+// against the built-in evidence groups (computed from the record's
+// own measured fields — never stored labels) and the user's group
+// membership (stable config IDs, persisted in collections.json).
+// Favorites and groups never bypass testing or trust: they only
+// narrow which records the filter returns.
+func (s *DataService) groupMatches(group string, cfg config.Config) bool {
+	now := time.Now().UnixMilli()
+
+	switch group {
+	case "", "all":
+		return true
+
+	case "favorites":
+		s.app.loadCollections()
+
+		s.app.collections.mu.Lock()
+		defer s.app.collections.mu.Unlock()
+
+		for _, id := range s.app.collections.favorites {
+			if id == cfg.ID {
+				return true
+			}
+		}
+
+		return false
+
+	case "working":
+		return cfg.TestedAt > 0 && cfg.Working
+
+	case "untested":
+		return cfg.TestedAt == 0
+
+	case "fast":
+		// A WORKING config with a real measurement at or below the
+		// threshold; 0 ms on a working config is measured (fastest).
+		return cfg.TestedAt > 0 && cfg.Working && cfg.LatencyMS <= fastGroupThresholdMS
+
+	case "recently_tested":
+		return cfg.TestedAt > 0 && now-cfg.TestedAt <= recentlyTestedWindow.Milliseconds()
+	}
+
+	// User group id: membership by stable config ID.
+	if strings.HasPrefix(group, userGroupIDPrefix) {
+		s.app.loadCollections()
+
+		s.app.collections.mu.Lock()
+		defer s.app.collections.mu.Unlock()
+
+		for _, grp := range s.app.collections.groups {
+			if grp.ID != group {
+				continue
+			}
+
+			for _, id := range grp.ConfigIDs {
+				if id == cfg.ID {
+					return true
+				}
+			}
+
+			return false
+		}
+	}
+
+	return false
 }
 
 // sortConfigs orders the match set in place.

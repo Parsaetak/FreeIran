@@ -74,7 +74,7 @@ export function Connect(configID) {
 }
 
 /**
- * ConnectBest implements the automatic connection path: rank every// ConnectBest implements the automatic connection path (v0.9.8.3):
+ * ConnectBest implements the automatic connection path:
  * the fresh-selection loop merges recent verified successes with the
  * top ranked candidates, fresh-tests stale evidence, re-ranks and
  * connects with an Internet-verification gate — the exact same loop
@@ -144,6 +144,20 @@ export function Reconnect() {
 }
 
 /**
+ * RecoveryStatus surfaces the bounded auto-recovery supervisor's
+ * state for the connection status center (v0.9.10 §6): episode
+ * activity, attempt counts and the next scheduled attempt. It is a
+ * READ-ONLY projection of the SAME recovery service the engine runs
+ * (no second recovery system) — the UI may render it, never drive it.
+ * @returns {$CancellablePromise<$models.RecoveryStatusView>}
+ */
+export function RecoveryStatus() {
+    return $Call.ByID(1501278334).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType9($result);
+    }));
+}
+
+/**
  * RefreshBackends re-runs executable discovery synchronously (the
  * user pressed "refresh" on the cores panel).
  * @returns {$CancellablePromise<$models.BackendView[]>}
@@ -164,3 +178,4 @@ const $$createType5 = $Create.Nullable($$createType4);
 const $$createType6 = connection$0.Snapshot.createFrom;
 const $$createType7 = $models.ConnectBestResult.createFrom;
 const $$createType8 = core$0.HealthReport.createFrom;
+const $$createType9 = $models.RecoveryStatusView.createFrom;

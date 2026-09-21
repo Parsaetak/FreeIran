@@ -84,6 +84,14 @@ type PsiphonEngine struct {
 	bootstrap BootstrapInfo
 	options   PsiphonOptions
 	lastError string
+
+	// runCancel cancels the CURRENT run's runtime context — the
+	// context that owns the Psiphon process's LIFETIME (v0.9.10). The
+	// caller's Start(ctx) parameter bounds only the negotiate wait;
+	// binding the process to it (as pre-0.9.10 did through
+	// exec.CommandContext) killed Psiphon the moment a short-lived
+	// operation context expired or its defer cancel() ran.
+	runCancel context.CancelFunc
 }
 
 // PsiphonOptions configures one run.
@@ -483,6 +491,14 @@ func (e *PsiphonEngine) Start(ctx context.Context) error {
 	scanner := newLineScanner(512)
 	scanner.setSink(e.ingestTunnelLine)
 
+	// v0.9.10 — runtime-context separation (the provider-side fix of
+	// the v0.9.9 connection-lifecycle defect): the Psiphon process is
+	// launched on a RUNTIME context owned by THIS RUN, never on the
+	// caller's operation context. The Start(ctx) parameter bounds only
+	// the negotiate wait below; the process lives until Stop (or a
+	// failed negotiate), exactly as the session architecture requires.
+	runCtx, runCancel := context.WithCancel(context.Background())
+
 	spec := system.ProcessSpec{
 		Name:   "psiphon",
 		Path:   binaryPath,
@@ -491,8 +507,10 @@ func (e *PsiphonEngine) Start(ctx context.Context) error {
 		Stderr: scanner,
 	}
 
-	proc, err := system.Start(ctx, spec)
+	proc, err := system.Start(runCtx, spec)
 	if err != nil {
+		runCancel() // the launch never happened; release the runtime ctx
+
 		e.mu.Lock()
 		e.lastError = err.Error()
 		e.mu.Unlock()
@@ -502,6 +520,7 @@ func (e *PsiphonEngine) Start(ctx context.Context) error {
 
 	e.mu.Lock()
 	e.process = proc
+	e.runCancel = runCancel
 	e.scanner = scanner
 	e.endpoints = []Endpoint{
 		{Network: "socks5", Host: "127.0.0.1", Port: socksPort},
@@ -514,13 +533,17 @@ func (e *PsiphonEngine) Start(ctx context.Context) error {
 
 	_ = e.binary.MarkState(StateStarting, "", "")
 
+	// The CALLER's ctx (plus the negotiate timeout) bounds this wait
+	// only — the process itself is owned by the run context.
 	readyErr := e.awaitReady(ctx, options.NegotiateTimeout, socksPort, httpPort)
 
 	if readyErr != nil {
 		_ = proc.Stop(5 * time.Second) // never leave orphans
+		runCancel()                    // the run is over: release its runtime context
 
 		e.mu.Lock()
 		e.process = nil
+		e.runCancel = nil
 		e.endpoints = nil
 		e.lastError = readyErr.Error()
 		e.bootstrap = BootstrapInfo{Tag: "failed", UpdatedAt: time.Now().UTC()}
@@ -626,20 +649,32 @@ func (e *PsiphonEngine) Stop(ctx context.Context) error {
 
 	proc := e.process
 	sc := e.scanner
+	runCancel := e.runCancel
 
 	e.process = nil
 	e.scanner = nil
+	e.runCancel = nil
 	e.endpoints = nil
 	e.bootstrap = BootstrapInfo{}
 	e.mu.Unlock()
 
 	if proc == nil {
+		if runCancel != nil {
+			runCancel() // no process reference, but never leak the ctx
+		}
+
 		return nil
 	}
 
 	_ = e.binary.MarkState(StateStopping, "", "")
 
 	err := proc.Stop(5 * time.Second)
+
+	// v0.9.10: the run's runtime context dies with the run — the
+	// belt-and-braces lifetime bound behind the deterministic Stop.
+	if runCancel != nil {
+		runCancel()
+	}
 
 	if sc != nil {
 		sc.close()

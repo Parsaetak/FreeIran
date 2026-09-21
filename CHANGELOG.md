@@ -3,6 +3,66 @@
 Release history for FreeIran. The newest release is documented in the
 [README](README.md); everything older lives here, newest first.
 
+## v0.9.10 — connection-lifetime architecture repair + beginner-first product release
+
+The connection-lifecycle root-cause release. Every change below was
+verified by the repository's own test matrix (unit + `-race` across
+every package + native + fake-core lifecycle batteries + frontend
+typecheck/tests/build + Windows cross-compile + clean-room build), and
+the lifecycle proofs were additionally verified to FAIL on the v0.9.9
+tree (before/after evidence).
+
+Connection lifetime (the v0.9.9 flaky-recovery root cause):
+
+- Persistent core/provider processes are no longer bound to the
+  caller's operation context. `engine/connection` owns a session
+  runtime context per active session (created at the session boundary,
+  cancelled only by disconnect, shutdown, session replacement or
+  unrecoverable failure); the operation context continues to bound
+  selection, preparation, startup deadline, readiness waiting,
+  verification and the bounded attempts.
+- Tor/Psiphon engines launch on a per-run runtime context; the
+  `Start(ctx)` parameter bounds only the bootstrap/negotiate wait (the
+  pre-0.9.10 engine killed the provider when a service-layer context
+  expired — including the 3-minute manual start on the Cores page).
+- `ConnectProvider` performs deterministic session replacement: the
+  previous core instance is closed and the previous provider stopped
+  (the pre-0.9.10 boundary orphaned the replaced process).
+- The crash transition is a true session boundary (generation bump +
+  runtime-context release), mirroring the stability-teardown
+  semantics.
+- Regression batteries: engine/connection (6 lifecycle tests),
+  engine/connection provider-session tests, engine/provider runtime
+  context test, engine/app Quick Connect + recovery survival tests —
+  all proving the properties with real processes.
+
+v0.7 roadmap completion (evidence only):
+
+- Source reliability dashboard: per-source fetch + refresh + store
+  evidence with "Not enough data" sentinels (success rate -1, fetch
+  flags), cached 5 s and invalidated by ingestion; per-source
+  duplicates/invalid added to the pipeline's SourceResult.
+- Configuration grouping: built-in evidence groups + persistent user
+  groups (versioned collections.json sidecar, stable IDs, atomic
+  writes) through the ONE server-side filter pipeline
+  (ConfigFilter.Group); organize-by source/protocol/status in the UI.
+- Favorites: persisted toggle, never bypassing testing or trust.
+
+Product experience:
+
+- Navigation reorganized: Connect → Configurations → Sources primary;
+  Dashboard/Connection/Cores/Network/Diagnostics/Settings under More.
+- Humanized Quick Connect failures (What happened / What FreeIran is
+  doing / What you can do + expandable technical details), a
+  "Fix my connection" recovery action, contextual education hints, a
+  why-cores explainer and a Connection-page session status card
+  (verification, route, recovery activity via the read-only
+  RecoveryStatus projection).
+- Secondary pages are code-split (React.lazy); the stable-filename
+  embed contract covers the deterministic page chunks. Bindings
+  regenerated with the pinned toolchain (byte-identical across two
+  consecutive generations).
+
 ## v0.9.9 — core engine execution, runtime performance and deep functional upgrade
 
 The core-engine/runtime release. Every change below was verified by

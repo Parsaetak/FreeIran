@@ -15,8 +15,12 @@
  *      assets/index.css
  *      assets/export-worker.js
  *
- * Any hashed artifact (index-*.js, app-*.css, exportWorker-*.js, ...),
- * duplicate worker or unexpected file is a hard failure.
+ * v0.9.10 code-split chunks (§7 Startup + performance): the six
+ * secondary surfaces are lazy-loaded through React.lazy, and Vite
+ * emits each one as a DETERMINISTIC, hash-free chunk named after its
+ * page module. The chunk names below are part of the stable filename
+ * contract exactly like the four canonical names — hashed artifacts
+ * remain forbidden.
  */
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -27,6 +31,26 @@ export const REQUIRED_ASSETS = [
   "assets/index.css",
   "assets/export-worker.js",
 ];
+
+/** v0.9.10: deterministic lazy-load chunks (hash-free, module-named):
+ * the six secondary page surfaces plus the shared binding chunks
+ * Rollup splits alongside them. Every name is module-derived and
+ * stable across builds; the inventory stays explicit so any NEW chunk
+ * fails validation loudly and is added deliberately. */
+export const LAZY_PAGE_ASSETS = [
+  "assets/Dashboard.js",
+  "assets/Connection.js",
+  "assets/Cores.js",
+  "assets/Network.js",
+  "assets/Diagnostics.js",
+  "assets/Settings.js",
+  "assets/discovery.js",
+  "assets/logservice.js",
+  "assets/storageservice.js",
+];
+
+/** Everything the embed tree may legally contain. */
+export const ALLOWED_ASSETS = [...REQUIRED_ASSETS, ...LAZY_PAGE_ASSETS];
 
 /** Hashed-era artifact families that must never return, even under a
  * name the exact allowlist would already reject. */
@@ -65,7 +89,7 @@ export function validateEmbedTree(target) {
   const produced = listFiles(target);
 
   const missing = REQUIRED_ASSETS.filter((name) => !produced.includes(name));
-  const unexpected = produced.filter((name) => !REQUIRED_ASSETS.includes(name));
+  const unexpected = produced.filter((name) => !ALLOWED_ASSETS.includes(name));
 
   if (missing.length > 0) {
     problems.push(

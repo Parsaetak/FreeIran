@@ -27,6 +27,11 @@ import ExportWorker from "../workers/export-worker?worker";
 import { useConnectionStore } from "../state/connectionStore";
 import { useQuickConnectStore } from "../state/quickConnectStore";
 import { describeError, toast } from "../state/toastStore";
+import {
+  useCollectionsStore,
+  BUILTIN_GROUP_LABELS,
+  BUILTIN_GROUP_HINTS,
+} from "../state/collectionsStore";
 import { EmptyState, Menu, ResultBadge, SegmentedControl } from "../components/common";
 import {
   IconChevronDown,
@@ -49,6 +54,28 @@ function protocolLabel(type: string): string {
   return type || "—";
 }
 
+/** v0.9.10 organize-by render item (§6 Configuration grouping). */
+type RenderItem =
+  | { kind: "header"; key: string; label: string; count: number }
+  | { kind: "row"; key: string; config: Config };
+
+/** The bucket key of one configuration under the active organize mode. */
+function organizeKeyOf(config: Config, mode: "source" | "protocol" | "status"): string {
+  switch (mode) {
+    case "source":
+      return String(config["source"] || "unknown source");
+    case "protocol":
+      return protocolLabel(String(config["type"]));
+    case "status": {
+      const tested = Number(config["tested_at"] ?? 0) > 0;
+
+      if (!tested) return "untested";
+
+      return config["working"] ? "working" : "failed";
+    }
+  }
+}
+
 /**
  * Virtualized configuration browser: protocol filters, latency color
  * coding, infinite scroll over paginated backend data and a detail
@@ -66,6 +93,23 @@ export function ConfigsPage() {
   const setSearchQuery = useConfigsStore((state) => state.setSearchQuery);
   const loadMore = useConfigsStore((state) => state.loadMore);
   const runSearch = useConfigsStore((state) => state.runSearch);
+
+  // v0.9.10: groups (built-in evidence groups + user groups) and the
+  // organize-by view. Favorites toggle straight from every row.
+  const builtinGroups = useCollectionsStore((state) => state.builtinGroups);
+  const userGroups = useCollectionsStore((state) => state.userGroups);
+  const favorites = useCollectionsStore((state) => state.favorites);
+  const loadCollections = useCollectionsStore((state) => state.load);
+  const toggleFavorite = useCollectionsStore((state) => state.toggleFavorite);
+
+  const [groupFilter, setGroupFilter] = useState<string>("");
+  const [organizeBy, setOrganizeBy] = useState<"" | "source" | "protocol" | "status">("");
+  const [newGroupOpen, setNewGroupOpen] = useState(false);
+  const [newGroupName, setNewGroupName] = useState("");
+
+  useEffect(() => {
+    void loadCollections();
+  }, [loadCollections]);
 
   const [protocol, setProtocol] = useState("");
   const [detail, setDetail] = useState<ConfigDetail | null>(null);
@@ -100,6 +144,46 @@ export function ConfigsPage() {
     return items.filter((item) => String(item["type"]) === protocol);
   }, [items, protocol, filtered]);
 
+  /** v0.9.10 organize-by (§6): one flat render array whose items are
+   * either section headers or configuration rows — the virtualizer
+   * sizes both, so grouped browsing keeps its O(visible) DOM cost. */
+  const renderItems = useMemo<Array<RenderItem>>(() => {
+    if (organizeBy === "") {
+      return visibleItems.map((config) => ({
+        kind: "row" as const,
+        key: String(config["id"]),
+        config,
+      }));
+    }
+
+    const buckets = new Map<string, Config[]>();
+
+    for (const config of visibleItems) {
+      const key = organizeKeyOf(config, organizeBy);
+      const bucket = buckets.get(key);
+
+      if (bucket) {
+        bucket.push(config);
+      } else {
+        buckets.set(key, [config]);
+      }
+    }
+
+    const out: RenderItem[] = [];
+
+    for (const key of [...buckets.keys()].sort((a, b) => a.localeCompare(b))) {
+      const bucket = buckets.get(key) ?? [];
+
+      out.push({ kind: "header" as const, key: `h:${key}`, label: key, count: bucket.length });
+
+      for (const config of bucket) {
+        out.push({ kind: "row" as const, key: String(config["id"]), config });
+      }
+    }
+
+    return out;
+  }, [visibleItems, organizeBy]);
+
   // The virtualizer must size against the array that is actually
   // RENDERED (visibleItems): sizing against the raw `items` while a
   // protocol filter narrows the list produced a huge blank scroll
@@ -115,8 +199,8 @@ export function ConfigsPage() {
   }, []);
 
   const virtualizer = useVirtualizer({
-    count: visibleItems.length,
-    estimateSize: () => (narrow ? 78 : 44),
+    count: renderItems.length,
+    estimateSize: (index) => (renderItems[index]?.kind === "header" ? 32 : narrow ? 78 : 44),
     overscan: 12,
     getScrollElement: () => parentRef.current,
   });
@@ -137,11 +221,12 @@ export function ConfigsPage() {
   // the narrow/wide row height switch.
   useEffect(() => {
     virtualizer.measure();
-  }, [visibleItems.length, narrow, virtualizer]);
+  }, [renderItems.length, narrow, virtualizer]);
 
-  // Server-side filtered view: any status filter or sort activates it.
+  // Server-side filtered view: any status filter, group or sort
+  // activates it (v0.9.10: the group filter rides the SAME pipeline).
   const loadFiltered = useCallback(async (limit: number) => {
-    if (statusFilter === "" && sortBy === "") {
+    if (statusFilter === "" && sortBy === "" && groupFilter === "") {
       setFiltered(null);
 
       return;
@@ -162,6 +247,7 @@ export function ConfigsPage() {
             sort_desc: sortBy === "latency",
             source: undefined,
             backend: undefined,
+            group: groupFilter || undefined,
           },
           0,
           limit,
@@ -175,7 +261,7 @@ export function ConfigsPage() {
     } finally {
       setFilteredLoading(false);
     }
-  }, [protocol, statusFilter, sortBy, searchQuery]);
+  }, [protocol, statusFilter, sortBy, searchQuery, groupFilter]);
 
   useEffect(() => {
     void loadFiltered(1000);
@@ -424,6 +510,130 @@ export function ConfigsPage() {
       {lastError && <div className="error-banner">{lastError}</div>}
 
       {/*
+       * v0.9.10 GROUPS RAIL (§6 Configuration grouping): built-in
+       * evidence groups with live counts + the user's own groups.
+       * One active group at a time; counts come from the backend's
+       * measured evidence — never invented.
+       */}
+      <div className="toolbar config-groups" role="group" aria-label="Configuration groups">
+        {builtinGroups.map((group) => (
+          <button
+            key={group.id}
+            type="button"
+            className={`group-chip ${groupFilter === group.id ? "active" : ""}`}
+            aria-pressed={groupFilter === group.id}
+            title={BUILTIN_GROUP_HINTS[group.id] ?? undefined}
+            onClick={() => setGroupFilter(groupFilter === group.id ? "" : group.id)}
+          >
+            {BUILTIN_GROUP_LABELS[group.id] ?? group.id}
+            <span className="group-count">{group.count}</span>
+          </button>
+        ))}
+
+        {userGroups.length > 0 && <span className="toolbar-divider" aria-hidden />}
+
+        {userGroups.map((group) => (
+          <span key={group.id} className="group-chip-wrap">
+            <button
+              type="button"
+              className={`group-chip ${groupFilter === group.id ? "active" : ""}`}
+              aria-pressed={groupFilter === group.id}
+              onClick={() => setGroupFilter(groupFilter === group.id ? "" : group.id)}
+            >
+              {group.name}
+              <span className="group-count">{group.count}</span>
+            </button>
+            <button
+              type="button"
+              className="fav-toggle"
+              style={{ width: 18, height: 18, fontSize: 11 }}
+              aria-label={`Delete group ${group.name}`}
+              title="Delete this group (configurations are kept)"
+              onClick={() => {
+                if (groupFilter === group.id) setGroupFilter("");
+
+                void useCollectionsStore.getState().deleteUserGroup(group.id).catch((error: unknown) => {
+                  toast("error", "Could not delete group", describeError(error));
+                });
+              }}
+            >
+              ×
+            </button>
+          </span>
+        ))}
+
+        <button
+          type="button"
+          className="group-chip"
+          aria-haspopup="dialog"
+          aria-expanded={newGroupOpen}
+          onClick={() => {
+            setNewGroupOpen(true);
+          }}
+        >
+          + New group
+        </button>
+
+        <span className="toolbar-spacer" />
+
+        <label className="organize-control">
+          <span className="organize-label">Group by</span>
+          <select
+            className="input slim"
+            aria-label="Group configurations by"
+            value={organizeBy}
+            onChange={(event) => setOrganizeBy(event.target.value as typeof organizeBy)}
+          >
+            <option value="">Nothing</option>
+            <option value="source">Source</option>
+            <option value="protocol">Protocol</option>
+            <option value="status">Status</option>
+          </select>
+        </label>
+      </div>
+
+      {newGroupOpen && (
+        <div className="toolbar">
+          <input
+            className="input"
+            placeholder="Group name (e.g. Work, Personal, Travel)"
+            aria-label="New group name"
+            value={newGroupName}
+            autoFocus
+            onChange={(event) => setNewGroupName(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") setNewGroupOpen(false);
+            }}
+          />
+          <button
+            type="button"
+            className="btn primary sm"
+            disabled={!newGroupName.trim()}
+            onClick={() => {
+              const name = newGroupName.trim();
+
+              if (!name) return;
+
+              setNewGroupName("");
+              setNewGroupOpen(false);
+
+              void useCollectionsStore
+                .getState()
+                .createUserGroup(name)
+                .catch((error: unknown) => {
+                  toast("error", "Could not create group", describeError(error));
+                });
+            }}
+          >
+            Create
+          </button>
+          <button type="button" className="btn sm" onClick={() => setNewGroupOpen(false)}>
+            Cancel
+          </button>
+        </div>
+      )}
+
+      {/*
        * SEARCH / FILTER TOOLBAR (§6: the testing controls live in their
        * own dedicated bar below — the two concerns never compete).
        */}
@@ -515,6 +725,42 @@ export function ConfigsPage() {
         <button type="button" className="btn sm" disabled={filteredLoading} onClick={() => void bulkTest("untested")}>
           <IconRefresh size={14} /> Test untested
         </button>
+
+        {/* v0.9.10: add the selected rows to one of the user's groups
+            (persistent, stable IDs — configurations are never
+            duplicated). Hidden until a selection exists so the default
+            bar stays simple (progressive disclosure). */}
+        {selected.size > 0 && userGroups.length > 0 && (
+          <select
+            className="input slim"
+            aria-label="Add selected to group"
+            defaultValue=""
+            onChange={(event) => {
+              const groupID = event.target.value;
+
+              if (!groupID) return;
+
+              const ids = [...selected];
+
+              event.target.value = ""; // reset for the next use
+
+              void Promise.all(
+                ids.map((id) =>
+                  useCollectionsStore.getState().addToGroup(groupID, id).catch(() => undefined),
+                ),
+              ).then(() => {
+                toast("success", `Added ${ids.length} to group`);
+              });
+            }}
+          >
+            <option value="">Add to group…</option>
+            {userGroups.map((group) => (
+              <option key={group.id} value={group.id}>
+                {group.name}
+              </option>
+            ))}
+          </select>
+        )}
 
         <div className="toolbar-spacer" />
 
@@ -652,22 +898,58 @@ export function ConfigsPage() {
             role="list"
             aria-label="Configurations"
           >
-            {visibleItems.length === 0 && !loading && !searching ? (
+            {renderItems.length === 0 && !loading && !searching ? (
               <EmptyState
                 icon={<IconSearch size={20} />}
-                title={searchQuery || protocol ? "No matching configurations" : "No configurations yet"}
+                title={searchQuery || protocol || groupFilter ? "No matching configurations" : "No configurations yet"}
                 hint={
-                  searchQuery || protocol
-                    ? "Try a different search term or protocol filter."
+                  searchQuery || protocol || groupFilter
+                    ? "Try a different search term, protocol filter or group."
                     : "Add a source and refresh to populate the database."
                 }
               />
             ) : (
               <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
                 {virtualizer.getVirtualItems().map((virtualRow) => {
-                  const config = visibleItems[virtualRow.index];
+                  const item = renderItems[virtualRow.index];
 
-                  if (!config) return null;
+                  if (!item) return null;
+
+                  // v0.9.10: organize-by section header — a sticky
+                  // separator naming the bucket and its live count.
+                  if (item.kind === "header") {
+                    return (
+                      <div
+                        key={item.key}
+                        className="list-section-header"
+                        role="presentation"
+                        style={{
+                          position: "absolute",
+                          top: 0,
+                          left: 0,
+                          width: "100%",
+                          height: virtualRow.size,
+                          transform: `translateY(${virtualRow.start}px)`,
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 8,
+                          padding: "0 12px",
+                          fontSize: 11,
+                          fontWeight: 600,
+                          letterSpacing: "0.03em",
+                          textTransform: "uppercase",
+                          color: "var(--text-faint)",
+                          background: "var(--surface-2, rgba(127,127,127,0.06))",
+                          borderBottom: "1px solid var(--border-subtle)",
+                        }}
+                      >
+                        <span>{item.label}</span>
+                        <span className="group-count">{item.count}</span>
+                      </div>
+                    );
+                  }
+
+                  const config = item.config;
 
                   return (
                     <div
@@ -699,6 +981,30 @@ export function ConfigsPage() {
                         onClick={(event) => event.stopPropagation()}
                         onChange={(event) => toggleSelect(String(config["id"]), event.target.checked)}
                       />
+
+                      {/* v0.9.10: favorite toggle — saved routes stay
+                          reachable from Quick Connect; testing and
+                          verification are never bypassed. */}
+                      <button
+                        type="button"
+                        className={`fav-toggle ${favorites.includes(String(config["id"])) ? "active" : ""}`}
+                        aria-pressed={favorites.includes(String(config["id"]))}
+                        aria-label={
+                          favorites.includes(String(config["id"]))
+                            ? `Remove ${String(config["name"] || "configuration")} from favorites`
+                            : `Save ${String(config["name"] || "configuration")} as favorite`
+                        }
+                        title={favorites.includes(String(config["id"])) ? "Remove from favorites" : "Save as favorite"}
+                        onClick={(event) => {
+                          event.stopPropagation();
+
+                          void toggleFavorite(String(config["id"])).catch((error: unknown) => {
+                            toast("error", "Could not update favorites", describeError(error));
+                          });
+                        }}
+                      >
+                        {favorites.includes(String(config["id"])) ? "★" : "☆"}
+                      </button>
 
                       <span className={`proto-badge proto-${protocolClass(String(config["type"]))}`}>
                         {protocolLabel(String(config["type"]))}
@@ -745,7 +1051,7 @@ export function ConfigsPage() {
                        * visible regardless of content length.
                        */}
                       <span className="actions">
-                        {statusFilter === "" && sortBy === "" && !searchQuery && (
+                        {statusFilter === "" && sortBy === "" && !searchQuery && organizeBy === "" && groupFilter === "" && (
                           <>
                             <button
                               type="button"
@@ -765,7 +1071,7 @@ export function ConfigsPage() {
                               className="btn sm"
                               aria-label={`Move ${String(config["name"] || "configuration")} down`}
                               title="Move down"
-                              disabled={virtualRow.index >= visibleItems.length - 1}
+                              disabled={virtualRow.index >= renderItems.length - 1}
                               onClick={(event) => {
                                 event.stopPropagation();
                                 void moveConfig(config, 1);

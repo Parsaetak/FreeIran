@@ -13,7 +13,8 @@ import {
   pickerStatusClass,
   type QuickCandidateRow,
 } from "../utilities/quickConnectModel";
-import { IconCheck, IconChevronDown, IconZap } from "../components/Icons";
+import { humanizeConnectionError, EDUCATION_HINTS } from "../utilities/connectionErrors";
+import { IconCheck, IconChevronDown, IconRefresh, IconZap } from "../components/Icons";
 
 /**
  * Quick Connect (v0.9.8) — the application's home connection surface.
@@ -154,6 +155,32 @@ export function QuickConnectPage({ onNavigate }: { onNavigate: (page: Page) => v
 
   const reducedMotion = useSettingsStore(effectiveReducedMotion);
 
+  /** v0.9.10: the classified, humanized failure view (§5). */
+  const humanized = useMemo(
+    () => (heroState === "failed" ? humanizeConnectionError(connectError ?? "") : null),
+    [heroState, connectError],
+  );
+
+  /** v0.9.10 “Fix my connection”: one action that refreshes evidence
+   * (sources), re-tests what is stale and reconnects — the same
+   * engine flow a power user would drive manually, condensed to a
+   * single, honest button. */
+  const [fixing, setFixing] = useState(false);
+
+  const onFixConnection = useCallback(async () => {
+    if (fixing) return;
+
+    setFixing(true);
+
+    try {
+      // The adaptive start flow already runs: detect → discover →
+      // test → rank → connect → verify — with real progress states.
+      await useStartFlowStore.getState().run();
+    } finally {
+      setFixing(false);
+    }
+  }, [fixing]);
+
   /** Detail line under the headline — real backend messages only. */
   const detail = useMemo(() => {
     switch (heroState) {
@@ -162,9 +189,9 @@ export function QuickConnectPage({ onNavigate }: { onNavigate: (page: Page) => v
       case "connecting":
         return "Starting tunnel…";
       case "verifying":
-        return "Checking connectivity…";
+        return "Checking that real Internet traffic flows…";
       case "failed":
-        return "No usable connection was verified.";
+        return humanized ? humanized.whatHappened : "No usable connection was verified.";
       case "disconnecting":
         return "Closing the tunnel…";
       case "connected":
@@ -172,7 +199,7 @@ export function QuickConnectPage({ onNavigate }: { onNavigate: (page: Page) => v
       default:
         return "Fastest measured connection, one tap away.";
     }
-  }, [heroState, flowMessage]);
+  }, [heroState, flowMessage, humanized]);
 
   const onConnect = useCallback(() => {
     // v0.9.8.1 (§12): provider sessions (Tor / Psiphon) and the Auto
@@ -320,22 +347,94 @@ export function QuickConnectPage({ onNavigate }: { onNavigate: (page: Page) => v
           </button>
         )}
 
+        {heroState === "failed" && humanized && (
+          <div className="qc-error-panel" role="alert">
+            <div className="qc-error-what">
+              <span className="qc-error-label">What happened</span>
+              <p>{humanized.whatHappened}</p>
+            </div>
+            <div className="qc-error-doing">
+              <span className="qc-error-label">What FreeIran is doing</span>
+              <p>{humanized.doingNow}</p>
+            </div>
+            <div className="qc-error-cando">
+              <span className="qc-error-label">What you can do</span>
+              <ul>
+                {humanized.canDo.map((step) => (
+                  <li key={step}>{step}</li>
+                ))}
+              </ul>
+            </div>
+            <details className="qc-error-technical">
+              <summary>Technical details</summary>
+              <pre className="mono-cell">{humanized.technical}</pre>
+            </details>
+          </div>
+        )}
+
         <div className="qc-links">
           {heroState === "connected" && (
             <button type="button" className="linklike" onClick={() => onNavigate("connection")}>
               Disconnect &amp; advanced controls
             </button>
           )}
-          {heroState === "failed" && (
-            <button type="button" className="linklike" onClick={() => onNavigate("connection")}>
-              Connection details &amp; diagnostics
-            </button>
-          )}
           {heroState === "ready" && candidates.length > 0 && (
-            <span className="qc-hint">Ordered by measured ping · verified connections first</span>
+            <span className="qc-hint" title={EDUCATION_HINTS.verification}>
+              Ordered by measured ping · verified connections first
+            </span>
+          )}
+          {heroState === "ready" && candidates.length === 0 && !candidatesLoading && (
+            <span className="qc-hint" title={EDUCATION_HINTS.source}>
+              First time here? Press Connect — FreeIran will discover, test and pick a working route.
+            </span>
           )}
         </div>
       </section>
+
+      {/* v0.9.10: the recovery action lives directly under the failed
+          hero — one obvious, honest path forward (§5 Errors). */}
+      {heroState === "failed" && (
+        <section className="qc-recover" aria-label="Recovery actions">
+          <button
+            type="button"
+            className="btn primary qc-fix"
+            disabled={fixing || busy}
+            aria-busy={fixing}
+            onClick={() => void onFixConnection()}
+          >
+            <span className="btn-icon-slot" aria-hidden>
+              {fixing ? <span className="btn-spinner" /> : <IconRefresh size={14} />}
+            </span>
+            Fix my connection
+          </button>
+          <span className="qc-recover-note">
+            Refreshes sources, re-tests the stale candidates and reconnects — with live progress.
+          </span>
+          <button type="button" className="linklike" onClick={() => onNavigate("connection")}>
+            Connection details &amp; diagnostics
+          </button>
+        </section>
+      )}
+
+      {heroState === "ready" && (
+        <section className="qc-learn" aria-label="What do these mean?">
+          <h3 className="qc-learn-title">What do these mean?</h3>
+          <dl className="qc-learn-grid">
+            <div>
+              <dt>Configuration</dt>
+              <dd>{EDUCATION_HINTS.configuration}</dd>
+            </div>
+            <div>
+              <dt>Verified</dt>
+              <dd>{EDUCATION_HINTS.verification}</dd>
+            </div>
+            <div>
+              <dt>Tor / Psiphon</dt>
+              <dd>Independent networks that bypass restrictions their own way — usually slower, often more resilient.</dd>
+            </div>
+          </dl>
+        </section>
+      )}
     </div>
   );
 }

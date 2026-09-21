@@ -120,6 +120,10 @@ func main() {
 			// shared Internet-Tools engine (§6).
 			application.NewService(app.NewProviderService(applicationInstance)),
 			application.NewService(app.NewInternetToolsService(applicationInstance)),
+			// v0.9.10: persistent favorites, user groups and the
+			// evidence-based source reliability dashboard (v0.7
+			// roadmap work completed on the existing architecture).
+			application.NewService(app.NewCollectionService(applicationInstance)),
 		},
 		Assets: application.AssetOptions{
 			Handler: versionedAssetCache(application.BundledAssetFileServer(assets)),

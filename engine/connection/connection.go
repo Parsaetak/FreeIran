@@ -308,6 +308,27 @@ type Manager struct {
 	// discarded: it can never mutate — or poison — a newer session.
 	generation uint64
 
+	// sessionCtx / sessionCancel are the RUNTIME context of the active
+	// session (v0.9.10): they own the LIFETIME of the persistent core
+	// process and every persistent provider process. The operation
+	// context a caller hands to Connect/ConnectProvider bounds only
+	// selection, preparation, the startup deadline, readiness waiting,
+	// verification and the bounded attempts — NEVER the process
+	// lifetime. A successful connection therefore SURVIVES the
+	// cancellation of the operation context that created it (the
+	// pre-0.9.10 code bound the core through exec.CommandContext to the
+	// caller's short-lived context, so every successful Quick Connect
+	// was killed the moment its 60-second attempt context expired or
+	// was released).
+	//
+	// The runtime context is cancelled ONLY at session boundaries:
+	// explicit Disconnect, Shutdown, session replacement (a new session
+	// beginning, including provider takeover), and unrecoverable
+	// runtime failure (stability teardown, observed process crash, the
+	// session's terminal connection_failed).
+	sessionCtx    context.Context
+	sessionCancel context.CancelFunc
+
 	monitorCancel context.CancelFunc
 	// monitorDone is closed when the monitor goroutine exits;
 	// stopMonitor JOINS it so returning from Disconnect/Shutdown means
@@ -438,9 +459,15 @@ func (m *Manager) Connect(
 	// Every async result captured before this point becomes stale; a
 	// Disconnect/Reconnect during this Connect cannot have its later
 	// state mutations clobber the newer session state.
+	//
+	// v0.9.10: the session's RUNTIME context begins here too — it (not
+	// the caller's operation context) will own the persistent core
+	// process launched by this session.
 	m.generation++
 
 	gen := m.generation
+
+	m.beginSessionLocked()
 
 	m.cfg = &cfg
 	m.state = StateSelecting
@@ -459,7 +486,7 @@ func (m *Manager) Connect(
 
 	selection, err := registry.Select(cfg, pref)
 	if err != nil {
-		return m.fail(err)
+		return m.failAt(gen, err)
 	}
 
 	m.mu.Lock()
@@ -545,6 +572,49 @@ func (m *Manager) currentGeneration() uint64 {
 	defer m.mu.Unlock()
 
 	return m.generation
+}
+
+// beginSessionLocked starts a NEW session runtime context, cancelling
+// any previous one first (caller holds m.mu). The returned context
+// owns the persistent processes of the session that is beginning:
+// cancelling it is the belt-and-braces lifetime bound behind the
+// deterministic instance/provider teardown paths — the pre-0.9.10
+// architecture bound every core to the caller's operation context
+// instead, so a successful connection died with the operation.
+func (m *Manager) beginSessionLocked() context.Context {
+	if m.sessionCancel != nil {
+		m.sessionCancel()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	m.sessionCtx = ctx
+	m.sessionCancel = cancel
+
+	return ctx
+}
+
+// endSessionLocked cancels the active session's runtime context and
+// forgets it (caller holds m.mu). Called exactly at session
+// boundaries: Disconnect, Shutdown (through Disconnect), the stability
+// teardown, an observed process crash and the session's terminal
+// connection_failed. Idempotent.
+func (m *Manager) endSessionLocked() {
+	if m.sessionCancel != nil {
+		m.sessionCancel()
+	}
+
+	m.sessionCancel = nil
+	m.sessionCtx = nil
+}
+
+// SessionContext exposes the active session's runtime context for
+// diagnostics and supervised launch paths that need to observe (never
+// own) the session lifetime. Nil when no session is active.
+func (m *Manager) SessionContext() context.Context {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.sessionCtx
 }
 
 // isStartupCrash reports whether an attempt failed because the core
@@ -650,11 +720,25 @@ func (m *Manager) attempt(
 			Subsystem, "connect", "session ended before %s launch", backend.Name())
 	}
 
+	// v0.9.10: the persistent core process is launched on the SESSION
+	// runtime context — its lifetime belongs to the active session, not
+	// to this attempt's bounded operation context. A successful
+	// connection therefore survives the operation context's
+	// cancellation/timeout; the failure paths below still close the
+	// instance deterministically.
+	sessCtx := m.sessionCtx
+
 	m.state = StateStartingCore
 	m.stateChanged()
 	m.mu.Unlock()
 
-	instance, err := backend.Start(ctx, cfg, opts)
+	if sessCtx == nil {
+		// Defensive: the generation matched, so a session context
+		// exists; never launch a process without one.
+		sessCtx = context.Background()
+	}
+
+	instance, err := backend.Start(sessCtx, cfg, opts)
 	if err != nil {
 		m.recordAttemptAt(gen, backend.Name(), false, err, started)
 
@@ -932,6 +1016,12 @@ func (m *Manager) Disconnect() Snapshot {
 	// post-disconnect state.
 	m.mu.Lock()
 	m.generation++
+
+	// v0.9.10: the session's runtime context dies with the session —
+	// the persistent core/provider processes it owns are torn down by
+	// the deterministic paths below (and by this cancellation as the
+	// belt-and-braces lifetime bound).
+	m.endSessionLocked()
 	m.mu.Unlock()
 
 	// Join the monitor: cancel its context and WAIT for the goroutine
@@ -1453,6 +1543,13 @@ func (m *Manager) handleCoreCrash(instance *core.Instance, gen uint64, message s
 		m.lastError = message
 		m.instance = nil
 		m.corePID = 0
+
+		// v0.9.10: the crash IS a session boundary (mirrors the
+		// stability-teardown semantics): the epoch ends with the dead
+		// process, so in-flight work captured by the old generation is
+		// stale, and the session's runtime context dies with it.
+		m.generation++
+		m.endSessionLocked()
 		m.stateChanged()
 	}
 
@@ -1569,6 +1666,10 @@ func (m *Manager) runStabilityRecheck(ctx context.Context, endpoint string, gen 
 	// distinguish a live teardown from a finished failure, then
 	// run the bounded teardown BEFORE the terminal state becomes
 	// observable.
+	//
+	// v0.9.10: the session runtime context ends with the session
+	// (unrecoverable runtime failure).
+	m.endSessionLocked()
 	degradedMsg := fmt.Sprintf("connection degraded: %d consecutive failed verification rechecks (%s)",
 		m.verifyFailures, result.Describe())
 
@@ -1676,6 +1777,15 @@ func (m *Manager) failAt(gen uint64, err error) (Snapshot, error) {
 		m.lastError = err.Error()
 		m.instance = nil
 		m.corePID = 0
+
+		// v0.9.10: connection_failed is terminal — the session (and its
+		// runtime context) ends here. Any process still bound to it is
+		// killed by this cancellation; the deterministic attempt paths
+		// already closed their instances, so this is the safety net.
+		if gen != 0 {
+			m.endSessionLocked()
+		}
+
 		m.stateChanged()
 	}
 
