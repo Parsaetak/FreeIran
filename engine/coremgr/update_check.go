@@ -97,12 +97,19 @@ func (m *Manager) CheckForUpdates(ctx context.Context, name CoreName) (UpdateInf
 		info.UpdateAvailable = true
 	}
 
-	// Persist the last-checked timestamp + state transition.
+	// Persist the last-checked timestamp, the authoritative
+	// upstream snapshot (version, tag, platform asset size) and
+	// the state transition. v0.9.13: the size/tag retention is what
+	// makes the Cores surface able to render the real update
+	// download size after a restart.
 	unlock := m.lock(name)
 	defer unlock()
 
 	_ = m.updateManifest(name, func(mf *Manifest) {
 		mf.LastChecked = info.CheckedAt
+		mf.LatestKnown = info.LatestVersion
+		mf.LatestTag = info.ReleaseTag
+		mf.LatestAssetSize = info.AssetSize
 		if info.UpdateAvailable && mf.State == StateReady {
 			mf.State = StateUpdateAvailable
 		}

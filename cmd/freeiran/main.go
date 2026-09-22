@@ -69,10 +69,11 @@ func main() {
 
 	logging.SetGlobal(logger)
 
-	if logger != nil {
-		logger.Info("app", "application_start",
-			"FreeIran %s starting (workspace %s)", version.String(), system.WorkspaceRoot())
-	}
+	// v0.9.13: the entrypoint no longer emits application_start —
+	// engine/app.New is the ONE authoritative producer of the
+	// successful startup record (version/commit/workspace fields),
+	// and it also owns every boot-failure record. The entrypoint
+	// owns the runtime-log lifecycle and the failure dialog only.
 
 	// BaseDir is intentionally NOT set: app.New resolves the single
 	// Workspace Root itself and runs the one-time legacy migration
@@ -81,9 +82,11 @@ func main() {
 		Logger: logger,
 	})
 	if err != nil {
+		// Boot-failure logging is owned by app.New (v0.9.13) —
+		// including failures before its own logger is resolved,
+		// which reach this same file through opts.Logger. The
+		// entrypoint closes the log and surfaces the failure.
 		if logger != nil {
-			logger.Error("app", "application_start", "boot", "fatal",
-				"boot failed: %v", err)
 			_ = logger.Close()
 		}
 
@@ -330,10 +333,8 @@ func smokeTest() int {
 
 	logging.SetGlobal(logger)
 
-	if logger != nil {
-		logger.Info("app", "application_start",
-			"smoke test starting (%s)", version.String())
-	}
+	// v0.9.13: no application_start here — app.New is the single
+	// authoritative producer (see the desktop path above).
 
 	applicationInstance, err := app.New(app.Options{
 		BaseDir:             baseDir,
@@ -342,9 +343,8 @@ func smokeTest() int {
 		SkipDefaultSources:  true,
 	})
 	if err != nil {
+		// app.New owns the fatal boot record (v0.9.13).
 		if logger != nil {
-			logger.Error("app", "application_start", "boot", "fatal",
-				"smoke boot failed: %v", err)
 			_ = logger.Close()
 		}
 

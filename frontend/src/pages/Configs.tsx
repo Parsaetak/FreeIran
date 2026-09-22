@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useConfigsStore, makeSearchRunner } from "../state/stores";
 import {
@@ -33,9 +33,10 @@ import {
   BUILTIN_GROUP_HINTS,
 } from "../state/collectionsStore";
 import { EmptyState, Menu, ResultBadge, SegmentedControl } from "../components/common";
+import type { MenuItem } from "../components/common";
 import {
   IconChevronDown,
-  IconDownload,
+  IconDots,
   IconPause,
   IconPlay,
   IconRefresh,
@@ -127,6 +128,14 @@ export function ConfigsPage() {
   const [queuePaused, setQueuePaused] = useState(false);
   // v0.9.7: per-row queued state derived from the queue snapshot.
   const [queuedIds, setQueuedIds] = useState<Set<string>>(new Set());
+  // v0.9.13: connection-store busy state gates the Connect action in
+  // the row menu (same policy as the detail panel's Connect button).
+  const connectBusy = useConnectionStore((state) => state.busy);
+  // v0.9.13: the ONE row-level action surface — opened by the ⋮
+  // button, by right-click (contextmenu) and by the keyboard
+  // context-menu invocation (Shift+F10 / Menu key). Same items,
+  // same model, viewport-clamped placement.
+  const [contextMenu, setContextMenu] = useState<{ config: Config; x: number; y: number } | null>(null);
   // v0.9.7: compact two-row card layout below 860px (actions get a
   // dedicated row) — the virtualizer sizes rows accordingly.
   const [narrow, setNarrow] = useState(
@@ -134,6 +143,11 @@ export function ConfigsPage() {
   );
 
   const parentRef = useRef<HTMLDivElement>(null);
+
+  // v0.9.13: favorites as a Set — favorite lookups stay O(1) per row
+  // (the previous array.includes scanned per visible row per render;
+  // with the real dataset size the row is rendered dozens of times).
+  const favoriteSet = useMemo(() => new Set(favorites), [favorites]);
 
   // The array actually rendered: the server-filtered result when one
   // exists, otherwise the client-side protocol filter over items.
@@ -200,7 +214,7 @@ export function ConfigsPage() {
 
   const virtualizer = useVirtualizer({
     count: renderItems.length,
-    estimateSize: (index) => (renderItems[index]?.kind === "header" ? 32 : narrow ? 78 : 44),
+    estimateSize: (index) => (renderItems[index]?.kind === "header" ? 32 : narrow ? 88 : 50),
     overscan: 12,
     getScrollElement: () => parentRef.current,
   });
@@ -325,6 +339,10 @@ export function ConfigsPage() {
   }, []);
 
   const onListScroll = () => {
+    // v0.9.13: an open row context menu is anchored to viewport
+    // coordinates — scrolling the list would desync it from its row.
+    setContextMenu(null);
+
     const element = parentRef.current;
 
     if (!element) return;
@@ -486,6 +504,128 @@ export function ConfigsPage() {
     }
   };
 
+  // v0.9.13: connect straight from a row/menu — the SAME connection
+  // flow the detail panel uses (no new networking path).
+  const connectToConfig = async (config: Config) => {
+    try {
+      await useConnectionStore.getState().connect(String(config["id"]));
+
+      const error = useConnectionStore.getState().error;
+
+      if (error) {
+        toast("error", "Connection failed", error);
+      } else {
+        toast("success", "Connecting", "The connection state machine is starting.");
+      }
+    } catch (error) {
+      toast("error", "Connection failed", describeError(error));
+    }
+  };
+
+  // v0.9.13: copy the SAFE endpoint (address:port — exactly the values
+  // already displayed on the row; no credential material, no full
+  // configuration URL, honoring the redaction rules).
+  const copyEndpoint = (config: Config) => {
+    const endpoint = `${String(config["address"])}:${String(config["port"])}`;
+
+    void navigator.clipboard
+      .writeText(endpoint)
+      .then(() => toast("success", "Endpoint copied", endpoint))
+      .catch((error: unknown) => {
+        toast("error", "Copy failed", describeError(error));
+      });
+  };
+
+  // v0.9.13: the single action model for one configuration — rendered
+  // by the ⋮ overflow button, the right-click context menu and the
+  // keyboard context-menu invocation alike.
+  const rowMenuItems = (config: Config): MenuItem[] => {
+    const id = String(config["id"]);
+    const name = String(config["name"] || "configuration");
+    const tested = Number(config["tested_at"] ?? 0) > 0;
+    const reorderable = statusFilter === "" && sortBy === "" && !searchQuery && organizeBy === "" && groupFilter === "";
+    const visibleIndex = visibleItems.findIndex((item) => String(item["id"]) === id);
+
+    const items: MenuItem[] = [
+      {
+        id: "test",
+        label: tested ? "Retest" : "Test",
+        disabled: testingId === id,
+        onSelect: () => void testConfig(config),
+      },
+      {
+        id: "connect",
+        label: "Connect",
+        disabled: connectBusy,
+        onSelect: () => void connectToConfig(config),
+      },
+      {
+        id: "favorite",
+        label: favorites.includes(id) ? `Remove ${name} from favorites` : `Save ${name} as favorite`,
+        onSelect: () => {
+          void toggleFavorite(id).catch((error: unknown) => {
+            toast("error", "Could not update favorites", describeError(error));
+          });
+        },
+      },
+      {
+        id: "select",
+        label: selected.has(id) ? "✓ Selected for bulk testing" : "Select for bulk testing",
+        onSelect: () => toggleSelect(id, !selected.has(id)),
+      },
+    ];
+
+    let firstGroup = true;
+
+    for (const group of userGroups) {
+      items.push({
+        id: `group-${group.id}`,
+        label: `Add to ${group.name}`,
+        separatorBefore: firstGroup,
+        onSelect: () => {
+          void useCollectionsStore
+            .getState()
+            .addToGroup(group.id, id)
+            .then(() => toast("success", `Added to ${group.name}`))
+            .catch((error: unknown) => {
+              toast("error", "Could not add to group", describeError(error));
+            });
+        },
+      });
+
+      firstGroup = false;
+    }
+
+    items.push(
+      {
+        id: "move-up",
+        label: "Move up",
+        separatorBefore: true,
+        disabled: !reorderable || visibleIndex <= 0,
+        onSelect: () => void moveConfig(config, -1),
+      },
+      {
+        id: "move-down",
+        label: "Move down",
+        disabled: !reorderable || visibleIndex < 0 || visibleIndex >= visibleItems.length - 1,
+        onSelect: () => void moveConfig(config, 1),
+      },
+      {
+        id: "details",
+        label: "View details",
+        separatorBefore: true,
+        onSelect: () => void showDetails(config),
+      },
+      {
+        id: "copy",
+        label: "Copy endpoint",
+        onSelect: () => copyEndpoint(config),
+      },
+    );
+
+    return items;
+  };
+
   return (
     <div className="page-flex">
       <div className="page-header">
@@ -499,11 +639,49 @@ export function ConfigsPage() {
           </div>
         </div>
 
+        {/*
+         * v0.9.13: view-level secondary controls (organize-by, export)
+         * moved behind progressive disclosure — the primary toolbar
+         * keeps search, status, protocol and sort visible.
+         */}
         <div className="page-actions">
-          <button type="button" className="btn" onClick={exportCSV}>
-            <IconDownload size={14} />
-            Export CSV
-          </button>
+          <Menu
+            ariaLabel="View and export options"
+            label={
+              <>
+                View
+                <IconChevronDown size={13} />
+              </>
+            }
+            items={[
+              {
+                id: "organize-none",
+                label: organizeBy === "" ? "✓ Group by: nothing" : "Group by: nothing",
+                onSelect: () => setOrganizeBy(""),
+              },
+              {
+                id: "organize-source",
+                label: organizeBy === "source" ? "✓ Group by: source" : "Group by: source",
+                onSelect: () => setOrganizeBy("source"),
+              },
+              {
+                id: "organize-protocol",
+                label: organizeBy === "protocol" ? "✓ Group by: protocol" : "Group by: protocol",
+                onSelect: () => setOrganizeBy("protocol"),
+              },
+              {
+                id: "organize-status",
+                label: organizeBy === "status" ? "✓ Group by: status" : "Group by: status",
+                onSelect: () => setOrganizeBy("status"),
+              },
+              {
+                id: "export",
+                label: "Export CSV",
+                separatorBefore: true,
+                onSelect: () => exportCSV(),
+              },
+            ]}
+          />
         </div>
       </div>
 
@@ -575,21 +753,6 @@ export function ConfigsPage() {
         </button>
 
         <span className="toolbar-spacer" />
-
-        <label className="organize-control">
-          <span className="organize-label">Group by</span>
-          <select
-            className="input slim"
-            aria-label="Group configurations by"
-            value={organizeBy}
-            onChange={(event) => setOrganizeBy(event.target.value as typeof organizeBy)}
-          >
-            <option value="">Nothing</option>
-            <option value="source">Source</option>
-            <option value="protocol">Protocol</option>
-            <option value="status">Status</option>
-          </select>
-        </label>
       </div>
 
       {newGroupOpen && (
@@ -879,18 +1042,15 @@ export function ConfigsPage() {
 
       <div className={`configs-layout ${detail ? "with-panel" : ""}`}>
         <div className="card flush mb-0">
-          <div className="row header config-row-v2">
-            <span aria-hidden />
-            <span>Proto</span>
-            <span>Endpoint</span>
-            <span className="hide-md">Transport</span>
-            <span title="Measured TCP ping (median of samples)">Ping</span>
-            <span className="hide-md" title="URL test through the tunnel">URL</span>
-            <span className="hide-md">Health</span>
-            <span className="hide-sm">Source</span>
-            <span className="actions-header">Actions</span>
-          </div>
-
+          {/*
+           * v0.9.13 COMPACT ROW (§2 Configuration surface): the
+           * primary browsing surface is a two-line hierarchy —
+           * line 1: name · protocol · health; line 2: endpoint ·
+           * measured ping. Transport, security, URL-test internals,
+           * test backend, source and timestamps live in the detail
+           * panel and the row context menu, NOT in the scan surface.
+           * No column-header row: the row itself is the label.
+           */}
           <div
             ref={parentRef}
             className="config-scroll"
@@ -950,19 +1110,42 @@ export function ConfigsPage() {
                   }
 
                   const config = item.config;
+                  const id = String(config["id"]);
+                  const isFavorite = favoriteSet.has(id);
+                  const name = String(config["name"] || "unnamed");
 
                   return (
                     <div
-                      key={String(config["id"])}
+                      key={id}
                       role="listitem"
-                      className={`row selectable config-row-v2 ${detail?.id === String(config["id"]) ? "selected" : ""}`}
+                      aria-selected={detail?.id === id}
+                      className={`row selectable config-row-v3 ${detail?.id === id ? "selected" : ""} ${selected.has(id) ? "bulk-selected" : ""}`}
                       tabIndex={0}
                       onClick={() => void showDetails(config)}
                       onKeyDown={(event) => {
                         if (event.key === "Enter" || event.key === " ") {
                           event.preventDefault();
                           void showDetails(config);
+
+                          return;
                         }
+
+                        // v0.9.13: keyboard context-menu invocation —
+                        // the SAME action model as right-click.
+                        if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+                          event.preventDefault();
+
+                          const rect = event.currentTarget.getBoundingClientRect();
+
+                          setContextMenu({ config, x: rect.left + 8, y: rect.bottom + 2 });
+                        }
+                      }}
+                      onContextMenu={(event) => {
+                        // v0.9.13: right-click opens the row context
+                        // menu — identical items to the ⋮ menu.
+                        event.preventDefault();
+
+                        setContextMenu({ config, x: event.clientX, y: event.clientY });
                       }}
                       style={{
                         position: "absolute",
@@ -973,118 +1156,64 @@ export function ConfigsPage() {
                         transform: `translateY(${virtualRow.start}px)`,
                       }}
                     >
-                      <input
-                        type="checkbox"
-                        className="row-check"
-                        aria-label="Select for bulk testing"
-                        checked={selected.has(String(config["id"]))}
-                        onClick={(event) => event.stopPropagation()}
-                        onChange={(event) => toggleSelect(String(config["id"]), event.target.checked)}
-                      />
-
                       {/* v0.9.10: favorite toggle — saved routes stay
                           reachable from Quick Connect; testing and
                           verification are never bypassed. */}
                       <button
                         type="button"
-                        className={`fav-toggle ${favorites.includes(String(config["id"])) ? "active" : ""}`}
-                        aria-pressed={favorites.includes(String(config["id"]))}
+                        className={`fav-toggle ${isFavorite ? "active" : ""}`}
+                        aria-pressed={isFavorite}
                         aria-label={
-                          favorites.includes(String(config["id"]))
-                            ? `Remove ${String(config["name"] || "configuration")} from favorites`
-                            : `Save ${String(config["name"] || "configuration")} as favorite`
+                          isFavorite
+                            ? `Remove ${name} from favorites`
+                            : `Save ${name} as favorite`
                         }
-                        title={favorites.includes(String(config["id"])) ? "Remove from favorites" : "Save as favorite"}
+                        title={isFavorite ? "Remove from favorites" : "Save as favorite"}
                         onClick={(event) => {
                           event.stopPropagation();
 
-                          void toggleFavorite(String(config["id"])).catch((error: unknown) => {
+                          void toggleFavorite(id).catch((error: unknown) => {
                             toast("error", "Could not update favorites", describeError(error));
                           });
                         }}
                       >
-                        {favorites.includes(String(config["id"])) ? "★" : "☆"}
+                        {isFavorite ? "★" : "☆"}
                       </button>
 
                       <span className={`proto-badge proto-${protocolClass(String(config["type"]))}`}>
                         {protocolLabel(String(config["type"]))}
                       </span>
 
+                      {/*
+                       * TWO-LINE HIERARCHY (§2): primary = name +
+                       * health state; secondary = endpoint + measured
+                       * ping (+ one small contextual indicator).
+                       */}
                       <span className="cell-main">
-                        <div className="cell-title">{String(config["name"] || "unnamed")}</div>
-                        <div className="cell-sub">
-                          {truncate(String(config["address"]), 40)}:{String(config["port"])}
-                        </div>
-                      </span>
-
-                      <span className="hide-md chip-row">
-                        {config["network"] && <span className="chip mono">{String(config["network"])}</span>}
-                        {config["security"] && <span className="chip mono">{String(config["security"])}</span>}
-                        {!config["network"] && !config["security"] && <span className="chip mono">tcp</span>}
-                      </span>
-
-                      <span className="cell-latency">
-                        <PingCell config={config} />
-                        {config["test_backend"] && (
-                          <span className="chip mono hide-sm" title="Backend that ran the last test">
-                            {String(config["test_backend"])}
+                        <span className="cell-line">
+                          <span className="cell-title">{name}</span>
+                          <HealthBadge config={config} />
+                        </span>
+                        <span className="cell-line">
+                          <span className="cell-sub">
+                            {truncate(String(config["address"]), 40)}:{String(config["port"])}
                           </span>
-                        )}
-                      </span>
-
-                      <span className="hide-md">
-                        <URLCell config={config} />
-                      </span>
-
-                      <span className="hide-md">
-                        <HealthBadge config={config} />
-                      </span>
-
-                      <span className="hide-sm">
-                        {config["source"] ? <span className="chip">{truncate(String(config["source"]), 14)}</span> : <span className="chip">—</span>}
+                          {queuedIds.has(id) && testingId !== id && (
+                            <span className="test-state queued" title="Waiting in the test queue">Queued</span>
+                          )}
+                          <PingCell config={config} />
+                        </span>
                       </span>
 
                       {/*
                        * ACTIONS cell (v0.9.7 §6): a dedicated wrapper —
-                       * never a bare last grid child. Fixed column width,
-                       * nowrap, never shrinks: the Test action stays
-                       * visible regardless of content length.
+                       * never a bare last grid child. The primary Test
+                       * action stays visible; every remaining operation
+                       * lives in the ⋮ menu (the same menu right-click
+                       * and the keyboard open).
                        */}
                       <span className="actions">
-                        {statusFilter === "" && sortBy === "" && !searchQuery && organizeBy === "" && groupFilter === "" && (
-                          <>
-                            <button
-                              type="button"
-                              className="btn sm"
-                              aria-label={`Move ${String(config["name"] || "configuration")} up`}
-                              title="Move up"
-                              disabled={virtualRow.index === 0}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                void moveConfig(config, -1);
-                              }}
-                            >
-                              ↑
-                            </button>
-                            <button
-                              type="button"
-                              className="btn sm"
-                              aria-label={`Move ${String(config["name"] || "configuration")} down`}
-                              title="Move down"
-                              disabled={virtualRow.index >= renderItems.length - 1}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                void moveConfig(config, 1);
-                              }}
-                            >
-                              ↓
-                            </button>
-                          </>
-                        )}
-                        {queuedIds.has(String(config["id"])) && testingId !== String(config["id"]) && (
-                          <span className="test-state queued" title="Waiting in the test queue">Queued</span>
-                        )}
-                        {testingId === String(config["id"]) ? (
+                        {testingId === id ? (
                           <span className="test-state testing" title="Test in progress">
                             <span className="btn-spinner" aria-hidden /> Testing
                           </span>
@@ -1100,6 +1229,22 @@ export function ConfigsPage() {
                             Test
                           </button>
                         )}
+                        <button
+                          type="button"
+                          className="btn sm ghost dots-btn"
+                          aria-label={`More actions for ${name}`}
+                          aria-haspopup="menu"
+                          title="More actions"
+                          onClick={(event) => {
+                            event.stopPropagation();
+
+                            const rect = event.currentTarget.getBoundingClientRect();
+
+                            setContextMenu({ config, x: rect.right - 240, y: rect.bottom + 4 });
+                          }}
+                        >
+                          <IconDots size={15} />
+                        </button>
                       </span>
                     </div>
                   );
@@ -1115,14 +1260,111 @@ export function ConfigsPage() {
           </div>
         </div>
 
-        {detail && <DetailPanel detail={detail} onClose={() => setDetail(null)} />}
+        {detail && <DetailPanel detail={detail} row={visibleItems.find((item) => String(item["id"]) === detail.id) ?? null} onClose={() => setDetail(null)} />}
       </div>
+
+      {/*
+       * v0.9.13 ROW CONTEXT MENU: one fixed-position surface fed by
+       * rowMenuItems() — opened by right-click, the ⋮ button and the
+       * keyboard (Shift+F10 / Menu key). Closed by selection, Escape,
+       * outside press or scrolling the list.
+       */}
+      {contextMenu && (
+        <ContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          items={rowMenuItems(contextMenu.config)}
+          onClose={() => setContextMenu(null)}
+        />
+      )}
     </div>
   );
 }
 
-function DetailPanel({ detail, onClose }: { detail: ConfigDetail; onClose: () => void }) {
-  const connect = useConnectionStore((state) => state.connect);
+/**
+ * v0.9.13 CONTEXT MENU: the single fixed-position action surface for
+ * one configuration. Opened by right-click, the ⋮ overflow button and
+ * the keyboard context-menu invocation; clamped to the viewport.
+ */
+function ContextMenu({
+  x,
+  y,
+  items,
+  onClose,
+}: {
+  x: number;
+  y: number;
+  items: MenuItem[];
+  onClose: () => void;
+}) {
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const onPointer = (event: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(event.target as Node)) {
+        onClose();
+      }
+    };
+
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+
+    document.addEventListener("mousedown", onPointer);
+    document.addEventListener("keydown", onKey);
+
+    return () => {
+      document.removeEventListener("mousedown", onPointer);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [onClose]);
+
+  // Viewport clamping: keep the menu on-screen on every edge (the
+  // estimated menu height covers the longest item list; the menu
+  // itself scrolls if a workspace adds many groups).
+  const left = Math.max(8, Math.min(x, window.innerWidth - 248));
+  const top = y + 340 > window.innerHeight ? Math.max(8, window.innerHeight - 348) : y;
+
+  return (
+    <div ref={rootRef} className="ctx-menu" role="menu" aria-label="Configuration actions" style={{ left, top }}>
+      {items.map((item) => (
+        <Fragment key={item.id}>
+          {item.separatorBefore && <div className="menu-sep" role="separator" />}
+
+          <button
+            type="button"
+            role="menuitem"
+            className={`menu-item ${item.danger ? "danger" : ""}`}
+            disabled={item.disabled}
+            onClick={() => {
+              onClose();
+              item.onSelect();
+            }}
+          >
+            {item.label}
+          </button>
+        </Fragment>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Detail panel (v0.9.13): the ONE place for technical configuration
+ * information, grouped for reading — Overview → Endpoint →
+ * Measurement → Health → Source → Technical. Measured evidence rides
+ * in from the row's config snapshot (the list model already carries
+ * ping / url_test / test_backend); no new backend path.
+ */
+function DetailPanel({
+  detail,
+  row,
+  onClose,
+}: {
+  detail: ConfigDetail;
+  row: Config | null;
+  onClose: () => void;
+}) {
   const connectBusy = useConnectionStore((state) => state.busy);
   const runSearch = useConfigsStore((state) => state.runSearch);
 
@@ -1146,7 +1388,7 @@ function DetailPanel({ detail, onClose }: { detail: ConfigDetail; onClose: () =>
   };
 
   const connectNow = async () => {
-    await connect(detail.id);
+    await useConnectionStore.getState().connect(detail.id);
 
     const error = useConnectionStore.getState().error;
 
@@ -1159,20 +1401,25 @@ function DetailPanel({ detail, onClose }: { detail: ConfigDetail; onClose: () =>
   };
 
   // v0.9.7 §18: honest, measured-only reporting — never fabricated.
-  const detailAny = detail as unknown as Record<string, unknown>;
-  const ping = detailAny["ping"] as
+  // The row snapshot (list model) carries the full measurement
+  // evidence; the detail binding carries the endpoint facts.
+  const rowAny = (row ?? detail) as unknown as Record<string, unknown>;
+  const ping = rowAny["ping"] as
     | { median_ms?: number; samples?: number; packet_loss?: number }
     | undefined;
-  const urlTest = detailAny["url_test"] as
+  const urlTest = rowAny["url_test"] as
     | { ok?: boolean; status?: number; total_ms?: number; timeout?: boolean }
     | undefined;
-  const testedAt = Number(detail.tested_at ?? 0);
+  const testBackend = rowAny["test_backend"] ? String(rowAny["test_backend"]) : "";
+  const testedAt = Number(detail.tested_at ?? 0) || Number(rowAny["tested_at"] ?? 0);
 
   const testState = !testedAt
     ? { label: "untested", cls: "untested" }
     : detail.working
       ? { label: "passed", cls: "passed" }
       : { label: "failed", cls: "failed" };
+
+  const rowClass = `detail-section`;
 
   return (
     <aside className="detail-panel" aria-label="Configuration details">
@@ -1206,129 +1453,161 @@ function DetailPanel({ detail, onClose }: { detail: ConfigDetail; onClose: () =>
           </button>
         </div>
 
-        <dl className="detail-grid">
-          <dt>Test state</dt>
-          <dd>
-            <span className={`test-state ${testing ? "testing" : testState.cls}`}>
-              {testing && <span className="btn-spinner" aria-hidden />}
-              {testing ? "Testing" : testState.label}
-            </span>
-          </dd>
+        {/* ---- OVERVIEW ---- */}
+        <section className={rowClass}>
+          <h4 className="detail-section-title">Overview</h4>
+          <dl className="detail-grid">
+            <dt>Name</dt>
+            <dd>{detail.name || "unnamed"}</dd>
 
-          <dt>Last test</dt>
-          <dd>{testedAt ? relativeTime(testedAt) : "never"}</dd>
+            <dt>Protocol</dt>
+            <dd className="mono-cell">{detail.type}</dd>
 
-          <dt>Ping</dt>
-          <dd className="mono-cell">
-            {ping && (ping.samples ?? 0) > 0
-              ? `${formatLatency(ping.median_ms ?? 0)} (median of ${ping.samples})`
-              : testedAt && detail.latency_ms
-                ? `~${formatLatency(detail.latency_ms)} (estimated)`
-                : "—"}
-          </dd>
+            <dt>Test state</dt>
+            <dd>
+              <span className={`test-state ${testing ? "testing" : testState.cls}`}>
+                {testing && <span className="btn-spinner" aria-hidden />}
+                {testing ? "Testing" : testState.label}
+              </span>
+            </dd>
 
-          <dt>URL</dt>
-          <dd className="mono-cell">
-            {urlTest?.total_ms
-              ? urlTest.ok
-                ? `HTTP ${urlTest.status} · ${urlTest.total_ms} ms`
-                : urlTest.timeout
-                  ? "timeout"
-                  : "failed"
-              : "not run"}
-          </dd>
+            <dt>Credentials</dt>
+            <dd className="cell-sub">
+              {[
+                detail.has_uuid ? "UUID (redacted)" : null,
+                detail.has_password ? "password (redacted)" : null,
+                detail.has_public_key ? "public key (redacted)" : null,
+              ]
+                .filter(Boolean)
+                .join(", ") || "none"}
+            </dd>
+          </dl>
+        </section>
 
-          <dt>Health</dt>
-          <dd>
-            {testedAt ? (
-              <ResultBadge ok={detail.working} okLabel="working" failLabel="failed" />
-            ) : (
-              <span className="badge neutral">untested</span>
+        {/* ---- ENDPOINT ---- */}
+        <section className={rowClass}>
+          <h4 className="detail-section-title">Endpoint</h4>
+          <dl className="detail-grid">
+            <dt>Address</dt>
+            <dd className="mono-cell">
+              {detail.address}:{detail.port}
+            </dd>
+
+            <dt>Redacted URL</dt>
+            <dd className="mono-cell">{detail.display || "—"}</dd>
+
+            <dt>Transport</dt>
+            <dd className="mono-cell">{detail.network || "tcp"}</dd>
+
+            <dt>Security</dt>
+            <dd className="mono-cell">{detail.security || "none"}</dd>
+
+            {detail.host && (
+              <>
+                <dt>Host</dt>
+                <dd className="mono-cell">{detail.host}</dd>
+              </>
             )}
-          </dd>
 
-          <dt>Core</dt>
-          <dd className="mono-cell">{detail.compatible_backends?.join(", ") || "none compatible"}</dd>
+            {detail.path && (
+              <>
+                <dt>Path</dt>
+                <dd className="mono-cell">{detail.path}</dd>
+              </>
+            )}
 
-          <dt>Verification</dt>
-          <dd>
-            {testedAt && detail.working
-              ? "protocol + connectivity verified"
-              : testedAt
-                ? "failed — see test state"
-                : "not verified"}
-          </dd>
+            {detail.service && (
+              <>
+                <dt>gRPC service</dt>
+                <dd className="mono-cell">{detail.service}</dd>
+              </>
+            )}
 
-          <dt>Protocol</dt>
-          <dd className="mono-cell">{detail.type}</dd>
+            {detail.server_name && (
+              <>
+                <dt>Server name</dt>
+                <dd className="mono-cell">{detail.server_name}</dd>
+              </>
+            )}
 
-          <dt>Address</dt>
-          <dd className="mono-cell">
-            {detail.address}:{detail.port}
-          </dd>
+            {detail.method && (
+              <>
+                <dt>Cipher</dt>
+                <dd className="mono-cell">{detail.method}</dd>
+              </>
+            )}
+          </dl>
+        </section>
 
-          <dt>Redacted URL</dt>
-          <dd className="mono-cell">{detail.display || "—"}</dd>
+        {/* ---- MEASUREMENT ---- */}
+        <section className={rowClass}>
+          <h4 className="detail-section-title">Measurement</h4>
+          <dl className="detail-grid">
+            <dt>Ping</dt>
+            <dd className="mono-cell">
+              {ping && (ping.samples ?? 0) > 0
+                ? `${formatLatency(ping.median_ms ?? 0)} (median of ${ping.samples})`
+                : testedAt && detail.latency_ms
+                  ? `~${formatLatency(detail.latency_ms)} (estimated)`
+                  : "—"}
+            </dd>
 
-          <dt>Transport</dt>
-          <dd className="mono-cell">{detail.network || "tcp"}</dd>
+            <dt>URL test</dt>
+            <dd className="mono-cell">
+              {urlTest?.total_ms
+                ? urlTest.ok
+                  ? `HTTP ${urlTest.status} · ${urlTest.total_ms} ms`
+                  : urlTest.timeout
+                    ? "timeout"
+                    : "failed"
+                : "not run"}
+            </dd>
 
-          <dt>Security</dt>
-          <dd className="mono-cell">{detail.security || "none"}</dd>
+            <dt>Test backend</dt>
+            <dd className="mono-cell">{testBackend || "—"}</dd>
 
-          {detail.path && (
-            <>
-              <dt>Path</dt>
-              <dd className="mono-cell">{detail.path}</dd>
-            </>
-          )}
+            <dt>Last test</dt>
+            <dd>{testedAt ? relativeTime(testedAt) : "never"}</dd>
+          </dl>
+        </section>
 
-          {detail.host && (
-            <>
-              <dt>Host</dt>
-              <dd className="mono-cell">{detail.host}</dd>
-            </>
-          )}
+        {/* ---- HEALTH ---- */}
+        <section className={rowClass}>
+          <h4 className="detail-section-title">Health</h4>
+          <dl className="detail-grid">
+            <dt>Result</dt>
+            <dd>
+              {testedAt ? (
+                <ResultBadge ok={detail.working} okLabel="working" failLabel="failed" />
+              ) : (
+                <span className="badge neutral">untested</span>
+              )}
+            </dd>
 
-          {detail.service && (
-            <>
-              <dt>gRPC service</dt>
-              <dd className="mono-cell">{detail.service}</dd>
-            </>
-          )}
+            <dt>Verification</dt>
+            <dd>
+              {testedAt && detail.working
+                ? "protocol + connectivity verified"
+                : testedAt
+                  ? "failed — see test state"
+                  : "not verified"}
+            </dd>
 
-          {detail.server_name && (
-            <>
-              <dt>Server name</dt>
-              <dd className="mono-cell">{detail.server_name}</dd>
-            </>
-          )}
+            <dt>Compatible cores</dt>
+            <dd className="mono-cell">{detail.compatible_backends?.join(", ") || "none compatible"}</dd>
+          </dl>
+        </section>
 
-          {detail.method && (
-            <>
-              <dt>Cipher</dt>
-              <dd className="mono-cell">{detail.method}</dd>
-            </>
-          )}
-
-          {detail.source && (
-            <>
+        {/* ---- SOURCE ---- */}
+        {detail.source && (
+          <section className={rowClass}>
+            <h4 className="detail-section-title">Source</h4>
+            <dl className="detail-grid">
               <dt>Source</dt>
               <dd>{detail.source}</dd>
-            </>
-          )}
-
-          <dt>Credentials</dt>
-          <dd className="cell-sub">
-            {[
-              detail.has_uuid ? "UUID (redacted)" : null,
-              detail.has_password ? "password (redacted)" : null,
-              detail.has_public_key ? "public key (redacted)" : null,
-            ]
-              .filter(Boolean)
-              .join(", ") || "none"}
-          </dd>
-        </dl>
+            </dl>
+          </section>
+        )}
       </div>
     </aside>
   );
@@ -1377,30 +1656,7 @@ function PingCell({ config }: { config: Config }) {
   return <span className="value latency none">—</span>;
 }
 
-/** v0.9.6 URL cell: measured HTTP connectivity through the tunnel. */
-function URLCell({ config }: { config: Config }) {
-  const url = config["url_test"] as
-    | { ok?: boolean; status?: number; total_ms?: number; timeout?: boolean }
-    | undefined;
-
-  if (!url || !url.total_ms) {
-    return <span className="value latency none">not run</span>;
-  }
-
-  return (
-    <span
-      className={`latency ${url.ok ? latencyClass(url.total_ms ?? 0) : "bad"}`}
-      title={
-        url.ok
-          ? `HTTP ${url.status} in ${url.total_ms} ms through the tunnel`
-          : `failed${url.timeout ? " (timeout)" : ""}`
-      }
-    >
-      {url.ok ? `${url.total_ms} ms` : url.timeout ? "timeout" : "failed"}
-    </span>
-  );
-}
-
+/** Health badge: measured working/failed state (never invented). */
 function HealthBadge({ config }: { config: Config }) {
   if (!config["tested_at"]) return <span className="badge neutral">untested</span>;
 

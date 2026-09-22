@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { Events as $events } from "@wailsio/runtime";
-import { call, coreService, providerService } from "../services";
+import { Browser } from "@wailsio/runtime";
+import {
+  appService,
+  call,
+  coreService,
+  diagnosticsService,
+  providerService,
+} from "../services";
 import type {
   CoreInstallProgress,
   CoreLifecycleView,
@@ -12,8 +19,8 @@ import type {
 import { describeError, toast } from "../state/toastStore";
 import { useProviderStore } from "../state/providerStore";
 import { useQuickConnectStore } from "../state/quickConnectStore";
-import { EmptyState, SkeletonPage } from "../components/common";
-import { IconDownload, IconPlay, IconRefresh, IconShield, IconStop } from "../components/Icons";
+import { EmptyState, Menu, SkeletonPage } from "../components/common";
+import { IconDots, IconDownload, IconPlay, IconRefresh, IconShield, IconStop } from "../components/Icons";
 import { formatBytes, truncate } from "../utilities/format";
 
 /**
@@ -90,6 +97,9 @@ export function CoresPage() {
           </div>
         </div>
         <div className="page-actions">
+          {/* v0.9.13: aggregate actions over the EXISTING backend
+              operations — CheckAllForUpdates and HealthCheckAll are
+              already parallel and bounded on the engine side. */}
           <button
             type="button"
             className="btn ghost"
@@ -97,6 +107,14 @@ export function CoresPage() {
             onClick={() => void run("all", "check", () => call(() => coreService.CheckAllForUpdates()))}
           >
             <IconRefresh size={14} /> Check all
+          </button>
+          <button
+            type="button"
+            className="btn ghost"
+            disabled={busy !== null}
+            onClick={() => void run("all", "verify", () => call(() => coreService.HealthCheckAll()))}
+          >
+            <IconShield size={14} /> Verify all
           </button>
           <button
             type="button"
@@ -146,9 +164,107 @@ export function CoresPage() {
         </div>
       )}
 
+      {/* v0.9.13: compact truthful runtime status — every value comes
+          from a real engine surface (lifecycle manifests, AppState
+          native-acceleration, the live memory/booster snapshot). No
+          invented percentages, no "optimized" claims. */}
+      <RuntimeSection cores={cores} />
+
       {/* v0.9.8.1 (§12/§13): Tor and Psiphon are first-class providers */}
       <ProvidersSection />
     </div>
+  );
+}
+
+/**
+ * RuntimeSection (v0.9.13): the honest runtime/performance picture.
+ * Core counts come from the lifecycle manifests already loaded by the
+ * page; native acceleration comes from AppState; memory pressure and
+ * the adaptive booster come from the diagnostics Memory snapshot.
+ * Both extra snapshots are ONE bounded call on mount — no polling.
+ */
+function RuntimeSection({ cores }: { cores: CoreLifecycleView[] }) {
+  const [nativeAccel, setNativeAccel] = useState<string | null>(null);
+  const [pressure, setPressure] = useState<string | null>(null);
+  const [boosterWorkers, setBoosterWorkers] = useState<number | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void call(() => appService.State())
+      .then((state) => {
+        if (cancelled || !state) return;
+
+        const fields = state as unknown as { native_acceleration?: string };
+
+        setNativeAccel(fields.native_acceleration || null);
+      })
+      .catch(() => {
+        /* best-effort status read */
+      });
+
+    void call(() => diagnosticsService.Memory())
+      .then((snap) => {
+        if (cancelled || !snap) return;
+
+        const fields = snap as unknown as {
+          pressure?: { state?: string };
+          booster?: { queue_concurrency?: number };
+        };
+
+        setPressure(fields.pressure?.state || null);
+        setBoosterWorkers(
+          typeof fields.booster?.queue_concurrency === "number" ? fields.booster.queue_concurrency : null,
+        );
+      })
+      .catch(() => {
+        /* best-effort status read */
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const installed = cores.filter((c) => c.manifest.state !== "not_installed");
+  const ready = cores.filter(
+    (c) => c.manifest.state === "ready" || c.manifest.state === "installed" || c.manifest.state === "update_available",
+  );
+  const updates = cores.filter((c) => c.manifest.state === "update_available");
+  const healthy = cores.filter((c) => c.manifest.last_health_result?.ok === true);
+  const healthChecked = cores.filter((c) => c.manifest.last_health_result != null);
+
+  return (
+    <section className="card runtime-status" aria-label="Runtime status">
+      <h3 className="card-title">Runtime</h3>
+      <dl className="kv runtime-grid">
+        <dt>Cores</dt>
+        <dd>
+          {ready.length}/{installed.length} ready
+          {updates.length > 0 ? ` · ${updates.length} update${updates.length === 1 ? "" : "s"} available` : ""}
+        </dd>
+
+        <dt>Health</dt>
+        <dd>
+          {healthChecked.length > 0
+            ? `${healthy.length}/${healthChecked.length} passed the last smoke test`
+            : "no smoke test run yet"}
+        </dd>
+
+        <dt>Native acceleration</dt>
+        <dd>{nativeAccel ?? "—"}</dd>
+
+        <dt>Memory pressure</dt>
+        <dd>{pressure ?? "—"}</dd>
+
+        <dt>Adaptive booster</dt>
+        <dd>
+          {boosterWorkers !== null
+            ? `active · ${boosterWorkers} test worker${boosterWorkers === 1 ? "" : "s"}`
+            : "—"}
+        </dd>
+      </dl>
+    </section>
   );
 }
 
@@ -171,6 +287,78 @@ function CoreCard({
   const isBusy = busy?.startsWith(`${m.name}:`) ?? false;
   const displayName = displayNameOf(m.name);
 
+  // v0.9.13: the retained authoritative upstream snapshot (persisted
+  // by the last update check — no re-query, no guessing). A zero size
+  // means the size is genuinely unavailable; the fallback says so.
+  const updateAvailable = m.state === "update_available" && !!m.latest_known;
+  const updateSizeText =
+    m.latest_asset_size && m.latest_asset_size > 0
+      ? ` · ${formatBytes(m.latest_asset_size)} download`
+      : " · Download size unavailable";
+
+  // Secondary operations — reachable through the ⋮ overflow instead of
+  // one button per operation on every card (§4).
+  const overflowItems = [
+    {
+      id: "check",
+      label: "Check update",
+      disabled: isBusy,
+      onSelect: () => onAction("check", () => call(() => coreService.CheckForUpdates(m.name))),
+    },
+    {
+      id: "verify",
+      label: "Verify",
+      disabled: isBusy,
+      onSelect: () => onAction("health", () => call(() => coreService.HealthCheck(m.name))),
+    },
+    {
+      id: "repair",
+      label: "Repair",
+      disabled: isBusy,
+      onSelect: () => onAction("repair", () => call(() => coreService.Repair(m.name))),
+    },
+    {
+      id: "reinstall",
+      label: "Reinstall",
+      disabled: isBusy,
+      onSelect: () => onAction("reinstall", () => call(() => coreService.Reinstall(m.name))),
+    },
+    {
+      id: "rollback",
+      label: "Roll back",
+      disabled: isBusy || !m.previous_version,
+      onSelect: () => onAction("rollback", () => call(() => coreService.Rollback(m.name))),
+    },
+    {
+      id: "enable-disable",
+      label: m.state === "disabled" ? "Enable" : "Disable",
+      disabled: isBusy || (m.state !== "disabled" && !(m.state === "ready" || m.state === "installed")),
+      onSelect: () =>
+        m.state === "disabled"
+          ? onAction("enable", () => call(() => coreService.Enable(m.name)))
+          : onAction("disable", () => call(() => coreService.Disable(m.name))),
+    },
+    {
+      id: "release-page",
+      label: "Open official release page",
+      disabled: !m.release_url,
+      onSelect: () => {
+        // The desktop runtime opens the URL in the user's browser
+        // (window.open is unreliable inside the webview).
+        void Browser.OpenURL(m.release_url).catch((error: unknown) => {
+          toast("error", "Could not open browser", describeError(error));
+        });
+      },
+    },
+    {
+      id: "uninstall",
+      label: "Uninstall",
+      danger: true,
+      disabled: isBusy || !m.binary_path,
+      onSelect: () => onAction("uninstall", () => call(() => coreService.Uninstall(m.name))),
+    },
+  ];
+
   return (
     <section className={`card core-card ${m.state === "broken" ? "card-broken" : ""}`}>
       <header className="card-head">
@@ -178,11 +366,21 @@ function CoreCard({
           <h3>{displayName}</h3>
           <div className="core-meta muted">
             {m.version ? `v${stripV(m.version)}` : "not installed"}
-            {m.latest_known && isOlder(m.version, m.latest_known) ? ` → ${m.latest_known} available` : ""}
+            {/* v0.9.13: the version TRANSITION is the informative line
+                when an update exists (v26.3.27 → v26.3.30). */}
+            {updateAvailable && m.latest_known ? ` → v${stripV(m.latest_known)}` : ""}
           </div>
         </div>
         <StateBadge state={m.state} progress={progress} />
       </header>
+
+      {updateAvailable && (
+        <div className="update-callout" role="status">
+          <span className="update-size">
+            Update available{updateSizeText}
+          </span>
+        </div>
+      )}
 
       {isBusy && progress && (
         <div className="install-progress">
@@ -237,6 +435,13 @@ function CoreCard({
         <dd>{m.last_health_check ? new Date(m.last_health_check).toLocaleString() : "never"}</dd>
       </dl>
 
+      {/*
+       * v0.9.13 footer: ONE essential action per state + the ⋮
+       * overflow carrying every secondary operation (check/verify/
+       * repair/reinstall/rollback/channel enable-disable/uninstall/
+       * release page). The broken-state recovery block above keeps
+       * its inline recovery actions.
+       */}
       <footer className="card-actions">
         {(m.state === "not_installed" || m.state === "broken") && (
           <button
@@ -249,53 +454,32 @@ function CoreCard({
           </button>
         )}
 
-        {(m.state === "ready" || m.state === "installed" || m.state === "update_available") && (
-          <>
-            <button
-              type="button"
-              className="btn ghost"
-              disabled={isBusy}
-              onClick={() => onAction("health", () => call(() => coreService.HealthCheck(m.name)))}
-            >
-              <IconShield size={14} /> Verify
-            </button>
-            <button
-              type="button"
-              className="btn ghost"
-              disabled={isBusy}
-              onClick={() => onAction("check", () => call(() => coreService.CheckForUpdates(m.name)))}
-            >
-              <IconRefresh size={14} /> Check update
-            </button>
-          </>
-        )}
-
-        {m.state === "update_available" && (
+        {updateAvailable && (
           <button
             type="button"
             className="btn primary"
             disabled={isBusy}
             onClick={() => onAction("install", () => call(() => coreService.Install(m.name)))}
           >
-            Update to {m.latest_known ? stripV(m.latest_known) : "latest"}
+            <IconDownload size={14} /> Update to {m.latest_known ? stripV(m.latest_known) : "latest"}
           </button>
         )}
 
-        {m.previous_version && (
+        {(m.state === "ready" || m.state === "installed") && (
           <button
             type="button"
-            className="btn ghost"
+            className="btn primary"
             disabled={isBusy}
-            onClick={() => onAction("rollback", () => call(() => coreService.Rollback(m.name)))}
+            onClick={() => onAction("health", () => call(() => coreService.HealthCheck(m.name)))}
           >
-            Roll back
+            <IconShield size={14} /> Verify
           </button>
         )}
 
         {m.state === "disabled" && m.binary_path && (
           <button
             type="button"
-            className="btn ghost"
+            className="btn primary"
             disabled={isBusy}
             onClick={() => onAction("enable", () => call(() => coreService.Enable(m.name)))}
           >
@@ -303,27 +487,11 @@ function CoreCard({
           </button>
         )}
 
-        {(m.state === "ready" || m.state === "installed") && (
-          <button
-            type="button"
-            className="btn ghost danger"
-            disabled={isBusy}
-            onClick={() => onAction("disable", () => call(() => coreService.Disable(m.name)))}
-          >
-            Disable
-          </button>
-        )}
-
-        {m.binary_path && (
-          <button
-            type="button"
-            className="btn ghost danger"
-            disabled={isBusy}
-            onClick={() => onAction("uninstall", () => call(() => coreService.Uninstall(m.name)))}
-          >
-            Uninstall
-          </button>
-        )}
+        <Menu
+          ariaLabel={`More actions for ${displayName}`}
+          label={<IconDots size={15} />}
+          items={overflowItems}
+        />
       </footer>
     </section>
   );
@@ -788,11 +956,6 @@ function displayNameOf(name: string): string {
 
 function stripV(v: string): string {
   return v.startsWith("v") ? v.slice(1) : v;
-}
-
-function isOlder(current: string, latest: string): boolean {
-  if (!current || !latest) return false;
-  return stripV(current) !== stripV(latest);
 }
 
 function technicalText(m: CoreManifest): string {

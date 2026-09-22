@@ -3,6 +3,76 @@
 Release history for FreeIran. The newest release is documented in the
 [README](README.md); everything older lives here, newest first.
 
+## v0.9.13 — clean runtime logging, configuration surface redesign, update-size transparency
+
+Product-quality update on the v0.9.12 architecture. No new subsystems;
+every change reuses the existing authoritative services.
+
+### Runtime logging (Normal profile)
+
+- Exactly ONE producer of the successful `application_start` record
+  (`engine/app.New`). The entrypoint no longer emits a second one, and
+  boot-failure records are owned by `app.New` as well — including the
+  earliest failure paths, which previously logged nothing or logged
+  twice (entrypoint + engine) depending on where the failure hit.
+- `boot_telemetry` is no longer a Normal-profile record. The phase →
+  milliseconds table is emitted as a compact, structured,
+  debug-severity, lifecycle-tagged record that Detailed/Debug profiles
+  admit; the timings no longer hide inside the message text.
+- Normal startup now answers "what happened / is the app healthy /
+  what failed" with the compact sequence `application_start →
+  store_open → application_ready → core_discovered → warmup_complete`.
+  `store_open` carries `records`/`chunks` as structured fields (the
+  message no longer duplicates them); `warmup_complete` is a new
+  measured summary (real elapsed warmup window, live core count).
+- Boot timings remain available to diagnostics and the UI state:
+  `AppState.BootTimings` is now actually populated (it existed and was
+  compared by the publisher since v0.9.4 but was never written to).
+
+### Configurations tab
+
+- The primary browsing row is a compact two-line hierarchy —
+  favorite | protocol | name + health / endpoint + measured ping |
+  Test | ⋮ — with virtualization preserved and no O(n) work per
+  render (favorite lookups are set-based now).
+- Transport, security, URL-test results, test backend, source
+  metadata and timestamps moved to the detail panel, which is grouped
+  (Overview → Endpoint → Measurement → Health → Source) and now
+  receives the row's real measurement evidence.
+- One action model per configuration: the ⋮ overflow, right-click and
+  the keyboard context-menu invocation (Shift+F10 / Menu key) open the
+  SAME menu (test/retest, connect, favorite, bulk-select, add to
+  group, move up/down, view details, copy endpoint — the endpoint
+  copy carries only the displayed `address:port`, never credential
+  material). Bulk selection keeps a visible row accent.
+- Organize-by and Export CSV moved into a "View" menu; search, status,
+  protocol, sort and the testing controls stay visible.
+
+### Cores tab and update metadata
+
+- Update checks persist the authoritative upstream snapshot — latest
+  version, release tag and the selected platform asset's download
+  size — into the managed manifest (optional fields; v0.9.12
+  manifests load unchanged). The update card renders the version
+  transition (`vA → vB`), "Update available · N download" and the
+  "Update to B" action; a missing size renders a truthful
+  "Download size unavailable" fallback, never a guess.
+- Secondary core operations (check, verify, repair, reinstall,
+  rollback, enable/disable, release page, uninstall) moved into a
+  per-card overflow menu; each card keeps ONE essential action.
+  "Verify all" joins the existing aggregate actions.
+- A compact runtime section reports only real engine state: core
+  readiness/health counts from the lifecycle manifests, native
+  acceleration from AppState, memory pressure and adaptive-booster
+  settings from the diagnostics snapshot.
+- Performance audit (measured): core discovery probes each available
+  binary with a version-probe process spawn (up to 5 s per probe
+  form). Registry refresh ran those probes serially on the
+  interactive-connect path; they now run concurrently, bounded by the
+  registered backend count, with identical result semantics and
+  ordering. A locator benchmark and a concurrency regression test
+  (run under `-race`) pin the behavior.
+
 ## v0.9.12 — provider lifecycle monotonicity, binding-contract verification, persistence hardening
 
 Full engineering closure of the v0.9.11 state. The failing race gate

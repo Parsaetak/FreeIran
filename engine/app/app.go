@@ -325,14 +325,29 @@ func New(opts Options) (*App, error) {
 		err    error
 	)
 
+	// v0.9.13 fatal-boot ownership: app.New is the single producer
+	// of boot-failure records. Failures before the app-level logger
+	// is resolved still reach the caller-opened runtime log through
+	// opts.Logger (the entrypoint passes it in the desktop path).
+	bootFatal := func(stage string, ferr error) {
+		if opts.Logger != nil {
+			opts.Logger.Error("app", "application_start", "boot", "fatal",
+				"boot failed at %s: %v", stage, ferr)
+		}
+	}
+
 	if defaultedWorkspace {
 		layout, err = system.EnsureWorkspace()
 		if err != nil {
+			bootFatal("workspace init", err)
+
 			return nil, err
 		}
 	} else {
 		layout, err = system.EnsureLayout(opts.BaseDir)
 		if err != nil {
+			bootFatal("workspace init", err)
+
 			return nil, err
 		}
 	}
@@ -377,7 +392,10 @@ func New(opts Options) (*App, error) {
 
 	// v0.9.7: workspace-ready is its own lifecycle stage (distinct
 	// event name — no duplicate start messages).
-	logger.Info("app", "workspace_ready", "workspace ready (%s)", opts.BaseDir)
+	// v0.9.13: the base directory is already a structured field on
+	// application_start, so the Normal profile no longer carries a
+	// separate workspace_ready record; Detailed/Debug keep it.
+	logger.DebugLifecycle("app", "workspace_ready", "workspace ready (%s)", opts.BaseDir)
 
 	// v0.9.2 one-time legacy migration: when the defaulted workspace
 	// is fresh, discover pre-0.9.2 per-user data and copy it in
@@ -427,9 +445,21 @@ func New(opts Options) (*App, error) {
 		return nil, fmt.Errorf("app: open store: %w", err)
 	}
 
-	logger.Info("store", "store_open",
-		"store ready (%d records, %d chunks)",
-		st.Count(), st.Snapshot().ChunkCount)
+	// v0.9.13: the record/chunk facts ride structured fields — the
+	// message no longer duplicates them.
+	storeSnapshot := st.Snapshot()
+
+	logger.Log(logging.Record{
+		Level:     logging.LevelInfo,
+		Subsystem: "store",
+		Event:     "store_open",
+		Message:   "store ready",
+		Status:    "ready",
+		Fields: map[string]any{
+			"records": st.Count(),
+			"chunks":  storeSnapshot.ChunkCount,
+		},
+	})
 
 	markPhase(BootStoreReady)
 
@@ -768,10 +798,13 @@ func (a *App) warmCaches() {
 		return nil
 	})
 
-	// Warm-up finished: the last startup phase. The telemetry line
-	// records the real boot → ready duration for developers.
+	// Warm-up finished: the last startup phase. The full phase
+	// timing table stays available to Detailed/Debug logs and to
+	// diagnostics via AppState.BootTimings; Normal gets one compact
+	// measured summary (v0.9.13).
 	a.markBoot(BootReady)
 	a.logBootTelemetry()
+	a.logWarmupComplete()
 }
 
 // Context returns the application lifecycle context. It is

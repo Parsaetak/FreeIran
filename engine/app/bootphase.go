@@ -28,6 +28,9 @@ package app
 import (
 	"sort"
 	"time"
+
+	"github.com/Parsaetak/FreeIran/engine/core"
+	"github.com/Parsaetak/FreeIran/internal/logging"
 )
 
 // Boot phases, in guaranteed transition order. A phase may be skipped
@@ -96,6 +99,16 @@ func (a *App) markBoot(phase string) {
 	a.bootTimings[phase] = time.Since(a.bootStart).Milliseconds()
 	a.state.BootPhase = phase
 
+	// v0.9.13: AppState.BootTimings was declared and compared by
+	// the publisher but never populated — diagnostics/state (and
+	// the UI boot telemetry surface) never received the timings.
+	// Keep the state mirror in sync with the authoritative map.
+	if a.state.BootTimings == nil {
+		a.state.BootTimings = make(map[string]int64, len(bootOrder)+1)
+	}
+
+	a.state.BootTimings[phase] = a.bootTimings[phase]
+
 	a.mu.Unlock()
 
 	// A real boot-phase advance reaches the UI as a real event
@@ -145,10 +158,13 @@ func (a *App) bootTimingsSorted() ([]string, []int64) {
 	return phases, values
 }
 
-// logBootTelemetry writes the phase → ms table to the runtime log in
-// one structured line, e.g.
-//
-//	boot: workspace_ready=3ms store_metadata_ready=41ms …
+// logBootTelemetry writes the phase → ms table to the runtime log as
+// ONE structured record. v0.9.13: the record is debug-severity and
+// lifecycle-tagged, so the Normal profile no longer carries a
+// standalone boot_telemetry line — the full timing table stays
+// available to Detailed/Debug profiles and to diagnostics through
+// AppState.BootTimings. The timings ride the structured fields only;
+// the message never repeats them.
 //
 // Developer/diagnostics-only: no remote telemetry exists anywhere.
 func (a *App) logBootTelemetry() {
@@ -157,40 +173,71 @@ func (a *App) logBootTelemetry() {
 	}
 
 	phases, values := a.bootTimingsSorted()
-	line := "startup telemetry:"
+	timings := make(map[string]any, len(phases))
 
 	for i, phase := range phases {
-		line += " " + phase + "=" + itoaMilli(values[i]) + "ms"
+		timings[phase] = values[i]
 	}
 
-	a.logger.Info("app", "boot_telemetry", "%s", line)
+	a.logger.Log(logging.Record{
+		Level:      logging.LevelDebug,
+		Subsystem:  "app",
+		Event:      "boot_telemetry",
+		Message:    "startup phase timings recorded",
+		Status:     "diagnostic",
+		Lifecycle:  true,
+		DurationMS: a.bootTimings[BootReady],
+		Fields:     map[string]any{"timings": timings},
+	})
 }
 
-// itoaMilli formats an elapsed-milliseconds value without importing
-// strconv for one call site (the file stays dependency-light).
-func itoaMilli(ms int64) string {
-	if ms == 0 {
-		return "0"
+// logWarmupComplete emits the single compact Normal-profile record
+// that reports background warm-up completion (v0.9.13). Every value
+// is measured: the warmup duration is the real elapsed time between
+// the background_warmup and ready boot phases, and the core count is
+// the live registry snapshot — nothing is estimated or invented.
+func (a *App) logWarmupComplete() {
+	if a.logger == nil {
+		return
 	}
 
-	negative := ms < 0
-	if negative {
-		ms = -ms
+	phases, values := a.bootTimingsSorted()
+
+	var warmupStartMS, readyMS int64
+
+	for i, phase := range phases {
+		switch phase {
+		case BootBackgroundWarm:
+			warmupStartMS = values[i]
+		case BootReady:
+			readyMS = values[i]
+		}
 	}
 
-	var digits [20]byte
-	pos := len(digits)
-
-	for ms > 0 {
-		pos--
-		digits[pos] = byte('0' + ms%10)
-		ms /= 10
+	warmupMS := readyMS - warmupStartMS
+	if warmupMS < 0 {
+		warmupMS = 0
 	}
 
-	if negative {
-		pos--
-		digits[pos] = '-'
+	cores := 0
+	if a.coreRegistry != nil {
+		for _, backend := range a.coreRegistry.Backends() {
+			if backend.Status == core.StatusAvailable {
+				cores++
+			}
+		}
 	}
 
-	return string(digits[pos:])
+	a.logger.Log(logging.Record{
+		Level:      logging.LevelInfo,
+		Subsystem:  "app",
+		Event:      "warmup_complete",
+		Message:    "background warmup complete",
+		Status:     "ready",
+		DurationMS: warmupMS,
+		Fields: map[string]any{
+			"warmup_ms": warmupMS,
+			"cores":     cores,
+		},
+	})
 }

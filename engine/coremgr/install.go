@@ -315,6 +315,12 @@ func (m *Manager) installCore(ctx context.Context, name CoreName) error {
 		mf.UpdatedAt = time.Now().UTC()
 		mf.FailureReason = ""
 		mf.FailureStage = ""
+		// v0.9.13: the just-installed version IS the latest
+		// upstream snapshot at install time — keep the retained
+		// metadata coherent (and its size real).
+		mf.LatestKnown = versionStr
+		mf.LatestTag = update.ReleaseTag
+		mf.LatestAssetSize = update.AssetSize
 		if prevExists {
 			mf.PreviousChecksum = prevChecksumStr
 			mf.PreviousPath = prevPath

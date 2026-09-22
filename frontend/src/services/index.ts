@@ -243,6 +243,14 @@ export interface CoreManifest {
   failure_reason?: string;
   failure_stage?: string;
   latest_known?: string;
+  /** v0.9.13: release tag of the retained upstream snapshot. */
+  latest_tag?: string;
+  /**
+   * v0.9.13: retained platform asset download size in bytes.
+   * Absent/0 = unavailable — the UI shows a truthful fallback,
+   * never a guessed value.
+   */
+  latest_asset_size?: number;
 }
 
 /** The complete core lifecycle view (app.CoreLifecycleView). */

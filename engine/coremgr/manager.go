@@ -111,8 +111,19 @@ type Manifest struct {
 	FailureStage string `json:"failure_stage,omitempty"`
 	// LatestKnown is the newest upstream version seen by the last
 	// update check ("update available" without a re-query).
-	LatestKnown string    `json:"latest_known,omitempty"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	//
+	// v0.9.13: the retained upstream snapshot is COMPLETED with the
+	// release tag and the selected platform asset's download size, so
+	// the UI can show the real update target and size across restarts
+	// without re-querying the release API. All three fields are
+	// optional (omitempty): manifests written by older versions load
+	// unchanged, and a zero size honestly means "unavailable" — the
+	// UI shows a fallback, never a guess. A channel change clears the
+	// snapshot because it was selected under the previous channel.
+	LatestKnown     string    `json:"latest_known,omitempty"`
+	LatestTag       string    `json:"latest_tag,omitempty"`
+	LatestAssetSize int64     `json:"latest_asset_size,omitempty"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 // HealthResult records the outcome of a smoke-test against one core.
@@ -530,6 +541,12 @@ func (m *Manager) SetChannel(name CoreName, ch Channel) error {
 	m.mu.Lock()
 	mf := m.manifestOrCreateLocked(name)
 	mf.Channel = ch
+	// v0.9.13: the retained upstream snapshot was selected under the
+	// previous channel — clear it so the UI never renders a stale
+	// "update available" target after a channel switch.
+	mf.LatestKnown = ""
+	mf.LatestTag = ""
+	mf.LatestAssetSize = 0
 	mf.UpdatedAt = time.Now().UTC()
 	m.mu.Unlock()
 

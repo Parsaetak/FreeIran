@@ -117,6 +117,15 @@ func (r *Registry) Get(name string) (Core, bool) {
 // and updates availability, path and version information. Missing or
 // invalid binaries are reported through BackendInfo, never as errors:
 // a desktop app must boot with zero cores installed.
+//
+// v0.9.13 (performance audit, measured): each AVAILABLE binary costs
+// a version-probe process spawn (bounded at 5s per probe form), and
+// Refresh runs on the interactive-connect critical path (boot priority
+// 1, post-install, explicit user refresh). Discovery therefore runs
+// CONCURRENTLY per backend — bounded by the registered backend count
+// (three), preserving the ordered, locked result updates. The measured
+// serial cost was the SUM of probe times; the concurrent cost is the
+// MAXIMUM of them.
 func (r *Registry) Refresh(ctx context.Context) {
 	if r == nil {
 		return
@@ -137,21 +146,31 @@ func (r *Registry) Refresh(ctx context.Context) {
 
 	r.mu.RUnlock()
 
+	var wg sync.WaitGroup
+
 	for _, item := range work {
-		status, version, path, note := r.discover(ctx, item.name)
+		wg.Add(1)
 
-		r.mu.Lock()
+		go func(name string) {
+			defer wg.Done()
 
-		if entry, ok := r.backends[item.name]; ok {
-			entry.status = status
-			entry.version = version
-			entry.path = path
-			entry.note = note
-			entry.check = time.Now().UTC()
-		}
+			status, version, path, note := r.discover(ctx, name)
 
-		r.mu.Unlock()
+			r.mu.Lock()
+
+			if entry, ok := r.backends[name]; ok {
+				entry.status = status
+				entry.version = version
+				entry.path = path
+				entry.note = note
+				entry.check = time.Now().UTC()
+			}
+
+			r.mu.Unlock()
+		}(item.name)
 	}
+
+	wg.Wait()
 }
 
 // discover probes one backend's executable. With no locator, or when

@@ -304,6 +304,24 @@ export class Manifest {
              */
             this["latest_known"] = undefined;
         }
+        if (/** @type {any} */(false)) {
+            /**
+             * LatestTag is the release tag of the retained upstream
+             * snapshot (v0.9.13).
+             * @member
+             * @type {string | undefined}
+             */
+            this["latest_tag"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * LatestAssetSize is the retained platform asset download
+             * size in bytes; 0/absent means unavailable (v0.9.13).
+             * @member
+             * @type {number | undefined}
+             */
+            this["latest_asset_size"] = undefined;
+        }
         if (!("updated_at" in $$source)) {
             /**
              * @member

@@ -338,3 +338,18 @@ export function IconGlobe(props: IconProps) {
     </svg>
   );
 }
+
+/**
+ * v0.9.13: overflow (⋮) trigger — the single row-level entry point to
+ * the per-configuration action model (context menu on desktop, the
+ * same menu on touch/narrow viewports).
+ */
+export function IconDots(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <circle cx="12" cy="5" r="1.6" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="19" r="1.6" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
