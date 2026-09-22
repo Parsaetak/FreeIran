@@ -183,16 +183,12 @@ func TestDoFailedExecutionIsNotCached(t *testing.T) {
 
 	boom := errors.New("boom")
 
-	firstErr := make(chan error, 1)
-
 	fnErr := func(context.Context) (int, error) { return 0, boom }
 
 	_, err := Do(g, context.Background(), "fail", execTimeout, fnErr)
 	if !errors.Is(err, boom) {
 		t.Fatalf("first call error = %v, want boom", err)
 	}
-
-	close(firstErr)
 
 	v, err := Do(g, context.Background(), "fail", execTimeout, func(context.Context) (int, error) {
 		return 7, nil
@@ -209,7 +205,13 @@ func TestDoFailedExecutionIsNotCached(t *testing.T) {
 
 // TestDoConcurrentMixedKeys stress-races many distinct keys so the
 // group map, the retire-before-release ordering and the per-call
-// channels are exercised under -race.
+// channels are exercised under -race. Waiter slots 3/7/11/… carry a
+// 1ms budget against a 5ms execution: they exercise the abandoned-
+// waiter branch (own context error, shared work untouched) while the
+// remaining waiters receive the shared result. Both branches are
+// ASSERTED to have run — the waiters and the keys are passed into the
+// goroutines explicitly so the cancellation path cannot be optimized
+// away by a capture mistake.
 func TestDoConcurrentMixedKeys(t *testing.T) {
 	g := &Group[int]{}
 
@@ -217,13 +219,24 @@ func TestDoConcurrentMixedKeys(t *testing.T) {
 		return context.WithTimeout(context.WithoutCancel(context.Background()), 10*time.Second)
 	}
 
+	const numKeys = 20
+	const waitersPerKey = 10
+
 	var wg sync.WaitGroup
 
-	for key := 0; key < 20; key++ {
-		for waiter := 0; waiter < 10; waiter++ {
+	// executions[key] counts how often the shared work ran: exactly
+	// once per key, no matter how many waiters abandoned it.
+	executions := make([]atomic.Int32, numKeys)
+
+	// cancelled/succeeded count the observed waiter outcomes across
+	// ALL keys — the test fails if either branch never ran.
+	var cancelled, succeeded atomic.Int32
+
+	for key := 0; key < numKeys; key++ {
+		for waiter := 0; waiter < waitersPerKey; waiter++ {
 			wg.Add(1)
 
-			go func(key int) {
+			go func(key, waiter int) {
 				defer wg.Done()
 
 				ctx := context.Background()
@@ -236,29 +249,57 @@ func TestDoConcurrentMixedKeys(t *testing.T) {
 				}
 
 				v, err := Do(g, ctx, keys[key], execTimeout, func(context.Context) (int, error) {
+					executions[key].Add(1)
+
 					time.Sleep(5 * time.Millisecond)
 
 					return key, nil
 				})
 
-				// Abandoned waiters (1ms budget) may legitimately see
-				// ctx.Err(); everyone else must see the shared value.
 				if err != nil {
+					// An abandoned waiter reports ITS OWN context
+					// error — never the shared result, never a
+					// foreign failure.
 					if !errors.Is(err, context.DeadlineExceeded) {
-						t.Errorf("key %d waiter: unexpected error %v", key, err)
+						t.Errorf("key %d waiter %d: unexpected error %v", key, waiter, err)
+
+						return
 					}
+
+					cancelled.Add(1)
 
 					return
 				}
 
+				succeeded.Add(1)
+
 				if v != key {
 					t.Errorf("key %d: value %d leaked across keys", key, v)
 				}
-			}(key)
+			}(key, waiter)
 		}
 	}
 
 	wg.Wait()
+
+	// The cancellation branch must genuinely have been exercised:
+	// 5 keys × waiters 3 and 7 per 10-waiter wave hold a 1ms budget
+	// against a 5ms execution.
+	if cancelled.Load() == 0 {
+		t.Fatal("no waiter was ever cancelled; the abandoned-waiter branch is not covered")
+	}
+
+	if succeeded.Load() == 0 {
+		t.Fatal("no waiter received the shared result; coverage is one-sided")
+	}
+
+	// Abandoned waiters must not restart shared work: one execution
+	// per key, exactly.
+	for key := range executions {
+		if got := executions[key].Load(); got != 1 {
+			t.Errorf("key %d: executions = %d, want 1 (abandoned waiters must not duplicate work)", key, got)
+		}
+	}
 }
 
 // keys for TestDoConcurrentMixedKeys (package-level so the closure

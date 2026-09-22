@@ -176,8 +176,11 @@ func (m *Manager) installCore(ctx context.Context, name CoreName, cfg installCon
 	// compare the local state. A suitable working candidate — the
 	// managed binary, an external installation, or a complete staged
 	// artifact — is reused or adopted instead of repeating the work.
-	// The release metadata resolved here is carried into the pipeline
-	// below: ONE authoritative resolve per install call.
+	// A local reuse answers from LOCAL evidence alone (its release-
+	// metadata enrichment runs detached afterwards); an acquisition
+	// resolves the release metadata here and carries it through the
+	// pipeline below: exactly ONE authoritative resolve per install
+	// call that actually needs remote metadata.
 	reuse, update, rerr := m.ensureReusable(ctx, name, src, preSnap, cfg.force)
 	if rerr != nil {
 		// The release resolve failed and nothing healthy is installed:

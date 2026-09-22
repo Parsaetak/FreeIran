@@ -296,11 +296,22 @@ func TestOfflineReuseBlackholedAuthorityStillReuses(t *testing.T) {
 		t.Fatalf("Install against black-holed authority: %v", err)
 	}
 
-	// The enrichment resolve must be cut off by the reuse budget, not
-	// the 30s detached flight: the local reuse answer cannot be held
-	// hostage by a dead network.
-	if elapsed := time.Since(start); elapsed > reuseResolveBudget+5*time.Second {
-		t.Fatalf("black-holed authority blocked local reuse for %s (budget %s)", elapsed, reuseResolveBudget)
+	// The reuse answer must be bounded by LOCAL work alone: the release
+	// resolve is detached enrichment now, so the call returns in local
+	// time (milliseconds) — the old inline enrichment wait (the full
+	// reuseResolveBudget) would overshoot this bound deterministically.
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("black-holed authority blocked local reuse for %s; the reuse answer must not wait on the network at all", elapsed)
+	}
+
+	// The manifest must record a usable, reused runtime.
+	mf, ok := mgr.Info(CoreXray)
+	if !ok {
+		t.Fatal("manifest missing")
+	}
+
+	if mf.State != StateReady && mf.State != StateUpdateAvailable {
+		t.Errorf("state = %s, want a healthy reused state", mf.State)
 	}
 }
 

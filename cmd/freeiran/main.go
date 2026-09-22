@@ -84,8 +84,11 @@ func main() {
 	if err != nil {
 		// Boot-failure logging is owned by app.New (v0.9.13) —
 		// including failures before its own logger is resolved,
-		// which reach this same file through opts.Logger. The
-		// entrypoint closes the log and surfaces the failure.
+		// which reach this same file through opts.Logger. New also
+		// OWNS the injected logger on every failure path and closes
+		// it before returning; the entrypoint close below is the
+		// idempotent safety net that keeps this path correct even
+		// for boot stages that never reach the transaction.
 		if logger != nil {
 			_ = logger.Close()
 		}

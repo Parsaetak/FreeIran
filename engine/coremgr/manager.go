@@ -244,6 +244,10 @@ type Manager struct {
 	flightMu      sync.Mutex
 	installFlight map[CoreName]*installFlight
 
+	// enrichWG counts in-flight detached reuse enrichments (see
+	// spawnReuseEnrichment / waitEnrichments).
+	enrichWG sync.WaitGroup
+
 	platform Platform
 
 	// download tuning (normalized in New)
@@ -256,6 +260,10 @@ type Manager struct {
 
 	// releaseFlights deduplicates concurrent release-metadata lookups
 	// for the same endpoint (v0.9.14).
+
+	// enrichWG tracks the detached reuse enrichments (v0.9.14
+	// local-first refinement) so their completion is observable —
+	// waitEnrichments — instead of racily polled.
 	releaseFlights singleflight.Group[[]byte]
 }
 
@@ -429,6 +437,12 @@ func New(opts Options) (*Manager, error) {
 // exists, but its bin directories are discovery inputs — the locator
 // is created right after and wired here). Nil resets to manager-only
 // semantics (no external discovery).
+// waitEnrichments blocks until every detached reuse enrichment has
+// settled. The enrichment refines the manifest asynchronously after
+// the install call returned, so observing its final state requires
+// waiting on the tracking group — never polling.
+func (m *Manager) waitEnrichments() { m.enrichWG.Wait() }
+
 func (m *Manager) SetLocator(l *system.CoreLocator) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

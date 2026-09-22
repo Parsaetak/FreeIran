@@ -44,6 +44,12 @@ func bootWithProfile(t *testing.T, profile logging.Profile) (*App, *logging.Logg
 		t.Fatalf("open test logger: %v", err)
 	}
 
+	// The test owns the handle until the app adopts it: register the
+	// idempotent close BEFORE New so even a failed boot (t.Fatalf)
+	// releases the file and Windows can remove the TempDir. Runs
+	// after the app's own Shutdown cleanup (LIFO) — a safe no-op.
+	t.Cleanup(func() { _ = logger.Close() })
+
 	application, err := New(Options{
 		BaseDir:                 filepath.Join(t.TempDir(), "freeiran"),
 		Logger:                  logger,
@@ -225,6 +231,10 @@ func TestWorkspaceReadyFollowsOpenProfile(t *testing.T) {
 			t.Fatalf("open test logger: %v", err)
 		}
 
+		// Directly-owned handle: deterministic close even when a
+		// fatal assertion skips the explicit Shutdown below.
+		t.Cleanup(func() { _ = logger.Close() })
+
 		application, err := New(Options{
 			BaseDir:                 filepath.Join(t.TempDir(), "freeiran"),
 			Logger:                  logger,
@@ -260,6 +270,11 @@ func TestBootFailureSingleFatalRecord(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open test logger: %v", err)
 	}
+
+	// Idempotent safety net for the directly-owned handle: the boot
+	// transaction closes the injected logger on the failure path, and
+	// this cleanup covers every path where New is never reached.
+	t.Cleanup(func() { _ = logger.Close() })
 
 	// A FILE where the workspace root must be created: EnsureLayout
 	// fails before any other subsystem starts.
@@ -304,6 +319,12 @@ func TestApplicationStartFieldsRedacted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open test logger: %v", err)
 	}
+
+	// This logger is never handed to an app instance: the test owns
+	// it outright, so the close MUST live here — an open handle on
+	// test.log blocks the Windows TempDir RemoveAll (v0.9.14 CI
+	// failure) exactly like a leaked app logger would.
+	t.Cleanup(func() { _ = logger.Close() })
 
 	logger.Log(logging.Record{
 		Level:     logging.LevelInfo,

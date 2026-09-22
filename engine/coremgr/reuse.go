@@ -149,18 +149,22 @@ func (m *Manager) invalidateDiscoveredPath(path string) {
 // a suitable working candidate exists, reconciles the manifest and
 // reports the install complete WITHOUT acquiring anything.
 //
-// Decision flow (v0.9.14, revised local-first ordering):
+// Decision flow (v0.9.14, true local-first ordering):
 //
 //  1. LOCAL DISCOVERY → FILE IDENTITY → LOCAL HEALTH: a healthy,
 //     identity-current active binary is reusable on LOCAL evidence
-//     alone. GitHub/release metadata can never veto that answer —
-//     a machine with a valid runtime stays fully usable while the
-//     remote API is unreachable, poisoned or slow.
-//  2. When local reuse is possible the release resolve runs inside a
-//     SHORT enrichment budget (reuseResolveBudget): online it refines
-//     the honest decision label (managed-current vs managed-healthy,
-//     system-current vs system-older) and the update surfaces; offline
-//     or black-holed it fails fast and the local reuse stands.
+//     alone. The reuse answer is produced and returned with ZERO
+//     network work — GitHub/release metadata can never veto that
+//     answer and must never delay it (a machine with a valid runtime
+//     stays fully usable while the remote API is unreachable,
+//     poisoned or slow).
+//  2. The release resolve that follows a local reuse is DETACHED
+//     ENRICHMENT (spawnReuseEnrichment): it runs outside the install
+//     call, bounded by reuseResolveBudget, and only refines the
+//     decision label (managed-current vs managed-healthy, system-
+//     current vs system-older) and the update surfaces when the
+//     authority is reachable. Its failure changes nothing — the local
+//     reuse stands.
 //  3. When the resolve fails, the reuse decision falls back to the
 //     manifest-cached target (LatestKnown) — current/newer/older
 //     classification keeps working offline — and OTHER local
@@ -168,9 +172,10 @@ func (m *Manager) invalidateDiscoveredPath(path string) {
 //     failure never invalidates a usable local runtime.
 //  4. WithForce (explicit update) bypasses the reuse gate entirely.
 //  5. Otherwise (nothing reusable locally, or a managed binary older
-//     than the target) the release resolve runs unbounded and the
-//     acquisition pipeline proceeds — the download genuinely needs
-//     remote metadata, so failing loudly when offline is correct.
+//     than the target) the release resolve runs inline on the
+//     caller's context and the acquisition pipeline proceeds — the
+//     download genuinely needs remote metadata, so failing loudly
+//     when offline is correct.
 func (m *Manager) ensureReusable(ctx context.Context, name CoreName, src Source, preSnap Manifest, force bool) (reuseResult, UpdateInfo, error) {
 	active := preSnap.BinaryPath
 	activeOwned := activeOwnership(preSnap)
@@ -196,33 +201,29 @@ func (m *Manager) ensureReusable(ctx context.Context, name CoreName, src Source,
 	// ---- 0. Local-first reuse gate -----------------------------------
 	// A healthy, identity-current active binary answers "can I use this
 	// already-existing executable right now?" with YES on local
-	// evidence alone (file identity + recorded health state). The
-	// release resolve that follows is an ENRICHMENT, not a
-	// prerequisite: it is bounded by reuseResolveBudget so a black-holed
-	// network delays local reuse by seconds instead of the full
-	// detached-flight lifetime, and its failure drops to the offline
-	// reuse path (cached-target classification + local discovery
-	// adoption) instead of failing the call.
+	// evidence alone (file identity + recorded health state) — the
+	// answer is returned WITHOUT any network work. The release resolve
+	// runs afterwards as detached, bounded enrichment: online it
+	// refines the decision label and the update surfaces; offline or
+	// black-holed it quietly fails and the local reuse stands. A
+	// black-holed network can therefore never hold a healthy local
+	// runtime hostage, not even for the enrichment budget.
 	//
 	// WithForce skips the gate: an explicit update request overrides
 	// reuse by design (identical work is still not redownloaded —
 	// see Acquire).
 	if !force && activeAlive && active != "" && healthyState(preSnap.State) && fileIdentityMatches(active, preSnap) {
-		enrichCtx, cancel := context.WithTimeout(ctx, reuseResolveBudget)
-		update, err := m.checkRelease(enrichCtx, name, preSnap.Channel)
-		cancel()
+		res, upd, rerr := m.reuseOffline(ctx, name, src, preSnap, active, activeOwned)
+		if rerr == nil && res.done {
+			m.spawnReuseEnrichment(ctx, name, preSnap, activeOwned)
 
-		if err == nil {
-			// Online: the original decision flow below classifies
-			// current/newer/older against the FRESH target. The identity
-			// is current and the health evidence is fresh, so the
-			// cmp == 0 arm reuses without re-probing; the newer/older
-			// arms keep their smoke-test validation.
-			return m.reuseActiveOnline(ctx, name, src, preSnap, force, update)
+			return res, upd, nil
 		}
 
-		// Offline or too slow: reuse on local evidence. Never veto.
-		return m.reuseOffline(ctx, name, src, preSnap, active, activeOwned)
+		// reuseOffline could not answer from local state (the active
+		// binary vanished or failed revalidation between the gate
+		// check and the reuse validation): fall through to the
+		// resolve-driven path below, which discovers alternatives.
 	}
 
 	// ---- 1. Resolve the target release ------------------------------
@@ -249,19 +250,112 @@ func (m *Manager) ensureReusable(ctx context.Context, name CoreName, src Source,
 	return m.reuseActiveOnline(ctx, name, src, preSnap, force, update)
 }
 
-// reuseResolveBudget bounds the OPTIONAL release-metadata resolve on
-// the local-first reuse path: online it refines the decision label
-// (current vs healthy) and the update surfaces; a black-holed or
-// poisoned network must not hold a healthy local runtime hostage for
-// the full detached-flight lifetime (30s) — a few seconds is enough
-// for a healthy API round trip, and failure simply keeps the local
-// decision. The singleflight flight itself keeps its own detached
-// 30s lifetime for OTHER callers; only this caller's wait is bounded.
+// reuseResolveBudget bounds the DETACHED release-metadata enrichment
+// that follows a local reuse decision: online it refines the decision
+// label (current vs healthy) and the update surfaces; a black-holed or
+// poisoned network must never hold a healthy local runtime hostage —
+// and because the enrichment runs outside the install call, the
+// caller's answer is bounded by LOCAL work alone. The singleflight
+// flight itself keeps its own detached 30s lifetime for OTHER callers;
+// only this enrichment's wait is budgeted.
 const reuseResolveBudget = 8 * time.Second
+
+// spawnReuseEnrichment runs the OPTIONAL release-metadata refinement
+// of an already-decided local reuse OUTSIDE the install call: the
+// caller's reuse answer was produced from local evidence alone and is
+// never delayed by the network. The enrichment is detached from the
+// caller's context (the install call that spawned it has already
+// returned) with its own reuseResolveBudget lifetime, so a black-holed
+// network cannot leak an unbounded background request. Exactly one
+// resolve per reuse event, singleflight-deduplicated with any
+// concurrent caller of the same endpoint; its failure changes nothing.
+func (m *Manager) spawnReuseEnrichment(ctx context.Context, name CoreName, preSnap Manifest, activeOwned system.Ownership) {
+	enrichCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), reuseResolveBudget)
+
+	// enrichWG makes the detached enrichment's completion OBSERVABLE
+	// (deterministic tests, future close-ordering) instead of
+	// something callers have to poll for.
+	m.enrichWG.Add(1)
+
+	go func() {
+		defer m.enrichWG.Done()
+		defer cancel()
+
+		update, err := m.checkRelease(enrichCtx, name, preSnap.Channel)
+		if err != nil {
+			// Offline / too slow / rate-limited: the local reuse
+			// decision (cached-target classification) stands.
+			m.logger.Info(Subsystem, "reuse_enrichment_skipped",
+				"core %s: release metadata unavailable after local reuse; local decision stands (%v)", name, err)
+
+			return
+		}
+
+		m.applyReuseEnrichment(name, preSnap, activeOwned, update)
+	}()
+}
+
+// applyReuseEnrichment folds fresh release metadata into the manifest
+// of a REUSED runtime: latest-known version/tag/size, the refreshed
+// decision label and update availability. It never touches health
+// evidence (no new local validation ran) and it no-ops when the
+// manifest moved on (a concurrent install/uninstall owns it now) —
+// the enrichment only ever refines the SAME healthy runtime it was
+// spawned for.
+func (m *Manager) applyReuseEnrichment(name CoreName, preSnap Manifest, activeOwned system.Ownership, update UpdateInfo) {
+	target := ExtractVersionToken(update.LatestVersion)
+	activeVersion := ExtractVersionToken(preSnap.Version)
+
+	decision := DecisionManagedHealthy
+	nextState := preSnap.State
+	note := ""
+
+	if target != "" && activeVersion != "" {
+		switch cmp := compareVersions(activeVersion, target); {
+		case cmp == 0:
+			decision = DecisionManagedCurrent
+
+			if activeOwned == system.OwnershipExternal {
+				decision = DecisionSystemCurrent
+			}
+
+		case cmp > 0:
+			decision = DecisionSystemNewer
+			note = "newer than last known stable; automatic downgrade refused"
+
+		case cmp < 0 && activeOwned == system.OwnershipExternal:
+			decision = DecisionSystemOlder
+			nextState = StateUpdateAvailable
+
+		default: // cmp < 0, managed: the update is acquirable online
+			decision = DecisionManagedHealthy
+			nextState = StateUpdateAvailable
+			note = "update available: " + update.LatestVersion
+		}
+	}
+
+	if err := m.updateManifest(name, func(mf *Manifest) {
+		if mf.BinaryPath != preSnap.BinaryPath || mf.Version != preSnap.Version || !healthyState(mf.State) {
+			return // a concurrent install/uninstall owns the manifest now
+		}
+
+		mf.State = nextState
+		mf.LastChecked = update.CheckedAt
+		mf.LatestKnown = update.LatestVersion
+		mf.LatestTag = update.ReleaseTag
+		mf.LatestAssetSize = update.AssetSize
+		mf.StatusNote = note
+		mf.LastDecision = string(decision)
+		mf.UpdatedAt = time.Now().UTC()
+	}); err != nil {
+		m.logger.Warn(Subsystem, "persist_failed",
+			"could not persist reuse enrichment for %s: %v", name, err)
+	}
+}
 
 // reuseOffline answers the reuse question from LOCAL evidence only —
 // the restrictive-network path (offline, DNS failure, poisoned
-// resolver, GitHub unreachable, resolve over budget). It never
+// resolver, GitHub unreachable, unreachable enrichment). It never
 // touches the network:
 //
 //   - a healthy active binary (identity-current: no re-probe; stale

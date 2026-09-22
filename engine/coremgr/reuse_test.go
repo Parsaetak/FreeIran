@@ -361,6 +361,90 @@ func TestRollbackPreservesExternalBinary(t *testing.T) {
 	}
 }
 
+// TestInstallOlderManagedReusedLocallyAndEnriched pins the true
+// local-first semantics for a healthy MANAGED core older than the
+// fresh release: Install answers from LOCAL evidence (the network is
+// never consulted on the critical path, nothing is downloaded), the
+// working runtime is kept byte for byte, and the detached enrichment
+// afterwards refines the manifest against the fresh target — the
+// runtime stays usable while the update becomes visible. The explicit
+// update transaction itself is covered by
+// TestInstallSmokeTestFailureKeepsPreviousCore (via Acquire).
+func TestInstallOlderManagedReusedLocallyAndEnriched(t *testing.T) {
+	const coreName = "xray"
+
+	h := newInstallHarness(t, coreName, "v8.0.0")
+
+	t.Setenv("FAKECORE_VERSION", "v8.0.0")
+
+	mgr := newTestManager(t, h, coreName)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	// First install: healthy managed core at v8.0.0.
+	if err := mgr.Install(ctx, CoreXray); err != nil {
+		t.Fatalf("first Install: %v", err)
+	}
+
+	before, _ := mgr.Info(CoreXray)
+	beforeSum, _ := fileSHA256(before.BinaryPath)
+
+	// A newer release is published, then Install runs again.
+	firstSnap := h.snapshot()
+
+	h.setRelease("v8.1.0")
+
+	// The reuse answer must be bounded by LOCAL work: a regression to
+	// the inline enrichment wait (the full reuseResolveBudget) would
+	// overshoot this bound deterministically.
+	start := time.Now()
+
+	if err := mgr.Install(ctx, CoreXray); err != nil {
+		t.Fatalf("second Install: %v", err)
+	}
+
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("local reuse took %s; the reuse answer must not wait on the network", elapsed)
+	}
+
+	if second := h.snapshot(); second.assetHits != firstSnap.assetHits {
+		t.Fatalf("asset downloads grew by %d, want 0 (older healthy managed core kept)",
+			second.assetHits-firstSnap.assetHits)
+	}
+
+	after, _ := mgr.Info(CoreXray)
+
+	afterSum, err := fileSHA256(after.BinaryPath)
+	if err != nil {
+		t.Fatalf("active binary vanished: %v", err)
+	}
+
+	if afterSum != beforeSum {
+		t.Fatal("active binary changed during local reuse")
+	}
+
+	// Enrichment refinement: the fresh target (v8.1.0) marks the update
+	// available while the runtime stays healthy and usable. Waiting on
+	// the manager's enrichment group is the deterministic completion
+	// signal — no polling.
+	mgr.waitEnrichments()
+
+	mf, _ := mgr.Info(CoreXray)
+
+	if mf.State != StateUpdateAvailable {
+		t.Errorf("state = %s, want update_available (fresh target surfaced by the enrichment)", mf.State)
+	}
+
+	if mf.LastDecision != string(DecisionManagedHealthy) {
+		t.Errorf("last_decision = %q, want managed-healthy (kept, update surfaced)", mf.LastDecision)
+	}
+
+	if mf.LatestKnown != "8.1.0" {
+		t.Errorf("latest_known = %q, want 8.1.0 (release metadata refined)", mf.LatestKnown)
+	}
+}
+
 func TestCurrentManagedInstallIsNoOp(t *testing.T) {
 	const coreName = "xray"
 
@@ -389,7 +473,8 @@ func TestCurrentManagedInstallIsNoOp(t *testing.T) {
 		t.Fatal("managed install must record the binary file identity")
 	}
 
-	// Second Install on the already-current core: a true no-op.
+	// Second Install on the already-current core: a true no-op on the
+	// critical path (local evidence only — zero inline network work).
 	if err := mgr.Install(ctx, CoreXray); err != nil {
 		t.Fatalf("second Install: %v", err)
 	}
@@ -400,11 +485,16 @@ func TestCurrentManagedInstallIsNoOp(t *testing.T) {
 		t.Fatalf("asset downloads = %d, want %d (no re-download for a current core)", second.assetHits, first.assetHits)
 	}
 
-	// Exactly ONE resolve per install call: the second call performs
-	// its own (single, deduplicated) resolve — two calls, two
-	// conditional API requests, zero asset downloads.
+	// Exactly ONE resolve per install call, now delivered by the
+	// DETACHED enrichment that follows a local reuse: wait for it
+	// to settle, then pin the count — two calls, two conditional
+	// API requests, zero asset downloads.
+	mgr.waitEnrichments()
+
+	second = h.snapshot()
+
 	if second.apiHits != first.apiHits+1 {
-		t.Fatalf("API hits = %d, want %d (one resolve per install call)", second.apiHits, first.apiHits+1)
+		t.Fatalf("API hits = %d, want %d (one enrichment resolve per reuse)", second.apiHits, first.apiHits+1)
 	}
 
 	if mf, _ = mgr.Info(CoreXray); mf.LastDecision != string(DecisionManagedCurrent) {

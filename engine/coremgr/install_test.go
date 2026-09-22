@@ -264,18 +264,18 @@ func (h *installHarness) setRelease(tag string) {
 
 	h.releaseTag = tag
 	h.releaseJSON = []byte(fmt.Sprintf(`{
-		"tag_name": %q,
-		"name": %q,
-		"prerelease": false,
-		"published_at": "2026-09-01T00:00:00Z",
-		"html_url": "https://github.com/example/%s/releases/tag/%s",
-		"assets": [{
-			"name": %q,
-			"browser_download_url": "ASSET_URL_PLACEHOLDER",
-			"size": %d,
-			"digest": "DIGEST_PLACEHOLDER"
-		}]
-	}`, tag, tag, h.coreName, tag, h.assetName, len(h.assetBody)))
+                "tag_name": %q,
+                "name": %q,
+                "prerelease": false,
+                "published_at": "2026-09-01T00:00:00Z",
+                "html_url": "https://github.com/example/%s/releases/tag/%s",
+                "assets": [{
+                        "name": %q,
+                        "browser_download_url": "ASSET_URL_PLACEHOLDER",
+                        "size": %d,
+                        "digest": "DIGEST_PLACEHOLDER"
+                }]
+        }`, tag, tag, h.coreName, tag, h.assetName, len(h.assetBody)))
 }
 
 // serveRelease writes the release document (with ETag/304 and the
@@ -606,6 +606,11 @@ func TestInstallPipelineEndToEnd(t *testing.T) {
 	if err := mgr.Install(ctx, CoreXray); err != nil {
 		t.Fatalf("second Install: %v", err)
 	}
+
+	// The second install is a LOCAL reuse now; its detached
+	// enrichment refines the manifest asynchronously — wait for it
+	// to settle so no write races the test's TempDir removal.
+	mgr.waitEnrichments()
 
 	if mf, _ = mgr.Info(CoreXray); mf.State != StateReady {
 		t.Errorf("state after re-install = %s, want ready", mf.State)
@@ -963,17 +968,20 @@ func TestInstallSmokeTestFailureKeepsPreviousCore(t *testing.T) {
 	before, _ := mgr.Info(CoreXray)
 	beforeSum, _ := fileSHA256(before.BinaryPath)
 
-	// Second install: an UPDATE to a newer release whose staged
-	// binary fails its smoke run. (v0.9.14: re-installing the SAME
-	// current version is a reuse no-op — the failing-update path is
-	// exercised with a real version bump.)
+	// Explicit update (Acquire — the reuse gate is bypassed by
+	// design) to a newer release whose staged binary fails its
+	// smoke run. Plain Install on the healthy core answers from
+	// LOCAL evidence and would never reach the failing update
+	// transaction; the user-visible "update" action is what must
+	// stay transactional. (TestInstallOlderManagedReusedLocally-
+	// AndEnriched covers the local-first reuse + enrichment side.)
 	h.setRelease("v8.1.0")
 
 	t.Setenv("FAKECORE_VERSION", "v8.1.0")
 	t.Setenv("FAKECORE_FAIL_FAST", "1")
 
-	if err := mgr.Install(ctx, CoreXray); err == nil {
-		t.Fatal("second Install succeeded despite the smoke-test failure")
+	if err := mgr.Acquire(ctx, CoreXray); err == nil {
+		t.Fatal("Acquire succeeded despite the smoke-test failure")
 	}
 
 	after, _ := mgr.Info(CoreXray)
@@ -1123,10 +1131,15 @@ func TestInstallCachedReleaseLookup(t *testing.T) {
 	hitsAfterFirst := h.apiHits
 	h.mu.Unlock()
 
-	// Second install: conditional request must be sent.
+	// Second install: the reuse gate answers from LOCAL evidence;
+	// its detached enrichment performs the conditional request.
 	if err := mgr.Install(ctx, CoreXray); err != nil {
 		t.Fatalf("second Install: %v", err)
 	}
+
+	// Wait for the detached enrichment to settle, then pin the
+	// conditional-request behavior.
+	mgr.waitEnrichments()
 
 	h.mu.Lock()
 	defer h.mu.Unlock()

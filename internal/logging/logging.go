@@ -1075,6 +1075,21 @@ func SetGlobal(l *Logger) { global.Store(l) }
 // Global returns the process-wide logger (nil before installation).
 func Global() *Logger { return global.Load() }
 
+// ClearGlobalIfCurrent uninstalls the process-wide logger, but ONLY
+// when it still points at l: the caller proves it owns the currently
+// installed global before removing it. The app lifecycle uses this on
+// every path that closes the process logger — failed construction and
+// shutdown alike — so Global() can never keep pointing at a closed
+// logger, while a global another owner legitimately installed in the
+// meantime is never clobbered.
+func ClearGlobalIfCurrent(l *Logger) {
+	if l == nil {
+		return
+	}
+
+	global.CompareAndSwap(l, nil)
+}
+
 // E logs an info event through the global logger (no-op when unset).
 func E(subsystem, event, format string, args ...any) {
 	if l := global.Load(); l != nil {

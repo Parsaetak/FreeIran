@@ -79,6 +79,13 @@ type Options struct {
 	// Logger overrides the runtime log (the desktop entrypoint opens
 	// it early so boot failures are captured). When nil, a logger is
 	// created under <BaseDir>/logs.
+	//
+	// Ownership: New owns the supplied logger for the whole
+	// construction — on success the App closes it during Shutdown, on
+	// failure the startup transaction closes it before returning. A
+	// caller-side Close after either outcome is a safe idempotent
+	// no-op (the double close is how the entrypoint keeps its own
+	// early-failure paths simple).
 	Logger *logging.Logger
 
 	// SkipConnectVerification relaxes the connection manager's
@@ -294,6 +301,62 @@ type AppState struct {
 	BootTimings map[string]int64 `json:"boot_timings,omitempty"`
 }
 
+// bootTx is the startup transaction of app.New: it tracks EVERY
+// resource the construction acquires — including a caller-injected
+// logger, which New owns from the moment Options.Logger is received
+// until New either succeeds (ownership transfers to App.Shutdown) or
+// fails (the transaction closes it). One authoritative failure path
+// releases exactly those resources once, in reverse acquisition order,
+// no matter how early construction fails:
+//
+//	resource acquisition → startup transaction →
+//	    success: App owns the resources
+//	    failure: tx.fail cleans them
+//
+// Owned resources: the runtime logger, the global-logger registration
+// (only when this boot installed it), the store, and the lifecycle
+// cancellation. Temporary runtime/global manifests (runtime root,
+// managed-process manifest path) carry no handle and are re-set by the
+// next boot, so they need no rollback.
+type bootTx struct {
+	logger *logging.Logger
+	// global records that logging.SetGlobal was called with
+	// tx.logger — only then may a failure uninstall the global.
+	global bool
+	store  *store.Store
+	cancel context.CancelFunc
+}
+
+// fail is the ONE authoritative boot-failure path. It records the
+// fatal event, releases every resource acquired so far exactly once,
+// uninstalls the global logger when THIS boot installed it (a closed
+// logger must never stay reachable through logging.Global) and wraps
+// the error for the caller.
+func (tx *bootTx) fail(stage string, ferr error) (*App, error) {
+	if tx.logger != nil {
+		tx.logger.Error("app", "application_start", "boot", "fatal",
+			"boot failed at %s: %v", stage, ferr)
+	}
+
+	if tx.cancel != nil {
+		tx.cancel()
+	}
+
+	if tx.store != nil {
+		_ = tx.store.Close()
+	}
+
+	if tx.global {
+		logging.ClearGlobalIfCurrent(tx.logger)
+	}
+
+	if tx.logger != nil {
+		_ = tx.logger.Close()
+	}
+
+	return nil, fmt.Errorf("app: %s: %w", stage, ferr)
+}
+
 // New boots the application to the READY state. Heavy verification
 // and cache warming continue after Start.
 func New(opts Options) (*App, error) {
@@ -304,6 +367,12 @@ func New(opts Options) (*App, error) {
 	}
 
 	markPhase(BootBoot)
+
+	// The startup transaction starts with whatever logger the caller
+	// injected (nil in production when the entrypoint could not open
+	// one). A supplied logger must not leak merely because failure
+	// occurs before the normal logger-resolution point.
+	tx := &bootTx{logger: opts.Logger}
 
 	// v0.9.2 workspace model: an explicitly provided BaseDir (tests,
 	// smoke test) is used as-is; otherwise the single Workspace Root
@@ -328,27 +397,17 @@ func New(opts Options) (*App, error) {
 	// v0.9.13 fatal-boot ownership: app.New is the single producer
 	// of boot-failure records. Failures before the app-level logger
 	// is resolved still reach the caller-opened runtime log through
-	// opts.Logger (the entrypoint passes it in the desktop path).
-	bootFatal := func(stage string, ferr error) {
-		if opts.Logger != nil {
-			opts.Logger.Error("app", "application_start", "boot", "fatal",
-				"boot failed at %s: %v", stage, ferr)
-		}
-	}
-
+	// the injected logger (the entrypoint passes it in the desktop
+	// path) — and the transaction closes that logger on the way out.
 	if defaultedWorkspace {
 		layout, err = system.EnsureWorkspace()
 		if err != nil {
-			bootFatal("workspace init", err)
-
-			return nil, err
+			return tx.fail("workspace init", err)
 		}
 	} else {
 		layout, err = system.EnsureLayout(opts.BaseDir)
 		if err != nil {
-			bootFatal("workspace init", err)
-
-			return nil, err
+			return tx.fail("workspace init", err)
 		}
 	}
 
@@ -364,11 +423,17 @@ func New(opts Options) (*App, error) {
 			Name: "freeiran.log",
 		})
 		if err != nil {
+			// Nothing was acquired beyond the (nil) injected logger:
+			// no fatal record is possible without a logger and there
+			// is nothing to release.
 			return nil, fmt.Errorf("app: open runtime log: %w", err)
 		}
+
+		tx.logger = logger
 	}
 
 	logging.SetGlobal(logger)
+	tx.global = true
 
 	// v0.9.7 lifecycle semantics: ONE application_start record per
 	// launch. Workspace/base-path initialization is represented as
@@ -409,9 +474,7 @@ func New(opts Options) (*App, error) {
 			logger.Error("workspace", "migration_error", "migrate", "environment",
 				"legacy workspace migration failed: %v", err)
 
-			_ = logger.Close()
-
-			return nil, fmt.Errorf("app: workspace migration: %w", err)
+			return tx.fail("workspace migration", err)
 		}
 
 		if report.Performed {
@@ -440,10 +503,10 @@ func New(opts Options) (*App, error) {
 		logger.Error("store", "store_error", "open", "environment",
 			"store open failed: %v", err)
 
-		_ = logger.Close()
-
-		return nil, fmt.Errorf("app: open store: %w", err)
+		return tx.fail("open store", err)
 	}
+
+	tx.store = st
 
 	// v0.9.13: the record/chunk facts ride structured fields — the
 	// message no longer duplicates them.
@@ -466,6 +529,7 @@ func New(opts Options) (*App, error) {
 	mreg := metrics.New()
 
 	ctx, cancel := context.WithCancel(context.Background())
+	tx.cancel = cancel
 
 	// v0.9.0: the Managed Core Manager boots with the app (not
 	// lazily) because its install locations ARE discovery inputs:
@@ -483,11 +547,7 @@ func New(opts Options) (*App, error) {
 		logger.Error("coremgr", "coremgr_error", "init", "environment",
 			"core manager init failed: %v", err)
 
-		_ = st.Close()
-		_ = logger.Close()
-		cancel()
-
-		return nil, fmt.Errorf("app: init core manager: %w", err)
+		return tx.fail("init core manager", err)
 	}
 
 	extraDirs := make([]string, 0, len(coremgr.AllCores))
@@ -509,18 +569,11 @@ func New(opts Options) (*App, error) {
 	coreRegistry := core.NewRegistry(locator)
 
 	// fail closes every resource already created by New so the
-	// caller never has to clean up after a partial boot. The logger
-	// is closed LAST so the failure itself is recorded.
-	fail := func(stage string, ferr error) (*App, error) {
-		logger.Error("app", "application_start", "boot", "fatal",
-			"boot failed at %s: %v", stage, ferr)
-
-		cancel()
-		_ = st.Close()
-		_ = logger.Close()
-
-		return nil, fmt.Errorf("app: %s: %w", stage, ferr)
-	}
+	// caller never has to clean up after a partial boot. It is the
+	// same transaction path the earlier failure stages use — one
+	// authoritative cleanup, with the logger closed LAST so the
+	// failure itself is recorded.
+	fail := tx.fail
 
 	if err := coreRegistry.Register(xray.New(), 0); err != nil {
 		return fail("register xray", err)
@@ -896,7 +949,8 @@ func (a *App) SetCoreProgressListener(fn func(coremgr.InstallProgress)) {
 //	stop the test queue (no new tests start; in-flight tests finish
 //	or are cancelled) → disable the tunnel mode (restores the
 //	previous system proxy; tears down TUN) →
-//	flush and close the store → close the runtime logger LAST.
+//	flush and close the store → close the runtime logger LAST and
+//	uninstall it from the process-global logger slot.
 //
 // Idempotent: safe to call any number of times. No core process may
 // outlive this call (the Windows guarantee: process first, temp-config
@@ -1005,6 +1059,12 @@ func (a *App) Shutdown() {
 			})
 
 			_ = a.logger.Close()
+
+			// The closed logger must not stay reachable through
+			// logging.Global: uninstall it when it is still the
+			// installed one (an owner that swapped in a different
+			// global meanwhile is never clobbered).
+			logging.ClearGlobalIfCurrent(a.logger)
 		}
 	})
 }
