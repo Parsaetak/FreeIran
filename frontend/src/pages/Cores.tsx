@@ -369,6 +369,11 @@ function CoreCard({
             {/* v0.9.13: the version TRANSITION is the informative line
                 when an update exists (v26.3.27 → v26.3.30). */}
             {updateAvailable && m.latest_known ? ` → v${stripV(m.latest_known)}` : ""}
+            {/* v0.9.14: trust distinction — "verified" is claimed ONLY
+                when the digest matched the authoritative upstream asset;
+                external binaries without a digest match are "working",
+                never "verified". */}
+            {m.trust === "upstream-verified" ? " · verified" : m.trust === "locally-validated" ? " · working" : ""}
           </div>
         </div>
         <StateBadge state={m.state} progress={progress} />
@@ -424,7 +429,24 @@ function CoreCard({
         </div>
       )}
 
+      {/* v0.9.14: honest non-failure status remark (e.g. "newer than
+          stable; automatic downgrade refused"). */}
+      {m.status_note && m.state !== "broken" && (
+        <div className="update-callout" role="status">
+          <span className="update-size">{m.status_note}</span>
+        </div>
+      )}
+
       <dl className="kv">
+        {/* v0.9.14: provenance — where the active binary came from and
+            who owns it. External installations are referenced, never
+            modified. */}
+        {view.origin && (
+          <>
+            <dt>Origin</dt>
+            <dd>{originLabel(view.origin)}</dd>
+          </>
+        )}
         <dt>Channel</dt>
         <dd>{m.channel}</dd>
         <dt>Executable</dt>
@@ -858,6 +880,26 @@ function providerLastCheckText(lastCheck: string | undefined): string {
   if (Number.isNaN(date.getTime()) || date.getFullYear() <= 1) return "—";
 
   return date.toLocaleString();
+}
+
+/**
+ * v0.9.14: human labels for core provenance. "managed" renders as the
+ * product's own installation; everything else marks an installation
+ * FreeIran discovered and only references.
+ */
+function originLabel(origin?: string): string {
+  switch (origin) {
+    case "managed":
+      return "FreeIran managed";
+    case "path":
+      return "system PATH";
+    case "system":
+      return "system";
+    case "user":
+      return "user-provided";
+    default:
+      return origin ?? "";
+  }
 }
 
 const STATE_LABELS: Record<string, string> = {

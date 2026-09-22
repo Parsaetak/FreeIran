@@ -9,6 +9,7 @@ import (
 
 	firerrors "github.com/Parsaetak/FreeIran/engine/errors"
 	"github.com/Parsaetak/FreeIran/internal/httpx"
+	"github.com/Parsaetak/FreeIran/internal/singleflight"
 )
 
 // githubAsset is the relevant subset of GitHub's release asset object.
@@ -42,6 +43,33 @@ type githubRelease struct {
 // unauthenticated API-budget consumption. Network failures fail
 // loudly (the cache is never silently served stale).
 func (m *Manager) fetchReleaseDocument(ctx context.Context, apiURL string) ([]byte, error) {
+	// v0.9.14 in-flight deduplication: concurrent callers requesting
+	// the SAME release endpoint (same source + endpoint identity — the
+	// URL already encodes channel and platform selection) share ONE
+	// network request. The first request resolves it; every concurrent
+	// caller receives the same result.
+	//
+	// Cancellation semantics: the shared request runs detached from
+	// the first caller's context (its own 30s lifetime), so one
+	// cancelled caller cannot cancel the shared request for everyone.
+	// A cancelled waiter returns its own ctx.Err() immediately while
+	// the shared request completes for the remaining callers.
+	body, err := singleflight.Do(&m.releaseFlights, ctx, apiURL,
+		func() (context.Context, context.CancelFunc) {
+			return context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		},
+		func(execCtx context.Context) ([]byte, error) {
+			return m.fetchReleaseDocumentOnce(execCtx, apiURL)
+		})
+
+	return body, err
+}
+
+// fetchReleaseDocumentOnce performs one conditional GET with the
+// persisted ETag/304 flow (v0.9.9): a 200 with an ETag refreshes the
+// persisted cache, a 304 replays the cached body, and everything else
+// fails with the documented release-API errors.
+func (m *Manager) fetchReleaseDocumentOnce(ctx context.Context, apiURL string) ([]byte, error) {
 	var ifNoneMatch string
 
 	if m.metaCache != nil {
@@ -50,10 +78,7 @@ func (m *Manager) fetchReleaseDocument(ctx context.Context, apiURL string) ([]by
 		}
 	}
 
-	reqCtx, cancel := withTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	resp, err := m.httpClient.Get(reqCtx, apiURL, httpx.GetOptions{
+	resp, err := m.httpClient.Get(ctx, apiURL, httpx.GetOptions{
 		Header: map[string]string{
 			"Accept":               "application/vnd.github+json",
 			"X-GitHub-Api-Version": "2022-11-28",

@@ -29,6 +29,10 @@ const (
 
 // BackendInfo is the registry's public view of one backend: identity,
 // availability, version, executable path, capabilities and priority.
+//
+// v0.9.14: Origin and Ownership carry the discovery provenance — where
+// the active executable came from (managed, path, system) and whether
+// FreeIran owns it or merely references an external installation.
 type BackendInfo struct {
 	Name         string        `json:"name"`
 	Status       BackendStatus `json:"status"`
@@ -39,6 +43,8 @@ type BackendInfo struct {
 	Summary      string        `json:"summary,omitempty"`
 	LastCheck    time.Time     `json:"last_check,omitempty"`
 	Note         string        `json:"note,omitempty"`
+	Origin       string        `json:"origin,omitempty"`
+	Ownership    string        `json:"ownership,omitempty"`
 }
 
 // Registry manages the set of registered protocol-core backends and
@@ -53,13 +59,15 @@ type Registry struct {
 }
 
 type registeredBackend struct {
-	core     Core
-	priority int
-	status   BackendStatus
-	version  string
-	path     string
-	note     string
-	check    time.Time
+	core      Core
+	priority  int
+	status    BackendStatus
+	version   string
+	path      string
+	note      string
+	check     time.Time
+	origin    string
+	ownership string
 }
 
 // NewRegistry creates an empty registry bound to an executable
@@ -126,9 +134,31 @@ func (r *Registry) Get(name string) (Core, bool) {
 // (three), preserving the ordered, locked result updates. The measured
 // serial cost was the SUM of probe times; the concurrent cost is the
 // MAXIMUM of them.
+//
+// v0.9.14 (reuse-aware): discovery goes through the shared
+// ExecDiscovery authority, so identical (engine, path, identity)
+// probes are cached within the bounded freshness window and
+// deduplicated in flight — a Refresh that follows a lifecycle event
+// which already discovered the updated state performs no duplicate
+// process spawns. RefreshForce bypasses the cache for an explicit
+// user refresh.
 func (r *Registry) Refresh(ctx context.Context) {
+	r.refresh(ctx, false)
+}
+
+// RefreshForce re-runs discovery ignoring cached probe results — the
+// explicit user refresh / Verify bypass of the freshness windows.
+func (r *Registry) RefreshForce(ctx context.Context) {
+	r.refresh(ctx, true)
+}
+
+func (r *Registry) refresh(ctx context.Context, force bool) {
 	if r == nil {
 		return
+	}
+
+	if force {
+		r.locator.InvalidateAll()
 	}
 
 	r.mu.RLock()
@@ -154,7 +184,7 @@ func (r *Registry) Refresh(ctx context.Context) {
 		go func(name string) {
 			defer wg.Done()
 
-			status, version, path, note := r.discover(ctx, name)
+			status, version, path, note, origin, ownership := r.discover(ctx, name)
 
 			r.mu.Lock()
 
@@ -164,6 +194,8 @@ func (r *Registry) Refresh(ctx context.Context) {
 				entry.path = path
 				entry.note = note
 				entry.check = time.Now().UTC()
+				entry.origin = origin
+				entry.ownership = ownership
 			}
 
 			r.mu.Unlock()
@@ -175,29 +207,39 @@ func (r *Registry) Refresh(ctx context.Context) {
 
 // discover probes one backend's executable. With no locator, or when
 // discovery fails, the backend stays missing but remains registered.
-func (r *Registry) discover(ctx context.Context, name string) (BackendStatus, string, string, string) {
+//
+// v0.9.14: the locator's candidate list is authoritative — the best
+// candidate's origin and ownership are surfaced so the UI can show
+// whether the active binary is FreeIran-managed or an external
+// installation it only references.
+func (r *Registry) discover(ctx context.Context, name string) (BackendStatus, string, string, string, string, string) {
 	if r.locator == nil {
-		return StatusMissing, "", "", "no executable locator configured"
+		return StatusMissing, "", "", "no executable locator configured", "", ""
 	}
 
-	binary, err := r.locator.Discover(ctx, name)
-	if err != nil {
-		return StatusMissing, "", "", "executable not found in cores directory or PATH"
+	// Prefer the full candidate list when the locator provides one:
+	// it is the same discovery authority, but the result carries
+	// provenance.
+	candidates := r.locator.DiscoverCandidates(ctx, name)
+	if len(candidates) == 0 {
+		return StatusMissing, "", "", "executable not found in managed directories, PATH or known system locations", "", ""
 	}
 
-	if binary.Path == "" {
-		return StatusInvalid, "", "", "discovered executable has no path"
+	best := candidates[0]
+
+	if best.Path == "" {
+		return StatusInvalid, "", "", "discovered executable has no path", string(best.Origin), string(best.Ownership)
 	}
 
 	// A missing version string is tolerated (probe forms are tried on
 	// Refresh; some builds may not implement any of them), but a core
 	// that never produced a version is flagged in diagnostics.
 	note := ""
-	if binary.Version == "" {
+	if best.Version == "" {
 		note = "executable found but version probe returned no output"
 	}
 
-	return StatusAvailable, binary.Version, binary.Path, note
+	return StatusAvailable, best.Version, best.Path, note, string(best.Origin), string(best.Ownership)
 }
 
 // Info returns the public view of one backend.
@@ -228,6 +270,8 @@ func (r *Registry) Info(name string) (BackendInfo, bool) {
 		Summary:      caps.Summary(),
 		LastCheck:    entry.check,
 		Note:         entry.note,
+		Origin:       entry.origin,
+		Ownership:    entry.ownership,
 	}, true
 }
 
@@ -257,6 +301,8 @@ func (r *Registry) Backends() []BackendInfo {
 			Summary:      caps.Summary(),
 			LastCheck:    entry.check,
 			Note:         entry.note,
+			Origin:       entry.origin,
+			Ownership:    entry.ownership,
 		})
 	}
 

@@ -1,12 +1,14 @@
 package system
 
-// v0.9.13 hot-path benchmark (§4 performance audit): CoreLocator.
-// Discover is the per-core executable probe behind every registry
-// refresh. The audit (v0.9.13) verified refreshes are event-driven
-// (boot, post-install, explicit user action) — never polled — so the
-// benchmark pins the per-call cost instead of justifying a cache:
-// the miss path walks the candidate directories plus PATH, the hit
-// path is a directory probe plus one version-probe process spawn.
+// Hot-path benchmark (v0.9.13 performance audit; updated v0.9.14):
+// CoreLocator.Discover is the per-core executable probe behind every
+// registry refresh. The audit (v0.9.13) verified refreshes are
+// event-driven (boot, post-install, explicit user action) — never
+// polled. v0.9.14 adds the identity-keyed probe cache: the MISS path
+// walks the candidate directories plus PATH and spawns one version
+// probe; the HIT path is a stat + map lookup with NO process spawn
+// (exactly what production does on repeated refreshes of an unchanged
+// binary).
 
 import (
 	"context"

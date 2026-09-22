@@ -12,6 +12,7 @@ import (
 	"time"
 
 	firerrors "github.com/Parsaetak/FreeIran/engine/errors"
+	"github.com/Parsaetak/FreeIran/system"
 )
 
 // queryVersion asks a core binary for its version string. Returns
@@ -266,21 +267,31 @@ func (m *Manager) Rollback(ctx context.Context, name CoreName) error {
 			"rollback binary missing: %s", mf.PreviousPath)
 	}
 
-	// Move the current binary aside (it becomes the new rollback
-	// target — the user can roll forward again).
+	// v0.9.14 ownership guard: when the ACTIVE binary is an external
+	// reference, it is NEVER moved aside or overwritten — rollback
+	// restores the retained MANAGED binary into the managed slot and
+	// the external file stays exactly where it is.
 	currentPath := m.BinaryPath(name)
 	backupPath := mf.PreviousPath + ".rollforward"
-	_ = os.Remove(backupPath)
-	if err := os.Rename(currentPath, backupPath); err != nil {
-		return firerrors.Wrap(err, firerrors.KindEnvironment,
-			Subsystem, "rollback",
-			"move current binary aside: %s", currentPath)
+
+	activeIsExternal := mf.Ownership == string(system.OwnershipExternal)
+
+	if !activeIsExternal {
+		_ = os.Remove(backupPath)
+		if err := os.Rename(currentPath, backupPath); err != nil {
+			return firerrors.Wrap(err, firerrors.KindEnvironment,
+				Subsystem, "rollback",
+				"move current binary aside: %s", currentPath)
+		}
 	}
 
 	// Activate the rollback binary.
 	if err := os.Rename(mf.PreviousPath, currentPath); err != nil {
-		// Restore the original.
-		_ = os.Rename(backupPath, currentPath)
+		// Restore the original (only ever moved when it was managed).
+		if !activeIsExternal {
+			_ = os.Rename(backupPath, currentPath)
+		}
+
 		return firerrors.Wrap(err, firerrors.KindEnvironment,
 			Subsystem, "rollback",
 			"activate rollback: %s", mf.PreviousPath)
@@ -305,6 +316,14 @@ func (m *Manager) Rollback(ctx context.Context, name CoreName) error {
 		mf.PreviousPath = backupPath
 		mf.PreviousVersion = ""
 		mf.PreviousChecksum = ""
+		// The active binary is the restored MANAGED one; the external
+		// reference (if any) is cleared — the external file itself was
+		// never touched.
+		mf.Ownership = string(system.OwnershipManaged)
+		mf.Origin = string(system.OriginManaged)
+		mf.ExternalPath = ""
+		mf.StatusNote = ""
+		recordIdentity(mf)
 		mf.UpdatedAt = time.Now().UTC()
 		if !result.OK {
 			mf.State = StateBroken

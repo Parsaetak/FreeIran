@@ -497,6 +497,13 @@ func New(opts Options) (*App, error) {
 
 	locator := system.NewCoreLocator(layout.Cores, extraDirs...)
 
+	// v0.9.14: ONE discovery authority shared app-wide. The same
+	// locator drives the registry's availability view AND the core
+	// manager's reuse-first install decisions, so no subsystem walks
+	// PATH or installation directories twice and version probes are
+	// cached/deduplicated across both consumers.
+	manager.SetLocator(locator)
+
 	// The core registry binds backend adapters to executable
 	// discovery: xray (priority 0), v2ray (1), sing-box (2).
 	coreRegistry := core.NewRegistry(locator)
@@ -539,7 +546,9 @@ func New(opts Options) (*App, error) {
 	httpClient := httpx.Default()
 
 	torEngine := provider.NewTorEngine(layout.Providers, httpClient, true)
+	torEngine.SetDiscovery(locator)
 	psiphonEngine := provider.NewPsiphonEngine(layout.Providers, httpClient)
+	psiphonEngine.SetDiscovery(locator)
 
 	providerMgr.Register(torEngine)
 	providerMgr.Register(psiphonEngine)

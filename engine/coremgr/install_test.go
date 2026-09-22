@@ -34,6 +34,7 @@ import (
 // failure injection) and the .dgst sidecar.
 type installHarness struct {
 	server     *httptest.Server
+	coreName   string
 	releaseTag string
 	assetName  string
 
@@ -175,16 +176,41 @@ func newInstallHarness(t *testing.T, coreName, tag string) *installHarness {
 	// The routes mirror the GitHub layout the identity verifier
 	// expects: /<owner>/<repo>/releases/latest and
 	// /<owner>/<repo>/releases/download/<tag>/<asset>.
+	//
+	// v0.9.14: dispatch is resolved against the CURRENT h.releaseTag /
+	// h.assetName on every request, so tests can publish a NEWER
+	// release mid-test (setRelease) — exactly the update scenario the
+	// reuse-first install path has to handle.
 	mux.HandleFunc("/repos/example/"+coreName+"/releases/latest", h.serveRelease)
 
-	mux.HandleFunc("/repos/example/"+coreName+"/releases/download/"+tag+"/"+h.assetName, h.serveAsset)
+	// The /releases LIST endpoint (CheckForUpdates / prerelease
+	// channel): the same document wrapped in a one-element array,
+	// dispatched against the CURRENT tag.
+	mux.HandleFunc("/repos/example/"+coreName+"/releases", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("per_page") == "" {
+			w.WriteHeader(http.StatusNotFound)
 
-	mux.HandleFunc("/repos/example/"+coreName+"/releases/download/"+tag+"/"+h.assetName+".dgst",
-		func(w http.ResponseWriter, r *http.Request) {
-			h.mu.Lock()
+			return
+		}
+
+		h.mu.Lock()
+		h.apiHits++
+		body := h.releaseJSON
+		h.mu.Unlock()
+
+		wrapped := append([]byte{'['}, append(body, ']')...)
+
+		_, _ = w.Write(wrapped)
+	})
+
+	mux.HandleFunc("/repos/example/"+coreName+"/releases/download/", func(w http.ResponseWriter, r *http.Request) {
+		h.mu.Lock()
+		tag := h.releaseTag
+		asset := h.assetName
+		h.mu.Unlock()
+
+		if strings.HasSuffix(r.URL.Path, "/releases/download/"+tag+"/"+asset+".dgst") {
 			digest := h.digestSHA
-			h.mu.Unlock()
-
 			if digest == "" {
 				w.WriteHeader(http.StatusNotFound)
 
@@ -192,12 +218,64 @@ func newInstallHarness(t *testing.T, coreName, tag string) *installHarness {
 			}
 
 			_, _ = w.Write([]byte("SHA256(asset)= " + digest + "\n"))
-		})
+
+			return
+		}
+
+		if strings.HasSuffix(r.URL.Path, "/releases/download/"+tag+"/"+asset) {
+			h.serveAsset(w, r)
+
+			return
+		}
+
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	h.coreName = coreName
 
 	h.server = httptest.NewServer(mux)
 	t.Cleanup(h.server.Close)
 
 	return h
+}
+
+// snapshot atomically captures the harness counters (v0.9.14 reuse
+// tests assert on multiple counters consistently).
+func (h *installHarness) snapshot() (out struct {
+	apiHits   int
+	assetHits int
+}) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	out.apiHits = h.apiHits
+	out.assetHits = h.assetHits
+
+	return out
+}
+
+// setRelease publishes a NEWER release mid-test: the release document,
+// the download route and the digest route all follow the current tag,
+// so the next Install call resolves and acquires the new version —
+// the real "update available" scenario.
+func (h *installHarness) setRelease(tag string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	h.releaseTag = tag
+	h.releaseJSON = []byte(fmt.Sprintf(`{
+		"tag_name": %q,
+		"name": %q,
+		"prerelease": false,
+		"published_at": "2026-09-01T00:00:00Z",
+		"html_url": "https://github.com/example/%s/releases/tag/%s",
+		"assets": [{
+			"name": %q,
+			"browser_download_url": "ASSET_URL_PLACEHOLDER",
+			"size": %d,
+			"digest": "DIGEST_PLACEHOLDER"
+		}]
+	}`, tag, tag, h.coreName, tag, h.assetName, len(h.assetBody)))
 }
 
 // serveRelease writes the release document (with ETag/304 and the
@@ -885,7 +963,13 @@ func TestInstallSmokeTestFailureKeepsPreviousCore(t *testing.T) {
 	before, _ := mgr.Info(CoreXray)
 	beforeSum, _ := fileSHA256(before.BinaryPath)
 
-	// Second install: the staged binary fails its smoke run.
+	// Second install: an UPDATE to a newer release whose staged
+	// binary fails its smoke run. (v0.9.14: re-installing the SAME
+	// current version is a reuse no-op — the failing-update path is
+	// exercised with a real version bump.)
+	h.setRelease("v8.1.0")
+
+	t.Setenv("FAKECORE_VERSION", "v8.1.0")
 	t.Setenv("FAKECORE_FAIL_FAST", "1")
 
 	if err := mgr.Install(ctx, CoreXray); err == nil {

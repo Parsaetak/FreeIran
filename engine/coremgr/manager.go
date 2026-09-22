@@ -40,6 +40,8 @@ import (
 	firerrors "github.com/Parsaetak/FreeIran/engine/errors"
 	"github.com/Parsaetak/FreeIran/internal/httpx"
 	"github.com/Parsaetak/FreeIran/internal/logging"
+	"github.com/Parsaetak/FreeIran/internal/singleflight"
+	"github.com/Parsaetak/FreeIran/system"
 )
 
 // Subsystem identifies the manager layer in structured errors.
@@ -120,10 +122,59 @@ type Manifest struct {
 	// unchanged, and a zero size honestly means "unavailable" — the
 	// UI shows a fallback, never a guess. A channel change clears the
 	// snapshot because it was selected under the previous channel.
-	LatestKnown     string    `json:"latest_known,omitempty"`
-	LatestTag       string    `json:"latest_tag,omitempty"`
-	LatestAssetSize int64     `json:"latest_asset_size,omitempty"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	LatestKnown     string `json:"latest_known,omitempty"`
+	LatestTag       string `json:"latest_tag,omitempty"`
+	LatestAssetSize int64  `json:"latest_asset_size,omitempty"`
+
+	// ---- v0.9.14: ownership, provenance and reuse evidence ----------
+	//
+	// All fields are optional: manifests written by v0.9.12/v0.9.13
+	// load unchanged (unknown fields are never erased), and an empty
+	// Ownership means the historical default — a FreeIran-managed
+	// binary.
+	//
+	// Ownership is "managed" (FreeIran-owned, installed/updated/
+	// removed by the workspace) or "external" (an already-installed
+	// binary FreeIran only REFERENCES — never deleted, renamed or
+	// overwritten; Disable/Remove/Rollback clear the reference and
+	// preserve the file).
+	Ownership string `json:"ownership,omitempty"`
+
+	// Origin records where the active binary came from: "managed",
+	// "path" (OS PATH lookup), "system" (known platform installation
+	// location) or "user" (user-supplied adoption).
+	Origin string `json:"origin,omitempty"`
+
+	// ExternalPath is the canonical path of the referenced external
+	// executable (equal to BinaryPath while the external reference is
+	// active). When it disappears the runtime rediscoveres
+	// alternatives instead of trusting a false "ready" state.
+	ExternalPath string `json:"external_path,omitempty"`
+
+	// Trust distinguishes "upstream-verified" (SHA-256 matches the
+	// authoritative upstream asset digest) from "locally-validated"
+	// (probes and passes its smoke test, no authoritative digest
+	// match available). A matching version string alone is NEVER
+	// proof of provenance.
+	Trust string `json:"trust,omitempty"`
+
+	// StatusNote carries an honest, non-failure status remark, e.g.
+	// "newer than stable; automatic downgrade refused".
+	StatusNote string `json:"status_note,omitempty"`
+
+	// BinarySize/BinaryModTime are the file identity the manifest was
+	// written under; the reuse-first install path compares them to
+	// prove the binary is unchanged before trusting recorded evidence.
+	BinarySize    int64     `json:"binary_size,omitempty"`
+	BinaryModTime time.Time `json:"binary_mod_time,omitempty"`
+
+	// LastDecision is the v0.9.14 reuse decision of the last install
+	// call (managed-current, system-current, system-newer,
+	// system-older-but-working, managed-healthy, needs-update,
+	// needs-download, invalid-local, not-found).
+	LastDecision string `json:"last_decision,omitempty"`
+
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // HealthResult records the outcome of a smoke-test against one core.
@@ -198,6 +249,14 @@ type Manager struct {
 	// download tuning (normalized in New)
 	dlStallTimeout time.Duration
 	dlMaxRetries   int
+
+	// locator is the shared discovery authority (optional; nil in
+	// tests without system discovery).
+	locator *system.CoreLocator
+
+	// releaseFlights deduplicates concurrent release-metadata lookups
+	// for the same endpoint (v0.9.14).
+	releaseFlights singleflight.Group[[]byte]
 }
 
 // installFlight is one in-flight (or just-finished) install whose
@@ -236,6 +295,13 @@ type Options struct {
 	HTTPClient httpx.Interface
 	Logger     *logging.Logger
 	Platform   Platform
+
+	// Locator is the shared executable-discovery authority
+	// (v0.9.14). When set, the reuse-first install path discovers and
+	// adopts already-installed cores instead of downloading; when nil
+	// (tests), only the managed workspace is examined and Install
+	// keeps its pure acquisition semantics.
+	Locator *system.CoreLocator
 
 	// DownloadStallTimeout tunes the no-progress watchdog for core
 	// archive downloads (default 30s). Zero = default.
@@ -284,6 +350,7 @@ func New(opts Options) (*Manager, error) {
 		coreMu:        make(map[CoreName]*sync.Mutex, len(AllCores)),
 		installFlight: make(map[CoreName]*installFlight, len(AllCores)),
 		platform:      opts.Platform,
+		locator:       opts.Locator,
 	}
 
 	for _, name := range AllCores {
@@ -357,6 +424,26 @@ func New(opts Options) (*Manager, error) {
 }
 
 // RootDir returns the managed cores root directory.
+// SetLocator attaches the shared executable-discovery authority after
+// construction (v0.9.14: the manager boots before the workspace layout
+// exists, but its bin directories are discovery inputs — the locator
+// is created right after and wired here). Nil resets to manager-only
+// semantics (no external discovery).
+func (m *Manager) SetLocator(l *system.CoreLocator) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.locator = l
+}
+
+// currentLocator snapshots the discovery authority (safe against the
+// deferred SetLocator wiring).
+func (m *Manager) currentLocator() *system.CoreLocator {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	return m.locator
+}
+
 func (m *Manager) RootDir() string { return m.rootDir }
 
 // RuntimeDir returns the directory used for short-lived helper
@@ -646,7 +733,16 @@ func (m *Manager) loadManifest(name CoreName) (*Manifest, error) {
 			Subsystem, "load", "decode manifest %s", name)
 	}
 
-	mf.BinaryPath = m.BinaryPath(name)
+	// v0.9.14: the manifest's BinaryPath is authoritative for an
+	// external reference (the executable lives OUTSIDE the workspace).
+	// Only a missing path defaults to the managed slot; historical
+	// managed manifests always recorded the canonical path anyway.
+	if mf.BinaryPath == "" {
+		mf.BinaryPath = m.BinaryPath(name)
+	}
+	if mf.Ownership == string(system.OwnershipExternal) && mf.ExternalPath != "" {
+		mf.BinaryPath = mf.ExternalPath
+	}
 	if mf.PreviousPath != "" {
 		mf.PreviousPath = m.RollbackPath(name)
 	}
@@ -685,7 +781,13 @@ func (m *Manager) Reinstall(ctx context.Context, name CoreName) error {
 	if err := m.Remove(ctx, name); err != nil {
 		return err
 	}
-	return m.Install(ctx, name)
+
+	// v0.9.14: Reinstall is the strongest recovery action — it must
+	// end with a freshly acquired official release, not with a
+	// re-adopted local candidate. An external installation found
+	// later by ordinary Install reuse remains available afterwards;
+	// the external file was never touched by Remove.
+	return m.Acquire(ctx, name)
 }
 
 // ExplainFailure returns a human-readable reason for a core's current

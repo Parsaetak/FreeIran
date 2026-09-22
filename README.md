@@ -19,6 +19,37 @@ EXPERIMENTAL and disabled in this release (see "TUN mode" below).
 
 ---
 
+## What's new in v0.9.14
+
+v0.9.14 closes the v0.9.13 update (the Windows PE resource metadata
+stayed on 0.9.12 — every authoritative version surface is now 0.9.14,
+proved by a structural regression test) and makes "reuse existing
+valid work before repeating it" an architectural invariant:
+
+- **FreeIran now discovers and reuses already-installed engines.** One
+  bounded, platform-aware discovery authority (managed directories →
+  PATH → known installation locations; never a disk walk) feeds the
+  registry, the core manager, the providers and the UI. Version probes
+  are cached per file identity with a bounded freshness window and
+  deduplicated in flight.
+- **A working installed binary beats an unnecessary download.** A
+  current external core is adopted by reference; an older-but-working
+  one is retained with "update available" surfaced; a newer one is
+  never downgraded; only a missing or unusable local core triggers a
+  download. Explicit Update (`Acquire`) still acquires the newer
+  release — external files are never deleted, renamed or overwritten.
+- **Artifacts and metadata are idempotent.** Complete staged archives
+  are verified and reused without touching the network, partial ones
+  resume, corrupt ones are discarded alone; concurrent identical
+  release-metadata requests share one network request with correct
+  cancellation semantics.
+- **Honest provenance everywhere**: `upstream-verified` versus
+  `locally-validated` trust, managed/external ownership on every core
+  card, and the reuse decision recorded on the manifest. See
+  [docs/reuse.md](docs/reuse.md) for the authoritative policy.
+
+---
+
 ## What's new in v0.9.12
 
 v0.9.12 is a **full engineering closure of the v0.9.11 state**: the

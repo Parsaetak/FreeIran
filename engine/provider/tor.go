@@ -57,6 +57,10 @@ type TorEngine struct {
 	scanner   *lineScanner
 	lastError string
 
+	// discovery is the shared executable-discovery authority
+	// (v0.9.14, optional): drives adoptInstalledTor.
+	discovery *system.CoreLocator
+
 	// runGen is the CURRENT run's generation number. It is bumped at
 	// every Start and stamped on every asynchronous event source
 	// (the log-line scanner sink) of that run (v0.9.12).
@@ -489,6 +493,15 @@ func (e *TorEngine) Install(ctx context.Context) error {
 		release.SHA256 != "" &&
 		strings.EqualFold(manifest.ChecksumSHA256, release.SHA256) {
 		// Same verified bundle already installed and activated.
+		return nil
+	}
+
+	// v0.9.14 reuse-first: an already-installed working Tor (PATH or a
+	// controlled system location) is ADOPTED BY REFERENCE instead of
+	// downloading the bundle again. The external binary is never
+	// modified; the latest stable metadata was already resolved above
+	// and remains visible through the update surface.
+	if version, err := e.adoptInstalledTor(ctx); err == nil && version != "" {
 		return nil
 	}
 

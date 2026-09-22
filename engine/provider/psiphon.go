@@ -76,6 +76,10 @@ type PsiphonEngine struct {
 	binary *BinaryManager
 	source *GitHubReleaseSource
 
+	// discovery is the shared executable-discovery authority
+	// (v0.9.14, optional): drives automatic user-binary adoption.
+	discovery *system.CoreLocator
+
 	mu        sync.Mutex
 	process   *system.ManagedProcess
 	endpoints []Endpoint

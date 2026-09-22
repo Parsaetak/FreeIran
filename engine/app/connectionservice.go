@@ -42,6 +42,8 @@ type BackendView struct {
 	Note          string   `json:"note,omitempty"`
 	PinnedVersion string   `json:"pinned_version,omitempty"`
 	Source        string   `json:"source,omitempty"`
+	Origin        string   `json:"origin,omitempty"`
+	Ownership     string   `json:"ownership,omitempty"`
 }
 
 // Backends lists the registered protocol-core backends with their
@@ -62,6 +64,8 @@ func (s *ConnectionService) Backends() []BackendView {
 			LastCheck:     info.LastCheck.UnixMilli(),
 			Note:          info.Note,
 			PinnedVersion: core.PinnedVersion(info.Name),
+			Origin:        info.Origin,
+			Ownership:     info.Ownership,
 		}
 
 		for _, pinned := range core.PinnedCores {
@@ -83,12 +87,14 @@ func (s *ConnectionService) Backends() []BackendView {
 }
 
 // RefreshBackends re-runs executable discovery synchronously (the
-// user pressed "refresh" on the cores panel).
+// user pressed "refresh" on the cores panel). This is an EXPLICIT user
+// action, so it bypasses the discovery freshness windows (RefreshForce)
+// — the bounded caches still serve every implicit refresh.
 func (s *ConnectionService) RefreshBackends() []BackendView {
 	ctx, cancel := context.WithTimeout(s.app.ctx, 30*time.Second)
 	defer cancel()
 
-	s.app.coreRegistry.Refresh(ctx)
+	s.app.coreRegistry.RefreshForce(ctx)
 
 	return s.Backends()
 }

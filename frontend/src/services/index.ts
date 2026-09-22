@@ -251,6 +251,18 @@ export interface CoreManifest {
    * never a guessed value.
    */
   latest_asset_size?: number;
+  /** v0.9.14: "managed" | "external" — external binaries are only referenced. */
+  ownership?: string;
+  /** v0.9.14: where the active binary came from (managed|path|system|user). */
+  origin?: string;
+  /** v0.9.14: canonical path of a referenced external executable. */
+  external_path?: string;
+  /** v0.9.14: "upstream-verified" | "locally-validated". */
+  trust?: string;
+  /** v0.9.14: honest non-failure status remark (e.g. "newer than stable"). */
+  status_note?: string;
+  /** v0.9.14: reuse decision of the last install call. */
+  last_decision?: string;
 }
 
 /** The complete core lifecycle view (app.CoreLifecycleView). */
@@ -261,6 +273,14 @@ export interface CoreLifecycleView {
   runtime_version?: string;
   path?: string;
   failure_message?: string;
+  /** v0.9.14: discovery provenance of the active binary. */
+  origin?: string;
+  /** v0.9.14: "managed" | "external". */
+  ownership?: string;
+  /** v0.9.14: honest non-failure status remark. */
+  status_note?: string;
+  /** v0.9.14: reuse decision of the last install call. */
+  last_decision?: string;
 }
 
 /**

@@ -3,6 +3,102 @@
 Release history for FreeIran. The newest release is documented in the
 [README](README.md); everything older lives here, newest first.
 
+## v0.9.14 — idempotent local discovery, artifact reuse & full v0.9.13 closure
+
+The release makes "do the work once" an architectural invariant. No
+new subsystem; one discovery authority, one reuse decision model,
+precise invalidation — every change reuses the existing services.
+
+### Version consistency (closes the v0.9.13 CI failure)
+
+- `build/winres.json` kept `0.9.12` PE resource metadata while the rest
+  of the tree moved on. Every authoritative version surface — `VERSION`,
+  `frontend/package.json`, `frontend/package-lock.json`,
+  `internal/version/version.go`, `build/winres.json` (release form and
+  four-part PE form) — is now `0.9.14`, and a structural regression
+  test (`internal/version`) proves all surfaces consistent without
+  weakening the CI gate.
+
+### One universal local-reuse decision (the core change)
+
+- ONE bounded, platform-aware executable discovery authority
+  (`system.ExecDiscovery`, surfaced through `system.CoreLocator`)
+  serves the core registry, the core manager, the provider manager,
+  diagnostics and the UI: managed directories → PATH → known platform
+  installation locations (`%ProgramFiles%`, `%ProgramFiles(x86)%`,
+  `%LocalAppData%`, `%AppData%`, ProgramData on Windows; the standard
+  Linux/macOS bin and per-user roots). A recursive disk walk is
+  prohibited by design.
+- Version probes are cached under a stable file identity (path + size
+  + mtime) with bounded freshness (15 min positive / 1 min negative)
+  and are deduplicated in flight: identical concurrent discovery
+  requests spawn exactly one probe process.
+- `Install` is now a reuse-first **ensure** operation: a current
+  managed core is a true no-op; a current external core is adopted by
+  reference; an older-but-working external core is retained with
+  "update available" surfaced and no download; a newer-than-stable
+  external core is used and never downgraded; only when no suitable
+  working local candidate exists does the download run. `Acquire`
+  (explicit Update) intentionally acquires the newer release without
+  ever touching external files.
+- External ownership is explicit (`managed` / `external`): external
+  executables are never deleted, renamed, overwritten or moved —
+  uninstall clears the reference, updates preserve the file, rollback
+  restores only managed binaries. When a referenced external binary
+  disappears the runtime rediscovers alternatives instead of trusting
+  a false "ready" state.
+- Trust is honest: `upstream-verified` (authoritative digest match)
+  versus `locally-validated` (probes, validates and smokes) — a
+  version string alone never proves provenance.
+
+### Artifact and metadata idempotency
+
+- A complete staged archive is verified (size + SHA-256 against the
+  authoritative digest) and reused with NO network; a partial one is
+  resumed; an oversized/corrupt one is discarded alone. Applies to
+  core installs and provider downloads alike.
+- Release metadata lookups are deduplicated in flight: concurrent
+  identical requests share one network request, detached from the
+  first caller's context (one cancelled caller cannot cancel the
+  shared request); ETag/304 and persisted cache behavior preserved.
+
+### Providers (Tor, Psiphon) follow the same rules
+
+- An installed, working Tor (PATH or controlled system location,
+  webtunnel-capable, smoke-passed) is adopted BY REFERENCE instead of
+  downloading the bundle again. Psiphon auto-discovery adopts an
+  existing consoleclient through the existing copy-not-move,
+  content-addressed, fully validated user-binary path. No duplicate
+  provider installer exists; checksum policy for downloaded binaries
+  is unchanged and unchanged-trust rules hold.
+
+### UI
+
+- The Cores page surfaces provenance (`FreeIran managed` / `system
+  PATH` / `system` / `user-provided`), the honest trust badge
+  (`verified` only with a digest match; otherwise `working`),
+  non-failure status notes ("newer than stable; automatic downgrade
+  refused") and the reuse decision. A core discovered on the system
+  but never managed by FreeIran now APPEARS on the Cores page — the
+  user never installs a second copy just to make the app aware of an
+  existing installation.
+
+### Regression-proved (new tests)
+
+- Discovery: managed/PATH/system origins, candidate ordering and
+  dedup, invalid/missing binaries, probe timeout, identity-change and
+  TTL re-probe, explicit bypass, concurrent probe dedup, vanished
+  binaries, Windows `.exe` naming.
+- Core manager: current-external → no download; older-external →
+  retained + update surfaced; newer-external → no downgrade;
+  invalid-external → fallthrough; external uninstall/update/rollback
+  preserve the user's file byte-for-byte; current-managed install is
+  a no-op; complete staged artifact reused; corrupt staged artifact
+  redownloaded; concurrent release lookups deduplicated.
+- Registry: provenance surfaced, forced refresh bypass, cache-aware
+  refresh. Singleflight: dedup, cancellation contract, error
+  propagation. Version surfaces: structural consistency gate.
+
 ## v0.9.13 — clean runtime logging, configuration surface redesign, update-size transparency
 
 Product-quality update on the v0.9.12 architecture. No new subsystems;

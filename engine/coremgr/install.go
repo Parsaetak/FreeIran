@@ -17,12 +17,25 @@ import (
 	firerrors "github.com/Parsaetak/FreeIran/engine/errors"
 	"github.com/Parsaetak/FreeIran/internal/httpx"
 	"github.com/Parsaetak/FreeIran/internal/safearchive"
+	"github.com/Parsaetak/FreeIran/system"
 )
 
-// Install downloads, verifies and activates the latest stable release
-// of the core on the configured channel. It is idempotent: re-running
-// it for an already-up-to-date core re-validates the active binary and
-// corrects the manifest.
+// Install ensures the core is available at the latest stable release
+// of the configured channel. v0.9.14 makes it REUSE-FIRST: an
+// already-installed working artifact — managed or external — is
+// discovered, validated and reused BEFORE anything is downloaded.
+// Calling Install on a current, healthy core is a true no-op; on a
+// current external core it records a reference without downloading;
+// on an older-but-working external core it retains the binary and
+// surfaces "update available". Only when no suitable working local
+// candidate exists does the acquisition pipeline run.
+//
+// Options:
+//
+//	WithForce(true) — the EXPLICIT update semantic: an older external
+//	binary no longer suppresses acquisition (used by UpdateAll /
+//	Acquire). Reuse of a current local binary and of complete staged
+//	artifacts still applies.
 //
 // Concurrent Install calls for the same core are deduplicated through
 // a per-core singleflight: the first caller runs the pipeline, every
@@ -49,7 +62,12 @@ import (
 // Any failure before activation leaves the previous binary active and
 // untouched; a failure during activation automatically restores the
 // previous binary. Staging is always cleaned up.
-func (m *Manager) Install(ctx context.Context, name CoreName) error {
+func (m *Manager) Install(ctx context.Context, name CoreName, opts ...InstallOption) error {
+	cfg := installConfig{}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
 	// ---- Per-core singleflight ----
 	m.flightMu.Lock()
 
@@ -76,14 +94,31 @@ func (m *Manager) Install(ctx context.Context, name CoreName) error {
 		m.flightMu.Unlock()
 	}()
 
-	fl.err = m.installCore(ctx, name)
+	fl.err = m.installCore(ctx, name, cfg)
 
 	return fl.err
 }
 
+// installConfig carries the resolved Install options.
+type installConfig struct {
+	force bool
+}
+
+// InstallOption customizes one Install call.
+type InstallOption func(*installConfig)
+
+// WithForce marks the install as an EXPLICIT acquisition/update: the
+// reuse phase no longer retains an older-but-working EXTERNAL binary
+// in place (the user asked for the newer release). Every other reuse
+// guarantee (current binary kept, staged artifacts reused, external
+// files never modified) still applies.
+func WithForce(force bool) InstallOption {
+	return func(cfg *installConfig) { cfg.force = force }
+}
+
 // installCore runs the transactional install pipeline while holding
 // the per-core mutex.
-func (m *Manager) installCore(ctx context.Context, name CoreName) error {
+func (m *Manager) installCore(ctx context.Context, name CoreName, cfg installConfig) error {
 	unlock := m.lock(name)
 	defer unlock()
 
@@ -105,15 +140,6 @@ func (m *Manager) installCore(ctx context.Context, name CoreName) error {
 		}
 	}
 
-	if err := m.setState(name, StateInstalling); err != nil {
-		return err
-	}
-
-	m.logger.Info(Subsystem, "install_start",
-		"installing core %s from %s", name, src.Repo)
-
-	// fail records the failure, cleans staging and — for updates over
-	// a healthy core — preserves the previous core's active state.
 	fail := func(stage string, ferr error) error {
 		_ = os.RemoveAll(m.StagingDir(name))
 
@@ -145,13 +171,41 @@ func (m *Manager) installCore(ctx context.Context, name CoreName) error {
 			Subsystem, "install", "%s: %s", name, stage)
 	}
 
-	// ---- 2. RESOLVE ------------------------------------------------
-	emitProgress(name, StageResolving, "resolving latest release for channel "+string(preSnap.Channel), 0, 0)
-
-	update, err := m.checkRelease(ctx, name, preSnap.Channel)
-	if err != nil {
-		return fail("resolve_release", err)
+	// ---- REUSE-FIRST (v0.9.14) --------------------------------------
+	// Before anything is downloaded: discover, identify, validate and
+	// compare the local state. A suitable working candidate — the
+	// managed binary, an external installation, or a complete staged
+	// artifact — is reused or adopted instead of repeating the work.
+	// The release metadata resolved here is carried into the pipeline
+	// below: ONE authoritative resolve per install call.
+	reuse, update, rerr := m.ensureReusable(ctx, name, src, preSnap, cfg.force)
+	if rerr != nil {
+		// The release resolve failed and nothing healthy is installed:
+		// the install genuinely cannot proceed. Same stage, failure
+		// recording and staging cleanup as the historical pipeline.
+		return fail("resolve_release", rerr)
 	}
+
+	if reuse.done {
+		emitProgress(name, StageComplete, reuse.message, 0, 0)
+
+		return nil
+	}
+
+	if err := m.setState(name, StateInstalling); err != nil {
+		return err
+	}
+
+	m.logger.Info(Subsystem, "install_start",
+		"installing core %s from %s (decision=%s)", name, src.Repo, reuse.decision)
+
+	// fail records the failure, cleans staging and — for updates over
+	// a healthy core — preserves the previous core's active state.
+	// ---- 2. RESOLVE (served by the reuse phase) ---------------------
+	// The release metadata was resolved once in the reuse phase; the
+	// pipeline consumes that result — a repeated network resolve here
+	// would be exactly the duplicate work v0.9.14 removes.
+	emitProgress(name, StageResolving, "resolved latest release for channel "+string(preSnap.Channel), 0, 0)
 
 	// ---- 3. SELECT + identity verification -------------------------
 	emitProgress(name, StageResolving, "selected "+path.Base(update.AssetURL), 0, 0)
@@ -160,15 +214,16 @@ func (m *Manager) installCore(ctx context.Context, name CoreName) error {
 		return fail("select_asset", err)
 	}
 
-	// ---- 4. Prepare staging ----------------------------------------
-	if err := os.RemoveAll(m.StagingDir(name)); err != nil {
-		return fail("reset_staging", err)
-	}
+	// ---- 4. Prepare staging (preserving reusable artifacts) --------
+	// v0.9.14: staging is NOT wiped. A complete staged archive from an
+	// interrupted install is verified and reused; a partial one is
+	// resumed by the downloader; only a corrupt artifact is discarded.
+	// Stale files from a DIFFERENT asset (older release) are removed —
+	// precisely, never the current candidate.
 	if err := os.MkdirAll(m.StagingDir(name), 0o700); err != nil {
 		return fail("mkdir_staging", err)
 	}
 
-	// ---- 5. DOWNLOAD (streamed, resumable, .part) -------------------
 	// The staged file keeps the asset's real extension so
 	// unpackArchive can pick the format.
 	assetName := path.Base(update.AssetURL)
@@ -178,16 +233,15 @@ func (m *Manager) installCore(ctx context.Context, name CoreName) error {
 
 	assetPath := filepath.Join(m.StagingDir(name), assetName)
 
+	if err := cleanStaleStaging(m.StagingDir(name), assetName); err != nil {
+		return fail("reset_staging", err)
+	}
+
+	// ---- 5. DOWNLOAD — only when no reusable artifact exists --------
 	emitProgress(name, StageDownloading, "downloading "+update.AssetURL, 0, update.AssetSize)
 
-	dlResult, err := m.httpClient.Download(ctx, update.AssetURL, httpx.DownloadOptions{
-		DestPath:     assetPath,
-		ExpectedSize: update.AssetSize,
-		StallTimeout: m.dlStallTimeout,
-		MaxRetries:   m.dlMaxRetries,
-		OnProgress: func(p httpx.Progress) {
-			emitDownloadProgress(name, p)
-		},
+	dlResult, err := m.downloadOrReuse(ctx, name, src, assetPath, update, func(p httpx.Progress) {
+		emitDownloadProgress(name, p)
 	})
 	if err != nil {
 		return fail("download", err)
@@ -328,6 +382,17 @@ func (m *Manager) installCore(ctx context.Context, name CoreName) error {
 		}
 		mf.LastHealthCheck = time.Now().UTC()
 		mf.LastHealthResult = result
+		// v0.9.14: record the managed binary's file identity so later
+		// ensure calls can cheaply prove nothing changed. A managed
+		// install replaces any previous external reference; the
+		// external file itself is never touched.
+		mf.Ownership = string(system.OwnershipManaged)
+		mf.Origin = string(system.OriginManaged)
+		mf.ExternalPath = ""
+		mf.Trust = string(TrustVerified)
+		mf.StatusNote = ""
+		recordIdentity(mf)
+		mf.LastDecision = string(DecisionNeedsDownload)
 	}); err != nil {
 		m.logger.Warn(Subsystem, "persist_failed",
 			"could not persist manifest for %s: %v", name, err)
@@ -352,6 +417,17 @@ func (m *Manager) activate(name CoreName, execPath string, preSnap Manifest) (fi
 	prevPath = m.RollbackPath(name)
 
 	currentBinaryPath := preSnap.BinaryPath
+
+	// v0.9.14 ownership guard: an EXTERNAL binary is never moved,
+	// renamed or deleted. Updating from an external reference to a
+	// managed install leaves the external file exactly where it is —
+	// only FreeIran's reference changes. (Rollback of the previous
+	// MANAGED binary, when one exists, is preserved below.)
+	currentIsExternal := preSnap.Ownership == string(system.OwnershipExternal)
+
+	if currentIsExternal {
+		currentBinaryPath = ""
+	}
 
 	if currentBinaryPath != "" {
 		if _, statErr := os.Stat(currentBinaryPath); statErr == nil {

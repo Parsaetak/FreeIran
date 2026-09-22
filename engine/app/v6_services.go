@@ -18,6 +18,12 @@ import (
 
 // CoreLifecycleView is the complete UI-facing lifecycle projection of
 // one managed core (manifest + registry discovery + failure text).
+//
+// v0.9.14: Origin and Ownership surface WHERE the active binary came
+// from and whether FreeIran owns it or only references an external
+// installation; StatusNote carries honest non-failure remarks ("newer
+// than stable"); LastDecision is the reuse decision of the last
+// install call.
 type CoreLifecycleView struct {
 	Manifest       coremgr.Manifest `json:"manifest"`
 	Discovered     bool             `json:"discovered"`
@@ -25,6 +31,10 @@ type CoreLifecycleView struct {
 	RuntimeVersion string           `json:"runtime_version,omitempty"`
 	Path           string           `json:"path,omitempty"`
 	FailureMessage string           `json:"failure_message,omitempty"`
+	Origin         string           `json:"origin,omitempty"`
+	Ownership      string           `json:"ownership,omitempty"`
+	StatusNote     string           `json:"status_note,omitempty"`
+	LastDecision   string           `json:"last_decision,omitempty"`
 }
 
 // CoreService exposes the Managed Core Manager to the UI. Every method
@@ -251,15 +261,73 @@ func (s *CoreService) LifecycleInfo() []CoreLifecycleView {
 			Manifest:       mf,
 			RuntimeState:   "not_running",
 			FailureMessage: mgr.ExplainFailure(mf.Name),
+			Origin:         mf.Origin,
+			Ownership:      mf.OwnershipLabel(),
+			StatusNote:     mf.StatusNote,
+			LastDecision:   mf.LastDecision,
 		}
 
 		if info, ok := registry[string(mf.Name)]; ok && info.Status == core.StatusAvailable {
 			view.Discovered = true
 			view.RuntimeVersion = info.Version
 			view.Path = info.Path
+
+			// The registry's discovery result is authoritative for
+			// provenance when the manifest predates the field or the
+			// active binary was adopted externally.
+			if view.Origin == "" {
+				view.Origin = info.Origin
+			}
+
+			if view.Ownership == "" {
+				view.Ownership = info.Ownership
+			}
 		}
 
 		views = append(views, view)
+	}
+
+	// v0.9.14 state reconciliation: a core the registry discovered
+	// but coremgr has no manifest for (a PATH/system installation
+	// never managed by FreeIran) must STILL appear in the Cores UI —
+	// the user must never have to install a second copy just to make
+	// the app aware of an existing installation. The synthesized view
+	// carries an honest external/ready state; install remains
+	// available but unnecessary.
+	seen := make(map[coremgr.CoreName]bool, len(views))
+	for _, view := range views {
+		seen[view.Manifest.Name] = true
+	}
+
+	for _, info := range s.app.coreRegistry.Backends() {
+		if info.Status != core.StatusAvailable {
+			continue
+		}
+
+		name := coremgr.CoreName(info.Name)
+
+		if seen[name] {
+			continue
+		}
+
+		views = append(views, CoreLifecycleView{
+			Manifest: coremgr.Manifest{
+				Name:        name,
+				State:       coremgr.StateReady,
+				Version:     info.Version,
+				BinaryPath:  info.Path,
+				Ownership:   info.Ownership,
+				Origin:      info.Origin,
+				LastChecked: info.LastCheck,
+			},
+			Discovered:     true,
+			RuntimeState:   "not_running",
+			RuntimeVersion: info.Version,
+			Path:           info.Path,
+			Origin:         info.Origin,
+			Ownership:      info.Ownership,
+			StatusNote:     "already installed on this system",
+		})
 	}
 
 	return views

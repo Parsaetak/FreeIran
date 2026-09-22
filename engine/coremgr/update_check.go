@@ -191,7 +191,12 @@ func (m *Manager) UpdateAll(ctx context.Context) map[CoreName]error {
 			continue
 		}
 
-		out[name] = m.Install(ctx, name)
+		// v0.9.14: UpdateAll is the EXPLICIT update operation — an
+		// older-but-working external binary does not suppress the
+		// acquisition the user asked for (Acquire = Install with
+		// WithForce). The external file itself is still never touched;
+		// the newer managed release simply replaces the reference.
+		out[name] = m.Acquire(ctx, name)
 	}
 
 	return out

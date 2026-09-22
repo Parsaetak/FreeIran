@@ -289,10 +289,16 @@ resolution — not scattered protocol checks — decides support
 everywhere in the application.
 
 **Registry** (`core.Registry`): registration (priority-ordered),
-executable discovery through `system.CoreLocator` (managed cores
-directory → PATH), availability state (available / missing /
-invalid), version reporting. Refresh is background work; the app
-boots with zero cores installed and reports them as missing.
+executable discovery through `system.CoreLocator` (v0.9.14: managed
+cores directories → PATH → bounded known platform installation
+locations, all through ONE shared discovery authority with a
+file-identity probe cache and in-flight probe deduplication), provenance
+reporting (origin: managed/path/system, ownership: managed/external),
+availability state (available / missing / invalid) and version
+reporting. Refresh is background work and cache-aware; an explicit
+user refresh bypasses the freshness windows (`RefreshForce`). The app
+boots with zero cores installed and reports them as missing. See
+[reuse.md](reuse.md) for the authoritative reuse/freshness policy.
 
 **Selection** (`core.Select`): deterministic and explainable —
 compatible candidates are ordered by user preference (when compatible

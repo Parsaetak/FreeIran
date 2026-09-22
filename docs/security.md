@@ -107,12 +107,18 @@ Protocol cores are external executables with full local privileges —
 the runtime treats them accordingly.
 
 **Executable discovery, never execution of downloaded data.**
-Backends resolve their binary through `system.CoreLocator` in exactly
-two controlled locations: the application-managed `<base>/cores`
-directory and the system PATH. Nothing found inside downloaded
-configuration data is ever executed, and user-installed binaries are
-never replaced or modified. Discovery reports path, version and
-availability; a missing core is a reportable state, not an error.
+Backends resolve their binary through `system.CoreLocator` in
+controlled, bounded locations (v0.9.14): the application-managed
+`<base>/cores` directories, the system PATH, and a fixed list of known
+platform installation locations (root × known-subdirectory ×
+known-executable-name — never a recursive filesystem walk). Nothing
+found inside downloaded configuration data is ever executed.
+Externally discovered binaries are REFERENCED, never replaced or
+modified, and they are validated (version probe, config-dialect check,
+smoke test) before use; a version string alone never proves
+provenance — see the trust distinctions in [reuse.md](reuse.md).
+Discovery reports path, version, origin and availability; a missing
+core is a reportable state, not an error.
 
 **Untrusted configuration flow.** Source data crosses a one-way
 pipeline: parse → normalize → validate → capability resolution →

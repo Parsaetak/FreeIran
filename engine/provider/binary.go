@@ -50,6 +50,24 @@ type Manifest struct {
 	PreviousPath     string    `json:"previous_path,omitempty"`
 	FailureReason    string    `json:"failure_reason,omitempty"`
 	FailureStage     string    `json:"failure_stage,omitempty"`
+
+	// ---- v0.9.14: ownership and provenance --------------------------
+	//
+	// Ownership is "managed" (FreeIran-owned binary inside the
+	// provider slot) or "external" (an already-installed engine the
+	// provider only REFERENCES — never deleted, renamed or
+	// overwritten). Empty keeps the historical default: managed.
+	Ownership string `json:"ownership,omitempty"`
+
+	// Origin records where the active binary came from: "managed"
+	// (downloaded bundle), "path" (OS PATH), "system" (known
+	// installation location) or "user" (user-supplied adoption).
+	Origin string `json:"origin,omitempty"`
+
+	// ExternalPath is the referenced external executable's canonical
+	// path (equal to BinaryPath while an external reference is
+	// active).
+	ExternalPath string `json:"external_path,omitempty"`
 }
 
 // BinaryManager owns one provider's binary slot on disk.
@@ -179,31 +197,24 @@ func (b *BinaryManager) Install(ctx context.Context, release Release) error {
 		return b.fail(manifestStage("prepare"), err)
 	}
 
-	_ = os.RemoveAll(b.StagingDir())
-
+	// v0.9.14: staging is NOT wiped wholesale — a complete staged
+	// archive from an interrupted install is verified and reused, a
+	// partial one is resumed by the downloader, and only artifacts of
+	// a DIFFERENT release are removed.
 	if err := os.MkdirAll(b.StagingDir(), 0o700); err != nil {
 		return b.fail(manifestStage("prepare"), err)
 	}
 
-	// ---- DOWNLOAD --------------------------------------------------
+	if err := cleanStaleProviderStaging(b.StagingDir(), release.AssetName); err != nil {
+		return b.fail(manifestStage("prepare"), err)
+	}
+
+	// ---- DOWNLOAD (only when no reusable artifact exists) ----------
 	archivePath := filepath.Join(b.StagingDir(), release.AssetName)
 
-	maxBytes := b.MaxDownloadBytes
-	if maxBytes <= 0 {
-		maxBytes = 512 << 20
-	}
-
-	options := httpx.DownloadOptions{
-		DestPath:     archivePath,
-		ExpectedSize: release.Size,
-		MaxBytes:     maxBytes,
-		StallTimeout: 30 * time.Second,
-		MaxRetries:   4,
-	}
-
-	result, err := b.HTTP.Download(ctx, release.AssetURL, options)
-	if err != nil {
-		return b.fail(manifestStage("download"), err)
+	result, downloadErr := b.downloadOrReuse(ctx, archivePath, release)
+	if downloadErr != nil {
+		return b.fail(manifestStage("download"), downloadErr)
 	}
 
 	// ---- VERIFY ----------------------------------------------------
@@ -253,9 +264,11 @@ func (b *BinaryManager) Install(ctx context.Context, release Release) error {
 	version := ""
 
 	if b.ValidateBinary != nil {
-		version, err = b.ValidateBinary(ctx, execPath)
-		if err != nil {
-			return b.fail(manifestStage("validate"), err)
+		var verr error
+
+		version, verr = b.ValidateBinary(ctx, execPath)
+		if verr != nil {
+			return b.fail(manifestStage("validate"), verr)
 		}
 	}
 
@@ -271,8 +284,14 @@ func (b *BinaryManager) Install(ctx context.Context, release Release) error {
 
 	target := filepath.Join(b.BinDir(), executableFileName(b.ExecutableName))
 
+	// v0.9.14 ownership guard: an EXTERNAL binary (system-discovered
+	// or user-adopted original) is NEVER moved aside or overwritten —
+	// only FreeIran's reference changes. Rollback retention applies to
+	// managed binaries exclusively.
+	previousIsExternal := previous.Ownership == string(OwnershipExternal)
+
 	// Retain the previous binary for rollback.
-	if previous.BinaryPath != "" && previous.BinaryPath != target {
+	if !previousIsExternal && previous.BinaryPath != "" && previous.BinaryPath != target {
 		if _, statErr := os.Stat(previous.BinaryPath); statErr == nil {
 			_ = os.Rename(previous.BinaryPath, previous.BinaryPath+".previous") //nolint:errcheck // best-effort retention
 		}
@@ -302,6 +321,14 @@ func (b *BinaryManager) Install(ctx context.Context, release Release) error {
 		PreviousVersion:  previous.Version,
 		PreviousChecksum: previous.ChecksumSHA256,
 		PreviousPath:     previous.BinaryPath + ".previous",
+		// v0.9.14: a downloaded-and-activated bundle is FreeIran-owned.
+		Ownership: string(OwnershipManaged),
+		Origin:    string(OriginManaged),
+	}
+	if previousIsExternal {
+		manifest.PreviousPath = ""
+		manifest.PreviousVersion = ""
+		manifest.PreviousChecksum = ""
 	}
 
 	if err := b.saveManifest(manifest); err != nil {

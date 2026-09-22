@@ -118,21 +118,108 @@ func GetInfo() Info {
 }
 
 // CoreLocator discovers installed protocol-core executables.
+//
+// v0.9.14: the locator is a thin facade over the ONE authoritative
+// executable-discovery mechanism (ExecDiscovery). Its search order is
+// unchanged — managed directories first, then PATH — and it now ALSO
+// probes the bounded platform installation locations, returns every
+// distinct installation as a ranked candidate list, caches version
+// probes under a stable file-identity fingerprint (no repeated process
+// spawns for the same unchanged binary) and deduplicates concurrent
+// probes in flight.
 type CoreLocator struct {
-	mu        sync.RWMutex
 	coreDir   string
 	lookPath  func(string) (string, error)
 	extraDirs []string
+
+	discovery *ExecDiscovery
+	specMu    sync.Mutex
+	specsSeen map[string]bool
 }
 
 // NewCoreLocator creates a locator that searches the system PATH, the
-// application cores directory and any extra directories.
+// application cores directory, any extra directories and the bounded
+// platform installation locations.
 func NewCoreLocator(coreDir string, extraDirs ...string) *CoreLocator {
+	discovery := NewExecDiscovery(nil, nil)
+	discovery.lookPath = execLookPath
+
 	return &CoreLocator{
 		coreDir:   coreDir,
 		lookPath:  execLookPath,
 		extraDirs: extraDirs,
+		discovery: discovery,
+		specsSeen: make(map[string]bool),
 	}
+}
+
+// specFor returns (registering on first use) the discovery spec for an
+// engine name. The managed directories — the application cores
+// directory and every extra directory — are registered as priority-1
+// roots for each engine, preserving the historical search order.
+func (l *CoreLocator) specFor(name string) EngineSpec {
+	l.specMu.Lock()
+	defer l.specMu.Unlock()
+
+	if l.specsSeen[name] {
+		l.discovery.mu.RLock()
+		spec := l.discovery.specs[name]
+		l.discovery.mu.RUnlock()
+
+		return spec
+	}
+
+	spec, known := func() (EngineSpec, bool) {
+		l.discovery.mu.RLock()
+		defer l.discovery.mu.RUnlock()
+
+		spec, ok := l.discovery.specs[name]
+
+		return spec, ok
+	}()
+
+	if !known {
+		// Dynamic engine: bounded spec with just the executable name
+		// (plus a title-case variant for Windows-style installs).
+		spec = EngineSpec{
+			Name:        name,
+			BinaryNames: []string{name},
+			Subdirs:     []string{name, strings.ToUpper(name[:1]) + name[1:]},
+		}
+
+		l.discovery.mu.Lock()
+		l.discovery.specs[name] = spec
+		l.discovery.mu.Unlock()
+	}
+
+	// Managed roots: the flat cores dir first, then the per-core bin
+	// directories (extraDirs) — exactly the historical priority order.
+	l.discovery.mu.Lock()
+
+	for _, dir := range append([]string{l.coreDir}, l.extraDirs...) {
+		if dir == "" {
+			continue
+		}
+
+		exists := false
+
+		for _, existing := range l.discovery.managedDirs[name] {
+			if existing == dir {
+				exists = true
+				break
+			}
+		}
+
+		if !exists {
+			l.discovery.managedDirs[name] = append(l.discovery.managedDirs[name], dir)
+		}
+	}
+
+	l.discovery.mu.Unlock()
+
+	l.specsSeen[name] = true
+
+	return spec
 }
 
 // CoreBinary describes one discovered protocol core.
@@ -140,6 +227,12 @@ type CoreBinary struct {
 	Name    string `json:"name"`
 	Path    string `json:"path"`
 	Version string `json:"version,omitempty"`
+	// Origin is where the executable was found (managed, path,
+	// system, user) — v0.9.14 ownership/origin reporting.
+	Origin string `json:"origin,omitempty"`
+	// Ownership distinguishes FreeIran-managed binaries from external
+	// ones (external binaries are only referenced, never modified).
+	Ownership string `json:"ownership,omitempty"`
 }
 
 // WellKnownCores are the protocol engines FreeIran integrates with.
@@ -148,42 +241,88 @@ type CoreBinary struct {
 var WellKnownCores = []string{"xray", "v2ray", "sing-box", "wireguard", "wg"}
 
 // Discover finds a core executable by name and queries its version.
+// The best candidate wins: managed directories, then PATH, then the
+// bounded platform installation locations. The version probe is
+// cached per file identity and deduplicated in flight.
 func (l *CoreLocator) Discover(ctx context.Context, name string) (CoreBinary, error) {
 	if l == nil {
 		return CoreBinary{}, firerrors.New(firerrors.KindConfiguration,
 			Subsystem, "discover", "locator is nil")
 	}
 
-	candidates := []string{l.coreDir}
-	candidates = append(candidates, l.extraDirs...)
+	_ = l.specFor(name)
 
-	for _, dir := range candidates {
-		if dir == "" {
-			continue
-		}
-
-		path := filepath.Join(dir, executableName(name))
-
-		if fileExists(path) {
-			return CoreBinary{
-				Name:    name,
-				Path:    path,
-				Version: queryCoreVersion(ctx, path),
-			}, nil
-		}
+	candidates := l.discovery.DiscoverCandidates(ctx, name)
+	if len(candidates) == 0 {
+		return CoreBinary{}, firerrors.New(firerrors.KindDependencyUnavailable,
+			Subsystem, "discover", "core %q not found", name)
 	}
 
-	path, err := l.lookPath(name)
-	if err == nil && path != "" {
-		return CoreBinary{
-			Name:    name,
-			Path:    path,
-			Version: queryCoreVersion(ctx, path),
-		}, nil
+	best := candidates[0]
+
+	return CoreBinary{
+		Name:      name,
+		Path:      best.Path,
+		Version:   best.Version,
+		Origin:    string(best.Origin),
+		Ownership: string(best.Ownership),
+	}, nil
+}
+
+// DiscoverCandidates returns every distinct installation of the named
+// engine found in the controlled search roots, best candidate first.
+// An engine with no installation yields an empty slice.
+func (l *CoreLocator) DiscoverCandidates(ctx context.Context, name string) []ExecCandidate {
+	if l == nil {
+		return nil
 	}
 
-	return CoreBinary{}, firerrors.New(firerrors.KindDependencyUnavailable,
-		Subsystem, "discover", "core %q not found", name)
+	_ = l.specFor(name)
+
+	return l.discovery.DiscoverCandidates(ctx, name)
+}
+
+// InvalidateEngine drops cached probe results for one engine — used
+// when an installation/update completes or its runtime fails.
+func (l *CoreLocator) InvalidateEngine(engine string) {
+	if l == nil {
+		return
+	}
+
+	l.discovery.InvalidateEngine(engine)
+}
+
+// InvalidatePath drops the cached probe result for one executable —
+// used when a runtime failure invalidates the candidate.
+func (l *CoreLocator) InvalidatePath(path string) {
+	if l == nil {
+		return
+	}
+
+	l.discovery.InvalidatePath(path)
+}
+
+// InvalidateAll drops every cached probe result (explicit
+// verify/refresh bypass).
+func (l *CoreLocator) InvalidateAll() {
+	if l == nil {
+		return
+	}
+
+	l.discovery.InvalidateAll()
+}
+
+// SetLookPath overrides the OS PATH lookup. This is the test seam for
+// PATH-origin discovery — production always uses the real exec.LookPath
+// (the historical field injection, now wired through the discovery
+// authority so both share one lookup).
+func (l *CoreLocator) SetLookPath(f func(string) (string, error)) {
+	if l == nil {
+		return
+	}
+
+	l.lookPath = f
+	l.discovery.lookPath = f
 }
 
 // DiscoverAll locates every well-known core, skipping missing ones.
