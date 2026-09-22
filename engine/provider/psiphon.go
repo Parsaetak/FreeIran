@@ -339,6 +339,22 @@ func (e *PsiphonEngine) Install(ctx context.Context) error {
 
 	release, err := e.Resolve(ctx)
 	if err != nil {
+		// v0.9.14 local-first revision: remote metadata failure must not
+		// make an installed or otherwise locally usable engine unusable.
+		// EnsureAvailable answers purely from local evidence (managed
+		// manifest + binary on disk, or a discoverable consoleclient
+		// adopted through the copy-not-move user-binary path). When
+		// nothing local is usable the resolve error is returned
+		// honestly.
+		if e.EnsureAvailable(ctx) {
+			logInstall(PsiphonName, "provider_reused", map[string]any{
+				"mode":   "local-install-kept",
+				"reason": "release metadata unavailable",
+			})
+
+			return nil
+		}
+
 		return err
 	}
 

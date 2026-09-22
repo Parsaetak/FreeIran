@@ -30,6 +30,12 @@ func (m *Manager) queryVersion(ctx context.Context, path string, args []string) 
 	applyHiddenConsole(cmd) // never flash a console window (§v0.9.0)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	// v0.9.14 CI fix: bound the post-kill pipe drain. On Windows,
+	// exec.Wait blocks until every pipe writer closes; an inherited
+	// handle held by a descendant would otherwise hang the probe past
+	// the context deadline (unbounded Wait = go test 10m package
+	// timeout). Deadline + WaitDelay is the hard ceiling.
+	cmd.WaitDelay = 2 * time.Second
 
 	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("version query failed: %w (stderr=%s)", err, stderr.String())
@@ -70,6 +76,10 @@ func (m *Manager) validateExecutable(ctx context.Context, name CoreName, path st
 	cmd := exec.CommandContext(checkCtx, path, args...)
 	applyHiddenConsole(cmd) // never flash a console window (§v0.9.0)
 	cmd.Stderr = &stderr
+	// v0.9.14 CI fix: bounded pipe drain after the deadline kill — see
+	// queryVersion. Prevents an unbounded exec.Wait on Windows when a
+	// descendant holds the inherited pipe write end.
+	cmd.WaitDelay = 2 * time.Second
 
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("config validation failed: %w (stderr=%s)", err, stderr.String())
@@ -142,6 +152,11 @@ func (m *Manager) smokeTest(ctx context.Context, name CoreName, path string, src
 	cmd := exec.CommandContext(runCtx, path, args...)
 	applyHiddenConsole(cmd) // never flash a console window (§v0.9.0)
 	cmd.Stderr = &stderr
+	// v0.9.14 CI fix: bounded pipe drain — see queryVersion. Without
+	// WaitDelay the cmd.Wait in the goroutine below (and the Kill+Wait
+	// not-ready path) can block indefinitely on Windows when a
+	// descendant keeps the inherited stderr pipe open.
+	cmd.WaitDelay = 2 * time.Second
 
 	if err := cmd.Start(); err != nil {
 		result.Details = fmt.Sprintf("smoke start: %v", err)

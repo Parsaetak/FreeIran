@@ -479,6 +479,23 @@ func (e *TorEngine) Install(ctx context.Context) error {
 
 	release, err := e.Resolve(ctx)
 	if err != nil {
+		// v0.9.14 local-first revision: remote metadata failure must not
+		// make an installed or otherwise locally usable engine unusable.
+		// EnsureAvailable answers purely from local evidence (managed
+		// manifest + binary on disk, or a discoverable installed Tor
+		// adopted by reference) — offline, DNS-failure and black-holed
+		// networks keep a working Tor working. When nothing local is
+		// usable the resolve error is returned honestly (a download
+		// would be pointless anyway).
+		if e.EnsureAvailable(ctx) {
+			logInstall(TorName, "provider_reused", map[string]any{
+				"mode":   "local-install-kept",
+				"reason": "release metadata unavailable",
+			})
+
+			return nil
+		}
+
 		return err
 	}
 

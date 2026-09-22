@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	firerrors "github.com/Parsaetak/FreeIran/engine/errors"
 	"github.com/Parsaetak/FreeIran/system"
 )
 
@@ -148,19 +149,28 @@ func (m *Manager) invalidateDiscoveredPath(path string) {
 // a suitable working candidate exists, reconciles the manifest and
 // reports the install complete WITHOUT acquiring anything.
 //
-// Decision flow (v0.9.14):
+// Decision flow (v0.9.14, revised local-first ordering):
 //
-//  1. resolve the latest stable release metadata (cached + deduplicated)
-//  2. evaluate the ACTIVE binary (managed or external):
-//     current → validate identity/health → REUSE, no download
-//     newer   → validate → REUSE, never downgrade
-//     older   → external: REUSE + surface update (unless forced)
-//     managed:  fall through to acquisition (explicit update)
-//  3. when the resolve itself fails (offline) a healthy active binary
-//     is still reused rather than failing the call
-//  4. DISCOVER other local candidates (managed dirs, PATH, known
-//     system locations) and ADOPT the best validated one
-//  5. otherwise acquire (download), with staged-artifact reuse.
+//  1. LOCAL DISCOVERY → FILE IDENTITY → LOCAL HEALTH: a healthy,
+//     identity-current active binary is reusable on LOCAL evidence
+//     alone. GitHub/release metadata can never veto that answer —
+//     a machine with a valid runtime stays fully usable while the
+//     remote API is unreachable, poisoned or slow.
+//  2. When local reuse is possible the release resolve runs inside a
+//     SHORT enrichment budget (reuseResolveBudget): online it refines
+//     the honest decision label (managed-current vs managed-healthy,
+//     system-current vs system-older) and the update surfaces; offline
+//     or black-holed it fails fast and the local reuse stands.
+//  3. When the resolve fails, the reuse decision falls back to the
+//     manifest-cached target (LatestKnown) — current/newer/older
+//     classification keeps working offline — and OTHER local
+//     candidates are still discovered and adopted; remote metadata
+//     failure never invalidates a usable local runtime.
+//  4. WithForce (explicit update) bypasses the reuse gate entirely.
+//  5. Otherwise (nothing reusable locally, or a managed binary older
+//     than the target) the release resolve runs unbounded and the
+//     acquisition pipeline proceeds — the download genuinely needs
+//     remote metadata, so failing loudly when offline is correct.
 func (m *Manager) ensureReusable(ctx context.Context, name CoreName, src Source, preSnap Manifest, force bool) (reuseResult, UpdateInfo, error) {
 	active := preSnap.BinaryPath
 	activeOwned := activeOwnership(preSnap)
@@ -183,31 +193,241 @@ func (m *Manager) ensureReusable(ctx context.Context, name CoreName, src Source,
 		}
 	}
 
+	// ---- 0. Local-first reuse gate -----------------------------------
+	// A healthy, identity-current active binary answers "can I use this
+	// already-existing executable right now?" with YES on local
+	// evidence alone (file identity + recorded health state). The
+	// release resolve that follows is an ENRICHMENT, not a
+	// prerequisite: it is bounded by reuseResolveBudget so a black-holed
+	// network delays local reuse by seconds instead of the full
+	// detached-flight lifetime, and its failure drops to the offline
+	// reuse path (cached-target classification + local discovery
+	// adoption) instead of failing the call.
+	//
+	// WithForce skips the gate: an explicit update request overrides
+	// reuse by design (identical work is still not redownloaded —
+	// see Acquire).
+	if !force && activeAlive && active != "" && healthyState(preSnap.State) && fileIdentityMatches(active, preSnap) {
+		enrichCtx, cancel := context.WithTimeout(ctx, reuseResolveBudget)
+		update, err := m.checkRelease(enrichCtx, name, preSnap.Channel)
+		cancel()
+
+		if err == nil {
+			// Online: the original decision flow below classifies
+			// current/newer/older against the FRESH target. The identity
+			// is current and the health evidence is fresh, so the
+			// cmp == 0 arm reuses without re-probing; the newer/older
+			// arms keep their smoke-test validation.
+			return m.reuseActiveOnline(ctx, name, src, preSnap, force, update)
+		}
+
+		// Offline or too slow: reuse on local evidence. Never veto.
+		return m.reuseOffline(ctx, name, src, preSnap, active, activeOwned)
+	}
+
 	// ---- 1. Resolve the target release ------------------------------
+	// Reached when there is no healthy identity-current active binary
+	// (nothing to reuse on local evidence — the network is required for
+	// acquisition anyway) or when force requested an explicit update.
 	update, err := m.checkRelease(ctx, name, preSnap.Channel)
 	if err != nil {
 		// Offline (or the release authority is unreachable): a healthy
 		// active binary is reused rather than failing the call — the
-		// application must stay usable without the remote API.
-		if activeAlive && healthyState(preSnap.State) {
-			_ = m.updateManifest(name, func(mf *Manifest) {
-				mf.LastChecked = time.Now().UTC()
-				mf.LastDecision = string(DecisionManagedHealthy)
-				mf.UpdatedAt = time.Now().UTC()
-			})
-
-			m.logger.Info(Subsystem, "core_reused",
-				"core %s reused %s v%s; release check unavailable, existing binary kept",
-				name, preSnap.OwnershipLabel(), preSnap.Version)
-
-			return reuseResult{
-				done:     true,
-				decision: DecisionManagedHealthy,
-				message:  "existing binary kept (release check unavailable)",
-			}, UpdateInfo{}, nil
+		// application must stay usable without the remote API. The
+		// offline path ALSO still discovers and adopts other local
+		// candidates, which the previous revision did not (an external
+		// installation could not be adopted while offline).
+		if activeAlive || m.currentLocator() != nil {
+			if res, _, rerr := m.reuseOffline(ctx, name, src, preSnap, active, activeOwned); rerr == nil && res.done {
+				return res, UpdateInfo{}, nil
+			}
 		}
 
 		return reuseResult{}, UpdateInfo{}, err
+	}
+
+	return m.reuseActiveOnline(ctx, name, src, preSnap, force, update)
+}
+
+// reuseResolveBudget bounds the OPTIONAL release-metadata resolve on
+// the local-first reuse path: online it refines the decision label
+// (current vs healthy) and the update surfaces; a black-holed or
+// poisoned network must not hold a healthy local runtime hostage for
+// the full detached-flight lifetime (30s) — a few seconds is enough
+// for a healthy API round trip, and failure simply keeps the local
+// decision. The singleflight flight itself keeps its own detached
+// 30s lifetime for OTHER callers; only this caller's wait is bounded.
+const reuseResolveBudget = 8 * time.Second
+
+// reuseOffline answers the reuse question from LOCAL evidence only —
+// the restrictive-network path (offline, DNS failure, poisoned
+// resolver, GitHub unreachable, resolve over budget). It never
+// touches the network:
+//
+//   - a healthy active binary (identity-current: no re-probe; stale
+//     identity: one local smoke validation) is REUSED — never
+//     downgraded, never invalidated by missing remote metadata;
+//   - classification uses the manifest-cached target (LatestKnown):
+//     current → managed-current/system-current, newer → system-newer,
+//     older external → system-older (retained, update surfaced),
+//     older managed → kept under managed-healthy (an offline machine
+//     cannot acquire the update, so the working binary stays);
+//   - without a cached target the honest "kept, release check
+//     unavailable" decision (managed-healthy) is used;
+//   - no healthy active binary: OTHER local candidates are still
+//     discovered and adopted (the v0.9.14 initial revision failed the
+//     whole call here — an externally installed core was unusable
+//     offline);
+//   - nothing usable locally: the caller's resolve error is returned.
+func (m *Manager) reuseOffline(
+	ctx context.Context,
+	name CoreName,
+	src Source,
+	preSnap Manifest,
+	active string,
+	activeOwned system.Ownership,
+) (reuseResult, UpdateInfo, error) {
+	// Synthetic update metadata from the manifest cache: preserves the
+	// update surfaces (LatestKnown/tag/size) without any network call.
+	cachedTarget := ExtractVersionToken(preSnap.LatestKnown)
+
+	offlineUpdate := UpdateInfo{
+		Name:          name,
+		LatestVersion: preSnap.LatestKnown,
+		ReleaseTag:    preSnap.LatestTag,
+		AssetSize:     preSnap.LatestAssetSize,
+	}
+
+	if active != "" {
+		if _, err := os.Stat(active); err == nil && healthyState(preSnap.State) {
+			identityOK := fileIdentityMatches(active, preSnap)
+
+			activeVersion := ExtractVersionToken(preSnap.Version)
+
+			cmp := 0
+			knownTarget := false
+
+			if activeVersion != "" && cachedTarget != "" {
+				cmp = compareVersions(activeVersion, cachedTarget)
+				knownTarget = true
+			}
+
+			// Validate only when the identity evidence is stale — the
+			// same discipline as the online fast path.
+			res := HealthResult{OK: identityOK}
+			if !identityOK {
+				res = m.smokeTest(ctx, name, active, src)
+			}
+
+			if res.OK {
+				decision := DecisionManagedHealthy
+				note := "existing binary kept (release check unavailable)"
+				nextState := StateReady
+
+				switch {
+				case knownTarget && cmp == 0:
+					decision = DecisionManagedCurrent
+					if activeOwned == system.OwnershipExternal {
+						decision = DecisionSystemCurrent
+					}
+					note = "current binary already present; release metadata unreachable"
+
+				case knownTarget && cmp > 0:
+					decision = DecisionSystemNewer
+					note = "newer than last known stable; automatic downgrade refused"
+
+				case knownTarget && cmp < 0 && activeOwned == system.OwnershipExternal:
+					decision = DecisionSystemOlder
+					note = "working external binary retained; update available"
+					nextState = StateUpdateAvailable
+
+				case knownTarget && cmp < 0:
+					// Managed older-than-known-target offline: the update
+					// cannot be acquired, so the working binary is kept.
+					decision = DecisionManagedHealthy
+					note = "update known but not acquirable offline; existing binary kept"
+				}
+
+				if err := m.updateManifest(name, func(mf *Manifest) {
+					mf.State = nextState
+					mf.LastChecked = time.Now().UTC()
+					mf.LatestKnown = preSnap.LatestKnown
+					mf.LatestTag = preSnap.LatestTag
+					mf.LatestAssetSize = preSnap.LatestAssetSize
+					mf.StatusNote = ""
+					if decision == DecisionSystemNewer {
+						mf.StatusNote = "newer than last known stable; automatic downgrade refused"
+					}
+					if res.CheckedAt.IsZero() {
+						mf.LastHealthCheck = time.Now().UTC()
+					} else {
+						mf.LastHealthCheck = res.CheckedAt
+					}
+					mf.LastHealthResult = res
+					mf.LastDecision = string(decision)
+					if identityOK {
+						recordIdentity(mf)
+					}
+					mf.UpdatedAt = time.Now().UTC()
+				}); err != nil {
+					m.logger.Warn(Subsystem, "persist_failed",
+						"could not persist offline reuse manifest for %s: %v", name, err)
+				}
+
+				m.logger.Info(Subsystem, "core_reused",
+					"core %s reused %s v%s offline; %s",
+					name, preSnap.OwnershipLabel(), preSnap.Version, note)
+
+				return reuseResult{
+					done:     true,
+					decision: decision,
+					message:  note,
+				}, offlineUpdate, nil
+			}
+
+			// The active binary no longer works: invalidate and fall
+			// through to discovery below.
+			m.logger.Warn(Subsystem, "artifact_invalid",
+				"core %s active binary failed offline revalidation at %s", name, active)
+
+			if m.currentLocator() != nil {
+				m.locator.InvalidatePath(active)
+			}
+		}
+	}
+
+	// Nothing healthy active: discover and adopt another local
+	// candidate against the cached target (pure local operation).
+	if m.currentLocator() != nil {
+		tried := map[string]bool{active: true}
+
+		if _, decision, ok := m.adoptCandidate(ctx, name, src, offlineUpdate, cachedTarget, tried, false); ok {
+			return reuseResult{
+				done:     true,
+				decision: decision,
+				message:  "local candidate adopted offline; download skipped",
+			}, offlineUpdate, nil
+		}
+	}
+
+	return reuseResult{}, UpdateInfo{}, firerrors.New(firerrors.KindDependencyUnavailable,
+		Subsystem, "reuse",
+		"no usable local runtime for core %s and release metadata unavailable", name)
+}
+
+// reuseActiveOnline is the release-metadata-informed reuse evaluation
+// of the ACTIVE binary plus the discovery/adoption fallback — the
+// v0.9.14 flow, entered only after the local-first gate has either
+// reused offline or confirmed there is no locally reusable evidence.
+func (m *Manager) reuseActiveOnline(ctx context.Context, name CoreName, src Source, preSnap Manifest, force bool, update UpdateInfo) (reuseResult, UpdateInfo, error) {
+	active := preSnap.BinaryPath
+	activeOwned := activeOwnership(preSnap)
+
+	activeAlive := false
+	if active != "" {
+		if _, err := os.Stat(active); err == nil {
+			activeAlive = true
+		}
 	}
 
 	target := ExtractVersionToken(update.LatestVersion)
@@ -428,6 +648,76 @@ func (m *Manager) adoptCandidate(
 
 	m.logger.Info(Subsystem, "core_discovered",
 		"core %s: %d local candidate(s) discovered", name, len(candidates))
+
+	// OFFLINE / NO-TARGET ADOPTION (v0.9.14 local-first revision): when
+	// no target version is known (never resolved, or resolved before
+	// the manifest existed), the classification passes below cannot
+	// run — but a VALIDATED, smoke-passing candidate is still adopted
+	// instead of failing the call. A working local runtime beats
+	// "nothing" under restrictive networks; provenance is recorded
+	// honestly (locally-validated trust, empty update surfaces).
+	if target == "" && !force {
+		for _, cand := range candidates {
+			if !cand.Validated() || tried[cand.Path] {
+				continue
+			}
+
+			if err := m.validateExecutable(ctx, name, cand.Path, src); err != nil {
+				tried[cand.Path] = true
+
+				continue
+			}
+
+			res := m.smokeTest(ctx, name, cand.Path, src)
+			tried[cand.Path] = true
+
+			if !res.OK {
+				continue
+			}
+
+			sha, _ := fileSHA256(cand.Path)
+
+			ownership := string(system.OwnershipExternal)
+			if cand.Managed() {
+				ownership = string(system.OwnershipManaged)
+			}
+
+			if err := m.updateManifest(name, func(mf *Manifest) {
+				mf.State = StateReady
+				mf.Version = cand.Version
+				mf.Ownership = ownership
+				mf.Origin = string(cand.Origin)
+				mf.BinaryPath = cand.Path
+				if ownership == string(system.OwnershipExternal) {
+					mf.ExternalPath = cand.Path
+				}
+				mf.ChecksumSHA256 = sha
+				mf.Trust = string(TrustLocal)
+				mf.BinarySize = cand.Size
+				mf.BinaryModTime = cand.ModTime
+				mf.SourceURL = "local:" + string(cand.Origin)
+				mf.LastChecked = time.Now().UTC()
+				mf.LastHealthCheck = time.Now().UTC()
+				mf.LastHealthResult = res
+				mf.FailureReason = ""
+				mf.FailureStage = ""
+				mf.StatusNote = ""
+				mf.LastDecision = string(DecisionManagedHealthy)
+				mf.UpdatedAt = time.Now().UTC()
+			}); err != nil {
+				m.logger.Warn(Subsystem, "persist_failed",
+					"could not persist offline adoption manifest for %s: %v", name, err)
+			}
+
+			m.logger.Info(Subsystem, "core_reused",
+				"core %s adopted %s %s v%s with no release target known (%s); no download required",
+				name, ownership, cand.Origin, cand.Version, TrustLocal)
+
+			return cand, DecisionManagedHealthy, true
+		}
+
+		return system.ExecCandidate{}, DecisionInvalidLocal, false
+	}
 
 	// Rank per the v0.9.14 evidence ordering: an exact current binary
 	// before a newer one, a newer one before an older one; ties keep

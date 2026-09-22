@@ -24,10 +24,22 @@ import (
 
 // call is one in-flight (or completed) shared execution.
 type call[T any] struct {
-	wg sync.WaitGroup
+	// done is closed exactly once, after val/err are final and the key
+	// has been removed from the group's map. Waiters select on it —
+	// no per-waiter goroutine is required (the previous WaitGroup +
+	// helper-goroutine design burned one blocked goroutine per waiter
+	// and every abandoned waiter kept that goroutine alive until the
+	// shared execution finished; under the release-metadata 30s flights
+	// a burst of expiring callers churned goroutines for nothing).
+	//
+	// Memory model: the write to val/err happens-before the close of
+	// done, and a receive that observes the closed channel therefore
+	// observes both final values (Go channel happens-before rule) —
+	// the same guarantee sync.WaitGroup provided.
+	done chan struct{}
 
-	// val and err are written once, before the waiters are released,
-	// and then only read.
+	// val and err are written once, before done is closed, and then
+	// only read.
 	val T
 	err error
 }
@@ -62,7 +74,7 @@ func Do[V any, K ~string](g *Group[V], ctx context.Context, key K, execTimeout f
 	}
 
 	c := new(call[V])
-	c.wg.Add(1)
+	c.done = make(chan struct{})
 	g.m[string(key)] = c
 	g.mu.Unlock()
 
@@ -70,31 +82,32 @@ func Do[V any, K ~string](g *Group[V], ctx context.Context, key K, execTimeout f
 	execCtx, cancel := execTimeout()
 
 	go func() {
-		defer c.wg.Done()
-
 		c.val, c.err = fn(execCtx)
 		cancel()
 
+		// Retire the key BEFORE releasing the waiters: a caller that
+		// arrives after the deletion starts a fresh execution instead
+		// of joining a completed one — identical to the WaitGroup
+		// design's ordering. Callers that already joined observe the
+		// final result through the closed channel.
 		g.mu.Lock()
 		delete(g.m, string(key))
 		g.mu.Unlock()
+
+		close(c.done)
 	}()
 
 	return wait(ctx, c)
 }
 
 // wait blocks until the shared execution completes or ctx is done.
+// It allocates nothing and blocks on a channel select only: abandoned
+// (cancelled) waiters leave no goroutine behind.
 func wait[V any](ctx context.Context, c *call[V]) (V, error) {
-	done := make(chan struct{})
-
-	go func() {
-		c.wg.Wait()
-		close(done)
-	}()
-
 	select {
-	case <-done:
+	case <-c.done:
 		return c.val, c.err
+
 	case <-ctx.Done():
 		var zero V
 

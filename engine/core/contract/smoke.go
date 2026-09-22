@@ -97,8 +97,16 @@ func smokeOne(t *testing.T, opts SmokeOptions, cfg config.Config, workDir string
 	t.Cleanup(func() { _ = os.Remove(file) })
 
 	// Stage 1: the real core validates its own configuration.
-	validate := exec.Command(opts.BinaryPath, opts.ValidateArgs(file)...)
+	// v0.9.14 CI fix: the validation child is bounded by an explicit
+	// context (it previously ran with NO deadline — a hung validator
+	// blocked the suite forever) plus a bounded WaitDelay so exec.Wait
+	// can never block past the kill on Windows pipe handles.
+	validateCtx, validateCancel := context.WithTimeout(context.Background(), timeout)
+	defer validateCancel()
+
+	validate := exec.CommandContext(validateCtx, opts.BinaryPath, opts.ValidateArgs(file)...)
 	hideConsole(validate) // no CMD flash on Windows (§v0.9.2 audit)
+	validate.WaitDelay = 2 * time.Second
 
 	if out, err := validate.CombinedOutput(); err != nil {
 		t.Fatalf("real core rejected the generated configuration: %v\n%s",

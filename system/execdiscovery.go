@@ -425,25 +425,68 @@ func (d *ExecDiscovery) DiscoverCandidates(ctx context.Context, engine string) [
 
 	// Identify + validate: probe each distinct path (cached,
 	// deduplicated in flight), keeping file identity with the result.
+	//
+	// v0.9.14 CI fix — bounded concurrent probing: discovery previously
+	// probed every candidate SEQUENTIALLY. Each cold miss costs up to
+	// 3 probe forms x 5s, so one discovery over several installations
+	// serialized to tens of seconds even though the probes are fully
+	// independent (each is a separate child process on a separate
+	// path, deduplicated by key and guarded by the cache mutex).
+	// Probes now run with bounded parallelism; the candidate slice
+	// keeps the located order (managed → PATH → system) and the
+	// deterministic sort below is unchanged, so results and ordering
+	// are byte-for-byte identical to the sequential implementation.
 	now := d.now().UTC()
 
-	candidates := make([]ExecCandidate, 0, len(found))
+	candidates := make([]ExecCandidate, len(found))
 
-	for _, loc := range found {
-		cand, ok := d.identify(ctx, engine, loc.path, loc.origin, now)
-		if !ok {
-			continue
+	const probeConcurrency = 4
+
+	sem := make(chan struct{}, probeConcurrency)
+
+	var wg sync.WaitGroup
+
+	for i, loc := range found {
+		wg.Add(1)
+
+		sem <- struct{}{}
+
+		go func(i int, loc struct {
+			path   string
+			origin Origin
+		}) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			// A cancelled caller must not spawn fresh probe work: the
+			// shared flights still finish for other callers, but this
+			// discovery stops contributing new launches.
+			if ctx.Err() != nil {
+				return
+			}
+
+			if cand, ok := d.identify(ctx, engine, loc.path, loc.origin, now); ok {
+				candidates[i] = cand
+			}
+		}(i, loc)
+	}
+
+	wg.Wait()
+
+	// Compact, preserving order (nil holes are vanished/unprobed paths).
+	probed := candidates[:0]
+	for _, cand := range candidates {
+		if cand.Path != "" {
+			probed = append(probed, cand)
 		}
-
-		candidates = append(candidates, cand)
 	}
 
 	// Deterministic ordering: managed before external; within a tier,
 	// validated (probed) before unvalidated; then stable path order.
 	// The candidate set is small (a handful of installations at most),
 	// so a full sort is cheap and keeps the result explainable.
-	sort.SliceStable(candidates, func(i, j int) bool {
-		a, b := candidates[i], candidates[j]
+	sort.SliceStable(probed, func(i, j int) bool {
+		a, b := probed[i], probed[j]
 
 		if a.Ownership != b.Ownership {
 			return a.Ownership == OwnershipManaged
@@ -460,7 +503,7 @@ func (d *ExecDiscovery) DiscoverCandidates(ctx context.Context, engine string) [
 		return a.Path < b.Path
 	})
 
-	return candidates
+	return probed
 }
 
 // identify stats the path and returns the candidate with its (cached)

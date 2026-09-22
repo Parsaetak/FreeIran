@@ -906,6 +906,19 @@ func queryCoreVersion(ctx context.Context, path string) string {
 		cmd := exec.CommandContext(probeCtx, path, args...)
 		concealChild(cmd)
 
+		// WaitDelay (v0.9.14 CI fix): CommandContext kills the child at
+		// the deadline, but exec.Wait still blocks until every writer of
+		// the captured stdout/stderr pipes closes it. On Windows an
+		// inherited pipe handle held by a descendant — or any non-console
+		// candidate binary among the discovered installations — would
+		// otherwise block CombinedOutput FOREVER past the context
+		// deadline: the only remaining bound was go test's 10-minute
+		// package timeout (the hang class that stalled the Windows CI
+		// job). WaitDelay bounds the post-kill pipe drain, so Wait is
+		// ALWAYS bounded by deadline + drain. Children that exit cleanly
+		// and close their pipes are unaffected.
+		cmd.WaitDelay = 2 * time.Second
+
 		out, err := cmd.CombinedOutput()
 		cancel()
 

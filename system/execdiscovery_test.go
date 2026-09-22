@@ -2,6 +2,7 @@ package system
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -568,5 +569,120 @@ func TestCoreLocatorOriginReported(t *testing.T) {
 
 	if binary.Ownership != string(OwnershipManaged) {
 		t.Fatalf("ownership = %q, want %q", binary.Ownership, OwnershipManaged)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// v0.9.14 CI-hardening coverage for the bounded-concurrent probe path
+// ---------------------------------------------------------------------------
+
+// TestExecDiscoveryBoundedConcurrentProbesMatchSequential pins the
+// bounded-parallelism probe path: with MANY distinct candidates the
+// candidate list, ordering and per-candidate probe counts are exactly
+// what the sequential implementation produced, while the wall clock
+// benefits from the (capped) parallelism.
+func TestExecDiscoveryBoundedConcurrentProbesMatchSequential(t *testing.T) {
+	d, probes := newTestDiscovery(t)
+
+	const candidates = 12
+
+	dir := t.TempDir()
+
+	for i := 0; i < candidates; i++ {
+		sub := filepath.Join(dir, fmt.Sprintf("slot%02d", i))
+		if err := os.MkdirAll(sub, 0o700); err != nil {
+			t.Fatal(err)
+		}
+
+		path := filepath.Join(sub, executableName("xray"))
+		if err := os.WriteFile(path, []byte("binary"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+
+		d.AddManagedDir("xray", sub)
+	}
+
+	got := d.DiscoverCandidates(context.Background(), "xray")
+
+	if len(got) != candidates {
+		t.Fatalf("candidates = %d, want %d", len(got), candidates)
+	}
+
+	// Exactly one probe per distinct candidate — no duplicated spawns
+	// introduced by the worker pool.
+	if n := atomic.LoadInt64(probes); n != candidates {
+		t.Fatalf("probes = %d, want %d (one per distinct candidate)", n, candidates)
+	}
+
+	// Deterministic ordering: all managed; stable path order.
+	for i := 1; i < len(got); i++ {
+		if got[i-1].Path >= got[i].Path {
+			t.Fatalf("path order not deterministic: %s before %s", got[i-1].Path, got[i].Path)
+		}
+	}
+}
+
+// TestExecDiscoveryCancelledContextSpawnsNoProbes proves a cancelled
+// caller never contributes new process launches: the shared flights
+// may finish for other callers, but a discovery entered with a dead
+// context reports no candidates instead of spawning probes.
+func TestExecDiscoveryCancelledContextSpawnsNoProbes(t *testing.T) {
+	d, probes := newTestDiscovery(t)
+
+	dir := t.TempDir()
+
+	path := filepath.Join(dir, executableName("xray"))
+	if err := os.WriteFile(path, []byte("binary"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	d.AddManagedDir("xray", dir)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	got := d.DiscoverCandidates(ctx, "xray")
+
+	if len(got) != 0 {
+		t.Fatalf("candidates = %d, want 0 for a cancelled discovery", len(got))
+	}
+
+	if n := atomic.LoadInt64(probes); n != 0 {
+		t.Fatalf("probes = %d, want 0 (cancelled caller must not spawn work)", n)
+	}
+}
+
+// TestExecDiscoveryWarmCacheSpawnsNoProbes verifies the warm-cache
+// contract after the concurrency change: a second discovery within the
+// freshness window over unchanged identities performs ZERO process
+// spawns (stat + map lookups only).
+func TestExecDiscoveryWarmCacheSpawnsNoProbes(t *testing.T) {
+	d, probes := newTestDiscovery(t)
+
+	dir := t.TempDir()
+
+	path := filepath.Join(dir, executableName("xray"))
+	if err := os.WriteFile(path, []byte("binary"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	d.AddManagedDir("xray", dir)
+
+	first := d.DiscoverCandidates(context.Background(), "xray")
+	if len(first) != 1 {
+		t.Fatalf("first discovery = %d candidates, want 1", len(first))
+	}
+
+	if n := atomic.LoadInt64(probes); n != 1 {
+		t.Fatalf("cold probes = %d, want 1", n)
+	}
+
+	second := d.DiscoverCandidates(context.Background(), "xray")
+	if len(second) != 1 || second[0].Version != first[0].Version {
+		t.Fatal("warm discovery must return the identical cached candidate")
+	}
+
+	if n := atomic.LoadInt64(probes); n != 1 {
+		t.Fatalf("probes after warm discovery = %d, want 1 (no respawn on warm cache)", n)
 	}
 }
