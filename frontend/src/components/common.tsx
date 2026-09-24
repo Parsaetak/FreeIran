@@ -1,4 +1,5 @@
-import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
+import { useRef, useState, useCallback, type ReactNode } from "react";
+import { MenuSurface, type MenuAnchor } from "./MenuSurface";
 import {
   IconAlert,
   IconCheck,
@@ -204,6 +205,12 @@ export interface MenuItem {
  * Compact overflow menu for secondary actions (v0.9.1). Closes on
  * outside click and Escape; items are real buttons so keyboard focus
  * and disabled states behave exactly like the rest of the UI.
+ *
+ * v0.9.15: the popup renders through the ONE shared portal surface
+ * (MenuSurface) — viewport-aware placement, flip + clamp, keyboard
+ * navigation and focus return for every menu in the application. The
+ * old CSS-absolute dropdown could be clipped by overflow ancestors
+ * and could poke past the window's right border.
  */
 export function Menu({
   label,
@@ -215,64 +222,48 @@ export function Menu({
   ariaLabel: string;
 }) {
   const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
+  const [anchor, setAnchor] = useState<MenuAnchor | null>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
-  useEffect(() => {
-    if (!open) return;
+  const openMenu = () => {
+    const element = triggerRef.current;
 
-    const onPointer = (event: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(event.target as Node)) {
-        setOpen(false);
-      }
-    };
+    if (element) {
+      const rect = element.getBoundingClientRect();
 
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
-    };
+      setAnchor({
+        kind: "rect",
+        rect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom },
+      });
+    }
 
-    document.addEventListener("mousedown", onPointer);
-    document.addEventListener("keydown", onKey);
+    setOpen(true);
+  };
 
-    return () => {
-      document.removeEventListener("mousedown", onPointer);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
+  const closeMenu = useCallback(() => setOpen(false), []);
 
   return (
-    <div className="menu-wrap" ref={rootRef}>
+    <div className="menu-wrap">
       <button
+        ref={triggerRef}
         type="button"
         className="btn"
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label={ariaLabel}
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => (open ? setOpen(false) : openMenu())}
       >
         {label}
       </button>
 
-      {open && (
-        <div className="menu" role="menu">
-          {items.map((item) => (
-            <Fragment key={item.id}>
-              {item.separatorBefore && <div className="menu-sep" role="separator" />}
-
-              <button
-                type="button"
-                role="menuitem"
-                className={`menu-item ${item.danger ? "danger" : ""}`}
-                disabled={item.disabled}
-                onClick={() => {
-                  setOpen(false);
-                  item.onSelect();
-                }}
-              >
-                {item.label}
-              </button>
-            </Fragment>
-          ))}
-        </div>
+      {open && anchor && (
+        <MenuSurface
+          anchor={anchor}
+          items={items}
+          onClose={closeMenu}
+          ariaLabel={ariaLabel}
+          restoreFocusTo={triggerRef.current}
+        />
       )}
     </div>
   );

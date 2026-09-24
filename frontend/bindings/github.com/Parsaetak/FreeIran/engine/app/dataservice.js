@@ -108,7 +108,12 @@ export function SetConfigOrder(ids) {
 }
 
 /**
- * TestConfig runs a reachability test and persists the outcome.
+ * TestConfig enqueues ONE configuration through the app's ONE
+ * authoritative testing engine (testqueue → worker → tester →
+ * persistence) and returns promptly with the config's current
+ * snapshot. Duplicate requests collapse into the queued task. The
+ * result is persisted by the queue's own result path; the UI observes
+ * it incrementally (no full-list refresh).
  * @param {string} id
  * @returns {$CancellablePromise<config$0.Config | null>}
  */

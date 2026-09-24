@@ -102,6 +102,12 @@ interface ConfigsStore {
   loadMore: () => Promise<void>;
   setSearchQuery: (query: string) => void;
   runSearch: () => Promise<void>;
+  /**
+   * v0.9.15: patches ONE configuration in place (fresh test data from
+   * the authoritative queue result path) — identity, order, selection
+   * and scroll position all survive; no full-list refresh.
+   */
+  patchConfig: (id: string, fresh: Config) => void;
 }
 
 export const useConfigsStore = create<ConfigsStore>((set, get) => ({
@@ -176,6 +182,20 @@ export const useConfigsStore = create<ConfigsStore>((set, get) => ({
   },
 
   setSearchQuery: (query) => set({ searchQuery: query, offset: 0, hasMore: false }),
+
+  patchConfig: (id, fresh) =>
+    set((state) => {
+      const matches = (item: Config) => String(item["id"]) === id;
+
+      const items = state.items.some(matches)
+        ? state.items.map((item) => (matches(item) ? { ...item, ...fresh } : item))
+        : state.items;
+
+      // A same-value patch must not re-render the world.
+      if (items === state.items) return state;
+
+      return { items };
+    }),
 
   runSearch: async () => {
     const query = get().searchQuery.trim();

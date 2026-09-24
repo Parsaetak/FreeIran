@@ -1483,3 +1483,218 @@ func TestFindChecksumLineTolerant(t *testing.T) {
 		t.Fatalf("missing asset matched: %q", got)
 	}
 }
+
+// TestTorSourceAssetHostSplit pins the v0.9.15 distribution topology:
+// dist.torproject.org serves the checksum authority but NOT the expert
+// bundles (the live upstream answers HTTP 404 for tor-expert-bundle-*
+// there — the exact defect that broke managed Tor acquisition), while
+// the official package archive hosts the assets. Resolve must build
+// the asset URL against the archive host while the digest still comes
+// from dist, and a full install must succeed across the two hosts.
+func TestTorSourceAssetHostSplit(t *testing.T) {
+	version := "15.0.20"
+	platform := PlatformSuffix(runtime.GOOS, runtime.GOARCH)
+	assetName := fmt.Sprintf("tor-expert-bundle-%s-%s.tar.gz", platform, version)
+	archive := buildBundleArchive(t, fakeTorBin, executableFileName("tor"))
+	archiveSHA := sha256Hex(archive)
+
+	// dist: listing + signed checksums; every asset request 404s (the
+	// live upstream topology that used to fail the download stage).
+	dist := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/":
+			fmt.Fprintf(w, `<html><body><a href="%s/">%s/</a></body></html>`, version, version)
+		case r.URL.Path == "/"+version+"/sha256sums-signed-build.txt":
+			fmt.Fprintf(w, "%s  %s\n", archiveSHA, assetName)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+
+	t.Cleanup(dist.Close)
+
+	// archive: the official package archive serving the bundle.
+	arch := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/torbrowser/"+version+"/"+assetName {
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(archive)))
+			_, _ = w.Write(archive)
+
+			return
+		}
+
+		http.NotFound(w, r)
+	}))
+
+	t.Cleanup(arch.Close)
+
+	root := t.TempDir()
+
+	source := NewTorSource(testHTTPClient(dist.URL), false)
+	source.BaseURL = dist.URL
+	source.ArchiveURL = arch.URL + "/torbrowser"
+
+	release, err := source.Resolve(context.Background())
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+
+	if !strings.HasPrefix(release.AssetURL, arch.URL+"/torbrowser/") {
+		t.Fatalf("asset URL must come from the archive host, got %q", release.AssetURL)
+	}
+
+	if !strings.Contains(release.AssetURL, assetName) || len(release.SHA256) != 64 {
+		t.Fatalf("release = %+v", release)
+	}
+
+	engine := NewTorEngineFromSource(root, testHTTPClient(dist.URL), source)
+
+	if err := engine.Install(context.Background()); err != nil {
+		t.Fatalf("install across the dist/archive split: %v", err)
+	}
+
+	if engine.binary.LoadManifest().State != string(StateInstalled) {
+		t.Fatal("install must activate the checksum-verified bundle")
+	}
+}
+
+// TestFindExecutableSkipsDebugVariants pins the v0.9.15 fix: recent
+// expert bundles ship debug/tor NEXT to the real tor/tor, and the old
+// first-hit walk returned the debug binary (verified live against
+// 15.0.23). The real binary must win.
+func TestFindExecutableSkipsDebugVariants(t *testing.T) {
+	root := t.TempDir()
+
+	for _, rel := range []string{
+		"debug/tor",
+		"tor/tor",
+		"data/geoip",
+		"tor/libcrypto.so.3",
+	} {
+		full := filepath.Join(root, rel)
+
+		if err := os.MkdirAll(filepath.Dir(full), 0o700); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := os.WriteFile(full, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	found, err := findExecutable(root, "tor")
+	if err != nil {
+		t.Fatalf("findExecutable: %v", err)
+	}
+
+	if want := filepath.Join(root, "tor", "tor"); found != want {
+		t.Fatalf("found %q, want the real binary %q", found, want)
+	}
+}
+
+// TestTorInstallMovesPayloadSiblings proves activation carries the
+// executable's archive siblings (libraries, transports) into bin/ —
+// a validated binary alone could not launch at runtime (verified live:
+// the 15.0.23 Linux bundle needs libcrypto/libevent/libssl next to
+// tor).
+func TestTorInstallMovesPayloadSiblings(t *testing.T) {
+	dist := fakeDistServerWithSiblings(t, "15.0.20")
+
+	root := t.TempDir()
+
+	source := NewTorSource(testHTTPClient(dist.URL), false)
+	source.BaseURL = dist.URL
+
+	engine := NewTorEngineFromSource(root, testHTTPClient(dist.URL), source)
+
+	if err := engine.Install(context.Background()); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	manifest := engine.binary.LoadManifest()
+
+	if manifest.State != string(StateInstalled) {
+		t.Fatalf("state = %q", manifest.State)
+	}
+
+	// The sibling library that sat next to the staged binary must be
+	// in bin/ next to the activated executable.
+	sibling := filepath.Join(engine.binary.BinDir(), "libtor-support.so")
+
+	if _, err := os.Stat(sibling); err != nil {
+		t.Fatalf("payload sibling missing from bin/: %v", err)
+	}
+}
+
+// fakeDistServerWithSiblings extends fakeDistServer: the bundle
+// archive also carries a sibling library next to the executable.
+func fakeDistServerWithSiblings(t *testing.T, version string) *httptest.Server {
+	t.Helper()
+
+	platform := PlatformSuffix(runtime.GOOS, runtime.GOARCH)
+	assetName := fmt.Sprintf("tor-expert-bundle-%s-%s.tar.gz", platform, version)
+
+	fakeBin, err := os.ReadFile(fakeTorBin)
+	if err != nil {
+		t.Fatalf("read fake tor fixture: %v", err)
+	}
+
+	archive := buildBundleArchive(t, fakeTorBin, executableFileName("tor"))
+
+	// Add a sibling entry next to the executable inside the archive.
+	var buf bytes.Buffer
+
+	gz := gzip.NewWriter(&buf)
+
+	tw := tar.NewWriter(gz)
+
+	entries := []struct {
+		name string
+		data []byte
+	}{
+		{executableFileName("tor"), fakeBin},
+		{"libtor-support.so", []byte("fake shared library")},
+	}
+
+	for _, entry := range entries {
+		hdr := &tar.Header{
+			Name: entry.name,
+			Mode: 0o755,
+			Size: int64(len(entry.data)),
+		}
+
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatalf("tar header: %v", err)
+		}
+
+		if _, err := tw.Write(entry.data); err != nil {
+			t.Fatalf("tar write: %v", err)
+		}
+	}
+
+	if err := tw.Close(); err != nil {
+		t.Fatalf("tar close: %v", err)
+	}
+
+	if err := gz.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+
+	archive = buf.Bytes()
+	archiveSHA := sha256Hex(archive)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/"+version+"/sha256sums-signed-build.txt":
+			fmt.Fprintf(w, "%s  %s\n", archiveSHA, assetName)
+		case r.URL.Path == "/"+version+"/"+assetName:
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(archive)))
+			_, _ = w.Write(archive)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+
+	t.Cleanup(server.Close)
+
+	return server
+}

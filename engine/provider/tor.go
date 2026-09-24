@@ -42,7 +42,19 @@ const (
 	TorLicense       = "BSD-3-Clause (Tor Project)"
 	TorNotice        = "Tor is developed by the Tor Project, Inc. This product is produced independently from the Tor® software and carries no guarantee from The Tor Project."
 	TorDefaultSource = "https://dist.torproject.org/torbrowser"
-	TorPinnedVersion = "15.0.20" // default channel; resolve fetches fresh checksums
+	// TorDefaultArchive is the official Tor Project package archive that
+	// hosts the expert-bundle ASSETS. v0.9.15 distribution topology,
+	// verified live: dist.torproject.org serves the version listing and
+	// sha256sums-signed-build.txt (the checksum authority, published
+	// with its .asc signature) but NOT the expert bundles — requesting
+	// tor-expert-bundle-* there answers HTTP 404. The archive carries
+	// every published bundle (plus per-file .asc signatures). Both hosts
+	// are Tor Project infrastructure over TLS: the digest comes from the
+	// signed checksums file on dist, the bytes come from the official
+	// archive, and the VERIFY stage proves they agree before anything
+	// executes. No mirrors, no invented keys, no weakened trust.
+	TorDefaultArchive = "https://archive.torproject.org/tor-package-archive/torbrowser"
+	TorPinnedVersion  = "15.0.20" // default channel; resolve fetches fresh checksums
 )
 
 // TorEngine manages the Tor expert bundle as a provider.
@@ -118,8 +130,14 @@ func DefaultTorOptions() TorOptions {
 
 // TorSource resolves official expert-bundle releases.
 type TorSource struct {
-	// BaseURL is the official distribution root.
+	// BaseURL is the official distribution root (version listing +
+	// sha256sums-signed-build.txt checksum authority).
 	BaseURL string
+
+	// ArchiveURL is the official package archive hosting the
+	// expert-bundle assets (empty: BaseURL is used — deterministic
+	// tests bind both to one fixture server).
+	ArchiveURL string
 
 	// PinnedVersion is the default channel version.
 	PinnedVersion string
@@ -182,12 +200,31 @@ func (s *TorSource) Resolve(ctx context.Context) (Release, error) {
 		return Release{}, fmt.Errorf("official checksums do not list %s", assetName)
 	}
 
+	// The ASSET is served by the official package archive (see the
+	// TorDefaultArchive note): dist only hosts the checksum authority
+	// and the portable installers, so the historical single-host URL
+	// answered 404 for every expert bundle. The checksum authority
+	// stays on dist — the archive never contributes digests.
+	//
+	// The split applies to the PRODUCTION topology only: an explicit
+	// ArchiveURL always wins, and a non-default BaseURL (deterministic
+	// test fixtures, advanced deployments) keeps serving everything from
+	// one host unless the archive host is set too.
+	archiveBase := strings.TrimSuffix(s.ArchiveURL, "/")
+	if archiveBase == "" {
+		if s.BaseURL == TorDefaultSource {
+			archiveBase = strings.TrimSuffix(TorDefaultArchive, "/")
+		} else {
+			archiveBase = strings.TrimSuffix(s.BaseURL, "/")
+		}
+	}
+
 	return Release{
 		Version:    version,
-		AssetURL:   fmt.Sprintf("%s/%s/%s", strings.TrimSuffix(s.BaseURL, "/"), version, assetName),
+		AssetURL:   fmt.Sprintf("%s/%s/%s", archiveBase, version, assetName),
 		AssetName:  assetName,
 		SHA256:     sha,
-		ReleaseURL: fmt.Sprintf("%s/%s/", strings.TrimSuffix(s.BaseURL, "/"), version),
+		ReleaseURL: fmt.Sprintf("%s/%s/", archiveBase, version),
 	}, nil
 }
 
@@ -496,6 +533,12 @@ func (e *TorEngine) Install(ctx context.Context) error {
 			return nil
 		}
 
+		// v0.9.15: record the unavailable-channel state honestly
+		// (stage=resolve), symmetric with the Psiphon engine — the UI
+		// can explain WHY nothing was acquired. Nothing existing is
+		// destroyed by this record.
+		_ = e.binary.MarkState(StateNotInstalled, "resolve", err.Error())
+
 		return err
 	}
 
@@ -513,13 +556,23 @@ func (e *TorEngine) Install(ctx context.Context) error {
 		return nil
 	}
 
-	// v0.9.14 reuse-first: an already-installed working Tor (PATH or a
-	// controlled system location) is ADOPTED BY REFERENCE instead of
-	// downloading the bundle again. The external binary is never
-	// modified; the latest stable metadata was already resolved above
-	// and remains visible through the update surface.
-	if version, err := e.adoptInstalledTor(ctx); err == nil && version != "" {
-		return nil
+	// v0.9.14 reuse-first, v0.9.15 adoption gate: an already-installed
+	// working Tor (PATH or a controlled system location) is ADOPTED BY
+	// REFERENCE instead of downloading the bundle again — but only
+	// while NO usable managed engine exists. Adoption never overrides
+	// an explicit acquire over a healthy managed install: when a
+	// verified managed bundle is already on disk, Install means
+	// "acquire the resolved release", and the transaction below
+	// performs exactly that (with the previous binary retained for
+	// rollback). The external binary is never modified either way.
+	managedUsable := manifest.BinaryPath != "" &&
+		(manifest.State == string(StateInstalled) || manifest.State == string(StateReady)) &&
+		fileExists(manifest.BinaryPath)
+
+	if !managedUsable {
+		if version, err := e.adoptInstalledTor(ctx); err == nil && version != "" {
+			return nil
+		}
 	}
 
 	return e.binary.Install(ctx, release)
@@ -993,6 +1046,7 @@ func (e *TorEngine) Info() Info {
 		State:         e.State(),
 		RuntimeState:  runtimeState,
 		Source:        manifest.SourceURL,
+		Acquisition:   manifest.Acquisition,
 		License:       TorLicense,
 		Notice:        TorNotice,
 		LastCheck:     manifest.LastChecked,
@@ -1234,7 +1288,11 @@ func smokeTestTor(ctx context.Context, path string) error {
 
 	defer os.RemoveAll(dir)
 
-	torrc := "SocksPort 127.0.0.1:0\nDataDirectory " + filepath.Join(dir, "data") + "\nLog notice stderr\n"
+	// Use the ACTUAL ephemeral-port form tor accepts: "auto". Port 0
+	// is rejected by modern tor ("Port 0 out of range", verified live
+	// against 15.0.23) — the smoke torrc previously used it and only
+	// ever ran because no install reached the smoke stage at all.
+	torrc := "SocksPort auto\nDataDirectory " + filepath.Join(dir, "data") + "\nLog notice stderr\n"
 
 	configPath := filepath.Join(dir, "torrc")
 

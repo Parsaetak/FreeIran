@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/Parsaetak/FreeIran/engine/config"
@@ -345,15 +346,18 @@ func NewTestQueueService(a *App) *TestQueueService {
 	return &TestQueueService{app: a}
 }
 
-// ensureQueue returns the app's test queue, initializing it lazily.
-// initMu serializes the init so concurrent UI calls don't create
-// duplicate queues (which would leak the prior queue's workers).
-func (s *TestQueueService) ensureQueue() (*testqueue.Queue, error) {
-	s.app.initMu.Lock()
-	defer s.app.initMu.Unlock()
+// ensureTestQueue returns the app's ONE test queue, initializing it
+// lazily. initMu serializes the init so concurrent callers don't
+// create duplicate queues (which would leak the prior queue's
+// workers). v0.9.15: this is the SINGLE construction path — the
+// TestQueueService AND DataService.TestConfig both answer from it, so
+// every testing entry point shares one execution engine.
+func (a *App) ensureTestQueue() (*testqueue.Queue, error) {
+	a.initMu.Lock()
+	defer a.initMu.Unlock()
 
-	if s.app.testQueue != nil {
-		return s.app.testQueue, nil
+	if a.testQueue != nil {
+		return a.testQueue, nil
 	}
 
 	cfg := testqueue.DefaultConfig()
@@ -363,20 +367,26 @@ func (s *TestQueueService) ensureQueue() (*testqueue.Queue, error) {
 	// respects the pressure regime the controller already computed.
 	// currentSettings is nil-receiver-safe and returns the static
 	// defaults when the controller is absent.
-	if settings := s.app.memory.currentSettings(); settings.QueueConcurrency > 0 {
+	if settings := a.memory.currentSettings(); settings.QueueConcurrency > 0 {
 		cfg.Concurrency = settings.QueueConcurrency
 	}
 
-	if settings := s.app.memory.currentSettings(); settings.QueueDepth > 0 {
+	if settings := a.memory.currentSettings(); settings.QueueDepth > 0 {
 		cfg.MaxQueueSize = settings.QueueDepth
 	}
 
-	adapter := &testerAdapter{app: s.app}
+	adapter := &testerAdapter{app: a}
 	q := testqueue.New(adapter, cfg)
-	q.Start(s.app.ctx)
+	q.Start(a.ctx)
 
-	s.app.testQueue = q
+	a.testQueue = q
 	return q, nil
+}
+
+// ensureQueue returns the app's test queue (delegates to the shared
+// App-level construction path).
+func (s *TestQueueService) ensureQueue() (*testqueue.Queue, error) {
+	return s.app.ensureTestQueue()
 }
 
 // testerAdapter bridges the existing tester.Tester (which takes a
@@ -679,6 +689,11 @@ func (s *TestQueueService) EnqueueByFilter(filter TestFilter) (TestBatchResult, 
 			return cfg.TestedAt == 0
 		case "failed":
 			return cfg.TestedAt > 0 && !cfg.Working
+		case "timed_out":
+			// v0.9.15: the classified failure reason makes "retry timed
+			// out" a REAL scope instead of a synonym for "failed".
+			return cfg.TestedAt > 0 && !cfg.Working &&
+				strings.Contains(strings.ToLower(cfg.LastFailureReason), "timeout")
 		case "working":
 			return cfg.TestedAt > 0 && cfg.Working
 		default: // "all", "selected"

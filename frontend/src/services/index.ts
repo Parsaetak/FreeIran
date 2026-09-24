@@ -482,6 +482,8 @@ export interface ProviderInfoView {
   state: string;
   runtime_state?: string;
   source?: string;
+  /** managed-release | user-binary | external-reference (v0.9.15 honest acquisition states). */
+  acquisition?: string;
   license?: string;
   notice?: string;
   last_check?: string;

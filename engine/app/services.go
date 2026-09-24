@@ -20,6 +20,7 @@ import (
 	"github.com/Parsaetak/FreeIran/engine/pipeline"
 	"github.com/Parsaetak/FreeIran/engine/source"
 	"github.com/Parsaetak/FreeIran/engine/store"
+	"github.com/Parsaetak/FreeIran/engine/testqueue"
 	"github.com/Parsaetak/FreeIran/internal/version"
 	"github.com/Parsaetak/FreeIran/system"
 )
@@ -637,25 +638,42 @@ func (s *DataService) GetConfig(id string) (*config.Config, error) {
 	return &cfg, nil
 }
 
-// TestConfig runs a reachability test and persists the outcome.
+// TestPrioritySingle is the queue priority of ONE user-initiated test
+// (above discovery (+100) and bulk tests (+400): a person clicked, a
+// person waits).
+const TestPrioritySingle = 500
+
+// TestConfig enqueues ONE configuration for testing through the app's
+// ONE authoritative testing engine (testqueue → worker → tester →
+// persistence) and returns PROMPTLY with the config's current
+// snapshot — v0.9.15: the UI never blocks on a synchronous network
+// test, and single tests share every queue guarantee bulk testing has
+// (deduplication, priority, per-backend concurrency, supervised core
+// processes, cancellation, retry, honest persistence).
+//
+// The enqueue is idempotent: a repeated click on an already
+// queued/running config collapses into the existing task (ErrDuplicate
+// is success), so redundant work is never created. The outcome reaches
+// the UI through the queue's own result path (the adapter persists the
+// result with the config), which the frontend observes incrementally —
+// no full-list refresh anywhere.
 func (s *DataService) TestConfig(id string) (*config.Config, error) {
 	cfg, err := s.GetConfig(id)
 	if err != nil {
 		return nil, err
 	}
 
-	result := s.app.tester.TestAndApply(s.app.ctx, cfg)
-
-	s.app.metricsR.AddTestExecuted(result.Working)
-
-	// Persist the updated runtime fields.
-	raw, err := json.Marshal(cfg)
+	q, err := s.app.ensureTestQueue()
 	if err != nil {
-		return nil, fmt.Errorf("app: encode config: %w", err)
+		return nil, err
 	}
 
-	if err := s.app.store.Upsert(id, raw); err != nil {
-		return nil, err
+	if _, err := q.Enqueue(id, string(cfg.Type), nil, TestPrioritySingle, cfg.Source, testqueue.EnqueueDefault); err != nil {
+		// Already queued or already running: the task exists, one test
+		// will run — exactly what the user asked for.
+		if !errors.Is(err, testqueue.ErrDuplicate) {
+			return nil, fmt.Errorf("enqueue test: %w", err)
+		}
 	}
 
 	return cfg, nil

@@ -706,9 +706,33 @@ function ProviderCard({ info, onRefresh }: { info: ProviderInfoView; onRefresh: 
 
       {info.failure_reason && <div className="callout error">{info.failure_reason}</div>}
 
+      {/*
+       * v0.9.15: the honest acquisition surface. The Go engine reports
+       * HOW the active binary was acquired (managed-release |
+       * user-binary | external-reference) and, for Psiphon, that the
+       * upstream project publishes NO authoritative Windows
+       * ConsoleClient artifact — so the user-binary path (Settings →
+       * validated adoption) is the supported install workflow there,
+       * stated plainly instead of pretending a downloader exists.
+       */}
+      {info.name === "psiphon" && !info.installed && (
+        <div className="callout info">
+          No authoritative Windows ConsoleClient release is published upstream
+          (library archives only — no executable, no checksums). Install by
+          providing the binary in Settings → Psiphon: it is copied into managed
+          storage, validated and smoke-tested before use.
+        </div>
+      )}
+
       <dl className="kv">
         <dt>State</dt>
         <dd>{STATE_LABELS[info.state] ?? info.state}</dd>
+        {info.acquisition && (
+          <>
+            <dt>Acquired</dt>
+            <dd>{ACQUISITION_LABELS[info.acquisition] ?? info.acquisition}</dd>
+          </>
+        )}
         <dt>Runtime</dt>
         <dd>{info.runtime_state || "—"}</dd>
         <dt>Source</dt>
@@ -901,6 +925,13 @@ function originLabel(origin?: string): string {
       return origin ?? "";
   }
 }
+
+/** v0.9.15: honest acquisition modes surfaced on provider cards. */
+const ACQUISITION_LABELS: Record<string, string> = {
+  "managed-release": "managed release (checksum verified)",
+  "user-binary": "user-provided binary (validated copy)",
+  "external-reference": "external installation (adopted by reference)",
+};
 
 const STATE_LABELS: Record<string, string> = {
   not_installed: "Not installed",

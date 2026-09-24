@@ -22,6 +22,7 @@ import {
   IconStop,
 } from "../components/Icons";
 import { describeError, toast } from "../state/toastStore";
+import { useTestProgress } from "../state/testProgress";
 
 const searchRunner = makeSearchRunner(250);
 
@@ -471,6 +472,23 @@ function BestCandidateCard({ disabled }: { disabled: boolean }) {
   useEffect(() => {
     void load();
   }, []);
+
+  // v0.9.15: fresh test results invalidate the ranking snapshot on the
+  // backend (the queue's result path). Connection must NOT behave as a
+  // separate testing universe: when tests complete anywhere in the app
+  // (Configs page, bulk runs), the candidate view converges on the
+  // fresh data with ONE bounded re-fetch — no polling, no full
+  // refresh, no duplicated tests. Debounced so a large batch (which
+  // bumps the version per patched config) triggers a single re-fetch.
+  const resultsVersion = useTestProgress((state) => state.resultsVersion);
+
+  useEffect(() => {
+    if (resultsVersion === 0) return; // initial load handled above
+
+    const timer = window.setTimeout(() => void load(), 1000);
+
+    return () => window.clearTimeout(timer);
+  }, [resultsVersion]);
 
   const qualityLabel: Record<string, string> = {
     best: "Excellent",

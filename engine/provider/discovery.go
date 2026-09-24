@@ -94,6 +94,7 @@ func (e *TorEngine) adoptInstalledTor(ctx context.Context) (string, error) {
 			Ownership:    string(OwnershipExternal),
 			Origin:       string(cand.Origin),
 			ExternalPath: cand.Path,
+			Acquisition:  "external-reference",
 		}
 
 		if err := e.binary.saveManifest(manifest); err != nil {

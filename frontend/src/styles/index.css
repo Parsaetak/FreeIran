@@ -1896,6 +1896,13 @@ button {
 /*
  * Fixed-position row context menu (v0.9.13): shares the .menu visual
  * language but is viewport-anchored (right-click / keyboard / ⋮).
+ *
+ * v0.9.15: `.menu-surface` is the ONE shared portal popup surface —
+ * MenuSurface renders every menu (trigger dropdowns AND row context
+ * menus) through it, positioned by the shared viewport-aware
+ * algorithm (measure → prefer down/right → flip → clamp). The old
+ * hard-coded 240/340/348 geometry is gone; max-height + scroll keep
+ * long menus inside the viewport on every edge.
  */
 .ctx-menu {
   position: fixed;
@@ -1910,6 +1917,11 @@ button {
   box-shadow: var(--shadow-md);
   z-index: calc(var(--z-tooltip) + 2);
   animation: fade-slide-in var(--motion-fast) var(--ease-out) both;
+}
+
+.menu-surface {
+  min-width: 190px;
+  max-width: 320px;
 }
 
 /* Detail panel grouped sections (v0.9.13): Overview → Endpoint →

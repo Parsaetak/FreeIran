@@ -263,6 +263,14 @@ export class Info {
         }
         if (/** @type {any} */(false)) {
             /**
+             * managed-release | user-binary | external-reference
+             * @member
+             * @type {string | undefined}
+             */
+            this["acquisition"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
              * short license name
              * @member
              * @type {string | undefined}

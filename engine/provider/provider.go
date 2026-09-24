@@ -139,6 +139,7 @@ type Info struct {
 	State         LifecycleState `json:"state"`
 	RuntimeState  string         `json:"runtime_state,omitempty"` // process state when running
 	Source        string         `json:"source,omitempty"`        // download source or "user-provided"
+	Acquisition   string         `json:"acquisition,omitempty"`   // managed-release | user-binary | external-reference
 	License       string         `json:"license,omitempty"`       // short license name
 	Notice        string         `json:"notice,omitempty"`        // attribution notice
 	LastCheck     time.Time      `json:"last_check,omitempty"`

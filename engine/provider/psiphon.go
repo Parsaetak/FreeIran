@@ -355,6 +355,13 @@ func (e *PsiphonEngine) Install(ctx context.Context) error {
 			return nil
 		}
 
+		// v0.9.15: an unavailable acquisition channel is a REAL, honest
+		// provider state — distinct from a failed download or a failed
+		// validation. Record it (stage=resolve) so the UI can explain WHY
+		// the managed path is not offered instead of surfacing a generic
+		// failure. Nothing existing is destroyed by this record.
+		_ = e.binary.MarkState(StateNotInstalled, "resolve", err.Error())
+
 		return err
 	}
 
@@ -443,6 +450,12 @@ func (e *PsiphonEngine) SetUserBinary(ctx context.Context, path string) error {
 	manifest.State = string(StateInstalled)
 	manifest.FailureReason = ""
 	manifest.FailureStage = ""
+	// The managed copy is FreeIran-owned content (the user's ORIGINAL
+	// file stays untouched outside the slot); its provenance is the
+	// user-supplied binary path.
+	manifest.Ownership = string(OwnershipManaged)
+	manifest.Origin = string(OriginUser)
+	manifest.Acquisition = "user-binary"
 
 	return e.binary.saveManifest(manifest)
 }
@@ -804,6 +817,7 @@ func (e *PsiphonEngine) Info() Info {
 		State:         e.State(),
 		RuntimeState:  runtimeState,
 		Source:        manifest.SourceURL,
+		Acquisition:   manifest.Acquisition,
 		License:       PsiphonLicense,
 		Notice:        PsiphonNotice,
 		LastCheck:     manifest.LastChecked,

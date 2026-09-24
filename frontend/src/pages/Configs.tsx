@@ -1,6 +1,7 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useConfigsStore, makeSearchRunner } from "../state/stores";
+import { MenuSurface, type MenuAnchor } from "../components/MenuSurface";
 import {
   dataService,
   connectionService,
@@ -25,8 +26,18 @@ import { configToRow } from "../utilities/export";
 // worker pipeline).
 import ExportWorker from "../workers/export-worker?worker";
 import { useConnectionStore } from "../state/connectionStore";
-import { useQuickConnectStore } from "../state/quickConnectStore";
+// v0.9.15: the Quick Connect invalidation moved into the shared result
+// patch path (state/testProgress.ts) — one invalidation per persisted
+// result, no matter which page triggered the test.
 import { describeError, toast } from "../state/toastStore";
+import {
+  applyQueueSnapshot,
+  clearTestRequested,
+  markTestRequested,
+  onTestResult,
+  useTestProgress,
+  type LiveTestState,
+} from "../state/testProgress";
 import {
   useCollectionsStore,
   BUILTIN_GROUP_LABELS,
@@ -78,6 +89,43 @@ function organizeKeyOf(config: Config, mode: "source" | "protocol" | "status"): 
 }
 
 /**
+ * v0.9.15: the REAL queue lifecycle rendered on rows and the detail
+ * panel — the application's actual task states (queued → preparing →
+ * testing → measuring), never fake timers. Labels/title maps keep the
+ * wording consistent across every surface that reads testProgress.
+ */
+const LIVE_STATE_LABELS: Record<LiveTestState, string> = {
+  queued: "Queued",
+  preparing: "Preparing",
+  testing: "Testing",
+  measuring: "Measuring",
+};
+
+const LIVE_STATE_TITLES: Record<LiveTestState, string> = {
+  queued: "Waiting in the test queue",
+  preparing: "Preparing the runtime configuration",
+  testing: "Core process testing in progress",
+  measuring: "Measuring latency",
+};
+
+/** Inline chip for a config's live test state (row secondary line). */
+function LiveTestChip({ state }: { state: LiveTestState | undefined }) {
+  if (!state || state === "queued") {
+    return state === "queued" ? (
+      <span className="test-state queued" title={LIVE_STATE_TITLES.queued}>
+        {LIVE_STATE_LABELS.queued}
+      </span>
+    ) : null;
+  }
+
+  return (
+    <span className="test-state testing" title={LIVE_STATE_TITLES[state]}>
+      <span className="btn-spinner" aria-hidden /> {LIVE_STATE_LABELS[state]}
+    </span>
+  );
+}
+
+/**
  * Virtualized configuration browser: protocol filters, latency color
  * coding, infinite scroll over paginated backend data and a detail
  * side panel. Only visible rows reach the DOM.
@@ -93,7 +141,10 @@ export function ConfigsPage() {
 
   const setSearchQuery = useConfigsStore((state) => state.setSearchQuery);
   const loadMore = useConfigsStore((state) => state.loadMore);
-  const runSearch = useConfigsStore((state) => state.runSearch);
+  // v0.9.15: the page-level runSearch hook is gone — testing flows patch
+  // results incrementally through the shared queue projection. The only
+  // remaining full reload is moveConfig (a list-order change), which
+  // reads the store directly.
 
   // v0.9.10: groups (built-in evidence groups + user groups) and the
   // organize-by view. Favorites toggle straight from every row.
@@ -114,7 +165,10 @@ export function ConfigsPage() {
 
   const [protocol, setProtocol] = useState("");
   const [detail, setDetail] = useState<ConfigDetail | null>(null);
-  const [testingId, setTestingId] = useState<string | null>(null);
+  // v0.9.15: per-config live test state comes from the ONE shared
+  // projection of the test queue (testProgress) — rows, detail panel
+  // and Connection all read the same store; no page-private truth.
+  const testStates = useTestProgress((state) => state.states);
 
   // v0.9.0: server-side status filter + sorting and bulk-test state.
   const [statusFilter, setStatusFilter] = useState<"" | "working" | "failed" | "untested">("");
@@ -126,16 +180,15 @@ export function ConfigsPage() {
   const [queueStats, setQueueStats] = useState<QueueStatsView | null>(null);
   // v0.9.7: queue pause state for the testing control bar.
   const [queuePaused, setQueuePaused] = useState(false);
-  // v0.9.7: per-row queued state derived from the queue snapshot.
-  const [queuedIds, setQueuedIds] = useState<Set<string>>(new Set());
   // v0.9.13: connection-store busy state gates the Connect action in
   // the row menu (same policy as the detail panel's Connect button).
   const connectBusy = useConnectionStore((state) => state.busy);
   // v0.9.13: the ONE row-level action surface — opened by the ⋮
   // button, by right-click (contextmenu) and by the keyboard
   // context-menu invocation (Shift+F10 / Menu key). Same items,
-  // same model, viewport-clamped placement.
-  const [contextMenu, setContextMenu] = useState<{ config: Config; x: number; y: number } | null>(null);
+  // same model; placement is handled by the ONE shared viewport-aware
+  // portal surface (MenuSurface) — v0.9.15.
+  const [contextMenu, setContextMenu] = useState<{ config: Config; anchor: MenuAnchor } | null>(null);
   // v0.9.7: compact two-row card layout below 860px (actions get a
   // dedicated row) — the virtualizer sizes rows accordingly.
   const [narrow, setNarrow] = useState(
@@ -285,6 +338,11 @@ export function ConfigsPage() {
   // ~800 ms while work is queued/running, 5 s when idle — the panel
   // only renders once total_enqueued > 0, so a fixed 1.5 s poll just
   // burned binding traffic for a page left open in the background.
+  // v0.9.15: the SAME snapshot feeds the shared testProgress store,
+  // which diffs live fingerprints against the previous tick, detects
+  // completions and patches their persisted results into the config
+  // model incrementally (one GetConfig per changed row — never a
+  // full-list refresh).
   useEffect(() => {
     let stop = false;
     let timer = 0;
@@ -303,7 +361,7 @@ export function ConfigsPage() {
           next = cadence(stats as QueueStatsView);
         }
 
-        // v0.9.7: track pause state + per-row queued fingerprints.
+        // v0.9.7: track pause state.
         try {
           const paused = await call(() => testQueueService.Paused());
           if (!stop) setQueuePaused(Boolean(paused));
@@ -311,14 +369,12 @@ export function ConfigsPage() {
           /* best-effort */
         }
 
+        // v0.9.15: ONE snapshot → shared live-state projection +
+        // incremental result patches.
         try {
           const snapshot = await call(() => testQueueService.Snapshot(200));
           if (!stop && Array.isArray(snapshot)) {
-            const live = snapshot.filter(
-              (task: { state?: string }) =>
-                task?.state === "queued" || task?.state === "preparing" || task?.state === "testing" || task?.state === "measuring",
-            );
-            setQueuedIds(new Set(live.map((task: { fingerprint?: string }) => String(task?.fingerprint ?? ""))));
+            applyQueueSnapshot(snapshot);
           }
         } catch {
           /* best-effort */
@@ -338,9 +394,53 @@ export function ConfigsPage() {
     };
   }, []);
 
+  // v0.9.15: completed tests patch the server-filtered view in place
+  // (the store-backed list is patched by testProgress itself; this
+  // covers the local filtered snapshot) and refresh an open detail
+  // panel through the REDACTED detail binding (the detail surface
+  // must never receive the raw config model). Selection, sorting,
+  // scroll position and expansion all survive — the arrays keep
+  // their shape and identity per row.
+  useEffect(() => {
+    let stale = false;
+
+    const off = onTestResult((fingerprint, fresh) => {
+      setFiltered((prev) =>
+        prev === null
+          ? prev
+          : prev.some((item) => String(item["id"]) === fingerprint)
+            ? prev.map((item) =>
+                String(item["id"]) === fingerprint ? { ...item, ...fresh } : item,
+              )
+            : prev,
+      );
+
+      void refreshDetail(fingerprint);
+    });
+
+    const refreshDetail = async (fingerprint: string) => {
+      try {
+        const fresh = await call(() => connectionService.ConfigDetails(fingerprint));
+
+        if (!stale && fresh) {
+          setDetail((prev) => (prev && prev.id === fingerprint ? (fresh as ConfigDetail) : prev));
+        }
+      } catch {
+        /* the config may have been removed while its test ran */
+      }
+    };
+
+    return () => {
+      stale = true;
+      off();
+    };
+  }, []);
+
   const onListScroll = () => {
     // v0.9.13: an open row context menu is anchored to viewport
     // coordinates — scrolling the list would desync it from its row.
+    // (MenuSurface also repositions on any scroll; closing here keeps
+    // the interaction predictable for fast list scrolls.)
     setContextMenu(null);
 
     const element = parentRef.current;
@@ -402,23 +502,23 @@ export function ConfigsPage() {
     }
   };
 
+  // v0.9.15: single test = enqueue through the ONE authoritative
+  // testing engine and return promptly. The backend collapses repeated
+  // clicks into the queued task; the row's live chip updates instantly
+  // (optimistic mark) and the result lands through the shared
+  // incremental patch path — NO full-list refresh (a runSearch() over
+  // ~17,000 configs per click was the wrong update model).
   const testConfig = async (config: Config) => {
     const id = String(config["id"]);
 
-    setTestingId(id);
+    markTestRequested(id);
 
     try {
       await dataService.TestConfig(id);
-      await runSearch();
-      // v0.9.8.7: a persisted test result changed the ranking inputs —
-      // the Quick Connect candidate list refreshes once, on this
-      // meaningful invalidation (no polling anywhere).
-      useQuickConnectStore.getState().invalidate();
-      toast("success", "Test finished", `${config["address"]}: responded.`);
+      toast("info", "Test queued", `${String(config["address"])}: queued for testing.`);
     } catch (error) {
+      clearTestRequested(id);
       toast("error", "Test failed", describeError(error));
-    } finally {
-      setTestingId(null);
     }
   };
 
@@ -543,14 +643,15 @@ export function ConfigsPage() {
     const id = String(config["id"]);
     const name = String(config["name"] || "configuration");
     const tested = Number(config["tested_at"] ?? 0) > 0;
+    const live = testStates[id] !== undefined;
     const reorderable = statusFilter === "" && sortBy === "" && !searchQuery && organizeBy === "" && groupFilter === "";
     const visibleIndex = visibleItems.findIndex((item) => String(item["id"]) === id);
 
     const items: MenuItem[] = [
       {
         id: "test",
-        label: tested ? "Retest" : "Test",
-        disabled: testingId === id,
+        label: live ? "Testing…" : tested ? "Retest" : "Test",
+        disabled: live,
         onSelect: () => void testConfig(config),
       },
       {
@@ -957,7 +1058,7 @@ export function ConfigsPage() {
               id: "retry-timeout",
               label: "Retry timed out",
               disabled: filteredLoading,
-              onSelect: () => void bulkTest("failed"),
+              onSelect: () => void bulkTest("timed_out"),
             },
             {
               id: "retest-working",
@@ -1113,6 +1214,7 @@ export function ConfigsPage() {
                   const id = String(config["id"]);
                   const isFavorite = favoriteSet.has(id);
                   const name = String(config["name"] || "unnamed");
+                  const liveState = testStates[id];
 
                   return (
                     <div
@@ -1137,7 +1239,10 @@ export function ConfigsPage() {
 
                           const rect = event.currentTarget.getBoundingClientRect();
 
-                          setContextMenu({ config, x: rect.left + 8, y: rect.bottom + 2 });
+                          setContextMenu({
+                            config,
+                            anchor: { kind: "rect", rect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom } },
+                          });
                         }
                       }}
                       onContextMenu={(event) => {
@@ -1145,7 +1250,7 @@ export function ConfigsPage() {
                         // menu — identical items to the ⋮ menu.
                         event.preventDefault();
 
-                        setContextMenu({ config, x: event.clientX, y: event.clientY });
+                        setContextMenu({ config, anchor: { kind: "point", x: event.clientX, y: event.clientY } });
                       }}
                       style={{
                         position: "absolute",
@@ -1198,9 +1303,7 @@ export function ConfigsPage() {
                           <span className="cell-sub">
                             {truncate(String(config["address"]), 40)}:{String(config["port"])}
                           </span>
-                          {queuedIds.has(id) && testingId !== id && (
-                            <span className="test-state queued" title="Waiting in the test queue">Queued</span>
-                          )}
+                          <LiveTestChip state={testStates[id]} />
                           <PingCell config={config} />
                         </span>
                       </span>
@@ -1213,9 +1316,9 @@ export function ConfigsPage() {
                        * and the keyboard open).
                        */}
                       <span className="actions">
-                        {testingId === id ? (
-                          <span className="test-state testing" title="Test in progress">
-                            <span className="btn-spinner" aria-hidden /> Testing
+                        {liveState ? (
+                          <span className="test-state testing" title={LIVE_STATE_TITLES[liveState]}>
+                            <span className="btn-spinner" aria-hidden /> {LIVE_STATE_LABELS[liveState]}
                           </span>
                         ) : (
                           <button
@@ -1240,7 +1343,10 @@ export function ConfigsPage() {
 
                             const rect = event.currentTarget.getBoundingClientRect();
 
-                            setContextMenu({ config, x: rect.right - 240, y: rect.bottom + 4 });
+                            setContextMenu({
+                              config,
+                              anchor: { kind: "rect", rect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom } },
+                            });
                           }}
                         >
                           <IconDots size={15} />
@@ -1264,87 +1370,21 @@ export function ConfigsPage() {
       </div>
 
       {/*
-       * v0.9.13 ROW CONTEXT MENU: one fixed-position surface fed by
+       * v0.9.13/v0.9.15 ROW CONTEXT MENU: one portal surface fed by
        * rowMenuItems() — opened by right-click, the ⋮ button and the
-       * keyboard (Shift+F10 / Menu key). Closed by selection, Escape,
-       * outside press or scrolling the list.
+       * keyboard (Shift+F10 / Menu key). Placement, flipping,
+       * clamping, keyboard navigation and focus return come from the
+       * ONE shared MenuSurface; the old 240/340/348 hard-coded
+       * geometry is gone.
        */}
       {contextMenu && (
-        <ContextMenu
-          x={contextMenu.x}
-          y={contextMenu.y}
+        <MenuSurface
+          anchor={contextMenu.anchor}
           items={rowMenuItems(contextMenu.config)}
           onClose={() => setContextMenu(null)}
+          ariaLabel="Configuration actions"
         />
       )}
-    </div>
-  );
-}
-
-/**
- * v0.9.13 CONTEXT MENU: the single fixed-position action surface for
- * one configuration. Opened by right-click, the ⋮ overflow button and
- * the keyboard context-menu invocation; clamped to the viewport.
- */
-function ContextMenu({
-  x,
-  y,
-  items,
-  onClose,
-}: {
-  x: number;
-  y: number;
-  items: MenuItem[];
-  onClose: () => void;
-}) {
-  const rootRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const onPointer = (event: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(event.target as Node)) {
-        onClose();
-      }
-    };
-
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-
-    document.addEventListener("mousedown", onPointer);
-    document.addEventListener("keydown", onKey);
-
-    return () => {
-      document.removeEventListener("mousedown", onPointer);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [onClose]);
-
-  // Viewport clamping: keep the menu on-screen on every edge (the
-  // estimated menu height covers the longest item list; the menu
-  // itself scrolls if a workspace adds many groups).
-  const left = Math.max(8, Math.min(x, window.innerWidth - 248));
-  const top = y + 340 > window.innerHeight ? Math.max(8, window.innerHeight - 348) : y;
-
-  return (
-    <div ref={rootRef} className="ctx-menu" role="menu" aria-label="Configuration actions" style={{ left, top }}>
-      {items.map((item) => (
-        <Fragment key={item.id}>
-          {item.separatorBefore && <div className="menu-sep" role="separator" />}
-
-          <button
-            type="button"
-            role="menuitem"
-            className={`menu-item ${item.danger ? "danger" : ""}`}
-            disabled={item.disabled}
-            onClick={() => {
-              onClose();
-              item.onSelect();
-            }}
-          >
-            {item.label}
-          </button>
-        </Fragment>
-      ))}
     </div>
   );
 }
@@ -1366,24 +1406,20 @@ function DetailPanel({
   onClose: () => void;
 }) {
   const connectBusy = useConnectionStore((state) => state.busy);
-  const runSearch = useConfigsStore((state) => state.runSearch);
-
-  const [testing, setTesting] = useState(false);
+  // v0.9.15: the live state is read from the ONE shared queue
+  // projection — the panel reacts to the same task the row shows.
+  const liveState = useTestProgress((state) => state.states[detail.id]);
+  const testing = liveState !== undefined;
 
   const test = async () => {
-    setTesting(true);
+    markTestRequested(detail.id);
 
     try {
       await dataService.TestConfig(detail.id);
-      await runSearch();
-      // v0.9.8.7: one bounded Quick Connect refresh per persisted test
-      // result (see testConfig above).
-      useQuickConnectStore.getState().invalidate();
-      toast("success", "Test finished", "The result was stored with the configuration.");
+      toast("info", "Test queued", "The test queue will run it; this panel updates when the result lands.");
     } catch (error) {
+      clearTestRequested(detail.id);
       toast("error", "Test failed", describeError(error));
-    } finally {
-      setTesting(false);
     }
   };
 

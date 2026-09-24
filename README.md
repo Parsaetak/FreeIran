@@ -9,7 +9,7 @@ configurations.
 **Project:** FreeIran — A SHEYTAN Digital System
 **Architect:** Parsa Tak / SHEYTAN
 **Repository:** https://github.com/Parsaetak/FreeIran
-**Current version:** 0.9.12 (see `VERSION`)
+**Current version:** 0.9.15 (see `VERSION`)
 **Status:** production architecture — multi-core protocol runtime with
 managed installation, multi-level node discovery, Ping/URL test modes
 with measured ranking, verified-connection engine with racing,
@@ -18,6 +18,104 @@ memory control and kernel-level process supervision. TUN mode is
 EXPERIMENTAL and disabled in this release (see "TUN mode" below).
 
 ---
+
+## What's new in v0.9.15
+
+v0.9.15 is a deep-fix release: it repairs the root causes found by a
+full acquisition/testing/UI audit instead of adding retries around
+them. No new subsystem — the existing queue, HTTP infrastructure,
+supervision and persistence carry every change.
+
+### Tor acquisition actually works again (root cause: host mismatch)
+
+- The Tor Project's distribution is split across two official hosts:
+  `dist.torproject.org/torbrowser/<ver>/` serves the version listing
+  and `sha256sums-signed-build.txt` (the checksum authority, published
+  with its `.asc` signature) but **not** the expert bundles — the
+  historical single-host asset URL answered HTTP 404 for every
+  `tor-expert-bundle-*`, which is exactly why managed Tor installs
+  failed while every checksum lookup succeeded. `Resolve` now builds
+  the asset URL against `archive.torproject.org/tor-package-archive/`
+  (the official full package archive, verified live: the downloaded
+  bundle's SHA-256 matches dist's published digest exactly). The
+  integrity chain is unchanged: digest from dist's signed checksums,
+  bytes from the official archive, VERIFY proves they agree before
+  anything executes.
+- An explicit Install over a healthy managed bundle now means
+  "acquire the resolved release" (adoption is no longer allowed to
+  silently short-circuit it); external adoption still happens whenever
+  no usable managed engine exists, and external files are never
+  touched.
+- Local-first behavior preserved: remote metadata failure keeps any
+  locally usable engine working (`EnsureAvailable`), failed downloads
+  never destroy the previous verified runtime, and failures record the
+  exact stage.
+
+### Psiphon: honest provider states, first-class local path
+
+- Verified upstream (2026-09): `Psiphon-Labs/psiphon-tunnel-core`
+  releases publish ONLY mobile/client library archives (with digests),
+  and `psiphon-tunnel-core-binaries` (moving `master`, no digests)
+  hosts Linux ConsoleClient + psiphond only — **no authoritative
+  Windows ConsoleClient artifact exists**. The managed channel stays
+  honestly unavailable; master content is never downloaded as a
+  managed release.
+- Provider manifests and `Info` now carry `acquisition`
+  (`managed-release` / `user-binary` / `external-reference`), so the
+  UI distinguishes managed installation, user-supplied validated
+  copies, adopted external installations and an unavailable channel
+  instead of collapsing them into one boolean. The Cores page states
+  plainly that Psiphon's supported install path is the validated
+  user-binary workflow.
+
+### ONE authoritative testing path (single tests converge on the queue)
+
+- `DataService.TestConfig` no longer runs a synchronous network test
+  on the UI's call. It enqueues into the SAME test queue bulk testing
+  uses (priority 500 — a person is waiting) and returns promptly with
+  the config's current snapshot. Repeated clicks collapse into the
+  queued task (`ErrDuplicate` is success). Single tests now share every
+  queue guarantee: deduplication, per-backend concurrency, supervised
+  core processes, cancellation, retry, persistence.
+- "Retry timed out" is a REAL scope now (classified failure reason)
+  instead of a synonym for "retry failed".
+
+### Configs UI: incremental, not rebuild-the-world
+
+- The live test lifecycle (`queued → preparing → testing → measuring`)
+  comes from ONE shared projection of the queue snapshot
+  (`state/testProgress.ts`) read by rows, the detail panel and
+  Connection — no page-private testing state.
+- Completed tests patch their configuration in place (one GetConfig
+  per changed fingerprint through the queue's own persistence path).
+  The old per-click full `runSearch()` over ~17k configs is gone.
+  Search, filters, sorting, organization, selection and scroll
+  position all survive a test completion. Quick Connect invalidates
+  once per persisted result, whatever page triggered the test.
+- Connection converges with Configs: the best-candidate view refreshes
+  once (debounced) when results land; the config picker reads the same
+  patched store. No duplicated tests, no stale state presented as
+  fresh.
+
+### Menus: ONE viewport-aware positioning mechanism
+
+- Every menu — trigger dropdowns (Configs, Cores) and the Configs row
+  context menu (⋮ button, right-click, Shift+F10) — renders through a
+  single portal-based surface (`components/MenuSurface.tsx`): anchor
+  to the real trigger, measure the real popup size, prefer
+  down/right, flip up/left when room runs out, clamp inside a small
+  gutter at the edges, reposition on scroll/resize, and keep Escape,
+  outside-click, keyboard navigation, focus return and ARIA semantics
+  in one place. The hard-coded 240/340/348 geometry and the
+  clip-vulnerable absolute dropdown are gone; the placement algorithm
+  is pinned by unit tests across all four viewport edges.
+
+### Housekeeping
+
+- Dead code removed (`moveTreePayload`/`copyTreeEntry`, the unused
+  manager-level `EnsureAvailable`); version surfaces synced to 0.9.15;
+  new regression tests for the queue convergence, the timed-out scope,
+  the Tor host split and the menu placement rules.
 
 ## What's new in v0.9.14
 

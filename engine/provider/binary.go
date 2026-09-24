@@ -68,6 +68,20 @@ type Manifest struct {
 	// path (equal to BinaryPath while an external reference is
 	// active).
 	ExternalPath string `json:"external_path,omitempty"`
+
+	// Acquisition records HOW the active binary was acquired, so the
+	// UI can distinguish the honest provider states instead of
+	// collapsing them into one "installed" boolean:
+	//
+	//   "managed-release"    downloaded from an authoritative,
+	//                        digest-publishing channel and verified
+	//   "user-binary"        user-supplied, content-addressed managed
+	//                        copy (validated + smoke-tested)
+	//   "external-reference" discovered external installation adopted
+	//                        by reference (never modified)
+	//
+	// Empty = the manifest predates the field or no binary is active.
+	Acquisition string `json:"acquisition,omitempty"`
 }
 
 // BinaryManager owns one provider's binary slot on disk.
@@ -297,6 +311,17 @@ func (b *BinaryManager) Install(ctx context.Context, release Release) error {
 		}
 	}
 
+	// v0.9.15: the archive ships the executable with SIBLINGS it needs
+	// at runtime — shared libraries next to the Linux binary, pluggable
+	// transports beside the Windows one (verified live: the 15.0.23
+	// bundle carries tor/libcrypto.so.3 + libevent + libssl, without
+	// which the validated binary could not launch). Move those payload
+	// siblings into bin/ alongside the executable; the retained
+	// .previous binary is never touched.
+	if err := movePayloadSiblings(filepath.Dir(execPath), b.BinDir(), filepath.Base(execPath), filepath.Base(target)); err != nil {
+		return b.fail(manifestStage("activate"), err)
+	}
+
 	if err := moveFile(execPath, target); err != nil {
 		// Restore any retained previous binary.
 		if previous.BinaryPath != "" {
@@ -322,8 +347,9 @@ func (b *BinaryManager) Install(ctx context.Context, release Release) error {
 		PreviousChecksum: previous.ChecksumSHA256,
 		PreviousPath:     previous.BinaryPath + ".previous",
 		// v0.9.14: a downloaded-and-activated bundle is FreeIran-owned.
-		Ownership: string(OwnershipManaged),
-		Origin:    string(OriginManaged),
+		Ownership:   string(OwnershipManaged),
+		Origin:      string(OriginManaged),
+		Acquisition: "managed-release",
 	}
 	if previousIsExternal {
 		manifest.PreviousPath = ""
@@ -469,12 +495,17 @@ func executableFileName(name string) string {
 	return name
 }
 
-// findExecutable locates the named executable (or any executable
-// matching the name) inside the unpacked tree.
+// findExecutable locates the named executable inside the unpacked
+// tree. Recent expert bundles ship a debug/ variant NEXT to the real
+// binary (debug/tor, debug/tor.exe), so the first walk hit is NOT
+// necessarily the real engine (verified live, v0.9.15). Matches are
+// scored deterministically: no "debug" path segment beats a debug
+// variant, a shallower path beats a deeper one, then lexicographic
+// order keeps the choice stable.
 func findExecutable(root, name string) (string, error) {
 	want := strings.ToLower(executableFileName(name))
 
-	var found string
+	var matches []string
 
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
@@ -482,21 +513,51 @@ func findExecutable(root, name string) (string, error) {
 		}
 
 		if strings.ToLower(d.Name()) == want {
-			found = path
-			return filepath.SkipAll
+			matches = append(matches, path)
 		}
 
 		return nil
 	})
-	if err != nil && found == "" {
+	if err != nil && len(matches) == 0 {
 		return "", fmt.Errorf("executable %q not found in archive: %w", name, err)
 	}
 
-	if found == "" {
+	if len(matches) == 0 {
 		return "", fmt.Errorf("executable %q not found in archive", name)
 	}
 
-	return found, nil
+	best := matches[0]
+	bestScore := scoreExecutablePath(root, best)
+
+	for _, candidate := range matches[1:] {
+		if score := scoreExecutablePath(root, candidate); score < bestScore {
+			best = candidate
+			bestScore = score
+		}
+	}
+
+	return best, nil
+}
+
+// scoreExecutablePath ranks one match: debug variants are worst, then
+// deeper paths, then the lexicographic tail.
+func scoreExecutablePath(root, path string) int {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		rel = path
+	}
+
+	score := 0
+
+	for _, segment := range strings.Split(filepath.ToSlash(rel), "/") {
+		if strings.EqualFold(segment, "debug") {
+			score += 1000 // debug builds never win
+		}
+	}
+
+	score += strings.Count(filepath.ToSlash(rel), "/") * 10
+
+	return score
 }
 
 // moveFile moves across filesystems with a copy fallback. RESERVED
@@ -657,27 +718,35 @@ func PlatformSuffix(goos, goarch string) string {
 	return osToken + "-" + archToken
 }
 
-// moveTreePayload moves the unpacked payload into the bin directory,
-// preserving every archive sibling (DLLs, data files, plugins). It
-// merges entry-by-entry so a previous install's directory layout is
-// refreshed in place; a move failure falls back to a copy so
-// cross-device staging still activates.
-func moveTreePayload(fromDir, toDir string) error {
+// movePayloadSiblings moves the archive payload entries that sit NEXT
+// to the staged executable (libraries, pluggable transports, support
+// data) into the bin directory, preserving every archive sibling. The
+// executable itself is excluded (activation moves it separately) and
+// the retained .previous rollback binary is never touched. A move
+// failure falls back to a copy so cross-device staging still
+// activates. (v0.9.15: the historical moveTreePayload was never wired
+// into activation at all — a single-file move left the validated
+// binary without its runtime siblings.)
+func movePayloadSiblings(payloadDir, toDir, execName, targetName string) error {
 	if err := os.MkdirAll(toDir, 0o700); err != nil {
 		return err
 	}
 
-	entries, err := os.ReadDir(fromDir)
+	entries, err := os.ReadDir(payloadDir)
 	if err != nil {
 		return err
 	}
 
 	for _, entry := range entries {
-		src := filepath.Join(fromDir, entry.Name())
+		if entry.Name() == execName || entry.Name() == targetName {
+			continue // the executable itself: activation's moveFile handles it
+		}
+
+		src := filepath.Join(payloadDir, entry.Name())
 		dst := filepath.Join(toDir, entry.Name())
 
-		// Refresh in place: remove a stale destination entry of
-		// the same name (never the retained .previous binary).
+		// Refresh in place: remove a stale destination entry of the same
+		// name — never the retained .previous binary.
 		if _, err := os.Stat(dst); err == nil {
 			if strings.HasSuffix(dst, ".previous") {
 				continue
@@ -720,9 +789,6 @@ func copyTreeEntry(src, dst string) error {
 	}
 
 	entries, err := os.ReadDir(src)
-	if err != nil {
-		return err
-	}
 
 	for _, entry := range entries {
 		if err := copyTreeEntry(
