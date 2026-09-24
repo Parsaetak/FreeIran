@@ -96,7 +96,7 @@ func concealChild(cmd *exec.Cmd) {
 // so even an abnormal FreeIran death (crash, Task Manager kill,
 // runner cancellation) makes the kernel reap every core process and
 // its descendants.
-func launchProcess(ctx context.Context, spec ProcessSpec) (*ManagedProcess, error) {
+func launchProcess(ctx context.Context, spec ProcessSpec, cancelLaunch context.CancelFunc) (*ManagedProcess, error) {
 	if parentInJob() {
 		logging.D("system", "launch",
 			"parent process already runs inside a Windows job; child-job binding will nest")
@@ -109,7 +109,7 @@ func launchProcess(ctx context.Context, spec ProcessSpec) (*ManagedProcess, erro
 
 	job, bindErr := createAndBindJob(cmd.Process.Pid)
 	if bindErr == nil {
-		return supervise(ctx, spec, cmd, job, true, "")
+		return supervise(ctx, spec, cmd, job, true, "", cancelLaunch)
 	}
 
 	// Retry tier: only when assignment was DENIED for job-hierarchy
@@ -126,12 +126,12 @@ func launchProcess(ctx context.Context, spec ProcessSpec) (*ManagedProcess, erro
 		if retryErr == nil {
 			retryJob, retryBind := createAndBindJob(retry.Process.Pid)
 			if retryBind == nil {
-				return supervise(ctx, spec, retry, retryJob, true, "")
+				return supervise(ctx, spec, retry, retryJob, true, "", cancelLaunch)
 			}
 
 			// Breakaway spawn worked but assignment still failed:
 			// keep this child under supervised fallback.
-			return supervise(ctx, spec, retry, nil, false, retryBind.Error())
+			return supervise(ctx, spec, retry, nil, false, retryBind.Error(), cancelLaunch)
 		}
 
 		// Breakaway itself not permitted: final fallback with a
@@ -141,14 +141,14 @@ func launchProcess(ctx context.Context, spec ProcessSpec) (*ManagedProcess, erro
 			return nil, launchError(spec, err2)
 		}
 
-		return supervise(ctx, spec, cmd2, nil, false, bindErr.Error())
+		return supervise(ctx, spec, cmd2, nil, false, bindErr.Error(), cancelLaunch)
 	}
 
 	// Non-restricted failure (job creation denied, or the child died
 	// before assignment — e.g. an injected fail-fast core): the child
 	// either is already dead or cannot leak; supervise it without a
 	// job and surface the degradation.
-	return supervise(ctx, spec, cmd, nil, false, bindErr.Error())
+	return supervise(ctx, spec, cmd, nil, false, bindErr.Error(), cancelLaunch)
 }
 
 // startChild builds and starts one exec.Cmd with the standard
@@ -343,13 +343,17 @@ func reapDescendants(m *ManagedProcess) {
 	killProcessTree(m.pid)
 }
 
-// politeShutdown has no equivalent for a windowless Windows child:
-// there is no signal channel to a process created with
-// CREATE_NO_WINDOW (console control events require a shared console,
-// which the launcher deliberately avoids). The grace period is
-// therefore a wait-for-natural-exit window, exactly as documented —
-// the hard-kill phase provides the deterministic guarantee.
-func politeShutdown(m *ManagedProcess) {}
+// politeShutdown issues the platform's exit REQUEST for a windowless
+// Windows child. A process created with CREATE_NO_WINDOW shares no
+// console, so there is no signal/control-event channel to ask it to
+// exit — the only available request is the kill bound to the launch
+// context (CommandContext). Issuing it here makes the grace period
+// that follows a bounded wait for death instead of five seconds of
+// guaranteed dead time, and the hard-kill phase (job terminate /
+// process-tree kill) remains the deterministic no-orphan guarantee.
+func politeShutdown(m *ManagedProcess) {
+	m.requestExit()
+}
 
 // hardKill terminates the whole supervision domain in one step:
 // TerminateJobObject when the kernel job binding is active (kills

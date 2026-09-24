@@ -448,6 +448,13 @@ type ManagedProcess struct {
 	stopStarted bool
 	stopDone    chan struct{}
 	stopErr     error
+
+	// cancelLaunch releases the launch context derived in Start —
+	// the context the child's CommandContext kill is bound to. It is
+	// the ONE exit request the supervisor can issue on Windows
+	// (requestExit / politeShutdown); cancelling it never cancels the
+	// caller's own context.
+	cancelLaunch context.CancelFunc
 }
 
 // Start launches a process and begins supervising it.
@@ -472,8 +479,24 @@ func Start(ctx context.Context, spec ProcessSpec) (*ManagedProcess, error) {
 
 	spec.Path = resolved
 
-	proc, err := launchProcess(ctx, spec)
+	// v0.9.15: the launch context is a DERIVED wrapper, so the
+	// supervisor owns one exit request (cancelLaunch) that turns
+	// CommandContext's kill into the Windows polite-shutdown phase —
+	// without it, Stop(grace) on Windows waited the FULL grace period
+	// doing nothing before the hard kill (no signal channel exists for
+	// a CREATE_NO_WINDOW child), which is where the Windows provider
+	// suite silently burned five seconds per lifecycle stop and smoke
+	// termination (144s package time in run 35996310774).
+	launchCtx, cancelLaunch := context.WithCancel(ctx)
+
+	// The cancel function travels INTO the platform launcher so the
+	// field is recorded BEFORE the wait goroutine starts — writing it
+	// after launchProcess returns raced finish()'s releaseLaunch on
+	// fast-exiting children (caught by -race).
+	proc, err := launchProcess(launchCtx, spec, cancelLaunch)
 	if err != nil {
+		cancelLaunch()
+
 		return nil, err
 	}
 
@@ -512,6 +535,7 @@ func supervise(
 	job *jobHandle,
 	bound bool,
 	note string,
+	cancelLaunch context.CancelFunc,
 ) (*ManagedProcess, error) {
 	proc := &ManagedProcess{
 		spec:            spec,
@@ -524,6 +548,7 @@ func supervise(
 		supervisionNote: note,
 		exitCode:        -1,
 		state:           StateRunning,
+		cancelLaunch:    cancelLaunch,
 	}
 
 	// Ownership evidence for external, path-verified cleanup (see
@@ -605,7 +630,46 @@ func (m *ManagedProcess) finish(state ProcessState, err error, code int) {
 	// so external cleanup never sees a stale ownership claim.
 	manifestRemove(m.pid)
 
+	// Release the launch-context resources on every exit path (the
+	// cancel itself is idempotent — politeShutdown may already have
+	// issued it).
+	m.releaseLaunch()
+
 	close(m.exited)
+}
+
+// requestExit issues the platform's polite exit request. On Unix
+// politeShutdown signals SIGTERM to the group and never calls this;
+// on Windows there is NO signal channel to a CREATE_NO_WINDOW child,
+// so the only honest exit request is the CommandContext kill bound to
+// the launch context. The grace window that follows remains a
+// bounded wait for death (never a dead wait), and the hard-kill
+// phase stays the deterministic guarantee.
+func (m *ManagedProcess) requestExit() {
+	if m == nil {
+		return
+	}
+
+	m.mu.Lock()
+	cancel := m.cancelLaunch
+	m.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+}
+
+// releaseLaunch cancels and drops the derived launch context
+// (idempotent; safe on every exit path).
+func (m *ManagedProcess) releaseLaunch() {
+	m.mu.Lock()
+	cancel := m.cancelLaunch
+	m.cancelLaunch = nil
+	m.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
 }
 
 // wasStopped reports whether Stop has been initiated.

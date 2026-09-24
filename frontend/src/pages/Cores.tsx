@@ -678,7 +678,7 @@ function ProviderCard({ info, onRefresh }: { info: ProviderInfoView; onRefresh: 
     try {
       await fn();
     } catch (error) {
-      toast("error", "Provider action failed", describeError(error));
+      toast("error", providerActionFailureTitle(describeError(error)), describeError(error));
     } finally {
       setBusyAction(null);
       onRefresh();
@@ -924,6 +924,28 @@ function originLabel(origin?: string): string {
     default:
       return origin ?? "";
   }
+}
+
+/**
+ * v0.9.15: a failed install must never collapse into a generic
+ * "Provider action failed". The engine wraps every failure with its
+ * transaction stage (`<provider>: <stage>: <cause>`, see BinaryManager.
+ * fail) — surface THAT stage as the headline so the failure names the
+ * actual next diagnosable thing (download, checksum, smoke, ...).
+ */
+function providerActionFailureTitle(message: string): string {
+  const m = message.toLowerCase();
+
+  if (m.includes("resolve")) return "Acquisition channel unavailable";
+  if (m.includes("download")) return "Download failed";
+  if (m.includes("checksum") || m.includes("verify")) return "Checksum verification failed";
+  if (m.includes("unpack")) return "Extraction failed";
+  if (m.includes("validate")) return "Validation failed";
+  if (m.includes("smoke")) return "Runtime smoke test failed";
+  if (m.includes("activate")) return "Activation failed";
+  if (m.includes("not found") || m.includes("binary not found")) return "Binary not found";
+
+  return "Provider action failed";
 }
 
 /** v0.9.15: honest acquisition modes surfaced on provider cards. */

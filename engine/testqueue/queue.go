@@ -247,6 +247,19 @@ type Stats struct {
 	CoreProbeConcurrency int `json:"core_probe_concurrency"`
 }
 
+// LiveStateView is the UI-facing one-call queue-state projection:
+// the complete live fingerprint set, the change version and the
+// aggregate state (stats + pause flag) the progress panel renders.
+// It is the payload of TestQueueService.LiveState and of the
+// freeiran:queuestate event — one shape everywhere, so the event
+// stream and the recovery read can never disagree about semantics.
+type LiveStateView struct {
+	Version      uint64   `json:"version"`
+	Fingerprints []string `json:"fingerprints"`
+	Stats        Stats    `json:"stats"`
+	Paused       bool     `json:"paused"`
+}
+
 // Mode selects the testing mode. Each mode presets Concurrency,
 // Timeout, MaxAttempts and MeasurementSamples.
 type Mode string
@@ -449,6 +462,14 @@ type Queue struct {
 	startedAt time.Time
 	stopped   atomic.Bool
 
+	// changeVersion is a monotonic generation bumped on EVERY queue
+	// state change (enqueue, dequeue, finish, cancel, pause). It is
+	// the versioning anchor of the complete live-state contract
+	// (LiveState): the UI can tell "the set has not changed since I
+	// last looked" from "I missed a transition" without ever
+	// inferring completion from a bounded page.
+	changeVersion atomic.Uint64
+
 	// notifyCh is closed+recreated on every state change to wake
 	// blocked Dequeue callers.
 	notifyCh chan struct{}
@@ -456,6 +477,12 @@ type Queue struct {
 	// resizeCh is closed+recreated by SetConcurrency to wake idle
 	// workers so the pool can shrink without waiting for work.
 	resizeCh chan struct{}
+
+	// changeSubs carries registered change-signal channels (see
+	// SubscribeChanges). Guarded by mu; sends are non-blocking into
+	// capacity-1 channels so bursts coalesce into one observation of
+	// the newest complete state — never a per-mutation event storm.
+	changeSubs []chan uint64
 
 	// coreSlots is the bounded CORE-PROBE POOL (v0.9.7 §14): every
 	// tester.Test call that spawns a temporary protocol-core
@@ -790,8 +817,15 @@ func (q *Queue) Enqueue(
 // notify wakes blocked Dequeue callers by closing the notifyCh and
 // creating a new one. Caller MUST hold q.mu.
 func (q *Queue) notifyLocked() {
+	// v0.9.15: every state change also advances the live-state version
+	// (the wake channel IS the change boundary) and signals every
+	// change subscriber (coalescing, non-blocking).
+	version := q.changeVersion.Add(1)
+
 	close(q.notifyCh)
 	q.notifyCh = make(chan struct{})
+
+	q.broadcastChangesLocked(version)
 }
 
 // Dequeue blocks until a task is available, returning the task.
@@ -1542,6 +1576,102 @@ func (q *Queue) Snapshot(limit int) []TaskSnapshot {
 	})
 
 	return out
+}
+
+// LiveStateSnapshot is the COMPLETE, authoritative live-set contract
+// for the UI (v0.9.15). Unlike Snapshot — a bounded page of the
+// priority head — LiveState lists EVERY fingerprint currently pending
+// or in flight, together with the queue's change version.
+//
+// Completeness is the whole point: the UI may infer "a fingerprint
+// that was live and is now absent from THIS set reached a terminal
+// state", because absence here means absence from the real queue, not
+// absence from a bounded page. A bounded Snapshot can never make that
+// inference (a task outside the page would be misread as finished —
+// the false-completion defect).
+type LiveStateSnapshot struct {
+	// Version is the queue's monotonic change generation. Equal
+	// versions across two reads prove the live set did not change in
+	// between; a missed intermediate transition is harmless because
+	// every LiveState is complete.
+	Version uint64 `json:"version"`
+
+	// Fingerprints is the complete live set (pending + in flight).
+	// Unbounded by design: strings only, bounded by the actual live
+	// task count.
+	Fingerprints []string `json:"fingerprints"`
+}
+
+// Queued reports whether a fingerprint currently has a pending or
+// in-flight task. The satellite test paths (discovery candidate warm-up,
+// Quick Connect shortlist retest) consult it so a config already being
+// tested by the ONE queue is never concurrently retested — the queue's
+// persisted result stays the single last writer for that fingerprint.
+func (q *Queue) Queued(fingerprint string) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	_, pending := q.byFingerprint[fingerprint]
+
+	return pending
+}
+
+// LiveState returns the complete live-set snapshot (see
+// LiveStateSnapshot). One read replaces the Stats + Paused + Snapshot
+// polling triple as the authoritative state source.
+func (q *Queue) LiveState() LiveStateSnapshot {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	fps := make([]string, 0, q.pending.Len()+len(q.inflight))
+
+	for _, t := range q.pending.heap {
+		fps = append(fps, t.Fingerprint)
+	}
+
+	for _, t := range q.inflight {
+		fps = append(fps, t.Fingerprint)
+	}
+
+	return LiveStateSnapshot{
+		Version:      q.changeVersion.Load(),
+		Fingerprints: fps,
+	}
+}
+
+// SubscribeChanges registers one change-signal channel. The returned
+// channel receives the newest change version on every queue state
+// transition (coalesced: capacity-1 buffer, non-blocking send — a
+// busy subscriber re-reads the CURRENT complete state when it wakes,
+// never the missed deltas). The returned cancel unregisters it.
+func (q *Queue) SubscribeChanges() (<-chan uint64, func()) {
+	q.mu.Lock()
+	ch := make(chan uint64, 1)
+	q.changeSubs = append(q.changeSubs, ch)
+	q.mu.Unlock()
+
+	return ch, func() {
+		q.mu.Lock()
+		defer q.mu.Unlock()
+
+		for i, sub := range q.changeSubs {
+			if sub == ch {
+				q.changeSubs = append(q.changeSubs[:i], q.changeSubs[i+1:]...)
+				break
+			}
+		}
+	}
+}
+
+// broadcastChangesLocked delivers the newest change version to every
+// subscriber without ever blocking the queue. Caller MUST hold q.mu.
+func (q *Queue) broadcastChangesLocked(version uint64) {
+	for _, sub := range q.changeSubs {
+		select {
+		case sub <- version:
+		default:
+		}
+	}
 }
 
 // snapshotTask copies the public fields of t into a TaskSnapshot.

@@ -254,6 +254,50 @@ func TestProcessForcedTermination(t *testing.T) {
 	assertNoSupervisedProcessSurvives(t, proc)
 }
 
+// TestProcessStopGraceNotDeadTime pins the v0.9.15 Windows fix: the
+// polite-shutdown phase must ISSUE an exit request, not merely wait.
+// A long-lived daemon that will never exit on its own must be
+// terminated by Stop(grace) well BEFORE the grace window elapses —
+// the pre-fix Windows implementation had no exit request at all, so
+// every Stop burned the full grace period (five seconds each) before
+// hard-killing, which is where the provider suite lost ~144s.
+//
+// The bound is generous (4.5s of a 5s grace) so a loaded CI runner
+// cannot flake, yet still strictly below the broken implementation's
+// ≥5s dead wait. The no-orphan guarantee is asserted unchanged.
+func TestProcessStopGraceNotDeadTime(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	proc, err := Start(ctx, longRunSpec(t))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	start := time.Now()
+
+	if err := proc.Stop(5 * time.Second); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	if elapsed := time.Since(start); elapsed >= 4500*time.Millisecond {
+		t.Fatalf("Stop(grace=5s) of a live daemon took %s: the grace window is dead time, not a bounded wait", elapsed)
+	}
+
+	if proc.Running() {
+		t.Fatal("process still running after Stop")
+	}
+
+	// An intentional stop is never reported as a failure.
+	switch proc.State() {
+	case StateStopped, StateExited:
+	default:
+		t.Fatalf("state = %s after intentional Stop", proc.State())
+	}
+
+	assertNoSupervisedProcessSurvives(t, proc)
+}
+
 // TestProcessRepeatedStop proves idempotency: after the first Stop
 // completes, later calls return the same result immediately and the
 // process stays dead.

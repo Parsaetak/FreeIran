@@ -27,6 +27,7 @@ import (
 	"github.com/Parsaetak/FreeIran/engine/app"
 	"github.com/Parsaetak/FreeIran/engine/connection"
 	"github.com/Parsaetak/FreeIran/engine/coremgr"
+	"github.com/Parsaetak/FreeIran/engine/testqueue"
 	"github.com/Parsaetak/FreeIran/internal/appicon"
 	"github.com/Parsaetak/FreeIran/internal/logging"
 	"github.com/Parsaetak/FreeIran/internal/statepub"
@@ -174,6 +175,22 @@ func main() {
 	applicationInstance.SetStateListener(stateEmitter.Submit)
 
 	applicationInstance.SetConnectionListener(connEmitter.Submit)
+
+	// v0.9.15: forward the ONE authoritative queue-state stream to the
+	// UI (freeiran:queuestate). The payload is the complete
+	// LiveStateView (live fingerprint set + change version + stats +
+	// pause) — the same shape the LiveState binding returns as the
+	// recovery read, so event and recovery can never disagree. The
+	// emitter is bounded: bursts coalesce into the newest complete
+	// state.
+	queueStateEmitter := statepub.NewBoundedEmitter("ui-queuestate",
+		func(view testqueue.LiveStateView) {
+			wailsApp.Event.Emit("freeiran:queuestate", view)
+		})
+
+	defer queueStateEmitter.Stop()
+
+	applicationInstance.SetQueueStateListener(queueStateEmitter.Submit)
 
 	// Background work starts after the publishers are wired: every
 	// state change it produces is observed event-driven.

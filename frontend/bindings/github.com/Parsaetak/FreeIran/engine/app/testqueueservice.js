@@ -90,6 +90,25 @@ export function EnqueueMany(tasks) {
 }
 
 /**
+ * LiveState returns the ONE authoritative, COMPLETE queue-state read
+ * for the UI (v0.9.15): the full live fingerprint set (pending +
+ * in-flight), the monotonic change version, the stats block and the
+ * pause flag — in a single binding call.
+ *
+ * This replaces the previous Stats + Paused + Snapshot(200) polling
+ * triple. Snapshot(200) is a BOUNDED page; a task beyond the page
+ * would be misread as finished (the false-completion defect). The
+ * complete live set carries unambiguous completeness semantics:
+ * absence from THIS set is a real terminal transition.
+ * @returns {$CancellablePromise<testqueue$0.LiveStateView>}
+ */
+export function LiveState() {
+    return $Call.ByID(1434935351).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType4($result);
+    }));
+}
+
+/**
  * Pause suspends task pickup: queued tests stay pending while
  * in-flight tests finish (v0.9.7 bulk-testing UX).
  * @returns {$CancellablePromise<void>}
@@ -151,3 +170,4 @@ const $$createType0 = $models.TestBatchResult.createFrom;
 const $$createType1 = testqueue$0.TaskSnapshot.createFrom;
 const $$createType2 = $Create.Array($$createType1);
 const $$createType3 = testqueue$0.Stats.createFrom;
+const $$createType4 = testqueue$0.LiveStateView.createFrom;

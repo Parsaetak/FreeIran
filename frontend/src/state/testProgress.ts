@@ -15,6 +15,34 @@ import { useQuickConnectStore } from "./quickConnectStore";
  * agrees about config health while tests run — and a finished test
  * patches its config in place (one GetConfig per changed fingerprint)
  * instead of rebuilding a 16,000-row dataset through a full refresh.
+ *
+ * CORRECTNESS MODEL (the false-completion fix):
+ *
+ *   - The backend LiveState contract is the COMPLETENESS authority: it
+ *     carries the COMPLETE live fingerprint set plus a monotonic change
+ *     version. A fingerprint that was live and is now absent from the
+ *     complete set reached a real terminal state — its persisted
+ *     result is patched in exactly once.
+ *
+ *   - A bounded task page (Snapshot(200)) is a DETAIL view of the
+ *     priority head only. Absence from a bounded page means NOTHING:
+ *     with 1,000 live tasks a watched test may sit outside the top
+ *     200 for its whole life, and treating that as completion produced
+ *     false completions, premature GetConfig calls and state flicker.
+ *     applyQueueSnapshot therefore only merges detail state words and
+ *     NEVER decides completion.
+ *
+ *   - Optimistic marks (requested[]) carry the change version of the
+ *     click. They are promoted to "observed" when the live set covers
+ *     them; when a strictly newer version still does not cover them,
+ *     the task either finished entirely inside the observation gap or
+ *     the enqueue never landed — either way the mark is retired
+ *     through the same one-shot patch path (idempotent for both).
+ *
+ *   - DEDUP INVARIANT: the same fingerprint has AT MOST ONE result
+ *     patch outstanding or queued. Backlog pushes are marked
+ *     scheduled, closing the historical gap that allowed repeated
+ *     scheduling before the backlog drained.
  */
 
 /** Live (non-terminal) task states reported by the queue snapshot. */
@@ -34,15 +62,26 @@ interface TestProgressState {
 
   /**
    * Optimistic mark from the click that enqueued a single test — keeps
-   * the row's queued chip INSTANT until the first snapshot confirms
-   * (or the result patch clears it when the task finished within the
-   * polling gap).
+   * the row's queued chip INSTANT until the live set confirms (or the
+   * result patch retires it when the task finished within the gap).
    */
   requested: Record<string, true>;
 }
 
-/** Fingerprints observed live at least once; diffed per tick to detect completion. */
-const watched = new Set<string>();
+/**
+ * Fingerprints the backend's COMPLETE live set currently reports.
+ * Rebuilt (not merged) on every authoritative read.
+ */
+const observedLive = new Set<string>();
+
+/** The queue change version last observed from the backend. */
+let lastVersion = 0;
+
+/**
+ * Optimistic marks awaiting their first live observation, with the
+ * queue version at which the click happened.
+ */
+const optimistic = new Map<string, number>();
 
 /** Result subscribers (fp, patched config snapshot). */
 type ResultListener = (fingerprint: string, config: Config) => void;
@@ -53,7 +92,10 @@ const MAX_INFLIGHT_PATCHES = 64;
 let inflightPatches = 0;
 const patchBacklog: string[] = [];
 
-/** Fingerprints currently patched (dedup across ticks). */
+/**
+ * Fingerprints with a patch operation scheduled or queued (the dedup
+ * set — see the DEDUP INVARIANT above).
+ */
 const patchScheduled = new Set<string>();
 
 export const useTestProgress = create<TestProgressState>(() => ({
@@ -64,7 +106,12 @@ export const useTestProgress = create<TestProgressState>(() => ({
 
 /** Marks a config as user-requested for testing (optimistic, instant). */
 export function markTestRequested(fingerprint: string) {
-  watched.add(fingerprint);
+  // The mark anchors at the CURRENT version: any strictly newer
+  // authoritative read that does not cover the fingerprint retires it
+  // (the task finished within the gap, or the enqueue never landed).
+  if (!optimistic.has(fingerprint)) {
+    optimistic.set(fingerprint, lastVersion);
+  }
 
   useTestProgress.setState((state) => ({
     requested: { ...state.requested, [fingerprint]: true },
@@ -74,6 +121,8 @@ export function markTestRequested(fingerprint: string) {
 
 /** Drops an optimistic mark (enqueue failed — nothing will run). */
 export function clearTestRequested(fingerprint: string) {
+  optimistic.delete(fingerprint);
+
   useTestProgress.setState((state) => {
     const requested = { ...state.requested };
     delete requested[fingerprint];
@@ -93,37 +142,86 @@ const LIVE_STATES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Feeds one queue snapshot (pending + in-flight tasks) into the store.
- * Fingerprints that LEFT the live set reached a terminal state: their
- * persisted result is patched into the config model incrementally.
+ * Feeds ONE complete, authoritative queue-state read (the LiveState
+ * contract) into the store. This is the ONLY path that decides
+ * completion.
+ *
+ * @param view    the complete live-state view (version + fingerprints).
+ * @param details optional bounded task page supplying per-task state
+ *                detail (queued/testing/...) — merged as detail ONLY;
+ *                it never contributes completion decisions.
  */
-export function applyQueueSnapshot(tasks: Array<{ fingerprint?: string; state?: string }>) {
-  const nextStates: Record<string, LiveTestState> = {};
+export function applyLiveState(
+  view: { version?: number; fingerprints?: string[] },
+  details?: Array<{ fingerprint?: string; state?: string }>,
+) {
+  const version = Number(view?.version ?? 0);
+  const versionAdvanced = version > lastVersion;
+  lastVersion = version;
 
-  for (const task of tasks) {
-    const fp = String(task?.fingerprint ?? "");
-    const state = String(task?.state ?? "");
+  const nextLive = new Set<string>();
 
-    if (!fp || !LIVE_STATES.has(state)) continue;
+  for (const fp of view?.fingerprints ?? []) {
+    const key = String(fp ?? "");
 
-    nextStates[fp] = state as LiveTestState;
-    watched.add(fp);
+    if (key) nextLive.add(key);
   }
 
-  // Completed since the previous tick: live before, absent now.
+  // Terminal transitions: fingerprints the COMPLETE set observed live
+  // before and does not cover anymore.
   const finished: string[] = [];
 
-  for (const fp of [...watched]) {
-    if (!(fp in nextStates)) {
-      watched.delete(fp);
+  for (const fp of observedLive) {
+    if (!nextLive.has(fp)) {
       finished.push(fp);
     }
   }
 
-  useTestProgress.setState((state) => ({
-    // Merge: snapshot states win; optimistic marks for tasks the poll
-    // has not observed yet stay visible (instant UI, no flicker).
-    states: { ...state.states, ...nextStates },
+  // Optimistic marks: promote when the live set covers them; retire
+  // through the patch path when a strictly newer version still does
+  // not (finished inside the gap, or the enqueue never landed — the
+  // patch is idempotent for both).
+  for (const [fp, markedAt] of [...optimistic]) {
+    if (nextLive.has(fp)) {
+      optimistic.delete(fp);
+      observedLive.add(fp);
+    } else if (versionAdvanced && markedAt < version) {
+      optimistic.delete(fp);
+      finished.push(fp);
+    }
+  }
+
+  // Rebuild the authoritative observed set.
+  observedLive.clear();
+
+  for (const fp of nextLive) {
+    observedLive.add(fp);
+  }
+
+  // Live detail states: the authoritative set decides WHO is live; the
+  // bounded page (when provided) decides the finer state words for the
+  // tasks it covers. Tasks beyond the page render as queued (honest:
+  // they ARE queued — the page is bounded, not the queue).
+  const nextStates: Record<string, LiveTestState> = {};
+
+  for (const fp of observedLive) {
+    nextStates[fp] = "queued";
+  }
+
+  for (const task of details ?? []) {
+    const fp = String(task?.fingerprint ?? "");
+    const live = String(task?.state ?? "");
+
+    if (!fp || !LIVE_STATES.has(live)) continue;
+
+    if (observedLive.has(fp)) {
+      nextStates[fp] = live as LiveTestState;
+    }
+  }
+
+  useTestProgress.setState((current) => ({
+    // Optimistic marks keep their chip until covered or retired.
+    states: { ...nextStates, ...optimisticChips(current.requested, nextStates) },
   }));
 
   for (const fp of finished) {
@@ -131,19 +229,96 @@ export function applyQueueSnapshot(tasks: Array<{ fingerprint?: string; state?: 
   }
 }
 
+/**
+ * Merges a bounded task page as DETAIL only (never completion): detail
+ * state words win for the fingerprints the authoritative live set (or
+ * an optimistic mark) already knows are live; nothing is removed from
+ * the live set here — a task outside a bounded page is NOT finished.
+ */
+export function applyQueueSnapshot(tasks: Array<{ fingerprint?: string; state?: string }>) {
+  const detailStates: Record<string, LiveTestState> = {};
+
+  for (const task of tasks) {
+    const fp = String(task?.fingerprint ?? "");
+    const live = String(task?.state ?? "");
+
+    if (!fp || !LIVE_STATES.has(live)) continue;
+
+    detailStates[fp] = live as LiveTestState;
+  }
+
+  useTestProgress.setState((current) => ({
+    states: {
+      ...current.states,
+      ...detailStates,
+      ...optimisticChips(current.requested, { ...current.states, ...detailStates }),
+    },
+  }));
+}
+
+/** Requested marks whose state is not already covered by live detail. */
+function optimisticChips(
+  requested: Record<string, true>,
+  states: Record<string, LiveTestState>,
+): Record<string, LiveTestState> {
+  const out: Record<string, LiveTestState> = {};
+
+  for (const fp of Object.keys(requested)) {
+    if (!states[fp]) out[fp] = "queued";
+  }
+
+  return out;
+}
+
+/**
+ * Coalesced Quick Connect invalidation (v0.9.15): a large batch used to
+ * fire one BestCandidates fetch PER persisted result — a backend fetch
+ * storm for a 16,000-config run. Results arrive in bursts, so the
+ * invalidation is coalesced on a trailing 750 ms window: at most one
+ * refresh per burst, always including the newest result (the backend
+ * invalidates its ranking snapshot on the same events, so nothing is
+ * stale between flushes — only the UI fetch is batched).
+ */
+const QC_FLUSH_WINDOW_MS = 750;
+
+let qcFlushTimer: number | null = null;
+let qcDirty = false;
+
+function invalidateQuickConnectCoalesced() {
+  qcDirty = true;
+
+  if (qcFlushTimer !== null) return;
+
+  qcFlushTimer = window.setTimeout(() => {
+    qcFlushTimer = null;
+
+    if (!qcDirty) return;
+
+    qcDirty = false;
+
+    useQuickConnectStore.getState().invalidate();
+  }, QC_FLUSH_WINDOW_MS);
+}
+
 function scheduleResultPatch(fingerprint: string) {
+  // DEDUP INVARIANT: at most one patch operation per fingerprint may be
+  // scheduled OR queued. The backlog push marks the fingerprint as
+  // scheduled too — the historical gap (backlog entries without a
+  // scheduled mark) allowed repeated scheduling of the same
+  // fingerprint before the backlog drained.
   if (patchScheduled.has(fingerprint)) return;
 
+  patchScheduled.add(fingerprint);
+
   if (inflightPatches >= MAX_INFLIGHT_PATCHES) {
-    // Backlog drains on the following ticks (the poll loop re-observes
-    // terminal transitions through `watched`... they already left it).
-    // Keep an explicit bounded queue so nothing is silently dropped.
+    // Backlog drains one entry per completed patch (finally below).
+    // The explicit bounded queue guarantees nothing is silently
+    // dropped; the scheduled mark guarantees no duplicates.
     patchBacklog.push(fingerprint);
 
     return;
   }
 
-  patchScheduled.add(fingerprint);
   void patchResult(fingerprint);
 }
 
@@ -158,7 +333,7 @@ async function patchResult(fingerprint: string) {
       // the outcome; here it is reflected into the shared list model
       // (patch in place — no full refresh anywhere).
       useConfigsStore.getState().patchConfig(fingerprint, config);
-      useQuickConnectStore.getState().invalidate();
+      invalidateQuickConnectCoalesced();
 
       useTestProgress.setState((state) => ({
         resultsVersion: state.resultsVersion + 1,
@@ -191,7 +366,7 @@ async function patchResult(fingerprint: string) {
       const states = { ...state.states };
 
       // Only clear when no newer live task took over the fingerprint.
-      if (states[fingerprint] && !watched.has(fingerprint)) {
+      if (states[fingerprint] && !observedLive.has(fingerprint)) {
         delete states[fingerprint];
       }
 
@@ -201,7 +376,7 @@ async function patchResult(fingerprint: string) {
     const next = patchBacklog.shift();
 
     if (next) {
-      scheduleResultPatch(next);
+      void patchResult(next);
     }
   }
 }

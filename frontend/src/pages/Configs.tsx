@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
+import { Events } from "@wailsio/runtime";
 import { useConfigsStore, makeSearchRunner } from "../state/stores";
 import { MenuSurface, type MenuAnchor } from "../components/MenuSurface";
 import {
@@ -10,6 +11,7 @@ import {
   type Config,
   type ConfigDetail,
   type QueueStatsView,
+  type QueueLiveStateView,
 } from "../services";
 import {
   formatLatency,
@@ -31,7 +33,7 @@ import { useConnectionStore } from "../state/connectionStore";
 // result, no matter which page triggered the test.
 import { describeError, toast } from "../state/toastStore";
 import {
-  applyQueueSnapshot,
+  applyLiveState,
   clearTestRequested,
   markTestRequested,
   onTestResult,
@@ -188,7 +190,18 @@ export function ConfigsPage() {
   // context-menu invocation (Shift+F10 / Menu key). Same items,
   // same model; placement is handled by the ONE shared viewport-aware
   // portal surface (MenuSurface) — v0.9.15.
-  const [contextMenu, setContextMenu] = useState<{ config: Config; anchor: MenuAnchor } | null>(null);
+  const [contextMenu, setContextMenu] = useState<{
+    config: Config;
+    anchor: MenuAnchor;
+    /** True when the ⋮ button holds the menu open (its re-click toggles). */
+    viaTrigger: boolean;
+    triggerId: string | null;
+  } | null>(null);
+
+  // The element that opened the row context menu (MenuSurface's toggle
+  // contract: outside-pointer dismissal ignores it so the trigger's own
+  // click toggles).
+  const contextMenuTriggerRef = useRef<HTMLElement | null>(null);
   // v0.9.7: compact two-row card layout below 860px (actions get a
   // dedicated row) — the virtualizer sizes rows accordingly.
   const [narrow, setNarrow] = useState(
@@ -334,50 +347,49 @@ export function ConfigsPage() {
     void loadFiltered(1000);
   }, [loadFiltered]);
 
-  // Live queue stats while a batch is running. Adaptive cadence:
-  // ~800 ms while work is queued/running, 5 s when idle — the panel
-  // only renders once total_enqueued > 0, so a fixed 1.5 s poll just
-  // burned binding traffic for a page left open in the background.
-  // v0.9.15: the SAME snapshot feeds the shared testProgress store,
-  // which diffs live fingerprints against the previous tick, detects
-  // completions and patches their persisted results into the config
-  // model incrementally (one GetConfig per changed row — never a
-  // full-list refresh).
+  // Live queue state while a batch is running. v0.9.15: the previous
+  // Stats + Paused + Snapshot(200) triple is replaced by ONE
+  // authoritative read — LiveState — whose live fingerprint set is
+  // COMPLETE. The complete set is what lets testProgress decide
+  // terminal transitions without false completions (a task outside a
+  // bounded page used to be misread as finished), and one call instead
+  // of three removes two-thirds of the binding traffic.
+  //
+  // Push + pull, one source of truth: the backend emits
+  // freeiran:queuestate (the SAME complete LiveStateView shape) on
+  // every coalesced queue change; this page applies it immediately and
+  // keeps a slow-cadence LiveState read as the recovery path for
+  // missed events / background throttling. The backend queue stays
+  // authoritative — this store is only its projection.
   useEffect(() => {
     let stop = false;
     let timer = 0;
 
     const cadence = (stats: QueueStatsView | null) =>
-      stats && (stats.queue_depth > 0 || stats.active_workers > 0) ? 800 : 5000;
+      stats && (stats.queue_depth > 0 || stats.active_workers > 0) ? 2000 : 5000;
+
+    const consume = (view: QueueLiveStateView | null) => {
+      if (!view) return;
+
+      setQueueStats(view.stats as QueueStatsView);
+      setQueuePaused(Boolean(view.paused));
+
+      // The COMPLETE live set drives completion + result patches; the
+      // bounded detail page (Snapshot) is fetched no longer — detail
+      // states come from the same LiveState event when the backend
+      // includes richer words (fingerprints render as queued).
+      applyLiveState(view);
+    };
 
     const tick = async () => {
       let next = 5000;
 
       try {
-        const stats = await call(() => testQueueService.Stats());
+        const view = (await call(() => testQueueService.LiveState())) as QueueLiveStateView | null;
 
-        if (!stop && stats) {
-          setQueueStats(stats as QueueStatsView);
-          next = cadence(stats as QueueStatsView);
-        }
-
-        // v0.9.7: track pause state.
-        try {
-          const paused = await call(() => testQueueService.Paused());
-          if (!stop) setQueuePaused(Boolean(paused));
-        } catch {
-          /* best-effort */
-        }
-
-        // v0.9.15: ONE snapshot → shared live-state projection +
-        // incremental result patches.
-        try {
-          const snapshot = await call(() => testQueueService.Snapshot(200));
-          if (!stop && Array.isArray(snapshot)) {
-            applyQueueSnapshot(snapshot);
-          }
-        } catch {
-          /* best-effort */
+        if (!stop) {
+          consume(view);
+          next = cadence((view?.stats ?? null) as QueueStatsView | null);
         }
       } catch {
         /* polling is best-effort */
@@ -386,11 +398,16 @@ export function ConfigsPage() {
       if (!stop) timer = window.setTimeout(tick, next);
     };
 
+    const offQueueState = Events.On("freeiran:queuestate", (event: { data: QueueLiveStateView }) => {
+      if (!stop) consume(event?.data ?? null);
+    });
+
     void tick();
 
     return () => {
       stop = true;
       window.clearTimeout(timer);
+      offQueueState();
     };
   }, []);
 
@@ -1239,9 +1256,14 @@ export function ConfigsPage() {
 
                           const rect = event.currentTarget.getBoundingClientRect();
 
+                          // Keyboard opening has no toggle trigger element.
+                          contextMenuTriggerRef.current = null;
+
                           setContextMenu({
                             config,
                             anchor: { kind: "rect", rect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom } },
+                            viaTrigger: false,
+                            triggerId: null,
                           });
                         }
                       }}
@@ -1250,7 +1272,15 @@ export function ConfigsPage() {
                         // menu — identical items to the ⋮ menu.
                         event.preventDefault();
 
-                        setContextMenu({ config, anchor: { kind: "point", x: event.clientX, y: event.clientY } });
+                        // Right-click opening has no toggle trigger.
+                        contextMenuTriggerRef.current = null;
+
+                        setContextMenu({
+                          config,
+                          anchor: { kind: "point", x: event.clientX, y: event.clientY },
+                          viaTrigger: false,
+                          triggerId: null,
+                        });
                       }}
                       style={{
                         position: "absolute",
@@ -1337,15 +1367,39 @@ export function ConfigsPage() {
                           className="btn sm ghost dots-btn"
                           aria-label={`More actions for ${name}`}
                           aria-haspopup="menu"
+                          aria-expanded={
+                            contextMenu?.viaTrigger && contextMenu.triggerId === String(config["id"])
+                          }
                           title="More actions"
                           onClick={(event) => {
                             event.stopPropagation();
 
+                            const triggerId = String(config["id"]);
+
+                            // Toggle contract: only the ⋮ trigger that is
+                            // CURRENTLY holding the menu open closes it on
+                            // re-click (its own mousedown is ignored by
+                            // MenuSurface, so the click must do the
+                            // closing). A menu opened by right-click or
+                            // keyboard re-anchors here instead — and in a
+                            // real browser the preceding outside-mousedown
+                            // already closed it, making this an open.
+                            if (contextMenu?.viaTrigger && contextMenu.triggerId === triggerId) {
+                              setContextMenu(null);
+                              contextMenuTriggerRef.current = null;
+
+                              return;
+                            }
+
                             const rect = event.currentTarget.getBoundingClientRect();
+
+                            contextMenuTriggerRef.current = event.currentTarget;
 
                             setContextMenu({
                               config,
                               anchor: { kind: "rect", rect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom } },
+                              viaTrigger: true,
+                              triggerId,
                             });
                           }}
                         >
@@ -1375,7 +1429,8 @@ export function ConfigsPage() {
        * keyboard (Shift+F10 / Menu key). Placement, flipping,
        * clamping, keyboard navigation and focus return come from the
        * ONE shared MenuSurface; the old 240/340/348 hard-coded
-       * geometry is gone.
+       * geometry is gone. The trigger ref makes the opening ⋮ button
+       * toggle the menu instead of flip-flopping.
        */}
       {contextMenu && (
         <MenuSurface
@@ -1383,6 +1438,7 @@ export function ConfigsPage() {
           items={rowMenuItems(contextMenu.config)}
           onClose={() => setContextMenu(null)}
           ariaLabel="Configuration actions"
+          triggerRef={contextMenuTriggerRef}
         />
       )}
     </div>

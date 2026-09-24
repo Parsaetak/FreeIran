@@ -523,6 +523,14 @@ func (a *App) freshTestShortlist(ctx context.Context, records []qcRecord) int {
 					continue // drain the queue; remaining work is abandoned
 				}
 
+				// v0.9.15 one-engine guard: skip fingerprints the
+				// shared test queue is already testing — the queue
+				// stays the single executor and last writer for that
+				// config.
+				if a.queueHas(cfg.Fingerprint()) {
+					continue
+				}
+
 				out := modeTester.TestAndApplyMode(testCtx, &cfg)
 
 				if out.Ping != nil || out.URLTest != nil || cfg.TestedAt != 0 {

@@ -548,6 +548,13 @@ func (s *DiscoveryService) testTopCandidates(ctx context.Context, nodes []discov
 
 		cfg := pending[i].Config
 
+		// v0.9.15 one-engine guard: a fingerprint already queued or
+		// in flight is skipped — the shared queue stays the single
+		// test executor and single last writer for that config.
+		if s.app.queueHas(cfg.Fingerprint()) {
+			continue
+		}
+
 		out := modeTester.TestAndApplyMode(ctx, &cfg)
 
 		if out.Ping != nil || out.URLTest != nil {

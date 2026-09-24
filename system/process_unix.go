@@ -47,7 +47,7 @@ func concealChild(cmd *exec.Cmd) {
 // protocol as Windows (including the test failure-injection hook) so
 // the supervised-fallback lifecycle is exercised uniformly; the actual
 // kernel guarantee on Unix is the process group itself.
-func launchProcess(ctx context.Context, spec ProcessSpec) (*ManagedProcess, error) {
+func launchProcess(ctx context.Context, spec ProcessSpec, cancelLaunch context.CancelFunc) (*ManagedProcess, error) {
 	cmd := exec.CommandContext(ctx, spec.Path, spec.Args...)
 	cmd.Env = spec.Env
 	cmd.Dir = spec.WorkDir
@@ -80,10 +80,10 @@ func launchProcess(ctx context.Context, spec ProcessSpec) (*ManagedProcess, erro
 		// Supervised fallback: the process group still provides
 		// deterministic cleanup; the degradation is recorded and
 		// surfaced, never silent.
-		return supervise(ctx, spec, cmd, nil, false, bindErr.Error())
+		return supervise(ctx, spec, cmd, nil, false, bindErr.Error(), cancelLaunch)
 	}
 
-	return supervise(ctx, spec, cmd, job, true, "")
+	return supervise(ctx, spec, cmd, job, true, "", cancelLaunch)
 }
 
 // reapDescendants enforces the no-descendant-survives invariant after

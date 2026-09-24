@@ -238,6 +238,11 @@ func (b *BinaryManager) Install(ctx context.Context, release Release) error {
 	if strings.TrimSpace(release.SHA256) == "" {
 		err := fmt.Errorf("release carries no published checksum; refusing to install unverified binary")
 
+		// The staged artifact can never be verified against an absent
+		// authority: it is unsafe data, not resumable state — remove
+		// that artifact alone before recording the failure.
+		_ = os.Remove(archivePath)
+
 		return b.fail(manifestStage("verify"), err)
 	}
 
@@ -249,11 +254,20 @@ func (b *BinaryManager) Install(ctx context.Context, release Release) error {
 	if !strings.EqualFold(sum, release.SHA256) {
 		err := fmt.Errorf("checksum mismatch: downloaded %s, published %s", sum, release.SHA256)
 
+		// PROVEN unsafe: a complete artifact whose digest does not
+		// match the published authority is removed — that artifact
+		// alone. Resumable .part bytes and every other staging entry
+		// survive (see fail/reconcileStagingAfterFailure).
+		_ = os.Remove(archivePath)
+
 		return b.fail(manifestStage("verify"), err)
 	}
 
 	if release.Size > 0 && result.Bytes != release.Size {
 		err := fmt.Errorf("size mismatch: downloaded %d, published %d", result.Bytes, release.Size)
+
+		// Same proof standard as the checksum mismatch above.
+		_ = os.Remove(archivePath)
 
 		return b.fail(manifestStage("verify"), err)
 	}
@@ -420,9 +434,12 @@ func (b *BinaryManager) MarkState(state LifecycleState, failureStage, failureRea
 	return b.saveManifest(manifest)
 }
 
-// fail records the failure and cleans staging.
+// fail records the failure and reconciles the staging directory to
+// the transaction's recovery semantics (v0.9.15 — the pre-fix
+// implementation removed the WHOLE staging directory, destroying the
+// exact resumable and reuse-ready state the downloader preserves).
 func (b *BinaryManager) fail(stage string, err error) error {
-	_ = os.RemoveAll(b.StagingDir())
+	b.reconcileStagingAfterFailure(stage)
 
 	manifest := b.LoadManifest()
 	manifest.Name = b.Name
@@ -437,6 +454,38 @@ func (b *BinaryManager) fail(stage string, err error) error {
 	})
 
 	return fmt.Errorf("%s: %s: %w", b.Name, stage, err)
+}
+
+// reconcileStagingAfterFailure removes ONLY the staging state the
+// failed transaction has proven unsafe, and never the recoverable
+// state. The transaction must stay recoverable after an application
+// crash, process termination, network interruption, download timeout,
+// checksum failure, extraction/validation/smoke failure or activation
+// failure:
+//
+//	prepare    nothing recoverable was staged yet.
+//	download   the .part file IS the resumable transfer and a complete
+//	           artifact (if any) is re-validated by downloadOrReuse on
+//	           the next attempt — keep everything.
+//	verify     the proven-unsafe artifact was removed where it was
+//	           proven (checksum/size/authority checks); resumable and
+//	           verified bytes stay.
+//	unpack, validate, smoke, activate
+//	           the archive already passed checksum verification, so it
+//	           is kept for artifact reuse on retry; only the derived
+//	           unpacked tree (possibly half-moved or corrupt) is
+//	           discarded — it is rebuilt on every attempt.
+//
+// bin/ (the last known-good activated binary) and manifest.json are
+// never touched by a failed transaction.
+func (b *BinaryManager) reconcileStagingAfterFailure(stage string) {
+	if stage == manifestStage("prepare") ||
+		stage == manifestStage("download") ||
+		stage == manifestStage("verify") {
+		return
+	}
+
+	_ = os.RemoveAll(filepath.Join(b.StagingDir(), "unpacked"))
 }
 
 func manifestStage(stage string) string { return stage }
@@ -488,7 +537,17 @@ func ensureExecutable(path string) error {
 }
 
 func executableFileName(name string) string {
-	if runtime.GOOS == "windows" && !strings.HasSuffix(strings.ToLower(name), ".exe") {
+	return executableFileNameFor(runtime.GOOS, name)
+}
+
+// executableFileNameFor is the pure platform-naming core of
+// executableFileName: "tor" gains ".exe" on Windows (and only there),
+// an already-.exe name is kept as-is, POSIX names pass through. It
+// exists so the Windows/POSIX fixture contract stays unit-testable on
+// every build host (the v0.9.15 Windows CI failure was exactly a
+// POSIX-named fixture meeting a Windows-named expectation).
+func executableFileNameFor(goos, name string) string {
+	if goos == "windows" && !strings.HasSuffix(strings.ToLower(name), ".exe") {
 		return name + ".exe"
 	}
 

@@ -394,6 +394,28 @@ describe("Configs row action menu (v0.9.13)", () => {
     });
   });
 
+  it("toggles closed on a ⋮ re-click (trigger toggle race)", async () => {
+    await renderPage();
+
+    const dots = screen.getByRole("button", { name: "More actions for Berlin edge" });
+
+    // Open via ⋮.
+    fireEvent.click(dots);
+
+    await waitFor(() => {
+      expect(screen.getByRole("menu", { name: "Configuration actions" })).toBeTruthy();
+    });
+
+    // A real re-click on the trigger is mousedown (ignored as the
+    // trigger) + click (must CLOSE, not reopen — the flip-flop bug).
+    fireEvent.mouseDown(dots);
+    fireEvent.click(dots);
+
+    await waitFor(() => {
+      expect(screen.queryByRole("menu", { name: "Configuration actions" })).toBeNull();
+    });
+  });
+
   it("runs Test through the existing service from the menu", async () => {
     const row = await renderPage();
 

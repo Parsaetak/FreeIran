@@ -27,6 +27,7 @@ package app
 import (
 	"github.com/Parsaetak/FreeIran/engine/connection"
 	"github.com/Parsaetak/FreeIran/engine/pipeline"
+	"github.com/Parsaetak/FreeIran/engine/testqueue"
 	"github.com/Parsaetak/FreeIran/internal/statepub"
 )
 
@@ -126,10 +127,17 @@ func (a *App) stopPublishers() {
 	a.pubMu.Lock()
 	statePub := a.statePub
 	cancel := a.connSubCancel
+	queueCancel := a.queueWatchCancel
 
 	a.statePub = nil
 	a.connSubCancel = nil
+	a.queueWatchCancel = nil
+	a.queueStateListener = nil
 	a.pubMu.Unlock()
+
+	if queueCancel != nil {
+		queueCancel()
+	}
 
 	if cancel != nil {
 		cancel()
@@ -137,6 +145,143 @@ func (a *App) stopPublishers() {
 
 	if statePub != nil {
 		statePub.Stop()
+	}
+}
+
+// SetQueueStateListener registers the emit callback for the ONE
+// authoritative queue-state stream (v0.9.15): complete
+// testqueue.LiveStateView projections pushed on every queue change
+// (coalesced — the newest complete state wins) plus one immediate
+// convergence publish at registration. The composition root
+// (cmd/freeiran) bridges it to the freeiran:queuestate UI event; the
+// UI's recovery read is the LiveState binding — event and recovery
+// read share the SAME shape and semantics. Registering twice is
+// rejected, mirroring SetStateListener.
+func (a *App) SetQueueStateListener(fn func(testqueue.LiveStateView)) {
+	if fn == nil {
+		return
+	}
+
+	a.pubMu.Lock()
+
+	if a.queueStateListener != nil {
+		a.pubMu.Unlock()
+
+		if a.logger != nil {
+			a.logger.Warn("app", "queue_state_listener",
+				"SetQueueStateListener called twice; ignoring the second registration")
+		}
+
+		return
+	}
+
+	a.queueStateListener = fn
+	a.pubMu.Unlock()
+
+	// Convergence at registration: publish the CURRENT complete state
+	// when a queue already exists (the lazy construction has not run
+	// in a fresh session — then the first queue creation publishes).
+	if q := a.currentQueue(); q != nil {
+		fn(liveStateView(q))
+	}
+}
+
+// currentQueue returns the app's test queue, if constructed.
+func (a *App) currentQueue() *testqueue.Queue {
+	a.initMu.Lock()
+	defer a.initMu.Unlock()
+
+	return a.testQueue
+}
+
+// queueHas reports whether the shared test queue currently has a task
+// for the fingerprint (pending or in flight). Satellite test paths
+// (discovery candidate warm-up, Quick Connect shortlist retest) use it
+// as a one-engine guard: a config the queue is already testing is
+// never concurrently retested, so the queue's persisted result stays
+// the single last writer. Nil-queue-safe.
+func (a *App) queueHas(fingerprint string) bool {
+	if q := a.currentQueue(); q != nil {
+		return q.Queued(fingerprint)
+	}
+
+	return false
+}
+
+// startQueueStateWatcher runs the ONE queue-change pump: it follows
+// the current queue across SetMode swaps, waits for coalesced change
+// signals and publishes the newest complete LiveStateView to the
+// registered listener. Started exactly once from ensureTestQueue;
+// exits when the app context is cancelled or stopPublishers clears
+// the listener. A burst of changes coalesces into one publish of the
+// newest state (the queue's change channel has capacity 1), so a
+// 16,000-config batch publishes at observation rate, not mutation
+// rate.
+func (a *App) startQueueStateWatcher(initial *testqueue.Queue) {
+	go func() {
+		q := initial
+
+		for {
+			if q == nil {
+				return
+			}
+
+			changes, cancel := q.SubscribeChanges()
+
+			a.pubMu.Lock()
+			a.queueWatchCancel = cancel
+			listener := a.queueStateListener
+			a.pubMu.Unlock()
+
+			// Initial convergence for this queue instance.
+			if listener != nil {
+				listener(liveStateView(q))
+			}
+
+			select {
+			case <-a.ctx.Done():
+				cancel()
+				return
+			case <-changes:
+			}
+
+			// A change arrived: publish the newest complete state. The
+			// listener may have been cleared by shutdown — publishing
+			// is then skipped, but the loop keeps following the queue
+			// until the app context ends (the queue itself is owned by
+			// the same lifecycle).
+			a.pubMu.Lock()
+			listener = a.queueStateListener
+			a.pubMu.Unlock()
+
+			if listener != nil {
+				listener(liveStateView(q))
+			}
+
+			// Follow a SetMode swap: the old queue's Stop issued one
+			// final change signal above (publishing its drained state);
+			// the next iteration binds to whatever queue is current now.
+			cancel()
+
+			if next := a.currentQueue(); next != nil && next != q {
+				q = next
+			}
+		}
+	}()
+}
+
+// liveStateView builds the complete UI projection from one queue:
+// the authoritative live set + version + the aggregate stats and
+// pause flag — the ONE shape shared by the event stream and the
+// LiveState recovery binding.
+func liveStateView(q *testqueue.Queue) testqueue.LiveStateView {
+	live := q.LiveState()
+
+	return testqueue.LiveStateView{
+		Version:      live.Version,
+		Fingerprints: live.Fingerprints,
+		Stats:        q.Stats(),
+		Paused:       q.Paused(),
 	}
 }
 

@@ -84,17 +84,30 @@ func (b *BinaryManager) downloadOrReuse(ctx context.Context, archivePath string,
 			_ = os.Remove(archivePath)
 
 		case release.Size > 0 && info.Size() < release.Size:
-			// Interrupted download without the .part naming: move it to
-			// the .part name so the downloader RESUMES it.
+			// Interrupted download without the .part naming: fold it
+			// into the .part resume base — keeping WHICHEVER prefix is
+			// longer, so a crash can never discard the furthest-along
+			// durable bytes of the transfer.
 			part := archivePath + ".part"
 
-			_ = os.Remove(part)
+			pinfo, perr := os.Stat(part)
+			if perr == nil && pinfo.Size() >= info.Size() {
+				// The existing .part is already the better resume base.
+				_ = os.Remove(archivePath)
 
-			if rerr := os.Rename(archivePath, part); rerr == nil {
 				logInstall(b.Name, "artifact_reused", map[string]any{
 					"asset": filepath.Base(part),
 					"mode":  "resume",
 				})
+			} else {
+				_ = os.Remove(part)
+
+				if rerr := os.Rename(archivePath, part); rerr == nil {
+					logInstall(b.Name, "artifact_reused", map[string]any{
+						"asset": filepath.Base(part),
+						"mode":  "resume",
+					})
+				}
 			}
 
 		default:

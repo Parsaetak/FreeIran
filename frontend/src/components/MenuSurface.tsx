@@ -109,6 +109,12 @@ export function computeMenuPosition(
 /**
  * MenuSurface renders the popup content through a portal and owns
  * placement, dismissal, keyboard navigation and focus return.
+ *
+ * triggerRef (optional) names the element that OPENED the menu. When
+ * set, outside-pointer dismissal ignores it: the trigger's own click
+ * sequence (mousedown on the trigger closes the menu, then the
+ * subsequent click would reopen it) must toggle — not flip-flop. The
+ * historical gap let a re-click on the trigger never dismiss the menu.
  */
 export function MenuSurface({
   anchor,
@@ -116,12 +122,14 @@ export function MenuSurface({
   onClose,
   ariaLabel,
   restoreFocusTo,
+  triggerRef,
 }: {
   anchor: MenuAnchor;
   items: MenuItem[];
   onClose: () => void;
   ariaLabel: string;
   restoreFocusTo?: HTMLElement | null;
+  triggerRef?: React.RefObject<HTMLElement | null>;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   // First paint is OFF-SCREEN but measured: position: fixed at
@@ -179,7 +187,13 @@ export function MenuSurface({
     const onPointerDown = (event: MouseEvent) => {
       const target = event.target as Node | null;
 
-      if (rootRef.current && target && !rootRef.current.contains(target)) {
+      if (!target) return;
+
+      // The trigger itself is handled by its own toggle click (see the
+      // triggerRef doc): it must not count as an outside dismissal.
+      if (triggerRef?.current?.contains(target)) return;
+
+      if (rootRef.current && !rootRef.current.contains(target)) {
         event.preventDefault();
         onClose();
       }
@@ -199,7 +213,7 @@ export function MenuSurface({
       document.removeEventListener("mousedown", onPointerDown);
       document.removeEventListener("keydown", onKeyDown);
     };
-  }, [onClose]);
+  }, [onClose, triggerRef]);
 
   // ---- keyboard navigation + focus management -------------------------
   useEffect(() => {

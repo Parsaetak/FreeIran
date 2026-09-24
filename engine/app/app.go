@@ -261,9 +261,11 @@ type App struct {
 	// SetConnectionListener only subscribes the UI bridge to it —
 	// one publisher per stream, no stacked dispatch layers.
 	// pubMu serializes registration/stop.
-	pubMu         sync.Mutex
-	statePub      *statepub.Publisher[AppState]
-	connSubCancel func()
+	pubMu              sync.Mutex
+	statePub           *statepub.Publisher[AppState]
+	connSubCancel      func()
+	queueStateListener func(testqueue.LiveStateView)
+	queueWatchCancel   func()
 
 	ingesting atomic.Bool
 	started   atomic.Bool

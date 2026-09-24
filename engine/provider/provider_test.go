@@ -16,7 +16,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -431,6 +433,399 @@ func TestTorInstallRefusesUnsignedRelease(t *testing.T) {
 
 	if _, err := engine.Resolve(context.Background()); err == nil {
 		t.Fatal("resolve must fail without a published checksum")
+	}
+}
+
+// ---- staging transaction recovery (v0.9.15 semantics) -----------------
+//
+// The install transaction must stay recoverable after an interrupted
+// download, a checksum failure, an extraction/validation/smoke failure
+// and an activation failure — while the last known-good activated
+// binary stays intact and proven-unsafe artifacts are removed. The
+// pre-0.9.15 fail() implementation wiped the WHOLE staging directory,
+// destroying the resumable .part bytes the downloader exists to
+// preserve; these tests pin the corrected contract.
+
+// interruptServer serves `failRequests` responses that honor the
+// resume intent (206 + correct Content-Range) but abort the connection
+// after delivering a 1 KiB prefix — exactly the shape of a mid-transfer
+// network failure on a range-aware server — then serves the COMPLETE
+// archive (http.ServeContent) so the downloader resumes from the
+// durable prefix.
+func interruptServer(t *testing.T, archive []byte, failRequests int) *httptest.Server {
+	t.Helper()
+
+	var requests atomic.Int64
+
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) <= int64(failRequests) {
+			offset := int64(0)
+
+			if rangeHeader := r.Header.Get("Range"); rangeHeader != "" {
+				// "bytes=N-" → resume offset N.
+				if _, after, ok := strings.Cut(rangeHeader, "bytes="); ok {
+					start := after
+
+					if idx := strings.Index(after, "-"); idx >= 0 {
+						start = after[:idx]
+					}
+
+					if v, err := strconv.ParseInt(start, 10, 64); err == nil {
+						offset = v
+					}
+				}
+			}
+
+			remaining := int64(len(archive)) - offset
+
+			if remaining <= 0 {
+				http.Error(w, "range not satisfiable", http.StatusRequestedRangeNotSatisfiable)
+
+				return
+			}
+
+			w.Header().Set("Content-Range",
+				fmt.Sprintf("bytes %d-%d/%d", offset, int64(len(archive))-1, len(archive)))
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", remaining))
+			w.WriteHeader(http.StatusPartialContent)
+
+			// A durable 1 KiB prefix of the REQUESTED range, then a
+			// broken connection. The flush makes the prefix reach the
+			// client before the abort (otherwise the server discards
+			// the whole response and the client never writes bytes).
+			chunk := int64(1024)
+
+			if remaining < chunk {
+				chunk = remaining
+			}
+
+			_, _ = w.Write(archive[offset : offset+chunk])
+
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+
+			panic(http.ErrAbortHandler)
+		}
+
+		http.ServeContent(w, r, "asset.tar.gz", time.Time{}, bytes.NewReader(archive))
+	}))
+}
+
+// completeServer serves the archive in full, with Range support.
+func completeServer(t *testing.T, archive []byte) *httptest.Server {
+	t.Helper()
+
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.ServeContent(w, r, "asset.tar.gz", time.Time{}, bytes.NewReader(archive))
+	}))
+}
+
+func TestStagingRecoveryAfterInterruptedDownload(t *testing.T) {
+	archive := buildBundleArchive(t, fakeTorBin, executableFileName("tor"))
+
+	// Phase 1: EVERY request aborts mid-stream (after the resumed
+	// prefix) — every in-call retry layer is exhausted.
+	aborting := interruptServer(t, archive, 1_000_000)
+
+	t.Cleanup(aborting.Close)
+
+	// Phase 2: the healthy server serves the complete archive with
+	// Range support, so the surviving .part prefix is resumed.
+	healthy := completeServer(t, archive)
+
+	t.Cleanup(healthy.Close)
+
+	root := t.TempDir()
+
+	manager := &BinaryManager{
+		Name:           TorName,
+		RootDir:        root,
+		HTTP:           testHTTPClient(aborting.URL),
+		Platform:       PlatformSuffix(runtime.GOOS, runtime.GOARCH),
+		ExecutableName: "tor",
+	}
+
+	release := Release{
+		Version:   "15.0.20",
+		AssetURL:  aborting.URL + "/asset.tar.gz",
+		AssetName: "asset.tar.gz",
+		SHA256:    sha256Hex(archive),
+	}
+
+	// First transaction: the transfer dies mid-stream after all
+	// in-call retries.
+	if err := manager.Install(context.Background(), release); err == nil {
+		t.Fatal("install must fail when every transfer attempt aborts")
+	}
+
+	part := filepath.Join(manager.StagingDir(), "asset.tar.gz.part")
+
+	info, err := os.Stat(part)
+	if err != nil {
+		t.Fatalf("the resumable .part bytes must survive a failed download: %v", err)
+	}
+
+	if info.Size() == 0 || info.Size() >= int64(len(archive)) {
+		t.Fatalf("unexpected .part size %d (want a durable 0<p<len prefix)", info.Size())
+	}
+
+	// Second transaction against the healthy server: the transfer is
+	// completed FROM the surviving prefix. The pre-fix behavior (staging
+	// wiped on failure) would redownload from zero; the recovery
+	// contract is that the transaction completes and activates.
+	manager.HTTP = testHTTPClient(healthy.URL)
+	release.AssetURL = healthy.URL + "/asset.tar.gz"
+
+	if err := manager.Install(context.Background(), release); err != nil {
+		t.Fatalf("install after interrupted download must recover from the resumable bytes: %v", err)
+	}
+
+	if manager.LoadManifest().State != string(StateInstalled) {
+		t.Fatal("recovered transaction must activate the verified bundle")
+	}
+
+	if _, err := os.Stat(part); !os.IsNotExist(err) {
+		t.Fatal("the .part file must be consumed once the transaction completes")
+	}
+}
+
+func TestStagingRecoveryAfterChecksumFailure(t *testing.T) {
+	archive := buildBundleArchive(t, fakeTorBin, executableFileName("tor"))
+
+	server := interruptServer(t, archive, 0) // serves the archive fine
+
+	t.Cleanup(server.Close)
+
+	root := t.TempDir()
+
+	manager := &BinaryManager{
+		Name:           TorName,
+		RootDir:        root,
+		HTTP:           testHTTPClient(server.URL),
+		Platform:       PlatformSuffix(runtime.GOOS, runtime.GOARCH),
+		ExecutableName: "tor",
+	}
+
+	// A known-good activated binary from an earlier release.
+	knownGood := filepath.Join(manager.BinDir(), executableFileName("tor"))
+
+	if err := os.MkdirAll(manager.BinDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(knownGood, []byte("known-good-binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := manager.saveManifest(Manifest{
+		Name:       TorName,
+		BinaryPath: knownGood,
+		Version:    "0.4.8.12",
+		State:      string(StateInstalled),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A mismatched release digest (corrupt artifact expectation).
+	release := Release{
+		Version:   "15.0.20",
+		AssetURL:  server.URL + "/asset.tar.gz",
+		AssetName: "asset.tar.gz",
+		SHA256:    strings.Repeat("c", 64), // matches NOTHING
+	}
+
+	err := manager.Install(context.Background(), release)
+	if err == nil {
+		t.Fatal("install must fail on a checksum mismatch")
+	}
+
+	// The PROVEN-unsafe artifact is removed — no corrupt archive may
+	// linger in staging after a verify failure...
+	if _, err := os.Stat(filepath.Join(manager.StagingDir(), "asset.tar.gz")); !os.IsNotExist(err) {
+		t.Fatal("the mismatched artifact must be removed, not kept")
+	}
+
+	// ...and the known-good binary survives untouched.
+	if _, err := os.Stat(knownGood); err != nil {
+		t.Fatal("the last known-good activated binary must never be touched by a failed install")
+	}
+
+	manifest := manager.LoadManifest()
+
+	if manifest.State != string(StateFailed) || manifest.FailureStage != "verify" {
+		t.Fatalf("manifest = %+v, want failed at verify", manifest)
+	}
+
+	if manifest.BinaryPath != knownGood {
+		t.Fatal("the manifest must keep pointing at the known-good binary")
+	}
+
+	// The next attempt downloads fresh and can still succeed (the
+	// corrupt artifact did not poison the slot).
+	goodRelease := Release{
+		Version:   "15.0.20",
+		AssetURL:  server.URL + "/asset.tar.gz",
+		AssetName: "asset.tar.gz",
+		SHA256:    sha256Hex(archive),
+	}
+
+	if err := manager.Install(context.Background(), goodRelease); err != nil {
+		t.Fatalf("install after a checksum failure must recover: %v", err)
+	}
+
+	if manager.LoadManifest().State != string(StateInstalled) {
+		t.Fatal("the recovery attempt must activate the verified bundle")
+	}
+}
+
+// TestStagingFailureStagePolicy pins the fail() stage policy matrix
+// directly: a failed transaction removes ONLY what it has proven
+// unsafe and never the recoverable state (.part resume bytes, the
+// checksum-verified archive) nor the last known-good activated binary.
+func TestStagingFailureStagePolicy(t *testing.T) {
+	root := t.TempDir()
+
+	manager := &BinaryManager{
+		Name:           TorName,
+		RootDir:        root,
+		ExecutableName: "tor",
+	}
+
+	staging := manager.StagingDir()
+
+	if err := os.MkdirAll(staging, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	artifact := filepath.Join(staging, "asset.tar.gz")
+	part := artifact + ".part"
+	unpacked := filepath.Join(staging, "unpacked")
+
+	for _, path := range []string{artifact, part} {
+		if err := os.WriteFile(path, []byte("payload"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := os.MkdirAll(unpacked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	// DOWNLOAD failure: everything recoverable survives — the .part IS
+	// the resumable transfer.
+	if err := manager.fail(manifestStage("download"), fmt.Errorf("network down")); err == nil {
+		t.Fatal("fail must return the wrapped error")
+	}
+
+	for _, path := range []string{artifact, part, unpacked} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("download-stage failure must keep %s: %v", path, err)
+		}
+	}
+
+	// VERIFY failure (the proven-unsafe artifact was removed at the
+	// proof site): the remaining recoverable state still survives.
+	_ = os.Remove(artifact)
+
+	if err := manager.fail(manifestStage("verify"), fmt.Errorf("checksum mismatch")); err == nil {
+		t.Fatal("fail must return the wrapped error")
+	}
+
+	if _, err := os.Stat(part); err != nil {
+		t.Fatalf("verify-stage failure must keep the .part bytes: %v", err)
+	}
+
+	if _, err := os.Stat(unpacked); err != nil {
+		t.Fatalf("verify-stage failure must keep the unpacked tree: %v", err)
+	}
+
+	// UNPACK/VALIDATE/SMOKE failure: the derived unpacked tree is
+	// discarded, the verified archive and resume bytes stay.
+	if err := manager.fail(manifestStage("smoke"), fmt.Errorf("smoke failed")); err == nil {
+		t.Fatal("fail must return the wrapped error")
+	}
+
+	if _, err := os.Stat(unpacked); !os.IsNotExist(err) {
+		t.Fatal("smoke-stage failure must discard the unpacked tree")
+	}
+
+	if _, err := os.Stat(part); err != nil {
+		t.Fatalf("smoke-stage failure must keep the .part bytes: %v", err)
+	}
+
+	// The manifest records the honest failure — and no activated
+	// binary was ever claimed destroyed (there was none to destroy).
+	manifest := manager.LoadManifest()
+
+	if manifest.State != string(StateFailed) || manifest.FailureStage != "smoke" {
+		t.Fatalf("manifest = %+v, want failed at smoke", manifest)
+	}
+}
+
+func TestStagingRecoveryAfterValidationFailure(t *testing.T) {
+	archive := buildBundleArchive(t, fakeTorBin, executableFileName("tor"))
+
+	server := interruptServer(t, archive, 0)
+
+	t.Cleanup(server.Close)
+
+	root := t.TempDir()
+
+	// ValidateBinary always fails: the archive itself is VALID (its
+	// digest matches), so it must be REUSED by the next attempt rather
+	// than redownloaded; only the derived unpacked tree may go.
+	manager := &BinaryManager{
+		Name:           TorName,
+		RootDir:        root,
+		HTTP:           testHTTPClient(server.URL),
+		Platform:       PlatformSuffix(runtime.GOOS, runtime.GOARCH),
+		ExecutableName: "tor",
+		ValidateBinary: func(context.Context, string) (string, error) {
+			return "", fmt.Errorf("injected validation failure")
+		},
+	}
+
+	release := Release{
+		Version:   "15.0.20",
+		AssetURL:  server.URL + "/asset.tar.gz",
+		AssetName: "asset.tar.gz",
+		SHA256:    sha256Hex(archive),
+	}
+
+	if err := manager.Install(context.Background(), release); err == nil {
+		t.Fatal("install must fail when validation is injected to fail")
+	}
+
+	// The verified archive is kept for artifact reuse...
+	staged := filepath.Join(manager.StagingDir(), "asset.tar.gz")
+
+	if info, err := os.Stat(staged); err != nil || info.Size() != int64(len(archive)) {
+		t.Fatalf("a checksum-verified archive must survive a validation failure (err=%v)", err)
+	}
+
+	// ...while the derived unpacked tree is discarded...
+	if _, err := os.Stat(filepath.Join(manager.StagingDir(), "unpacked")); !os.IsNotExist(err) {
+		t.Fatal("the unpacked tree must be discarded after a validation failure")
+	}
+
+	// ...and the manifest records the honest failure stage.
+	if manifest := manager.LoadManifest(); manifest.FailureStage != "validate" {
+		t.Fatalf("failure stage = %q, want validate", manifest.FailureStage)
+	}
+
+	// Retry with a working validator: the SAME staging artifact is
+	// reused (no redownload) and the transaction completes.
+	manager.ValidateBinary = func(_ context.Context, path string) (string, error) {
+		return "0.4.8.16", nil
+	}
+
+	if err := manager.Install(context.Background(), release); err != nil {
+		t.Fatalf("retry with the reused verified artifact must succeed: %v", err)
+	}
+
+	if manager.LoadManifest().State != string(StateInstalled) {
+		t.Fatal("the retry must activate the verified bundle")
 	}
 }
 
@@ -1561,12 +1956,22 @@ func TestTorSourceAssetHostSplit(t *testing.T) {
 // expert bundles ship debug/tor NEXT to the real tor/tor, and the old
 // first-hit walk returned the debug binary (verified live against
 // 15.0.23). The real binary must win.
+//
+// Platform contract (the Windows CI regression): the fixtures are
+// built through executableFileName, so on Windows the archive carries
+// debug/tor.exe and tor/tor.exe while POSIX carries debug/tor and
+// tor/tor — exactly the layouts the production findExecutable must
+// resolve on each OS. A POSIX-named fixture meeting a Windows-named
+// expectation is what broke run 35996310774; this test now proves the
+// real intended behavior on EVERY supported OS.
 func TestFindExecutableSkipsDebugVariants(t *testing.T) {
 	root := t.TempDir()
 
+	archiveName := executableFileName("tor")
+
 	for _, rel := range []string{
-		"debug/tor",
-		"tor/tor",
+		"debug/" + archiveName,
+		"tor/" + archiveName,
 		"data/geoip",
 		"tor/libcrypto.so.3",
 	} {
@@ -1586,8 +1991,163 @@ func TestFindExecutableSkipsDebugVariants(t *testing.T) {
 		t.Fatalf("findExecutable: %v", err)
 	}
 
-	if want := filepath.Join(root, "tor", "tor"); found != want {
+	if want := filepath.Join(root, "tor", archiveName); found != want {
 		t.Fatalf("found %q, want the real binary %q", found, want)
+	}
+}
+
+// TestExecutableFileNamePlatformContract pins the executable-naming
+// semantics on BOTH platforms, on every build host: Windows appends
+// .exe exactly once, POSIX keeps the native name, and an already-.exe
+// name is never double-suffixed. findExecutable and every fixture
+// builder depend on this contract.
+func TestExecutableFileNamePlatformContract(t *testing.T) {
+	cases := []struct {
+		goos, name, want string
+	}{
+		{"windows", "tor", "tor.exe"},
+		{"windows", "tor.exe", "tor.exe"},
+		{"windows", "TOR", "TOR.exe"},
+		{"windows", "Tor.EXE", "Tor.EXE"},
+		{"windows", "psiphon-tunnel-core-windows-x86_64", "psiphon-tunnel-core-windows-x86_64.exe"},
+		{"linux", "tor", "tor"},
+		{"linux", "tor.exe", "tor.exe"},
+		{"darwin", "tor", "tor"},
+	}
+
+	for _, tc := range cases {
+		if got := executableFileNameFor(tc.goos, tc.name); got != tc.want {
+			t.Errorf("executableFileNameFor(%q, %q) = %q, want %q",
+				tc.goos, tc.name, got, tc.want)
+		}
+	}
+
+	// The runtime helper must agree with the pure core for the host.
+	if got, want := executableFileName("tor"), executableFileNameFor(runtime.GOOS, "tor"); got != want {
+		t.Errorf("executableFileName(%q) = %q, want %q", "tor", got, want)
+	}
+}
+
+// TestFindExecutableNestedArchiveLayouts proves matching handles the
+// real expert-bundle shapes: the executable at the archive root, one
+// directory deep, and layouts where BOTH the platform-named binary
+// and a debug variant exist at several depths — the shallowest
+// non-debug match wins deterministically, and repeated calls return
+// the identical path (staging must be stable across attempts).
+func TestFindExecutableNestedArchiveLayouts(t *testing.T) {
+	archiveName := executableFileName("tor")
+
+	layout := map[string][]string{
+		"flat":        {archiveName},
+		"one-deep":    {"bin/" + archiveName},
+		"nested-deep": {"a/b/c/" + archiveName},
+		"both-depths": {"bin/" + archiveName, "bin/tools/" + archiveName},
+	}
+
+	for name, entries := range layout {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+
+			for _, rel := range entries {
+				full := filepath.Join(root, filepath.FromSlash(rel))
+
+				if err := os.MkdirAll(filepath.Dir(full), 0o700); err != nil {
+					t.Fatal(err)
+				}
+
+				if err := os.WriteFile(full, []byte("#!/bin/sh\n"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			first, err := findExecutable(root, "tor")
+			if err != nil {
+				t.Fatalf("findExecutable: %v", err)
+			}
+
+			second, err := findExecutable(root, "tor")
+			if err != nil {
+				t.Fatalf("findExecutable (repeat): %v", err)
+			}
+
+			if first != second {
+				t.Fatalf("matching not deterministic: %q vs %q", first, second)
+			}
+
+			// The shallowest match must win when several valid
+			// candidates exist.
+			if name == "both-depths" {
+				if want := filepath.Join(root, "bin", archiveName); first != want {
+					t.Fatalf("found %q, want the shallowest candidate %q", first, want)
+				}
+			}
+		})
+	}
+}
+
+// TestFindExecutableDebugLosesAmongCandidates proves the scoring
+// contract when debug variants and real variants mix at the SAME
+// depth: no "debug" path segment may ever win, and a valid candidate
+// beats a debug one regardless of walk order (WalkDir is
+// lexicographic, but the choice must not depend on it).
+func TestFindExecutableDebugLosesAmongCandidates(t *testing.T) {
+	archiveName := executableFileName("tor")
+
+	root := t.TempDir()
+
+	for _, rel := range []string{
+		"debug/" + archiveName,        // debug variant, shallow
+		"release/" + archiveName,      // real variant, same depth
+		"debug/deeper/" + archiveName, // debug variant, deeper
+	} {
+		full := filepath.Join(root, filepath.FromSlash(rel))
+
+		if err := os.MkdirAll(filepath.Dir(full), 0o700); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := os.WriteFile(full, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	found, err := findExecutable(root, "tor")
+	if err != nil {
+		t.Fatalf("findExecutable: %v", err)
+	}
+
+	if want := filepath.Join(root, "release", archiveName); found != want {
+		t.Fatalf("found %q, want the non-debug candidate %q", found, want)
+	}
+}
+
+// TestFindExecutableIgnoresUnrelatedFiles pins that near-miss names
+// never satisfy the lookup: similar prefixes, suffixed variants and
+// unrelated payloads must not make a missing executable "found".
+func TestFindExecutableIgnoresUnrelatedFiles(t *testing.T) {
+	archiveName := executableFileName("tor")
+
+	root := t.TempDir()
+
+	for _, rel := range []string{
+		"tor.gz",
+		"tor-next" + executableFileName("tor-next"),
+		"not-" + archiveName,
+		"tor" + executableFileName("tor") + ".bak",
+	} {
+		full := filepath.Join(root, filepath.FromSlash(rel))
+
+		if err := os.MkdirAll(filepath.Dir(full), 0o700); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := os.WriteFile(full, []byte("x"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := findExecutable(root, "tor"); err == nil {
+		t.Fatal("findExecutable must fail when only unrelated files exist")
 	}
 }
 

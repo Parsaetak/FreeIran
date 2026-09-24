@@ -777,3 +777,116 @@ func TestQueueFull(t *testing.T) {
 		t.Errorf("Enqueue at capacity err = %v, want ErrQueueFull", err)
 	}
 }
+
+// TestLiveStateCompletenessContract pins the v0.9.15 authoritative
+// live-set contract: LiveState reports EVERY pending + in-flight
+// fingerprint (never a bounded page), the version is monotonic across
+// changes, and a fingerprint that was live and is now absent has truly
+// reached a terminal state — the property the UI's false-completion
+// fix is built on.
+func TestLiveStateCompletenessContract(t *testing.T) {
+	q := New(&fakeTester{delay: 50 * time.Millisecond}, Config{
+		Concurrency: 1,
+		Timeout:     5 * time.Second,
+		MaxAttempts: 1,
+	})
+	q.Start(context.Background())
+	defer q.Stop()
+
+	const total = 250 // larger than any UI page bound (200)
+
+	for i := 0; i < total; i++ {
+		if _, err := q.Enqueue(fmt.Sprintf("fp-live-%d", i), "vless", nil, 100, "src", EnqueueDefault); err != nil {
+			t.Fatalf("Enqueue %d: %v", i, err)
+		}
+	}
+
+	// While everything is pending, the live set must be COMPLETE —
+	// all 250 fingerprints, not a 200-task page.
+	live := q.LiveState()
+
+	if len(live.Fingerprints) != total {
+		t.Fatalf("live set = %d fingerprints, want the complete %d (a bounded page is not a live set)", len(live.Fingerprints), total)
+	}
+
+	seen := make(map[string]bool, len(live.Fingerprints))
+
+	for _, fp := range live.Fingerprints {
+		seen[fp] = true
+	}
+
+	for i := 0; i < total; i++ {
+		if !seen[fmt.Sprintf("fp-live-%d", i)] {
+			t.Fatalf("fingerprint fp-live-%d missing from the COMPLETE live set", i)
+		}
+	}
+
+	versionAtFull := live.Version
+
+	if versionAtFull == 0 {
+		t.Fatal("version must be nonzero after enqueues")
+	}
+
+	// Wait for everything to finish, then every fingerprint must be
+	// absent — absence after being observed IS the terminal signal.
+	deadline := time.Now().Add(30 * time.Second)
+
+	for {
+		stats := q.Stats()
+		if stats.TotalCompleted >= total {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("queue did not drain: %d/%d completed", stats.TotalCompleted, total)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	live = q.LiveState()
+
+	if len(live.Fingerprints) != 0 {
+		t.Fatalf("drained queue live set = %v, want empty", live.Fingerprints)
+	}
+
+	if live.Version <= versionAtFull {
+		t.Fatalf("version %d must be strictly greater than %d after completions", live.Version, versionAtFull)
+	}
+}
+
+// TestSubscribeChangesCoalesces pins the change-signal contract: every
+// state change signals the subscriber non-blockingly (capacity-1 — a
+// slow subscriber coalesces bursts into one wake), and cancellation
+// stops the signals without ever blocking the queue.
+func TestSubscribeChangesCoalesces(t *testing.T) {
+	q := New(&fakeTester{delay: 1 * time.Hour}, Config{Concurrency: 1, Timeout: 5 * time.Second, MaxAttempts: 1})
+	q.Start(context.Background())
+	defer q.Stop()
+
+	changes, cancel := q.SubscribeChanges()
+	defer cancel()
+
+	if _, err := q.Enqueue("fp-sig-1", "vless", nil, 100, "src", EnqueueDefault); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	select {
+	case <-changes:
+		// The enqueue's change signal arrived.
+	case <-time.After(2 * time.Second):
+		t.Fatal("no change signal after enqueue")
+	}
+
+	// Cancel, then enqueue again: no panic, no block, no delivery to
+	// the cancelled subscriber (the cancel removed the registration).
+	cancel()
+
+	if _, err := q.Enqueue("fp-sig-2", "vless", nil, 100, "src", EnqueueDefault); err != nil {
+		t.Fatalf("Enqueue 2: %v", err)
+	}
+
+	select {
+	case v := <-changes:
+		t.Fatalf("cancelled subscriber received a signal (version %d)", v)
+	case <-time.After(150 * time.Millisecond):
+	}
+}

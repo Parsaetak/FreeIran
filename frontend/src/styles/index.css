@@ -901,20 +901,6 @@ button {
   display: inline-flex;
 }
 
-.menu {
-  position: absolute;
-  top: calc(100% + 4px);
-  right: 0;
-  min-width: 190px;
-  padding: 4px;
-  background: var(--surface-raised);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-md);
-  z-index: calc(var(--z-tooltip) + 1);
-  animation: fade-slide-in var(--motion-fast) var(--ease-out) both;
-}
-
 .menu-item {
   display: flex;
   align-items: center;

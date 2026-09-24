@@ -380,6 +380,13 @@ func (a *App) ensureTestQueue() (*testqueue.Queue, error) {
 	q.Start(a.ctx)
 
 	a.testQueue = q
+
+	// v0.9.15: the ONE queue-change pump starts with the ONE queue.
+	// From here every queue transition is pushed to the UI as a
+	// coalesced, complete LiveStateView event (freeiran:queuestate);
+	// the frontend's LiveState binding is the recovery read.
+	a.startQueueStateWatcher(q)
+
 	return q, nil
 }
 
@@ -611,6 +618,32 @@ func (s *TestQueueService) Snapshot(limit int) []testqueue.TaskSnapshot {
 		limit = 100
 	}
 	return q.Snapshot(limit)
+}
+
+// LiveState returns the ONE authoritative, COMPLETE queue-state read
+// for the UI (v0.9.15): the full live fingerprint set (pending +
+// in-flight), the monotonic change version, the stats block and the
+// pause flag — in a single binding call.
+//
+// This replaces the previous Stats + Paused + Snapshot(200) polling
+// triple. Snapshot(200) is a BOUNDED page; a task beyond the page
+// would be misread as finished (the false-completion defect). The
+// complete live set carries unambiguous completeness semantics:
+// absence from THIS set is a real terminal transition.
+func (s *TestQueueService) LiveState() (testqueue.LiveStateView, error) {
+	q, err := s.ensureQueue()
+	if err != nil {
+		return testqueue.LiveStateView{}, err
+	}
+
+	live := q.LiveState()
+
+	return testqueue.LiveStateView{
+		Version:      live.Version,
+		Fingerprints: live.Fingerprints,
+		Stats:        q.Stats(),
+		Paused:       q.Paused(),
+	}, nil
 }
 
 // Drain blocks until the queue is empty or 30 minutes elapse.

@@ -262,6 +262,7 @@ export function Menu({
           items={items}
           onClose={closeMenu}
           ariaLabel={ariaLabel}
+          triggerRef={triggerRef}
           restoreFocusTo={triggerRef.current}
         />
       )}

@@ -168,6 +168,21 @@ export interface QueueStatsView {
   core_probe_concurrency?: number;
 }
 
+/**
+ * v0.9.15: the ONE authoritative, COMPLETE queue-state view
+ * (TestQueueService.LiveState and the freeiran:queuestate event — one
+ * shape everywhere). `fingerprints` is the full live set (pending +
+ * in-flight), NOT a bounded page: absence from it is a real terminal
+ * transition, which is the completeness contract the false-completion
+ * fix is built on.
+ */
+export interface QueueLiveStateView {
+  version: number;
+  fingerprints: string[];
+  stats: QueueStatsView;
+  paused: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // v0.9.0 view types
 // ---------------------------------------------------------------------------
