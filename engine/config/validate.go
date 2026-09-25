@@ -99,6 +99,15 @@ func validateHysteria(c *Config) error {
 		return fmt.Errorf("Hysteria authentication is required")
 	}
 
+	// v0.10.3: the obfuscation layer is an ENUMERATED value, not a
+	// free-form string — Hysteria (v1 and v2) implements exactly one
+	// obfuscation protocol (salamander). Accepting arbitrary values
+	// produced runtime configs the core rejects ("unknown obfs").
+	if c.Obfs != "" && c.Obfs != ObfsSalamander {
+		return fmt.Errorf("invalid Hysteria obfs %q (allowed: empty or %q)",
+			c.Obfs, ObfsSalamander)
+	}
+
 	return nil
 }
 
@@ -109,6 +118,21 @@ func validateTUIC(c *Config) error {
 
 	if strings.TrimSpace(c.Password) == "" {
 		return fmt.Errorf("TUIC password is required")
+	}
+
+	// v0.10.3: congestion control is its OWN field with its OWN value
+	// domain — bbr | cubic | new_reno. It must never appear in
+	// Network (the transport slot); the capability matcher would read
+	// it as a transport name. An explicit value outside the domain is
+	// rejected instead of silently forwarded to the core.
+	if c.CongestionControl != "" && !ValidTUICCongestionControl(c.CongestionControl) {
+		return fmt.Errorf("invalid TUIC congestion_control %q (allowed: %s)",
+			c.CongestionControl, strings.Join(TUICCongestionControlValues, ", "))
+	}
+
+	if c.UDPRelayMode != "" && !ValidTUICUDPRelayMode(c.UDPRelayMode) {
+		return fmt.Errorf("invalid TUIC udp_relay_mode %q (allowed: %s)",
+			c.UDPRelayMode, strings.Join(TUICUDPRelayModeValues, ", "))
 	}
 
 	return nil

@@ -3,6 +3,121 @@
 Release history for FreeIran. The newest release is documented in the
 [README](README.md); everything older lives here, newest first.
 
+## v0.10.3 — Windows WinINet ABI/semantics repair, protocol data-model truth pass, secret-free test material
+
+v0.10.3 is a correctness release. It repairs the v0.10.2 Windows
+test/verification failures at root cause (a wrong test expectation, a
+WinINet fidelity gap and a cross-process test race), moves TUIC /
+Hysteria / WireGuard protocol details into their OWN semantic fields
+(replacing the v0.10.2 overloading), and removes committed key-shaped
+test literals that tripped Gitleaks. Every claim below is scoped to
+the evidence actually executed (Linux CI suite, Windows cross-compile
+and static analysis); the Windows-native round-trips run in CI on
+GitHub-hosted Windows runners.
+
+### Windows WinINet — the v0.10.2 CI failures, root-caused
+
+- `TestWinINetStructLayout` failed against a CORRECT production
+  struct: the test's own expectation computed
+  `ptrSize*3 + 16 = 40` bytes on amd64 for
+  `INTERNET_PER_CONN_OPTION_LIST`, while the C structure is **32
+  bytes** (dwSize+pad | pszConnection | counts | pOptions — a
+  double-counted slot in the test formula). The expectation now
+  counts the four pointer-class slots (32 on amd64, 20 on 386). The
+  production mirrors were byte-exact and unchanged.
+- WinINet WPAD fidelity: the connection's autodiscovery policy lives
+  in the SEPARATE `INTERNET_PER_CONN_AUTODISCOVERY_FLAGS` option
+  (the `AUTO_PROXY_FLAG_*` mask), not only in the
+  `PROXY_TYPE_AUTO_DETECT` flag bit. v0.10.2 neither captured nor
+  restored it, so a save/restore cycle could not faithfully restore
+  the autodetect state and restore VERIFICATION could observe an
+  `AUTO_DETECT` bit the record never described. The snapshot now
+  captures the option tolerantly (some builds reject it when no
+  autodiscovery policy exists), persists it in the marker
+  (`autodiscovery_flags`, backward compatible — schema stays v2),
+  and applies it back in the SAME per-connection transaction when a
+  record carries it. Zero still means "not captured" everywhere.
+- `proxyStatesEqual` comparison semantics are now documented per
+  field: mode/server/bypass always compare; the PAC URL compares
+  when the autoconfig mode is claimed (Windows PRESERVES a
+  stored-but-inactive URL — an inactive stale value is not part of
+  the effective state); `AutoDetect` compares only when at least one
+  side is a captured (non-legacy) snapshot — a v1 record never
+  recorded autodetect (the documented v1 fidelity limit);
+  `AutoDiscoveryFlags` compares only when the expected side recorded
+  it. Nothing was weakened silently; each rule names the platform
+  behavior it models.
+- Cross-process test race removed: `engine/app`'s boot-recovery test
+  performs a REAL WinINet restore during boot (machine-global
+  mutation) and had NO restore path — under `-p 2` it raced
+  `engine/tunnel`'s round-trip tests on the same registry-backed
+  state. The runner's proxy state is now captured before the boot
+  and restored VERIFIED afterwards (guaranteed restore path, §16),
+  through new `tunnel.CaptureSystemProxySnapshot` /
+  `tunnel.RestoreSystemProxySnapshot` helpers; and the Windows test
+  step serializes package binaries with `-p 1` because mutating
+  machine-global WinINet state from two processes is inherently
+  nondeterministic.
+- §16 diagnostics: every WinINet round-trip/recovery verification
+  failure now dumps BOTH states field-by-field (flags, effective
+  mode, server, bypass, PAC URL, autodetect, autodiscovery,
+  override) via `dumpProxyState`; the crash-recovery battery in CI
+  runs `-v`, `-p 1`, and `if: always()` so a failing full matrix can
+  never hide the targeted diagnostic evidence again.
+
+### Protocol data model — every detail in its own semantic field
+
+- TUIC: `congestion_control` is a dedicated `Config.CongestionControl`
+  field with an enforced value domain (bbr | cubic | new_reno).
+  v0.10.2 overloaded it into `Network`, so the capability matcher
+  read "bbr" as a TRANSPORT name and matching/validation failed for
+  every congestion-controlled config. `udp_relay_mode` is parsed
+  (native | quadratic; generation pins the documented default
+  `native`). TUIC URIs with values outside the domains are rejected
+  at parse time.
+- Hysteria / Hysteria2: `obfs` → `Config.Obfs`, `obfs-password` →
+  `Config.ObfsPassword`. v0.10.2 mapped obfs→Security (the TLS slot)
+  and obfs-password→Host (the WS host-header slot), corrupting both.
+  Obfuscation values are VALIDATED (empty or salamander) instead of
+  accepting arbitrary strings; generation emits the sing-box
+  `obfs` object only from the dedicated fields.
+- WireGuard: the INI `Address` (LOCAL interface address) is parsed
+  into `Config.InterfaceAddress` — v0.10.2 dropped it entirely and
+  generated a sing-box ENDPOINT with no local `address` at all (the
+  real binary requires one at startup); `AllowedIPs` remains the
+  PEER routing list and never carries interface addresses; the URL
+  parser accepts `address`/`localAddress`. When a configuration
+  records no interface address, the endpoint generator emits the
+  documented deterministic default pair.
+- Parser repair found by the audit: `wireguard://` / `wg://` URIs
+  were UNREACHABLE — `isSupportedScheme` never listed them although
+  the scheme handlers existed. WireGuard URIs now parse.
+- The generated sing-box documents are pinned by new JSON-level tests:
+  tuic `congestion_control`/`udp_relay_mode`, hysteria2 `obfs`
+  object, and the WireGuard endpoint's local `address` +
+  `peers[].allowed_ips` separation.
+- Fingerprints are deliberately UNCHANGED (the new fields are tuning,
+  not identity — same policy as up_mbps/insecure); stored IDs stay
+  stable across the upgrade.
+
+### Security / CI
+
+- Gitleaks: the committed WireGuard-KEY-SHAPED base64 literals in
+  `engine/core/singbox/singbox_test.go` and
+  `engine/app/importservice_test.go` are replaced by keys DERIVED at
+  runtime from deterministic seeds (32-byte ramp → 44-char padded
+  base64). Same coverage, deterministic, syntactically valid, never
+  real credentials, no secret-looking literals committed — and NO
+  Gitleaks suppression, allowlist or rule weakening.
+- Windows CI: full matrix runs `-p 1` (serialized machine-global
+  WinINet mutations), the targeted crash-recovery battery runs
+  always/verbose, and the runtime smoke runs `if: always()`.
+
+### Not changed on purpose
+
+- TUN remains unavailable (honest status, see ROADMAP).
+- No push to GitHub was performed by this release work.
+
 ## v0.10.2 — Windows system-proxy repair, transactional ownership, personal import, real QUIC/WireGuard runtime
 
 v0.10.2 fixes the v0.10.1 Windows regression AT ROOT CAUSE (a broken

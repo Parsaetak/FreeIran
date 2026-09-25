@@ -1,4 +1,4 @@
-# Protocol × core capability matrix (v0.10.2)
+# Protocol × core capability matrix (v0.10.3)
 
 This document is the truthful statement of what FreeIran can execute.
 Status levels:
@@ -33,10 +33,10 @@ v2ray 5.53.0, sing-box 1.14.0.
 | Shadowsocks | yes | yes | tested | tested | tested | real-binary smoke suites |
 | SOCKS | yes | yes | tested | tested | tested | real-binary smoke suites |
 | HTTP | yes | yes | tested | tested | tested | real-binary smoke suites |
-| Hysteria2 | yes (v0.10.2: insecure captured) | yes | not supported by this core | not supported by this core | **tested (new in v0.10.2)** | sing-box 1.14.0 real-binary smoke |
-| TUIC | yes | yes | not supported by this core | not supported by this core | **tested (new in v0.10.2)** | sing-box 1.14.0 real-binary smoke |
-| WireGuard | yes | yes | not supported by this core | not supported by this core | **tested (new in v0.10.2, endpoint form)** | sing-box 1.14.0 real-binary smoke |
-| Hysteria (v1) | yes (v0.10.2: up/down captured) | yes | not supported by this core | not supported by this core | **tested (new in v0.10.2)** | sing-box 1.14.0 real-binary smoke |
+| Hysteria2 | yes (v0.10.2: insecure; v0.10.3: obfs/obfs-password in their own fields) | yes (obfs validated: empty or salamander) | not supported by this core | not supported by this core | **tested (new in v0.10.2)** | sing-box 1.14.0 real-binary smoke |
+| TUIC | yes (v0.10.3: congestion_control + udp_relay_mode in their own fields) | yes (value domains enforced) | not supported by this core | not supported by this core | **tested (new in v0.10.2)** | sing-box 1.14.0 real-binary smoke |
+| WireGuard | yes (v0.10.3: INI/URL `wireguard://` reachable, local Address parsed) | yes | not supported by this core | not supported by this core | **tested (new in v0.10.2, endpoint form; v0.10.3: endpoint always carries a local address)** | sing-box 1.14.0 real-binary smoke |
+| Hysteria (v1) | yes (v0.10.2: up/down; v0.10.3: obfs fields) | yes (obfs validated) | not supported by this core | not supported by this core | **tested (new in v0.10.2)** | sing-box 1.14.0 real-binary smoke |
 
 Notes on the QUIC family and WireGuard (all verified against the real
 pinned binary with `sing-box check` and smoke startup):
@@ -50,10 +50,19 @@ pinned binary with `sing-box check` and smoke startup):
   reject configurations without them, with the reason.
 - WireGuard uses the sing-box ENDPOINT form (`"type": "wireguard"` in
   `endpoints`; the `"wireguard"` OUTBOUND was removed in sing-box
-  1.11). Both local keys are required at validate time; the local
-  interface address is optional (the endpoint auto-generates one when
-  absent). AllowedIPs default to `0.0.0.0/0` + `::/0` when the
-  configuration omits them.
+  1.11). Both local keys are required at validate time. The LOCAL
+  interface address (INI `Address` / URL `address`) maps to the
+  endpoint's `address` — the real binary requires it at startup;
+  when a configuration omits it, the generator emits the documented
+  deterministic default pair. `AllowedIPs` is the PEER routing list
+  and defaults to `0.0.0.0/0` + `::/0`; it never carries interface
+  addresses.
+- v0.10.3 field semantics: `obfs`/`obfs-password` are Hysteria's own
+  fields (validated: empty or salamander); TUIC `congestion_control`
+  (bbr | cubic | new_reno) and `udp_relay_mode` (native | quadratic)
+  are TUIC's own fields and never touch the transport slot (v0.10.2
+  overloaded congestion_control into Network, which the capability
+  matcher read as a transport name).
 - WireGuard execution additionally depends on the sing-box build
   tags `with_wireguard`/`with_gvisor` — present in every official
   release binary the core manager installs.

@@ -363,17 +363,17 @@ jobs:
       # where this step lost communication with the runner and every
       # diagnostic with it):
       #
-      #   -p 2           bounds the number of concurrently RUNNING
-      #                  test binaries. The Windows matrix is
-      #                  process-heavy: system, provider, connection
-      #                  and app tests each supervise real cmd.exe /
-      #                  ping / fake-core children under job objects,
-      #                  and provider's TestMain compiles two more
-      #                  binaries. At the runner's 4 vCPU, the default
-      #                  (-p = GOMAXPROCS = 4) lets four
-      #                  process-spawning suites plus their children
-      #                  starve the runner agent itself; -p 2 keeps
-      #                  headroom so the agent can always heartbeat.
+      #   -p 1           bounds the number of concurrently RUNNING
+      #                  test binaries to ONE. The Windows matrix
+      #                  mutates MACHINE-GLOBAL state: engine/tunnel's
+      #                  WinINet round-trips and engine/app's boot
+      #                  recovery both write the per-connection proxy
+      #                  settings through wininet.dll, and v0.10.2's
+      #                  -p 2 let those two packages race each other
+      #                  on the same registry-backed state
+      #                  (nondeterministic round-trip failures). -p 1
+      #                  serializes the binaries; within a package the
+      #                  mutating tests were always sequential.
       #                  This bounds SCHEDULING, not coverage: every
       #                  test still runs.
       #   -timeout=20m   an explicit, visible per-binary bound. The
@@ -386,24 +386,27 @@ jobs:
       #                  full stacks — is exactly what run 36074448116
       #                  never delivered).
       - name: Run Go tests
-        run: go test -count=1 -p 2 -timeout=20m ./...
+        run: go test -count=1 -p 1 -timeout=20m ./...
         env:
           CGO_ENABLED: "0"
           FREEIRAN_TEST_CORES: ${{ runner.temp }}\freeiran-test-cores
 
-      # v0.10.2: targeted repetition for the REPAIRED Windows
-      # crash-recovery path. The v0.10.1 regression
-      # (TestAppBootsAfterCrashedProxySession, "marker still present
-      # after a successful Windows recovery") was caused by a broken
-      # WinINet INTERNET_PER_CONN_OPTION ABI in proxy_windows.go;
-      # this step runs the boot-recovery test battery repeatedly so a
-      # flaky pass can never masquerade as a fix.
-      - name: Crash-recovery regression battery (repeated)
-        run: go test -count=5 -timeout=10m -run "TestAppBootsAfterCrashedProxySession|TestAppBootsWithoutProxyResidue|TestRecoverStaleProxy.*|TestRecoveryMarker.*|TestEnable.*|TestDisable.*|TestWinINet.*" ./engine/tunnel/ ./engine/app/
+      # v0.10.3: the targeted diagnostic battery runs EVEN WHEN the
+      # full matrix failed (if: always()) — a failing full run must
+      # never hide the targeted evidence. The battery re-runs the
+      # tunnel/app proxy lifecycle suites with full per-field WinINet
+      # state dumps (flags, mode, server, bypass, PAC, autodetect —
+      # dumpProxyState) so the Actions log shows the EXACT divergent
+      # field. -p 1: the two packages mutate machine-global WinINet
+      # state and must never overlap.
+      - name: Crash-recovery regression battery (repeated, always runs)
+        if: always()
+        run: go test -count=5 -p 1 -timeout=10m -v -run "TestAppBootsAfterCrashedProxySession|TestAppBootsWithoutProxyResidue|TestRecoverStaleProxy.*|TestRecoveryMarker.*|TestEnable.*|TestDisable.*|TestWinINet.*" ./engine/tunnel/ ./engine/app/
         env:
           CGO_ENABLED: "0"
 
       - name: Runtime smoke test
+        if: always()
         shell: pwsh
         # Headless application smoke test: boot the engine, verify the
         # service surface, shut down. The webview itself is not launched

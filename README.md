@@ -9,7 +9,7 @@ configurations.
 **Project:** FreeIran — A SHEYTAN Digital System
 **Architect:** Parsa Tak / SHEYTAN
 **Repository:** https://github.com/Parsaetak/FreeIran
-**Current version:** 0.10.2 (see `VERSION`)
+**Current version:** 0.10.3 (see `VERSION`)
 **Status:** production architecture — multi-core protocol runtime with
 managed installation, multi-level node discovery, Ping/URL test modes
 with measured ranking, verified-connection engine with racing,
@@ -18,6 +18,58 @@ memory control and kernel-level process supervision. TUN mode is
 EXPERIMENTAL and disabled in this release (see "TUN mode" below).
 
 ---
+
+## What's new in v0.10.3
+
+v0.10.3 is a Windows-correctness and protocol-truth release: it fixes
+the v0.10.2 Windows test failures at root cause (a wrong test-side ABI
+expectation — the C structure is 32 bytes on amd64, not 40; a WinINet
+WPAD fidelity gap — the AUTODISCOVERY_FLAGS option was never captured
+or restored; and a cross-process test race — the app boot test mutated
+machine-global proxy state with no restore path), moves TUIC/Hysteria/
+WireGuard protocol details into their OWN semantic fields (ending the
+congestion_control→Network and obfs→Security overloading), and removes
+committed key-shaped test literals that tripped Gitleaks — with NO
+suppression or rule weakening. Windows-native round-trips run in CI;
+Linux/full-suite evidence is in the changelog.
+
+### Windows WinINet — root-cause repairs
+
+- `TestWinINetStructLayout` failed against a CORRECT struct: the
+  test's expectation computed 40 bytes where the C
+  `INTERNET_PER_CONN_OPTION_LIST` is **32 bytes** on amd64. The
+  expectation is fixed; production code was not touched to satisfy a
+  wrong test.
+- `INTERNET_PER_CONN_AUTODISCOVERY_FLAGS` (option 5) is now captured,
+  persisted in the ownership marker (backward compatible) and restored
+  in the same per-connection transaction — WPAD autodetect state is
+  faithful in both directions of a save/restore cycle.
+- `proxyStatesEqual` documents per-field comparison semantics
+  (mode/server/bypass always; PAC URL when autoconfig mode is claimed;
+  autodetect only for captured snapshots — the documented v1 fidelity
+  limit). Nothing weakened silently.
+- The app boot-recovery test now has a GUARANTEED restore path
+  (capture → boot → verified restore); Windows CI serializes package
+  binaries (-p 1) so machine-global WinINet mutations never overlap;
+  the crash-recovery diagnostic battery runs `if: always()`, `-v`,
+  with full per-field state dumps on failure.
+
+### Protocol data model truth pass
+
+- TUIC: dedicated `congestion_control` field (bbr | cubic | new_reno —
+  v0.10.2 overloaded it into Network, so the capability matcher read
+  "bbr" as a transport) and parsed `udp_relay_mode`. Values outside
+  the domains are rejected at parse time.
+- Hysteria/Hysteria2: dedicated `obfs`/`obfs-password` fields
+  (v0.10.2 mapped them into Security/Host); values validated
+  (empty or salamander) instead of accepting arbitrary strings.
+- WireGuard: the INI `Address` (LOCAL interface address) is parsed and
+  emitted as the sing-box endpoint `address` — v0.10.2 generated an
+  endpoint with no local address, which the real binary rejects at
+  startup; `AllowedIPs` stays the PEER routing list; `wireguard://` /
+  `wg://` URIs are now actually reachable (the scheme gate never
+  listed them).
+- Fingerprints unchanged — stored configuration IDs remain stable.
 
 ## What's new in v0.10.2
 

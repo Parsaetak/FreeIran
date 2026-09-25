@@ -2,6 +2,7 @@ package singbox_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"os"
 	"testing"
@@ -12,6 +13,24 @@ import (
 	"github.com/Parsaetak/FreeIran/engine/core/contract"
 	"github.com/Parsaetak/FreeIran/engine/core/singbox"
 )
+
+// deterministicKey derives a syntactically valid 32-byte base64 key
+// from a seed byte. v0.10.3: committed key-SHAPED literals trip the
+// Gitleaks wireguard rule even when they are synthetic test vectors,
+// so all WireGuard test material is now derived at RUNTIME:
+// deterministic (same bytes every run, same fingerprints/assertions),
+// syntactically valid (32 bytes → 44-char padded base64), and never
+// a real credential — the seed bytes are an ascending integer ramp,
+// not entropy from any real key.
+func deterministicKey(seed byte) string {
+	key := make([]byte, 32)
+
+	for i := range key {
+		key[i] = seed + byte(i)
+	}
+
+	return base64.StdEncoding.EncodeToString(key)
+}
 
 // TestContract runs the shared backend contract suite against the
 // sing-box adapter with the fake-core process stand-in.
@@ -476,8 +495,9 @@ func tuicConfig() config.Config {
 	}
 }
 
-// wireGuardConfig is the synthetic endpoint fixture (the keys are
-// syntactically valid base64 test vectors, never real credentials).
+// wireGuardConfig is the synthetic endpoint fixture. The keys are
+// derived at runtime by deterministicKey — see the v0.10.3 Gitleaks
+// note above; no secret-looking literal is committed.
 func wireGuardConfig() config.Config {
 	return config.Config{
 		Type: config.TypeWireGuard,
@@ -486,8 +506,8 @@ func wireGuardConfig() config.Config {
 		// smoke proves config acceptance + startup, never a tunnel.
 		Address:    "192.0.2.1",
 		Port:       51820,
-		PrivateKey: "eCtXsJZ27+4PbhDkHnB923tkUn2Gj59wZw5wFA75MnU=",
-		PublicKey:  "Cr8hWlKvtDt7nrvf+f0brNQQzabAqrjfBvas9pmowjo=",
+		PrivateKey: deterministicKey(0x21),
+		PublicKey:  deterministicKey(0x42),
 	}
 }
 

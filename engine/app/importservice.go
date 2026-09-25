@@ -4,15 +4,15 @@
 //
 // The flow (§ Import Configuration):
 //
-//	paste / file
-//	→ detect format          (parser: URL list / base64 subscription / JSON)
-//	→ parse                  (engine/parser — the ONE parser, no second pipeline)
-//	→ normalize + validate   (config.Normalize/Validate + backend Validate)
-//	→ capability preview     (which installed cores can EXECUTE each config)
-//	→ redacted preview       (no credentials in the preview surface)
-//	→ Save                   (existing store + trust model)
-//	→ Test                   (existing TestQueue — user action)
-//	→ Connect                (existing connection engine — user action)
+//      paste / file
+//      → detect format          (parser: URL list / base64 subscription / JSON)
+//      → parse                  (engine/parser — the ONE parser, no second pipeline)
+//      → normalize + validate   (config.Normalize/Validate + backend Validate)
+//      → capability preview     (which installed cores can EXECUTE each config)
+//      → redacted preview       (no credentials in the preview surface)
+//      → Save                   (existing store + trust model)
+//      → Test                   (existing TestQueue — user action)
+//      → Connect                (existing connection engine — user action)
 //
 // Guarantees:
 //
@@ -325,6 +325,13 @@ func importFormat(payload string) string {
 		_ = decoded
 
 		return "base64-subscription"
+	}
+
+	// The parser ALSO accepts WireGuard INI payloads (the
+	// looksLikeWireGuardConfig path); label them honestly instead of
+	// reporting "url-list" for a config file.
+	if parser.LooksLikeWireGuardINI(trimmed) {
+		return "wireguard-ini"
 	}
 
 	return "url-list"

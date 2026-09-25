@@ -51,10 +51,11 @@ import (
 //
 // The option tags used here:
 //
-//	INTERNET_PER_CONN_FLAGS          (1) — proxy enable + type bits
-//	INTERNET_PER_CONN_PROXY_SERVER   (2) — explicit proxy string
-//	INTERNET_PER_CONN_PROXY_BYPASS   (3) — bypass list
-//	INTERNET_PER_CONN_AUTOCONFIG_URL (4) — PAC/autoconfig URL
+//	INTERNET_PER_CONN_FLAGS              (1) — proxy enable + type bits
+//	INTERNET_PER_CONN_PROXY_SERVER       (2) — explicit proxy string
+//	INTERNET_PER_CONN_PROXY_BYPASS       (3) — bypass list
+//	INTERNET_PER_CONN_AUTOCONFIG_URL     (4) — PAC/autoconfig URL
+//	INTERNET_PER_CONN_AUTODISCOVERY_FLAGS (5) — AUTO_PROXY_FLAG_* mask
 //
 // Proxy flags (INTERNET_PER_CONN_FLAGS):
 //
@@ -62,6 +63,20 @@ import (
 //	PROXY_TYPE_PROXY           (2) — explicit proxy server
 //	PROXY_TYPE_AUTO_PROXY_URL  (4) — PAC/autoconfiguration
 //	PROXY_TYPE_AUTO_DETECT     (8) — WPAD automatic detection
+//
+// v0.10.3 fidelity correction: the AUTO_DETECT bit of
+// INTERNET_PER_CONN_FLAGS is only HALF of the WPAD story. Windows
+// keeps the connection's autodiscovery policy in the SEPARATE
+// INTERNET_PER_CONN_AUTODISCOVERY_FLAGS option (AUTO_PROXY_FLAG_*:
+// USER_SET 0x1, ALWAYS_DETECT 0x2, DETECTION_RUN 0x4, …) and
+// re-derives the AUTO_DETECT flag bit from it on query. v0.10.2
+// neither captured nor restored option 5, so a session that saved a
+// connection with WPAD enabled could not restore it faithfully and
+// restore VERIFICATION could observe an AUTO_DETECT bit the record
+// never described. v0.10.3 captures option 5 tolerantly (it is
+// rejected by some builds when no autodiscovery policy exists),
+// persists it in the snapshot, and applies it back when the record
+// carries it. Zero continues to mean "not captured" everywhere.
 //
 // String allocation/free semantics: set() hands WinINet pointers to
 // UTF-16 buffers owned by this call (kept alive across the syscall);
@@ -248,6 +263,13 @@ func (b *winINetBackend) Restore(previous SystemProxySnapshot) error {
 // captured proxy mode (explicit / PAC / autodetect / direct) and the
 // associated strings. Legacy (v1) snapshots — no Flags captured —
 // derive the mode from Enabled/Server (documented v1 fidelity limit).
+//
+// v0.10.3: a snapshot that captured the connection's
+// INTERNET_PER_CONN_AUTODISCOVERY_FLAGS (v2+ records) also restores
+// it, so WPAD autodetection state is faithful on both directions of
+// a save/restore cycle. A record without it (zero) leaves the
+// connection's autodiscovery policy untouched — "not captured" must
+// never become "clobbered".
 func (b *winINetBackend) applySnapshot(s SystemProxySnapshot) error {
 	flags := s.Flags & allProxyTypeFlags
 
@@ -271,10 +293,10 @@ func (b *winINetBackend) applySnapshot(s SystemProxySnapshot) error {
 	// A plain-direct restore clears everything else; WinINet expects
 	// the non-direct flags to carry their strings.
 	if flags == proxyTypeDirect {
-		return b.set(flags, "", bypassJoin(s.Bypass), "")
+		return b.setFull(flags, "", bypassJoin(s.Bypass), "", s.AutoDiscoveryFlags)
 	}
 
-	return b.set(flags, s.Server, bypassJoin(s.Bypass), pac)
+	return b.setFull(flags, s.Server, bypassJoin(s.Bypass), pac, s.AutoDiscoveryFlags)
 }
 
 // verifyMatches reads the ACTUAL platform state and compares it
@@ -304,8 +326,10 @@ func bypassJoin(bypass []string) string {
 // v0.10.2 semantics: FLAGS + PROXY_SERVER + PROXY_BYPASS are queried
 // together (all always valid); the AUTOCONFIG_URL is queried in a
 // second, tolerant call (some Windows builds reject the option when
-// no PAC is configured). Returned strings are WinINet-allocated and
-// are freed with GlobalFree after conversion.
+// no PAC is configured). v0.10.3 adds the tolerant
+// AUTODISCOVERY_FLAGS query — the other half of the WPAD state.
+// Returned strings are WinINet-allocated and are freed with
+// GlobalFree after conversion.
 func (b *winINetBackend) query() (SystemProxySnapshot, error) {
 	flags, server, bypass, err := b.queryCore()
 	if err != nil {
@@ -313,16 +337,18 @@ func (b *winINetBackend) query() (SystemProxySnapshot, error) {
 	}
 
 	pac := b.queryAutoconfigURL()
+	autoDiscovery := b.queryAutoDiscoveryFlags()
 
 	snapshot := SystemProxySnapshot{
-		Enabled:       flags&proxyTypeProxy != 0,
-		Server:        server,
-		Bypass:        splitBypass(bypass),
-		Override:      bypass,
-		AutoConfigURL: pac,
-		AutoDetect:    flags&proxyTypeAutoDetect != 0,
-		Flags:         flags & allProxyTypeFlags,
-		Saved:         b.hasSaved,
+		Enabled:            flags&proxyTypeProxy != 0,
+		Server:             server,
+		Bypass:             splitBypass(bypass),
+		Override:           bypass,
+		AutoConfigURL:      pac,
+		AutoDetect:         flags&proxyTypeAutoDetect != 0,
+		Flags:              flags & allProxyTypeFlags,
+		AutoDiscoveryFlags: autoDiscovery,
+		Saved:              b.hasSaved,
 	}
 
 	return snapshot, nil
@@ -399,10 +425,54 @@ func (b *winINetBackend) queryAutoconfigURL() string {
 	return globalAllocedUTF16(&options[0].value)
 }
 
+// queryAutoDiscoveryFlags queries the connection's
+// INTERNET_PER_CONN_AUTODISCOVERY_FLAGS (the AUTO_PROXY_FLAG_* mask
+// that accompanies the AUTO_DETECT flag bit). Tolerant like the PAC
+// query: an error or a zero value means "not reported by this
+// build/connection", which the snapshot algebra treats as "not
+// captured" — never as a policy of "none".
+func (b *winINetBackend) queryAutoDiscoveryFlags() uint32 {
+	options := make([]internetPerConnOption, 1)
+	options[0].dwOption = internetPerConnAutoDiscoveryFlags
+
+	list := internetPerConnOptionList{
+		dwSize:        uint32(unsafe.Sizeof(internetPerConnOptionList{})),
+		pszConnection: 0,
+		dwOptionCount: uint32(len(options)),
+		pOptions:      uintptr(unsafe.Pointer(&options[0])),
+	}
+
+	size := list.dwSize
+
+	ret, _, _ := procInternetQueryOption.Call(
+		0,
+		uintptr(internetOptionPerConnectionOption),
+		uintptr(unsafe.Pointer(&list)),
+		uintptr(unsafe.Pointer(&size)),
+	)
+	runtime.KeepAlive(&options)
+	runtime.KeepAlive(&list)
+
+	if ret == 0 {
+		return 0
+	}
+
+	return uint32(options[0].value)
+}
+
 // set writes the per-connection proxy settings. Empty autoconfig
 // selects a 3-option list; a non-empty PAC URL is appended as its
 // own INTERNET_PER_CONN_AUTOCONFIG_URL entry.
 func (b *winINetBackend) set(flags uint32, proxyServer, bypass, autoconfig string) error {
+	return b.setFull(flags, proxyServer, bypass, autoconfig, 0)
+}
+
+// setFull is set with autodiscovery-flag fidelity: a non-zero
+// autoDiscovery value appends an INTERNET_PER_CONN_AUTODISCOVERY_FLAGS
+// entry so the connection's WPAD policy is written in the SAME
+// transaction as the flags (WinINet applies a per-connection list
+// atomically — flags and autodiscovery must never be two calls).
+func (b *winINetBackend) setFull(flags uint32, proxyServer, bypass, autoconfig string, autoDiscovery uint32) error {
 	serverUTF16, err := syscall.UTF16PtrFromString(proxyServer)
 	if err != nil {
 		return fmt.Errorf("proxy server string: %w", err)
@@ -425,6 +495,10 @@ func (b *winINetBackend) set(flags uint32, proxyServer, bypass, autoconfig strin
 		count = 4
 	}
 
+	if autoDiscovery != 0 {
+		count++
+	}
+
 	options := make([]internetPerConnOption, count)
 	options[0].dwOption = internetPerConnFlags
 	options[0].value = uintptr(flags)
@@ -435,9 +509,17 @@ func (b *winINetBackend) set(flags uint32, proxyServer, bypass, autoconfig strin
 	options[2].dwOption = internetPerConnProxyBypass
 	options[2].value = uintptr(unsafe.Pointer(bypassUTF16))
 
+	next := 3
+
 	if pacUTF16 != nil {
-		options[3].dwOption = internetPerConnAutoconfigURL
-		options[3].value = uintptr(unsafe.Pointer(pacUTF16))
+		options[next].dwOption = internetPerConnAutoconfigURL
+		options[next].value = uintptr(unsafe.Pointer(pacUTF16))
+		next++
+	}
+
+	if autoDiscovery != 0 {
+		options[next].dwOption = internetPerConnAutoDiscoveryFlags
+		options[next].value = uintptr(autoDiscovery)
 	}
 
 	list := internetPerConnOptionList{

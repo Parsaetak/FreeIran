@@ -498,7 +498,9 @@ func buildSBOutbound(cfg config.Config, security config.Security) (*sbOutbound, 
 	case config.TypeHysteria2:
 		// Verified against v1.14.0: TLS required (checked at startup),
 		// password auth, optional salamander obfs, optional
-		// bandwidth caps.
+		// bandwidth caps. v0.10.3: obfs comes from its OWN fields
+		// (Obfs/ObfsPassword) — v0.10.2 read it out of Security/Host,
+		// which the parser no longer pollutes.
 		outbound.Type = "hysteria2"
 		outbound.Server = cfg.Address
 		outbound.ServerPort = cfg.Port
@@ -506,21 +508,53 @@ func buildSBOutbound(cfg config.Config, security config.Security) (*sbOutbound, 
 		outbound.UpMbps = cfg.UpMbps
 		outbound.DownMbps = cfg.DownMbps
 
-		if cfg.Security != "" && cfg.Security != string(config.SecurityNone) {
-			outbound.Obfs = &sbObfs{Type: cfg.Security, Password: cfg.Host}
+		if cfg.Obfs != "" && cfg.Obfs != config.ObfsSalamander {
+			return nil, firerrors.New(firerrors.KindInvalidInput,
+				Subsystem, "build",
+				"invalid Hysteria2 obfs %q (allowed: empty or %q)", cfg.Obfs, config.ObfsSalamander)
+		}
+
+		if cfg.Obfs != "" {
+			outbound.Obfs = &sbObfs{Type: cfg.Obfs, Password: cfg.ObfsPassword}
 		}
 
 	case config.TypeTUIC:
 		// Verified against v1.14.0: TLS required, uuid+password (v5
-		// auth), congestion control from the URI's congestion_control
-		// (parsed into Network by the parser), native UDP relay.
+		// auth), native UDP relay. v0.10.3: congestion_control comes
+		// from its OWN field (v0.10.2 read it out of Network, which
+		// the parser no longer pollutes — "bbr" is not a transport).
+		// The value domain was validated upstream; enforce it here so
+		// a programmatically-built config cannot smuggle garbage into
+		// the core document.
 		outbound.Type = "tuic"
 		outbound.Server = cfg.Address
 		outbound.ServerPort = cfg.Port
 		outbound.UUID = cfg.UUID
 		outbound.Password = cfg.Password
-		outbound.CongestionControl = cfg.Network
-		outbound.UDPRelayMode = "native"
+
+		if cfg.CongestionControl != "" && !config.ValidTUICCongestionControl(cfg.CongestionControl) {
+			return nil, firerrors.New(firerrors.KindInvalidInput,
+				Subsystem, "build",
+				"invalid TUIC congestion_control %q (allowed: %s)",
+				cfg.CongestionControl, strings.Join(config.TUICCongestionControlValues, ", "))
+		}
+
+		outbound.CongestionControl = cfg.CongestionControl
+
+		if cfg.UDPRelayMode != "" && !config.ValidTUICUDPRelayMode(cfg.UDPRelayMode) {
+			return nil, firerrors.New(firerrors.KindInvalidInput,
+				Subsystem, "build",
+				"invalid TUIC udp_relay_mode %q (allowed: %s)",
+				cfg.UDPRelayMode, strings.Join(config.TUICUDPRelayModeValues, ", "))
+		}
+
+		// sing-box defaults udp_relay_mode to "native"; pin the
+		// documented default when the config did not choose one.
+		outbound.UDPRelayMode = cfg.UDPRelayMode
+
+		if outbound.UDPRelayMode == "" {
+			outbound.UDPRelayMode = config.UDPRelayModeNative
+		}
 
 	case config.TypeHysteria:
 		// Verified against v1.14.0: TLS required, auth_str auth,
@@ -534,8 +568,14 @@ func buildSBOutbound(cfg config.Config, security config.Security) (*sbOutbound, 
 		outbound.UpMbps = cfg.UpMbps
 		outbound.DownMbps = cfg.DownMbps
 
-		if cfg.Security != "" && cfg.Security != string(config.SecurityNone) {
-			outbound.Obfs = &sbObfs{Type: cfg.Security, Password: cfg.Host}
+		if cfg.Obfs != "" && cfg.Obfs != config.ObfsSalamander {
+			return nil, firerrors.New(firerrors.KindInvalidInput,
+				Subsystem, "build",
+				"invalid Hysteria obfs %q (allowed: empty or %q)", cfg.Obfs, config.ObfsSalamander)
+		}
+
+		if cfg.Obfs != "" {
+			outbound.Obfs = &sbObfs{Type: cfg.Obfs, Password: cfg.ObfsPassword}
 		}
 
 	case config.TypeSOCKS:
@@ -586,11 +626,36 @@ func buildSBOutbound(cfg config.Config, security config.Security) (*sbOutbound, 
 
 // buildSBWireGuardEndpoint converts a normalized WireGuard
 // configuration into the sing-box endpoint form.
+//
+// v0.10.3 endpoint semantics (the real v1.14 binary is authoritative:
+// a wireguard ENDPOINT without a local `address` is rejected at
+// startup with "missing local address" — the v0.10.2 document had
+// no local address and only ever passed `sing-box check` in the
+// fake-core smoke, never against the real binary's stricter runtime
+// path):
+//
+//   - `address`      — the LOCAL interface address list
+//     (cfg.InterfaceAddress); when the configuration did not record
+//     one, a deterministic link-local-style default pair is
+//     generated (documented, stable across runs).
+//   - `peers[].address/port` — the PEER endpoint (cfg.Address/Port).
+//   - `peers[].allowed_ips` — the PEER routing list
+//     (cfg.AllowedIPs, defaulting to 0.0.0.0/0 + ::/0).
 func buildSBWireGuardEndpoint(cfg config.Config) *sbEndpoint {
+	address := cfg.InterfaceAddress
+
+	if len(address) == 0 {
+		// Deterministic local addresses for the generated endpoint
+		// (the documented default when the imported configuration did
+		// not carry an INI Address / URI address parameter).
+		address = []string{"172.19.0.2/32", "fdfe:dcba:9876::2/128"}
+	}
+
 	endpoint := &sbEndpoint{
 		Type:       "wireguard",
 		Tag:        "proxy",
 		System:     false,
+		Address:    address,
 		PrivateKey: cfg.PrivateKey,
 		MTU:        cfg.MTU,
 		Peers: []sbWGPeer{

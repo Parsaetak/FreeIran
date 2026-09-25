@@ -36,10 +36,11 @@ const Subsystem = "tunnel"
 // (documented in proxy_windows.go; declared here because the
 // platform-neutral snapshot algebra compares them).
 const (
-	internetPerConnFlags         = 1
-	internetPerConnProxyServer   = 2
-	internetPerConnProxyBypass   = 3
-	internetPerConnAutoconfigURL = 4
+	internetPerConnFlags              = 1
+	internetPerConnProxyServer        = 2
+	internetPerConnProxyBypass        = 3
+	internetPerConnAutoconfigURL      = 4
+	internetPerConnAutoDiscoveryFlags = 5
 
 	proxyTypeDirect       = 1
 	proxyTypeProxy        = 2
@@ -154,6 +155,18 @@ type SystemProxySnapshot struct {
 	AutoConfigURL string `json:"autoconfig_url,omitempty"`
 	AutoDetect    bool   `json:"autodetect,omitempty"`
 	Flags         uint32 `json:"flags,omitempty"`
+
+	// v0.10.3 fidelity field: the connection's autodiscovery
+	// settings (INTERNET_PER_CONN_AUTODISCOVERY_FLAGS, option 5 —
+	// the AUTO_PROXY_FLAG_* mask that Windows keeps BESIDE the
+	// PROXY_TYPE_AUTO_DETECT flag bit). v0.10.2 never captured or
+	// restored it, so a session could not faithfully restore the
+	// WPAD autodetection state it had saved: the AUTO_PROXY flags
+	// live in this option, not in INTERNET_PER_CONN_FLAGS, and
+	// Windows re-derives the AUTO_DETECT flag bit from it on query.
+	// Zero = not captured (legacy v1 records) — the comparison
+	// algebra treats zero as "unknown", never as "absent".
+	AutoDiscoveryFlags uint32 `json:"autodiscovery_flags,omitempty"`
 }
 
 // ErrOwnershipResidual is returned when the proxy STATE was restored
@@ -248,13 +261,24 @@ func proxyModeOf(s SystemProxySnapshot) string {
 	return "direct"
 }
 
+// isLegacySnapshot reports whether a snapshot predates the v0.10.2
+// fidelity fields (no raw flags captured). The comparison algebra
+// must not hold a legacy snapshot to fields it never recorded: the
+// documented v1 fidelity limit is that PAC/autodetect state was not
+// captured, so a legacy-vs-captured comparison verifies only the
+// fields BOTH sides actually describe.
+func isLegacySnapshot(s SystemProxySnapshot) bool {
+	return s.Flags == 0
+}
+
 // normalizedProxyState returns a canonical copy: trimmed strings,
 // sorted bypass entries, legacy fields folded into the mode.
 func normalizedProxyState(s SystemProxySnapshot) SystemProxySnapshot {
 	out := SystemProxySnapshot{
-		Server:        strings.TrimSpace(s.Server),
-		AutoConfigURL: strings.TrimSpace(s.AutoConfigURL),
-		AutoDetect:    s.AutoDetect,
+		Server:             strings.TrimSpace(s.Server),
+		AutoConfigURL:      strings.TrimSpace(s.AutoConfigURL),
+		AutoDetect:         s.AutoDetect,
+		AutoDiscoveryFlags: s.AutoDiscoveryFlags,
 	}
 
 	if len(s.Bypass) > 0 {
@@ -280,6 +304,28 @@ func normalizedProxyState(s SystemProxySnapshot) SystemProxySnapshot {
 // proxyStatesEqual compares two snapshots in normalized form: the
 // canonical MODE must match, then server, PAC URL, autodetect and the
 // bypass set (order-insensitive).
+//
+// v0.10.3 comparison semantics (documented, not weakened blindly):
+//
+//   - The canonical MODE always compares — it is the effective proxy
+//     behavior and both legacy and captured snapshots derive it.
+//   - Server and the bypass set always compare — they are the
+//     effective explicit-proxy configuration.
+//   - The PAC URL compares only when at least one side claims the
+//     autoconfig MODE: Windows PRESERVES a stored-but-inactive
+//     AutoConfigURL in the connection settings after the flags move
+//     away from PROXY_TYPE_AUTO_PROXY_URL, so an inactive stale URL
+//     is not part of the effective state and cannot fail a restore
+//     that never promised to clear it. When the mode IS autoconfig,
+//     the URL is the effective configuration and compares strictly.
+//   - AutoDetect compares only when at least one side is a CAPTURED
+//     snapshot (raw flags present). A legacy v1 snapshot never
+//     recorded autodetect state (the documented v1 fidelity limit);
+//     holding it to an observed AUTO_DETECT bit would fail recovery
+//     for state it could not have known.
+//   - AutoDiscoveryFlags compares only when the EXPECTED side
+//     recorded it (non-zero): zero means "not captured" for legacy
+//     records, never "the machine must show none".
 func proxyStatesEqual(a, b SystemProxySnapshot) bool {
 	na, nb := normalizedProxyState(a), normalizedProxyState(b)
 
@@ -287,7 +333,23 @@ func proxyStatesEqual(a, b SystemProxySnapshot) bool {
 		return false
 	}
 
-	if na.Server != nb.Server || na.AutoConfigURL != nb.AutoConfigURL || na.AutoDetect != nb.AutoDetect {
+	if na.Server != nb.Server {
+		return false
+	}
+
+	modeA, modeB := proxyModeOf(na), proxyModeOf(nb)
+
+	if (modeA == "autoconfig" || modeB == "autoconfig") && na.AutoConfigURL != nb.AutoConfigURL {
+		return false
+	}
+
+	if !isLegacySnapshot(na) || !isLegacySnapshot(nb) {
+		if na.AutoDetect != nb.AutoDetect {
+			return false
+		}
+	}
+
+	if na.AutoDiscoveryFlags != 0 && na.AutoDiscoveryFlags != nb.AutoDiscoveryFlags {
 		return false
 	}
 
@@ -302,6 +364,23 @@ func proxyStatesEqual(a, b SystemProxySnapshot) bool {
 	}
 
 	return true
+}
+
+// dumpProxyState renders a snapshot for FAILURE DIAGNOSTICS: every
+// fidelity field, the canonical mode and the raw flag mask. This is
+// the §16 CI diagnostic contract — a verification mismatch must
+// print BOTH sides in full so the exact divergent field is visible
+// in the Actions log (flags, mode, server, bypass, PAC, autodetect).
+func dumpProxyState(label string, s SystemProxySnapshot) string {
+	bypass := "<none>"
+
+	if len(s.Bypass) > 0 {
+		bypass = "[" + strings.Join(s.Bypass, "; ") + "]"
+	}
+
+	return fmt.Sprintf("%s: mode=%s flags=0x%x autodiscovery=0x%x autodetect=%t server=%q bypass=%s pac=%q override=%q",
+		label, proxyModeOf(s), s.Flags, s.AutoDiscoveryFlags, s.AutoDetect,
+		s.Server, bypass, s.AutoConfigURL, s.Override)
 }
 
 // systemProxyActivated reports whether the observed platform state
@@ -341,6 +420,26 @@ func systemProxyActivated(observed SystemProxySnapshot, host string, port int) b
 // ErrUnsupportedPlatform.
 func New() *Controller {
 	return NewWithProxyBackend(newSystemProxyBackend())
+}
+
+// CaptureSystemProxySnapshot reads the ACTUAL platform proxy state
+// through the platform backend (WinINet on Windows). It exists for
+// the guaranteed-restore-path contract: a test (or diagnostic tool)
+// that may let the application mutate the machine's proxy settings
+// must FIRST capture this snapshot and MUST defer
+// RestoreSystemProxySnapshot with a verified restore. On platforms
+// without a platform backend the error says so — never a fake
+// snapshot.
+func CaptureSystemProxySnapshot() (SystemProxySnapshot, error) {
+	return newSystemProxyBackend().Current()
+}
+
+// RestoreSystemProxySnapshot applies a previously captured snapshot
+// back to the platform and VERIFIES the platform state matches
+// before reporting success — the same gate boot recovery uses. This
+// is the other half of the guaranteed restore path.
+func RestoreSystemProxySnapshot(s SystemProxySnapshot) error {
+	return newSystemProxyBackend().Restore(s)
 }
 
 // NewWithProxyBackend constructs a Controller with an injected

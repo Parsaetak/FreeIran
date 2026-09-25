@@ -55,6 +55,16 @@ import (
 //	    dwOptionCount; DWORD dwOptionError; LPINT pOptions; }
 //	    INTERNET_PER_CONN_OPTION_LIST;
 //	  — amd64: sizeof 32   — 386: sizeof 20
+//
+//	  amd64: dwSize(4)+pad(4) | pszConnection(8) | counts(4+4) |
+//	         pOptions(8)  = 32. The v0.10.2 test computed
+//	         ptrSize*3+16 = 40 — a double-counted slot — and the
+//	         mismatch FAILED the layout test against a struct
+//	         that is byte-exact with the C ABI. The production
+//	         mirrors were never wrong; the EXPECTATION was.
+//	         (v0.10.3 fix: the formula now counts the four
+//	         pointer-class slots: dwSize+pad, pszConnection, the
+//	         two DWORDs, pOptions.)
 func TestWinINetStructLayout(t *testing.T) {
 	ptrSize := unsafe.Sizeof(uintptr(0))
 
@@ -67,9 +77,11 @@ func TestWinINetStructLayout(t *testing.T) {
 		t.Fatalf("offsetof(Value) = %d, want %d", got, ptrSize)
 	}
 
-	wantList := ptrSize*3 + 16 // dwSize+pad, pszConnection, counts, pOptions
+	// dwSize+pad (ptrSize) + pszConnection (ptrSize) + the two
+	// DWORD counts (8) + pOptions (ptrSize).
+	wantList := ptrSize*2 + 8 + ptrSize
 	if got := unsafe.Sizeof(internetPerConnOptionList{}); got != wantList {
-		t.Fatalf("sizeof(INTERNET_PER_CONN_OPTION_LIST) = %d, want %d", got, wantList)
+		t.Fatalf("sizeof(INTERNET_PER_CONN_OPTION_LIST) = %d, want %d (amd64 must be 32, 386 must be 20 — the WinINet C ABI)", got, wantList)
 	}
 
 	if got := unsafe.Offsetof(internetPerConnOptionList{}.pOptions); got != wantList-ptrSize {
@@ -93,6 +105,9 @@ func saveSystemProxyState(t *testing.T) SystemProxySnapshot {
 }
 
 // restoreSystemProxyState applies a snapshot back and verifies it.
+// On verification failure BOTH sides are dumped field-by-field (the
+// §16 diagnostic contract) before the fatal — the Actions log must
+// show the exact divergent field, not just "mismatch".
 func restoreSystemProxyState(t *testing.T, snap SystemProxySnapshot) {
 	t.Helper()
 
@@ -103,6 +118,13 @@ func restoreSystemProxyState(t *testing.T, snap SystemProxySnapshot) {
 	}
 
 	if err := backend.verifyMatches(snap); err != nil {
+		observed, qerr := backend.Current()
+		if qerr == nil {
+			t.Logf("restore verification diagnostic:")
+			t.Logf("  %s", dumpProxyState("expected", snap))
+			t.Logf("  %s", dumpProxyState("observed ", observed))
+		}
+
 		t.Fatalf("verify runner proxy settings restored: %v", err)
 	}
 }
@@ -180,7 +202,8 @@ func TestWinINetDirectToFreeIranToDirect(t *testing.T) {
 }
 
 // TestWinINetExplicitProxyRoundTrip preserves a pre-existing explicit
-// proxy through a FreeIran session.
+// proxy through a FreeIran session. Every comparison failure dumps
+// both states field-by-field (§16 diagnostics).
 func TestWinINetExplicitProxyRoundTrip(t *testing.T) {
 	withRunnerProxyState(t)
 
@@ -211,7 +234,12 @@ func TestWinINetExplicitProxyRoundTrip(t *testing.T) {
 	}
 
 	if !proxyStatesEqual(final, original) {
-		t.Fatalf("user's original explicit proxy not restored: got %+v, want %+v", final, original)
+		t.Logf("explicit-proxy round-trip diagnostic:")
+		t.Logf("  %s", dumpProxyState("expected", original))
+		t.Logf("  %s", dumpProxyState("observed ", final))
+
+		t.Fatalf("user's original explicit proxy not restored: got mode %q, want mode %q",
+			proxyModeOf(final), proxyModeOf(original))
 	}
 }
 
@@ -247,7 +275,13 @@ func TestWinINetPACRoundTrip(t *testing.T) {
 	}
 
 	if !proxyStatesEqual(final, original) {
-		t.Fatalf("PAC state not restored: got %+v, want %+v", final, original)
+		t.Logf("PAC round-trip diagnostic:")
+		t.Logf("  %s", dumpProxyState("expected", original))
+		t.Logf("  %s", dumpProxyState("observed ", final))
+
+		t.Fatalf("PAC state not restored: got mode %q (pac %q), want mode %q (pac %q)",
+			proxyModeOf(final), final.AutoConfigURL,
+			proxyModeOf(original), original.AutoConfigURL)
 	}
 }
 
@@ -369,6 +403,17 @@ func TestRecoverStaleProxyRealBackend(t *testing.T) {
 
 	found, err := RecoverStaleProxy()
 	if !found || err != nil {
+		if observed, qerr := (&winINetBackend{}).Current(); qerr == nil {
+			t.Logf("recovery failure diagnostic:")
+			t.Logf("  %s", dumpProxyState("platform ", observed))
+			t.Logf("  %s", dumpProxyState("recorded ", SystemProxySnapshot{
+				Enabled: true,
+				Server:  "proxy.corp.example:8080",
+				Bypass:  []string{"localhost"},
+				Flags:   proxyTypeProxy,
+			}))
+		}
+
 		t.Fatalf("RecoverStaleProxy = (%v, %v), want (true, nil) — the v0.10.1 Windows regression", found, err)
 	}
 

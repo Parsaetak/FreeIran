@@ -25,6 +25,64 @@ const (
 	TypeUnknown     Type = "unknown"
 )
 
+// v0.10.3 value domains for enumerated protocol details. These are
+// the ONLY values the parsers may produce and the backends generate;
+// validation rejects anything else instead of forwarding garbage to
+// the core at runtime.
+const (
+	// ObfsSalamander is the single obfuscation protocol the
+	// Hysteria family implements.
+	ObfsSalamander = "salamander"
+
+	// TUIC congestion-control algorithms (sing-box v1.14 tuic
+	// outbound `congestion_control`).
+	CongestionControlBBR     = "bbr"
+	CongestionControlCubic   = "cubic"
+	CongestionControlNewReno = "new_reno"
+
+	// TUIC UDP relay modes (sing-box v1.14 tuic outbound
+	// `udp_relay_mode`).
+	UDPRelayModeNative    = "native"
+	UDPRelayModeQuadratic = "quadratic"
+)
+
+// TUICCongestionControlValues is the exhaustive value domain.
+var TUICCongestionControlValues = []string{
+	CongestionControlBBR,
+	CongestionControlCubic,
+	CongestionControlNewReno,
+}
+
+// TUICUDPRelayModeValues is the exhaustive value domain.
+var TUICUDPRelayModeValues = []string{
+	UDPRelayModeNative,
+	UDPRelayModeQuadratic,
+}
+
+// ValidTUICCongestionControl reports whether v is an accepted
+// congestion_control value.
+func ValidTUICCongestionControl(v string) bool {
+	for _, ok := range TUICCongestionControlValues {
+		if v == ok {
+			return true
+		}
+	}
+
+	return false
+}
+
+// ValidTUICUDPRelayMode reports whether v is an accepted
+// udp_relay_mode value.
+func ValidTUICUDPRelayMode(v string) bool {
+	for _, ok := range TUICUDPRelayModeValues {
+		if v == ok {
+			return true
+		}
+	}
+
+	return false
+}
+
 // Config is the normalized representation of a VPN/proxy configuration.
 //
 // Parsers convert external formats into Config objects.
@@ -102,8 +160,30 @@ type Config struct {
 	ALPN       []string `json:"alpn,omitempty"`        // TLS ALPN list.
 	SpiderX    string   `json:"spider_x,omitempty"`    // REALITY spider path.
 
+	// v0.10.3 protocol-detail fields. v0.10.2 overloaded unrelated
+	// slots (TUIC congestion_control → Network; Hysteria obfs →
+	// Security; obfs-password → Host), which corrupted BOTH meanings:
+	// the capability matcher treated "bbr" as a transport, and the
+	// WS host header slot carried an obfuscation password. Each
+	// value now lives in its semantic field and generates the
+	// correct sing-box JSON. Not part of the fingerprint (tuning,
+	// not identity).
+	CongestionControl string `json:"congestion_control,omitempty"` // TUIC: bbr | cubic | new_reno.
+	UDPRelayMode      string `json:"udp_relay_mode,omitempty"`     // TUIC: native | quadratic.
+	Obfs              string `json:"obfs,omitempty"`               // Hysteria v1/2: salamander ("" = none).
+	ObfsPassword      string `json:"obfs_password,omitempty"`      // Hysteria v1/2 salamander password.
+
 	// WireGuard.
+	//
+	// v0.10.3 semantics split: InterfaceAddress is the LOCAL
+	// interface address list (the WireGuard INI "Address" — what the
+	// tun interface gets); AllowedIPs is the PEER routing list (what
+	// traffic the peer accepts). They are distinct concepts and must
+	// never overload each other: v0.10.2 dropped the interface
+	// address entirely and generated a WireGuard endpoint with no
+	// local address at all.
 	PrivateKey          string   `json:"private_key,omitempty"`
+	InterfaceAddress    []string `json:"interface_address,omitempty"`
 	AllowedIPs          []string `json:"allowed_ips,omitempty"`
 	DNS                 []string `json:"dns,omitempty"`
 	MTU                 int      `json:"mtu,omitempty"`
@@ -246,6 +326,12 @@ func (c *Config) Normalize() {
 	c.HeaderType = strings.ToLower(strings.TrimSpace(c.HeaderType))
 	c.SpiderX = strings.TrimSpace(c.SpiderX)
 
+	// v0.10.3 protocol-detail normalization.
+	c.CongestionControl = strings.ToLower(strings.TrimSpace(c.CongestionControl))
+	c.UDPRelayMode = strings.ToLower(strings.TrimSpace(c.UDPRelayMode))
+	c.Obfs = strings.ToLower(strings.TrimSpace(c.Obfs))
+	c.ObfsPassword = strings.TrimSpace(c.ObfsPassword)
+
 	c.ALPN = compactStrings(c.ALPN)
 
 	c.PrivateKey = strings.TrimSpace(c.PrivateKey)
@@ -258,7 +344,12 @@ func (c *Config) Normalize() {
 		c.DNS[i] = strings.TrimSpace(c.DNS[i])
 	}
 
+	for i := range c.InterfaceAddress {
+		c.InterfaceAddress[i] = strings.TrimSpace(c.InterfaceAddress[i])
+	}
+
 	c.AllowedIPs = compactStrings(c.AllowedIPs)
+	c.InterfaceAddress = compactStrings(c.InterfaceAddress)
 	c.DNS = compactStrings(c.DNS)
 }
 

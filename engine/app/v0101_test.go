@@ -34,6 +34,25 @@ const staleProxyMarker = `{
 }`
 
 func TestAppBootsAfterCrashedProxySession(t *testing.T) {
+	// Guaranteed restore path (§16): on Windows the boot recovery
+	// performs a REAL WinINet restore — a machine-global mutation.
+	// The runner's current state is captured first and restored
+	// (verified) no matter how the test ends; a failure to capture on
+	// a platform WITH a backend fails loudly instead of mutating
+	// without a safety net.
+	if runtime.GOOS == "windows" {
+		saved, err := tunnel.CaptureSystemProxySnapshot()
+		if err != nil {
+			t.Fatalf("capture runner proxy state (guaranteed restore path): %v", err)
+		}
+
+		t.Cleanup(func() {
+			if err := tunnel.RestoreSystemProxySnapshot(saved); err != nil {
+				t.Errorf("restore runner proxy state after boot-recovery test: %v", err)
+			}
+		})
+	}
+
 	base := filepath.Join(t.TempDir(), "freeiran")
 
 	runtimeDir := filepath.Join(base, "runtime")

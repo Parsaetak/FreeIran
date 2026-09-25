@@ -12,7 +12,7 @@ The application should feel like a mature desktop connectivity client rather tha
 
 ---
 
-# Roadmap ladder (v0.10.2)
+# Roadmap ladder (v0.10.3)
 
 The roadmap is a four-phase ladder. Each phase must be TRUE before the
 next one starts; the acceptance standard is the user-visible pipeline

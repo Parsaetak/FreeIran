@@ -20,6 +20,7 @@ package app
 //     target the exact imported ID.
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -101,12 +102,17 @@ func TestImportWireGuardINIWithoutSubscription(t *testing.T) {
 	a := newTestApp(t)
 	svc := NewImportService(a)
 
+	// v0.10.3: key material is DERIVED at runtime — committed
+	// key-shaped literals trip the Gitleaks wireguard rule even when
+	// synthetic. deterministicTestKey yields the same 44-char
+	// base64 every run (deterministic coverage, no committed
+	// secret-looking literal, never a real credential).
 	ini := "[Interface]\n" +
-		"PrivateKey = eCtXsJZ27+4PbhDkHnB923tkUn2Gj59wZw5wFA75MnU=\n" +
+		"PrivateKey = " + deterministicTestKey(0x21) + "\n" +
 		"Address = 10.7.0.2/32\n" +
 		"DNS = 1.1.1.1\n\n" +
 		"[Peer]\n" +
-		"PublicKey = Cr8hWlKvtDt7nrvf+f0brNQQzabAqrjfBvas9pmowjo=\n" +
+		"PublicKey = " + deterministicTestKey(0x42) + "\n" +
 		"Endpoint = 192.0.2.10:51820\n" +
 		"AllowedIPs = 0.0.0.0/0\n"
 
@@ -264,4 +270,20 @@ func base64Encode(data []byte) string {
 	}
 
 	return string(out)
+}
+
+// deterministicTestKey derives a syntactically valid 32-byte base64
+// key from a seed byte — the v0.10.3 Gitleaks contract for test
+// material: deterministic across runs, syntactically valid (32 bytes
+// → 44-char padded base64), never a real credential, and never a
+// committed secret-looking literal (the wireguard rule cannot match
+// a value that only exists at runtime).
+func deterministicTestKey(seed byte) string {
+	key := make([]byte, 32)
+
+	for i := range key {
+		key[i] = seed + byte(i)
+	}
+
+	return base64.StdEncoding.EncodeToString(key)
 }

@@ -1051,18 +1051,23 @@ func parseHysteria(u *url.URL) (config.Config, error) {
 
 	query := u.Query()
 
+	// v0.10.3 semantic split: obfs/obfs-password are the Hysteria
+	// obfuscation layer — NEVER the TLS security slot or the WS host
+	// slot (v0.10.2 mapped obfs→Security and obfs-password→Host,
+	// corrupting both fields). Values are validated by config.Validate
+	// (empty or salamander).
 	return config.Config{
-		Type:       config.TypeHysteria,
-		Address:    u.Hostname(),
-		Port:       port,
-		Password:   password,
-		ServerName: query.Get("sni"),
-		Security:   query.Get("obfs"),
-		Host:       query.Get("obfs-password"),
-		Insecure:   isTruthy(query.Get("insecure")),
-		UpMbps:     nonNegative(query.Get("upmbps")),
-		DownMbps:   nonNegative(query.Get("downmbps")),
-		Name:       u.Fragment,
+		Type:         config.TypeHysteria,
+		Address:      u.Hostname(),
+		Port:         port,
+		Password:     password,
+		ServerName:   query.Get("sni"),
+		Obfs:         query.Get("obfs"),
+		ObfsPassword: query.Get("obfs-password"),
+		Insecure:     isTruthy(query.Get("insecure")),
+		UpMbps:       nonNegative(query.Get("upmbps")),
+		DownMbps:     nonNegative(query.Get("downmbps")),
+		Name:         u.Fragment,
 	}, nil
 }
 
@@ -1106,18 +1111,21 @@ func parseHysteria2(u *url.URL) (config.Config, error) {
 
 	query := u.Query()
 
+	// v0.10.3 semantic split (see parseHysteria): obfs and
+	// obfs-password live in their own fields, never in
+	// Security/Host.
 	return config.Config{
-		Type:       config.TypeHysteria2,
-		Address:    u.Hostname(),
-		Port:       port,
-		Password:   password,
-		ServerName: query.Get("sni"),
-		Security:   query.Get("obfs"),
-		Host:       query.Get("obfs-password"),
-		Insecure:   isTruthy(query.Get("insecure")),
-		UpMbps:     nonNegative(query.Get("upmbps")),
-		DownMbps:   nonNegative(query.Get("downmbps")),
-		Name:       u.Fragment,
+		Type:         config.TypeHysteria2,
+		Address:      u.Hostname(),
+		Port:         port,
+		Password:     password,
+		ServerName:   query.Get("sni"),
+		Obfs:         query.Get("obfs"),
+		ObfsPassword: query.Get("obfs-password"),
+		Insecure:     isTruthy(query.Get("insecure")),
+		UpMbps:       nonNegative(query.Get("upmbps")),
+		DownMbps:     nonNegative(query.Get("downmbps")),
+		Name:         u.Fragment,
 	}, nil
 }
 
@@ -1161,16 +1169,24 @@ func parseTUIC(u *url.URL) (config.Config, error) {
 
 	query := u.Query()
 
+	// v0.10.3 semantic split: congestion_control and udp_relay_mode
+	// are TUIC's OWN parameters with their own value domains —
+	// v0.10.2 overloaded congestion_control into Network (the
+	// transport slot), so the capability matcher read "bbr" as a
+	// transport name and every bbr/cubic/new_reno config failed
+	// backend matching. Network stays EMPTY (TUIC is QUIC-based, no
+	// transport layer); values are validated by config.Validate.
 	return config.Config{
-		Type:       config.TypeTUIC,
-		Address:    u.Hostname(),
-		Port:       port,
-		UUID:       uuid,
-		Password:   password,
-		ServerName: query.Get("sni"),
-		Network:    query.Get("congestion_control"),
-		Insecure:   isTruthy(query.Get("insecure")),
-		Name:       u.Fragment,
+		Type:              config.TypeTUIC,
+		Address:           u.Hostname(),
+		Port:              port,
+		UUID:              uuid,
+		Password:          password,
+		ServerName:        query.Get("sni"),
+		CongestionControl: query.Get("congestion_control"),
+		UDPRelayMode:      query.Get("udp_relay_mode"),
+		Insecure:          isTruthy(query.Get("insecure")),
+		Name:              u.Fragment,
 	}, nil
 }
 
@@ -1291,6 +1307,8 @@ func isSupportedScheme(value string) bool {
 		strings.HasPrefix(lower, "hysteria2://") ||
 		strings.HasPrefix(lower, "hy2://") ||
 		strings.HasPrefix(lower, "tuic://") ||
+		strings.HasPrefix(lower, "wireguard://") ||
+		strings.HasPrefix(lower, "wg://") ||
 		strings.HasPrefix(lower, "socks://") ||
 		strings.HasPrefix(lower, "socks4://") ||
 		strings.HasPrefix(lower, "socks4a://") ||
@@ -1468,6 +1486,14 @@ func parseWireGuardURL(u *url.URL) (config.Config, error) {
 
 	dns := splitConfigValues(query.Get("dns"))
 
+	// v0.10.3: the LOCAL interface address (sing-box endpoint
+	// `address`), distinct from the peer's allowedIPs.
+	interfaceAddress := splitConfigValues(query.Get("address"))
+
+	if len(interfaceAddress) == 0 {
+		interfaceAddress = splitConfigValues(query.Get("localAddress"))
+	}
+
 	mtu := parsePort(query.Get("mtu"))
 
 	keepalive := parsePort(
@@ -1486,6 +1512,7 @@ func parseWireGuardURL(u *url.URL) (config.Config, error) {
 		Port:                port,
 		PublicKey:           publicKey,
 		PrivateKey:          privateKey,
+		InterfaceAddress:    interfaceAddress,
 		AllowedIPs:          allowedIPs,
 		DNS:                 dns,
 		MTU:                 mtu,
@@ -1594,6 +1621,17 @@ func parseWireGuardConfig(text string) (config.Config, error) {
 		),
 	)
 
+	// v0.10.3: the INI "Address" is the LOCAL interface address —
+	// a different concept from the peer's AllowedIPs. v0.10.2
+	// dropped it entirely, so the generated sing-box endpoint had no
+	// local address (the real binary requires one).
+	interfaceAddress := splitConfigValues(
+		firstConfigValue(
+			values,
+			"interface.address",
+		),
+	)
+
 	dns := splitConfigValues(
 		firstConfigValue(
 			values,
@@ -1621,6 +1659,7 @@ func parseWireGuardConfig(text string) (config.Config, error) {
 		Port:                port,
 		PublicKey:           publicKey,
 		PrivateKey:          privateKey,
+		InterfaceAddress:    interfaceAddress,
 		AllowedIPs:          allowedIPs,
 		DNS:                 dns,
 		MTU:                 mtu,
@@ -1715,4 +1754,11 @@ func looksLikeWireGuardConfig(text string) bool {
 	hasEndpoint := strings.Contains(normalized, "endpoint")
 
 	return hasPrivateKey && hasPublicKey && hasEndpoint
+}
+
+// LooksLikeWireGuardINI reports whether a payload appears to be a
+// WireGuard INI configuration (exported for the import surface's
+// format label — the preview must name the format honestly).
+func LooksLikeWireGuardINI(text string) bool {
+	return looksLikeWireGuardConfig(text)
 }
