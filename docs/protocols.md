@@ -1,4 +1,4 @@
-# Protocol × core capability matrix (v0.10.3)
+# Protocol × core capability matrix (v0.10.4)
 
 This document is the truthful statement of what FreeIran can execute.
 Status levels:
@@ -33,10 +33,10 @@ v2ray 5.53.0, sing-box 1.14.0.
 | Shadowsocks | yes | yes | tested | tested | tested | real-binary smoke suites |
 | SOCKS | yes | yes | tested | tested | tested | real-binary smoke suites |
 | HTTP | yes | yes | tested | tested | tested | real-binary smoke suites |
-| Hysteria2 | yes (v0.10.2: insecure; v0.10.3: obfs/obfs-password in their own fields) | yes (obfs validated: empty or salamander) | not supported by this core | not supported by this core | **tested (new in v0.10.2)** | sing-box 1.14.0 real-binary smoke |
-| TUIC | yes (v0.10.3: congestion_control + udp_relay_mode in their own fields) | yes (value domains enforced) | not supported by this core | not supported by this core | **tested (new in v0.10.2)** | sing-box 1.14.0 real-binary smoke |
+| Hysteria2 | yes (v0.10.2: insecure; v0.10.3: obfs/obfs-password in their own fields) | yes (obfs validated: empty, salamander or gecko) | not supported by this core | not supported by this core | **tested (new in v0.10.2)** | sing-box 1.14.0 real-binary smoke |
+| TUIC | yes (v0.10.3: congestion_control + udp_relay_mode in their own fields; v0.10.4: relay domain corrected to native \| quic) | yes (value domains enforced) | not supported by this core | not supported by this core | **tested (new in v0.10.2)** | sing-box 1.14.0 real-binary smoke |
 | WireGuard | yes (v0.10.3: INI/URL `wireguard://` reachable, local Address parsed) | yes | not supported by this core | not supported by this core | **tested (new in v0.10.2, endpoint form; v0.10.3: endpoint always carries a local address)** | sing-box 1.14.0 real-binary smoke |
-| Hysteria (v1) | yes (v0.10.2: up/down; v0.10.3: obfs fields) | yes (obfs validated) | not supported by this core | not supported by this core | **tested (new in v0.10.2)** | sing-box 1.14.0 real-binary smoke |
+| Hysteria (v1) | yes (v0.10.2: up/down; v0.10.3: obfs fields; v0.10.4: obfs is the v1 password string) | yes (obfs generated as the documented JSON string; omitted when absent) | not supported by this core | not supported by this core | **tested (new in v0.10.2)** | sing-box 1.14.0 real-binary smoke |
 
 Notes on the QUIC family and WireGuard (all verified against the real
 pinned binary with `sing-box check` and smoke startup):
@@ -53,13 +53,28 @@ pinned binary with `sing-box check` and smoke startup):
   1.11). Both local keys are required at validate time. The LOCAL
   interface address (INI `Address` / URL `address`) maps to the
   endpoint's `address` — the real binary requires it at startup;
-  when a configuration omits it, the generator emits the documented
-  deterministic default pair. `AllowedIPs` is the PEER routing list
+  when a configuration omits it, the generator emits a deterministic
+  FreeIran-generated fallback pair (172.19.0.2/32 +
+  fdfe:dcba:9876::2/128). This fallback is FreeIran's own choice for
+  reproducible documents — it is NOT a sing-box "documented default"
+  (sing-box only requires SOME local address).
+  `AllowedIPs` is the PEER routing list
   and defaults to `0.0.0.0/0` + `::/0`; it never carries interface
   addresses.
+- v0.10.4 field semantics: TUIC `udp_relay_mode` is native | quic (the
+  v0.10.3 "quadratic" was an invented value, never documented by any
+  sing-box release); Hysteria2 `obfs` is salamander | gecko (gecko was
+  wrongly rejected in v0.10.3) and generates the object
+  `{"type", "password"}`; Hysteria (v1) `obfs` is the obfuscation
+  PASSWORD string — a different protocol with a different sing-box
+  schema — and generates the JSON string, omitted when absent. The
+  v0.10.4 semantic variants (TUIC relay/congestion matrix, Hysteria2
+  salamander + gecko, Hysteria v1 obfs string, WireGuard endpoint)
+  were all passed through the real pinned sing-box 1.14.0 binary
+  (`sing-box check` + startup + listener readiness).
 - v0.10.3 field semantics: `obfs`/`obfs-password` are Hysteria's own
-  fields (validated: empty or salamander); TUIC `congestion_control`
-  (bbr | cubic | new_reno) and `udp_relay_mode` (native | quadratic)
+  fields (never the TLS security slot or the WS host slot); TUIC
+  `congestion_control` (bbr | cubic | new_reno) and `udp_relay_mode`
   are TUIC's own fields and never touch the transport slot (v0.10.2
   overloaded congestion_control into Network, which the capability
   matcher read as a transport name).

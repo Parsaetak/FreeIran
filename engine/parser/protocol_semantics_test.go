@@ -28,7 +28,7 @@ func TestTUICCongestionControlOwnField(t *testing.T) {
 	p := New()
 
 	input := "tuic://uuid-goes-here:pw@example.com:443" +
-		"?congestion_control=bbr&udp_relay_mode=quadratic&sni=example.com"
+		"?congestion_control=bbr&udp_relay_mode=quic&sni=example.com"
 
 	cfgs, err := p.Parse([]byte(input))
 	if err != nil {
@@ -45,8 +45,8 @@ func TestTUICCongestionControlOwnField(t *testing.T) {
 		t.Errorf("CongestionControl = %q, want bbr", cfg.CongestionControl)
 	}
 
-	if cfg.UDPRelayMode != "quadratic" {
-		t.Errorf("UDPRelayMode = %q, want quadratic", cfg.UDPRelayMode)
+	if cfg.UDPRelayMode != "quic" {
+		t.Errorf("UDPRelayMode = %q, want quic", cfg.UDPRelayMode)
 	}
 
 	// THE regression: Network is the TRANSPORT slot. TUIC is
@@ -96,47 +96,90 @@ func TestTUICInvalidUDPRelayModeRejected(t *testing.T) {
 func TestHysteriaObfsOwnFields(t *testing.T) {
 	p := New()
 
-	for _, scheme := range []string{"hysteria", "hysteria2"} {
-		input := scheme + "://auth-password@example.com:443" +
-			"?obfs=salamander&obfs-password=obfs-secret&sni=example.com&insecure=1"
+	// Hysteria2: obfs is the obfuscation TYPE (salamander | gecko
+	// for sing-box v1.14 — v0.10.4 added the documented gecko which
+	// v0.10.3 rejected) and obfs-password carries the password.
+	for _, obfsType := range []string{"salamander", "gecko"} {
+		input := "hysteria2://auth-password@example.com:443" +
+			"?obfs=" + obfsType + "&obfs-password=obfs-secret&sni=example.com&insecure=1"
 
 		cfgs, err := p.Parse([]byte(input))
 		if err != nil {
-			t.Fatalf("Parse(%s): %v", scheme, err)
+			t.Fatalf("Parse(hysteria2, obfs=%s): %v", obfsType, err)
 		}
 
 		if len(cfgs) != 1 {
-			t.Fatalf("%s: configs = %d, want 1", scheme, len(cfgs))
+			t.Fatalf("hysteria2: configs = %d, want 1", len(cfgs))
 		}
 
 		cfg := cfgs[0]
 
-		if cfg.Obfs != "salamander" {
-			t.Errorf("%s: Obfs = %q, want salamander", scheme, cfg.Obfs)
+		if cfg.Obfs != obfsType {
+			t.Errorf("hysteria2: Obfs = %q, want %s", cfg.Obfs, obfsType)
 		}
 
 		if cfg.ObfsPassword != "obfs-secret" {
-			t.Errorf("%s: ObfsPassword = %q, want obfs-secret", scheme, cfg.ObfsPassword)
+			t.Errorf("hysteria2: ObfsPassword = %q, want obfs-secret", cfg.ObfsPassword)
 		}
 
 		// The overloaded slots must stay CLEAN: Security is the TLS
 		// layer, Host is the WS/H2 host header — neither may carry
 		// obfuscation values.
 		if cfg.Security != "" {
-			t.Errorf("%s: Security = %q, want empty (obfs must not overload the security slot)", scheme, cfg.Security)
+			t.Errorf("hysteria2: Security = %q, want empty (obfs must not overload the security slot)", cfg.Security)
 		}
 
 		if cfg.Host != "" {
-			t.Errorf("%s: Host = %q, want empty (obfs-password must not overload the host slot)", scheme, cfg.Host)
+			t.Errorf("hysteria2: Host = %q, want empty (obfs-password must not overload the host slot)", cfg.Host)
 		}
 
 		if !cfg.Insecure {
-			t.Errorf("%s: Insecure = false, want true", scheme)
+			t.Errorf("hysteria2: Insecure = false, want true")
 		}
 
 		if err := cfg.Validate(); err != nil {
-			t.Errorf("%s: Validate: %v", scheme, err)
+			t.Errorf("hysteria2: Validate: %v", err)
 		}
+	}
+}
+
+// TestHysteriaV1ObfsIsThePasswordString pins the v1 URI semantics:
+// the Hysteria (v1) format has NO obfs type concept — the `obfs`
+// parameter IS the obfuscation password the server was configured
+// with (v0.10.4; v0.10.3 forced it through the v2 salamander enum and
+// rejected every real v1 URI whose obfs password was not literally
+// "salamander").
+func TestHysteriaV1ObfsIsThePasswordString(t *testing.T) {
+	p := New()
+
+	input := "hysteria://auth-password@example.com:443" +
+		"?obfs=xplus-obfs-secret&upmbps=100&downmbps=500&insecure=1"
+
+	cfgs, err := p.Parse([]byte(input))
+	if err != nil {
+		t.Fatalf("Parse(hysteria): %v", err)
+	}
+
+	if len(cfgs) != 1 {
+		t.Fatalf("configs = %d, want 1", len(cfgs))
+	}
+
+	cfg := cfgs[0]
+
+	if cfg.Type != config.TypeHysteria {
+		t.Fatalf("Type = %v, want hysteria", cfg.Type)
+	}
+
+	if cfg.Obfs != "xplus-obfs-secret" {
+		t.Errorf("Obfs = %q, want the v1 obfs password verbatim", cfg.Obfs)
+	}
+
+	if cfg.Security != "" || cfg.Host != "" {
+		t.Errorf("Security = %q, Host = %q — both slots must stay clean", cfg.Security, cfg.Host)
+	}
+
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate: %v", err)
 	}
 }
 
@@ -155,6 +198,19 @@ func TestHysteriaInvalidObfsRejected(t *testing.T) {
 
 	if !strings.Contains(err.Error(), "obfs") {
 		t.Fatalf("error = %v, want an obfs message", err)
+	}
+
+	// The v1 obfs is a password string, NOT the v2 enum: the same
+	// value that is invalid as a v2 obfs type is a legitimate v1
+	// obfuscation password.
+	cfgs, err := p.Parse([]byte(
+		"hysteria://pw@example.com:443?obfs=not-a-real-obfs&upmbps=100&downmbps=500"))
+	if err != nil {
+		t.Fatalf("Parse(hysteria v1, obfs=not-a-real-obfs): %v", err)
+	}
+
+	if cfgs[0].Obfs != "not-a-real-obfs" {
+		t.Errorf("v1 Obfs = %q, want the password verbatim", cfgs[0].Obfs)
 	}
 }
 
@@ -197,27 +253,34 @@ func TestWireGuardINIInterfaceAddress(t *testing.T) {
 func TestWireGuardURLInterfaceAddress(t *testing.T) {
 	p := New()
 
-	input := "wireguard://" + deterministicINIKey(0x42) +
-		"@192.0.2.10:51820?privateKey=" + deterministicINIKey(0x21) +
-		"&address=10.7.0.2%2F32&allowedIPs=0.0.0.0%2F0"
+	// Both URI spellings must stay reachable (§6).
+	for _, scheme := range []string{"wireguard", "wg"} {
+		input := scheme + "://" + deterministicINIKey(0x42) +
+			"@192.0.2.10:51820?privateKey=" + deterministicINIKey(0x21) +
+			"&address=10.7.0.2%2F32&allowedIPs=0.0.0.0%2F0"
 
-	cfgs, err := p.Parse([]byte(input))
-	if err != nil {
-		t.Fatalf("Parse: %v", err)
-	}
+		cfgs, err := p.Parse([]byte(input))
+		if err != nil {
+			t.Fatalf("Parse(%s): %v", scheme, err)
+		}
 
-	if len(cfgs) != 1 {
-		t.Fatalf("configs = %d, want 1", len(cfgs))
-	}
+		if len(cfgs) != 1 {
+			t.Fatalf("%s: configs = %d, want 1", scheme, len(cfgs))
+		}
 
-	cfg := cfgs[0]
+		cfg := cfgs[0]
 
-	if len(cfg.InterfaceAddress) != 1 || cfg.InterfaceAddress[0] != "10.7.0.2/32" {
-		t.Errorf("InterfaceAddress = %v, want [10.7.0.2/32]", cfg.InterfaceAddress)
-	}
+		if cfg.Type != config.TypeWireGuard {
+			t.Errorf("%s: Type = %v, want wireguard", scheme, cfg.Type)
+		}
 
-	if len(cfg.AllowedIPs) != 1 || cfg.AllowedIPs[0] != "0.0.0.0/0" {
-		t.Errorf("AllowedIPs = %v, want [0.0.0.0/0]", cfg.AllowedIPs)
+		if len(cfg.InterfaceAddress) != 1 || cfg.InterfaceAddress[0] != "10.7.0.2/32" {
+			t.Errorf("%s: InterfaceAddress = %v, want [10.7.0.2/32] (the LOCAL interface address)", scheme, cfg.InterfaceAddress)
+		}
+
+		if len(cfg.AllowedIPs) != 1 || cfg.AllowedIPs[0] != "0.0.0.0/0" {
+			t.Errorf("%s: AllowedIPs = %v, want [0.0.0.0/0] (the PEER routing list)", scheme, cfg.AllowedIPs)
+		}
 	}
 }
 

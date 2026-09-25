@@ -12,11 +12,33 @@ The application should feel like a mature desktop connectivity client rather tha
 
 ---
 
-# Roadmap ladder (v0.10.3)
+# Roadmap ladder (v0.10.4)
 
 The roadmap is a four-phase ladder. Each phase must be TRUE before the
 next one starts; the acceptance standard is the user-visible pipeline
 below, not internal test counts.
+
+### v0.10.4 current-release status (factual)
+
+v0.10.4 corrects protocol semantics against the pinned sing-box
+v1.14.0 (TUIC `udp_relay_mode` native | quic — the v0.10.3
+"quadratic" was invented; Hysteria2 obfs salamander | gecko;
+Hysteria v1 obfs as the documented JSON string) and root-causes the
+last v0.10.3 Windows test failure (an invalid WinINet bypass fixture —
+CIDR is not WinINet syntax; production WinINet code was not widened).
+
+Evidence actually executed for v0.10.4: full Linux Go suite,
+`-race` on the tunnel/config/parser/core packages, `GOOS=windows`
+vet/build/test-binary-compile checks, frontend typecheck + unit tests
++ production build, and real-core verification (sing-box 1.14.0,
+SHA-256-pinned: `sing-box check` + startup + listener readiness for
+every TUIC/Hysteria/Hysteria2/WireGuard semantic variant, added to the
+CI real-binary smoke).
+
+NOT yet executed at release: the Windows-native CI gate (WinINet
+round-trip battery, Windows runtime smoke, Windows desktop build) —
+it runs on GitHub-hosted Windows runners when this tree is pushed and
+must pass before the release is described as Windows-verified.
 
 ```
 P0 — Fully usable personal connectivity client

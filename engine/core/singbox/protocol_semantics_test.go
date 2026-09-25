@@ -60,7 +60,7 @@ func TestTUICDocumentCarriesCongestionControl(t *testing.T) {
 		UUID:              "99999999-9999-9999-9999-999999999999",
 		Password:          "synthetic-tuic-password",
 		CongestionControl: "bbr",
-		UDPRelayMode:      "quadratic",
+		UDPRelayMode:      "quic",
 	}
 
 	raw := buildRaw(t, cfg)
@@ -74,14 +74,85 @@ func TestTUICDocumentCarriesCongestionControl(t *testing.T) {
 		t.Errorf("congestion_control = %v, want bbr", outbound["congestion_control"])
 	}
 
-	if outbound["udp_relay_mode"] != "quadratic" {
-		t.Errorf("udp_relay_mode = %v, want quadratic", outbound["udp_relay_mode"])
+	if outbound["udp_relay_mode"] != "quic" {
+		t.Errorf("udp_relay_mode = %v, want quic", outbound["udp_relay_mode"])
 	}
 
 	// The transport slot must stay clean (a "network" field in the
 	// outbound would mean the old overload leaked into generation).
 	if _, present := outbound["network"]; present {
 		t.Errorf("outbound carries a network field — the congestion_control overload leaked into generation")
+	}
+}
+
+// TestTUICRelayModeAndCongestionVariants pins the FULL documented
+// value domains end-to-end through generation (v0.10.4): every
+// udp_relay_mode (native | quic — the v0.10.3 "quadratic" was an
+// invented value) and every congestion_control (cubic | new_reno |
+// bbr), plus the documented default when the URI did not choose one.
+func TestTUICRelayModeAndCongestionVariants(t *testing.T) {
+	for _, relay := range []string{"", "native", "quic"} {
+		for _, cc := range []string{"", "cubic", "new_reno", "bbr"} {
+			cfg := config.Config{
+				Type:              config.TypeTUIC,
+				Address:           "sb-tuic.example.org",
+				Port:              443,
+				UUID:              "99999999-9999-9999-9999-999999999999",
+				Password:          "synthetic-tuic-password",
+				CongestionControl: cc,
+				UDPRelayMode:      relay,
+			}
+
+			raw := buildRaw(t, cfg)
+			outbound := firstArrayElement(t, raw, "outbounds")
+
+			wantRelay := relay
+			if wantRelay == "" {
+				wantRelay = "native" // sing-box documents native as the default; generation pins it
+			}
+
+			if got := outbound["udp_relay_mode"]; got != wantRelay {
+				t.Errorf("udp_relay_mode = %v (input %q), want %q", got, relay, wantRelay)
+			}
+
+			// congestion_control must appear VERBATIM when chosen
+			// and stay absent when not (no default invented).
+			if cc == "" {
+				if _, present := outbound["congestion_control"]; present {
+					t.Errorf("congestion_control present for empty input — generation must not invent a default")
+				}
+			} else if got := outbound["congestion_control"]; got != cc {
+				t.Errorf("congestion_control = %v (input %q), want %q", got, cc, cc)
+			}
+
+			// No leakage into the transport slot for ANY variant.
+			if _, present := outbound["network"]; present {
+				t.Errorf("udp_relay_mode=%q congestion_control=%q: outbound carries a network field", relay, cc)
+			}
+		}
+	}
+}
+
+// TestTUICInvalidUDPRelayModeRejectedAtBuild pins the build-time
+// domain enforcement for the relay mode.
+func TestTUICInvalidUDPRelayModeRejectedAtBuild(t *testing.T) {
+	backend := singbox.New()
+
+	_, err := backend.BuildConfig(config.Config{
+		Type:         config.TypeTUIC,
+		Address:      "sb-tuic.example.org",
+		Port:         443,
+		UUID:         "99999999-9999-9999-9999-999999999999",
+		Password:     "synthetic-tuic-password",
+		UDPRelayMode: "quadratic", // the invented v0.10.3 value
+	}, core.RuntimeOptions{LocalHost: "127.0.0.1", LocalPort: 10808})
+
+	if err == nil {
+		t.Fatal("BuildConfig accepted udp_relay_mode=quadratic")
+	}
+
+	if !strings.Contains(err.Error(), "udp_relay_mode") {
+		t.Fatalf("error = %v, want a udp_relay_mode message", err)
 	}
 }
 
@@ -107,29 +178,101 @@ func TestTUICInvalidCongestionControlRejectedAtBuild(t *testing.T) {
 }
 
 func TestHysteria2DocumentCarriesObfsObject(t *testing.T) {
+	// Both documented obfs types (v0.10.4: gecko added — v0.10.3
+	// only knew salamander). The generated shape MUST be the
+	// sing-box OBJECT {"type", "password"} for both.
+	for _, obfsType := range []string{"salamander", "gecko"} {
+		cfg := config.Config{
+			Type:         config.TypeHysteria2,
+			Address:      "sb-hy2.example.org",
+			Port:         443,
+			Password:     "synthetic-hy2-password",
+			Obfs:         obfsType,
+			ObfsPassword: "synthetic-obfs-password",
+		}
+
+		raw := buildRaw(t, cfg)
+		outbound := firstArrayElement(t, raw, "outbounds")
+
+		obfs, ok := outbound["obfs"].(map[string]any)
+		if !ok {
+			t.Fatalf("obfs=%s: outbound.obfs missing or not an object: %v", obfsType, outbound["obfs"])
+		}
+
+		if obfs["type"] != obfsType {
+			t.Errorf("obfs=%s: obfs.type = %v", obfsType, obfs["type"])
+		}
+
+		if obfs["password"] != "synthetic-obfs-password" {
+			t.Errorf("obfs=%s: obfs.password = %v, want the obfs-password field value", obfsType, obfs["password"])
+		}
+
+		// The Hysteria2 obfs must never leak into the transport,
+		// security or host slots.
+		if _, present := outbound["network"]; present {
+			t.Errorf("obfs=%s: outbound carries a network field", obfsType)
+		}
+	}
+}
+
+// TestHysteria2InvalidObfsRejectedAtBuild pins the build-time domain
+// enforcement of the obfs type.
+func TestHysteria2InvalidObfsRejectedAtBuild(t *testing.T) {
+	backend := singbox.New()
+
+	_, err := backend.BuildConfig(config.Config{
+		Type:     config.TypeHysteria2,
+		Address:  "sb-hy2.example.org",
+		Port:     443,
+		Password: "synthetic-hy2-password",
+		Obfs:     "not-a-real-obfs",
+	}, core.RuntimeOptions{LocalHost: "127.0.0.1", LocalPort: 10808})
+
+	if err == nil {
+		t.Fatal("BuildConfig accepted obfs=not-a-real-obfs")
+	}
+
+	if !strings.Contains(err.Error(), "obfs") {
+		t.Fatalf("error = %v, want an obfs message", err)
+	}
+}
+
+// TestHysteriaV1ObfsJSONString pins the EXACT JSON type of the
+// Hysteria (v1) obfs field (v0.10.4): the v1 schema takes a plain
+// STRING (the obfuscation password) — v0.10.3 emitted the
+// Hysteria2-style object here because the protocols share a name,
+// and the real binary rejects that shape for hysteria.
+func TestHysteriaV1ObfsJSONString(t *testing.T) {
+	// Present → JSON string, verbatim.
 	cfg := config.Config{
-		Type:         config.TypeHysteria2,
-		Address:      "sb-hy2.example.org",
-		Port:         443,
-		Password:     "synthetic-hy2-password",
-		Obfs:         "salamander",
-		ObfsPassword: "synthetic-obfs-password",
+		Type:     config.TypeHysteria,
+		Address:  "sb-hy.example.org",
+		Port:     443,
+		Password: "synthetic-hy-password",
+		Obfs:     "synthetic-obfs-password",
+		UpMbps:   100,
+		DownMbps: 500,
 	}
 
 	raw := buildRaw(t, cfg)
 	outbound := firstArrayElement(t, raw, "outbounds")
 
-	obfs, ok := outbound["obfs"].(map[string]any)
+	obfs, ok := outbound["obfs"].(string)
 	if !ok {
-		t.Fatalf("outbound.obfs missing or not an object: %v", outbound["obfs"])
+		t.Fatalf("outbound.obfs is not a JSON string: %v (type %T) — Hysteria v1 must never inherit the Hysteria2 object shape", outbound["obfs"], outbound["obfs"])
 	}
 
-	if obfs["type"] != "salamander" {
-		t.Errorf("obfs.type = %v, want salamander", obfs["type"])
+	if obfs != "synthetic-obfs-password" {
+		t.Errorf("outbound.obfs = %q, want the obfs password verbatim", obfs)
 	}
 
-	if obfs["password"] != "synthetic-obfs-password" {
-		t.Errorf("obfs.password = %v, want the obfs-password field value", obfs["password"])
+	// Absent → the key is omitted entirely.
+	cfg.Obfs = ""
+	raw = buildRaw(t, cfg)
+	outbound = firstArrayElement(t, raw, "outbounds")
+
+	if _, present := outbound["obfs"]; present {
+		t.Errorf("outbound carries obfs %v for an empty Obfs field — must be omitted", outbound["obfs"])
 	}
 }
 
@@ -186,9 +329,11 @@ func TestWireGuardEndpointCarriesLocalAddressAndPeerList(t *testing.T) {
 
 func TestWireGuardEndpointGeneratesDeterministicLocalAddress(t *testing.T) {
 	// The v0.10.2 document had NO local address; the v0.10.3
-	// generator provides the documented deterministic default so the
-	// endpoint reaches startup on the real binary even when the
-	// imported configuration did not record an Address.
+	// generator supplies a deterministic FreeIran-generated fallback
+	// pair (NOT a sing-box documented default — sing-box only
+	// requires some local address) so the endpoint reaches startup
+	// on the real binary even when the imported configuration did
+	// not record an Address.
 	cfg := wireGuardConfig()
 
 	raw := buildRaw(t, cfg)

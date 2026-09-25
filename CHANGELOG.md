@@ -3,6 +3,107 @@
 Release history for FreeIran. The newest release is documented in the
 [README](README.md); everything older lives here, newest first.
 
+## v0.10.4 — TUIC/Hysteria semantic corrections, WinINet bypass-grammar fix, documented query order
+
+v0.10.4 is a protocol-semantics correction release. It fixes the last
+full-suite Windows failure of the v0.10.3 battery (an invalid test
+fixture, not production code), corrects the TUIC `udp_relay_mode`
+domain and the Hysteria family's obfs semantics against the pinned
+sing-box v1.14.0, and hardens WinINet diagnostics. Every claim below
+is scoped to the evidence actually executed for this release: the full
+Linux suite (plus `-race`), `GOOS=windows` vet/build/test-compile
+checks, and real-core verification with the pinned sing-box 1.14.0
+binary (`sing-box check` + startup + listener readiness). The
+Windows-native WinINet round-trips run in CI on GitHub-hosted Windows
+runners; they are NOT claimed from Linux.
+
+### Windows WinINet — root cause and hardening
+
+- `TestWinINetExplicitProxyRoundTrip` failed while applying its
+  synthetic `original` snapshot — BEFORE the intended
+  Enable/Disable round-trip. Root cause: the fixture's bypass list
+  carried `10.0.0.0/8`. WinINet's documented bypass grammar supports
+  host names, IP literals, wildcard patterns and `<local>` — CIDR
+  notation is not valid syntax — so `InternetSetOption` rejected the
+  whole per-connection list with `ERROR_INVALID_PARAMETER`, surfaced
+  by the guaranteed-restore path as "restore runner proxy settings:
+  The parameter is incorrect." The fixture now uses `192.168.1.*`
+  (deterministic, documented syntax). Production WinINet code was NOT
+  widened to accept CIDR.
+- New `TestWinINetBypassGrammar` pins the supported grammar and
+  rejects CIDR/separator/scheme/assignment forms at grammar level, so
+  an invalid fixture fails with a named cause instead of a syscall
+  error inside a restore path. `recovery_test.go`'s recorded-previous
+  fixture was aligned to WinINet-plausible syntax as well.
+- Documented Windows 7+ query order implemented in `queryCore`:
+  `INTERNET_PER_CONN_FLAGS_UI` first, falling back to
+  `INTERNET_PER_CONN_FLAGS` if the UI tag is rejected; setting keeps
+  using `INTERNET_PER_CONN_FLAGS` (the documented transaction
+  contract). One authoritative per-connection transaction per
+  mutation, unchanged.
+- WinINet syscall failures now report the failing operation and the
+  numeric code (`win32 error 87 (...)` via the new `win32CallError`
+  rendering) — "The parameter is incorrect." alone hid the errno.
+- `notifyChanged` failures are reported through the structured
+  diagnostics log per stage (`proxy_notify_failed`: activate /
+  restore-previous / reset-to-direct / recovery-restore). The
+  transaction contract is unchanged: platform mutation + verification
+  stays the hard correctness gate; a failed notification is surfaced,
+  never silently discarded, and never rolls back verified state.
+- `Options.Bypass` documentation now states the WinINet grammar
+  contract explicitly (the old comment used `10.0.0.0/8` as an
+  example — the exact mistake the fixture regression pinned).
+
+### TUIC — the relay-mode domain is real
+
+- `UDPRelayModeQuadratic = "quadratic"` was an INVENTED value: no
+  sing-box release documents it. The model, validation and generation
+  now use the documented domain **native | quic**
+  (`UDPRelayModeQUIC`). `congestion_control` remains
+  cubic | new_reno | bbr and still never touches the transport slot.
+- New tests pin the full matrix end-to-end: default relay behavior
+  (generation pins the documented `native`), explicit `native`,
+  explicit `quic`, cubic, new_reno, bbr, invalid congestion control
+  and invalid relay mode rejected at parse AND build time, and no
+  leakage into `Network` for any variant.
+
+### Hysteria2 — gecko added; Hysteria v1 — obfs is a string
+
+- Hysteria2's obfs domain is now **salamander | gecko** (sing-box
+  1.14 documents both; the Hysteria2 URI format carries both;
+  v0.10.3 rejected gecko). Generated JSON remains the object
+  `{"type": "salamander"|"gecko", "password": "..."}` — never
+  Security/Host/Network.
+- Hysteria (v1) is a DIFFERENT protocol with a different sing-box
+  schema: its `obfs` is the obfuscation password as a plain JSON
+  STRING, omitted when absent. v0.10.3 emitted the Hysteria2 object
+  shape for v1 AND rejected real v1 obfs passwords through the v2
+  salamander enum. The v1 URI semantics (`obfs` = password) are
+  implemented only where the actual v1 format supports them;
+  Hysteria2's `obfs` + `obfs-password` URI semantics are unchanged.
+- Exact JSON type assertions pin all three cases: v1 obfs absent →
+  key omitted; v1 obfs present → JSON string; Hysteria2 obfs present
+  → JSON object. All variants (plus TUIC relay/congestion variants
+  and the WireGuard endpoint) passed through the REAL pinned
+  sing-box 1.14.0 binary: `sing-box check` accepted every generated
+  document and every variant reached listener readiness.
+
+### WireGuard — documentation truth pass
+
+- The deterministic fallback local address pair (172.19.0.2/32 +
+  fdfe:dcba:9876::2/128) generated when an imported configuration
+  carries no INI `Address` is FreeIran-generated — stable across runs
+  for reproducible documents — and is NOT a sing-box "documented
+  default". Misleading wording in the generator comment, the capability
+  notes and docs/protocols.md was corrected.
+- The conceptual split is unchanged and pinned by tests: INI/URI
+  `Address` → endpoint `address`, peer `AllowedIPs` →
+  `peers[].allowed_ips`, peer endpoint stays the peer endpoint;
+  interface addresses never merge into AllowedIPs. Both
+  `wireguard://` and `wg://` URI spellings are regression-tested.
+- Fingerprints unchanged — stored configuration IDs remain stable
+  across the whole release.
+
 ## v0.10.3 — Windows WinINet ABI/semantics repair, protocol data-model truth pass, secret-free test material
 
 v0.10.3 is a correctness release. It repairs the v0.10.2 Windows

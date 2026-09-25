@@ -25,14 +25,19 @@ const (
 	TypeUnknown     Type = "unknown"
 )
 
-// v0.10.3 value domains for enumerated protocol details. These are
+// v0.10.4 value domains for enumerated protocol details. These are
 // the ONLY values the parsers may produce and the backends generate;
 // validation rejects anything else instead of forwarding garbage to
 // the core at runtime.
 const (
-	// ObfsSalamander is the single obfuscation protocol the
-	// Hysteria family implements.
+	// ObfsSalamander and ObfsGecko are the obfuscation protocols
+	// sing-box v1.14 implements for the Hysteria2 outbound
+	// (`obfs.type`). The Hysteria (v1) outbound has DIFFERENT
+	// semantics: its `obfs` is a plain JSON string carrying the
+	// obfuscation password itself — never a type name (see
+	// docs/protocols.md and the v0.10.4 changelog).
 	ObfsSalamander = "salamander"
+	ObfsGecko      = "gecko"
 
 	// TUIC congestion-control algorithms (sing-box v1.14 tuic
 	// outbound `congestion_control`).
@@ -41,9 +46,11 @@ const (
 	CongestionControlNewReno = "new_reno"
 
 	// TUIC UDP relay modes (sing-box v1.14 tuic outbound
-	// `udp_relay_mode`).
-	UDPRelayModeNative    = "native"
-	UDPRelayModeQuadratic = "quadratic"
+	// `udp_relay_mode`). v0.10.4 correction: the v0.10.3 enum said
+	// "quadratic", which no sing-box release documents — the
+	// actual domain is native | quic.
+	UDPRelayModeNative = "native"
+	UDPRelayModeQUIC   = "quic"
 )
 
 // TUICCongestionControlValues is the exhaustive value domain.
@@ -56,7 +63,28 @@ var TUICCongestionControlValues = []string{
 // TUICUDPRelayModeValues is the exhaustive value domain.
 var TUICUDPRelayModeValues = []string{
 	UDPRelayModeNative,
-	UDPRelayModeQuadratic,
+	UDPRelayModeQUIC,
+}
+
+// Hysteria2ObfsValues is the exhaustive obfs.type domain of the
+// Hysteria2 outbound (sing-box v1.14). Hysteria (v1) does not share
+// this domain — its obfs is a password string, not an enum.
+var Hysteria2ObfsValues = []string{
+	ObfsSalamander,
+	ObfsGecko,
+}
+
+// ValidHysteria2Obfs reports whether v is an accepted Hysteria2
+// obfs type. The empty value means "no obfuscation" and is handled
+// by the callers.
+func ValidHysteria2Obfs(v string) bool {
+	for _, ok := range Hysteria2ObfsValues {
+		if v == ok {
+			return true
+		}
+	}
+
+	return false
 }
 
 // ValidTUICCongestionControl reports whether v is an accepted
@@ -168,10 +196,18 @@ type Config struct {
 	// value now lives in its semantic field and generates the
 	// correct sing-box JSON. Not part of the fingerprint (tuning,
 	// not identity).
+	// v0.10.4 semantics note: Obfs means different things for the
+	// two Hysteria protocols, matching each actual wire format:
+	//   - Hysteria2: the obfs TYPE ("" | salamander | gecko) and
+	//     ObfsPassword carries the obfuscation password — generated
+	//     as the sing-box object {"type", "password"}.
+	//   - Hysteria (v1): the obfuscation PASSWORD string itself
+	//     (the v1 format has no type concept) — generated as the
+	//     sing-box JSON string `"obfs": "..."`, omitted when empty.
 	CongestionControl string `json:"congestion_control,omitempty"` // TUIC: bbr | cubic | new_reno.
-	UDPRelayMode      string `json:"udp_relay_mode,omitempty"`     // TUIC: native | quadratic.
-	Obfs              string `json:"obfs,omitempty"`               // Hysteria v1/2: salamander ("" = none).
-	ObfsPassword      string `json:"obfs_password,omitempty"`      // Hysteria v1/2 salamander password.
+	UDPRelayMode      string `json:"udp_relay_mode,omitempty"`     // TUIC: native | quic.
+	Obfs              string `json:"obfs,omitempty"`               // Hysteria2: salamander | gecko; Hysteria v1: obfs password string.
+	ObfsPassword      string `json:"obfs_password,omitempty"`      // Hysteria2 obfs password (object shape).
 
 	// WireGuard.
 	//

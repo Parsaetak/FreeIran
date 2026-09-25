@@ -99,15 +99,31 @@ func validateHysteria(c *Config) error {
 		return fmt.Errorf("Hysteria authentication is required")
 	}
 
-	// v0.10.3: the obfuscation layer is an ENUMERATED value, not a
-	// free-form string — Hysteria (v1 and v2) implements exactly one
-	// obfuscation protocol (salamander). Accepting arbitrary values
-	// produced runtime configs the core rejects ("unknown obfs").
-	if c.Obfs != "" && c.Obfs != ObfsSalamander {
-		return fmt.Errorf("invalid Hysteria obfs %q (allowed: empty or %q)",
-			c.Obfs, ObfsSalamander)
+	// v0.10.4: the two Hysteria protocols have DIFFERENT obfs
+	// semantics and must not share one validation rule.
+	//
+	//   - Hysteria2: the URI carries obfs=<type> + obfs-password=<pw>;
+	//     the type is an ENUMERATED value ("" | salamander | gecko
+	//     for sing-box v1.14). v0.10.3 only knew salamander and
+	//     rejected the documented gecko.
+	//   - Hysteria (v1): the format has no obfs TYPE concept — the
+	//     obfuscation value IS the password string the server was
+	//     configured with. Restricting it to the enum (the v0.10.3
+	//     behavior) rejected every real v1 configuration whose
+	//     password was not literally "salamander". Any non-empty
+	//     string is accepted here and generated as the sing-box
+	//     JSON string `"obfs": "..."`.
+	if c.Type == TypeHysteria2 {
+		if c.Obfs != "" && !ValidHysteria2Obfs(c.Obfs) {
+			return fmt.Errorf("invalid Hysteria2 obfs %q (allowed: empty or %s)",
+				c.Obfs, strings.Join(Hysteria2ObfsValues, ", "))
+		}
+
+		return nil
 	}
 
+	// Hysteria (v1): obfs is a free-form obfuscation password.
+	// ObfsPassword is a Hysteria2 concept; nothing to validate.
 	return nil
 }
 

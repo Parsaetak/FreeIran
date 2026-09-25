@@ -35,6 +35,7 @@ package tunnel
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -207,11 +208,18 @@ func TestWinINetDirectToFreeIranToDirect(t *testing.T) {
 func TestWinINetExplicitProxyRoundTrip(t *testing.T) {
 	withRunnerProxyState(t)
 
-	// Put the runner into a user-owned explicit proxy state.
+	// Put the runner into a user-owned explicit proxy state. The
+	// bypass uses ONLY WinINet-documented grammar (v0.10.4: the
+	// v0.10.3 fixture carried "10.0.0.0/8" — CIDR notation is not
+	// WinINet syntax, InternetSetOption rejected the whole
+	// per-connection list with ERROR_INVALID_PARAMETER while
+	// applying the synthetic snapshot, and the failure surfaced in
+	// the guaranteed-restore path as "restore runner proxy settings:
+	// The parameter is incorrect."). See TestWinINetBypassGrammar.
 	original := SystemProxySnapshot{
 		Enabled: true,
 		Server:  "proxy.corp.example:8080",
-		Bypass:  []string{"localhost", "10.0.0.0/8"},
+		Bypass:  []string{"localhost", "192.168.1.*"},
 		Flags:   proxyTypeProxy,
 	}
 
@@ -512,6 +520,116 @@ func TestRecoverStaleProxyCorruptMarkerRealBackend(t *testing.T) {
 	if _, statErr := os.Stat(recoveryMarkerPath); !os.IsNotExist(statErr) {
 		t.Fatalf("corrupt marker must be removed: %v", statErr)
 	}
+}
+
+// TestWinINetBypassGrammar pins WinINet's documented bypass grammar
+// (v0.10.4 regression guard).
+//
+// The bypass string joined by bypassJoin reaches InternetSetOption
+// VERBATIM. WinINet's documented grammar accepts host names, IP
+// literals, wildcard patterns and the "<local>" keyword; it does NOT
+// accept CIDR notation ("10.0.0.0/8") — such an entry fails the whole
+// per-connection transaction with ERROR_INVALID_PARAMETER. The
+// v0.10.3 suite shipped a fixture with exactly that entry and the
+// Windows battery failed in the guaranteed-restore path before any
+// assertion ran. This test gives an invalid bypass fixture an
+// IMMEDIATE, named failure at grammar level instead of a syscall
+// error far from the cause.
+func TestWinINetBypassGrammar(t *testing.T) {
+	// The syntax families the tests (and Options.Bypass callers)
+	// rely on — all must stay accepted.
+	valid := map[string]string{
+		"hostname":        "localhost",
+		"fqdn":            "proxy.corp.example",
+		"ip literal":      "127.0.0.1",
+		"wildcard subnet": "192.168.1.*",
+		"wildcard domain": "*.local",
+		"<local> keyword": "<local>",
+	}
+
+	for name, entry := range valid {
+		if err := validateWinINetBypassEntry(entry); err != nil {
+			t.Errorf("%s: entry %q rejected: %v", name, entry, err)
+		}
+	}
+
+	// Entries outside WinINet's grammar — rejected here before any
+	// fixture reaches the real syscall.
+	invalid := map[string]string{
+		"CIDR":            "10.0.0.0/8",
+		"empty":           "",
+		"embedded list":   "a;b",
+		"embedded spaces": "a b",
+		"scheme-prefixed": "http://proxy.corp.example:8080",
+		"assignment form": "socks=host:1080",
+	}
+
+	for name, entry := range invalid {
+		if err := validateWinINetBypassEntry(entry); err == nil {
+			t.Errorf("%s: entry %q accepted — WinINet cannot store it and the per-connection transaction would fail", name, entry)
+		}
+	}
+
+	// The round-trip through the renderer preserves the entries.
+	joined := bypassJoin([]string{"localhost", "192.168.1.*", "<local>"})
+	if joined != "localhost;192.168.1.*;<local>" {
+		t.Fatalf("bypassJoin = %q, want localhost;192.168.1.*;<local>", joined)
+	}
+
+	// Every bypass entry used by a round-trip fixture in this file
+	// must satisfy the grammar — new fixtures added to the battery
+	// are diagnosed here, not as an ERROR_INVALID_PARAMETER inside a
+	// restore path.
+	for _, fixture := range roundTripBypassFixtures {
+		if err := validateWinINetBypassEntry(fixture); err != nil {
+			t.Errorf("round-trip fixture %q violates WinINet bypass grammar: %v", fixture, err)
+		}
+	}
+}
+
+// roundTripBypassFixtures is the registry of every bypass entry the
+// real-WinINet round-trip tests apply to the platform. A new fixture
+// must be added here so the grammar test validates it.
+var roundTripBypassFixtures = []string{
+	"localhost",   // TestWinINetDirectToFreeIranToDirect + Enable calls
+	"<local>",     // Enable calls
+	"192.168.1.*", // TestWinINetExplicitProxyRoundTrip synthetic state
+}
+
+// validateWinINetBypassEntry checks one bypass entry against the
+// subset of WinINet's documented grammar the engine relies on:
+// host names, IP literals, wildcard patterns and "<local>". CIDR
+// notation, embedded separators and scheme/assignment forms are
+// rejected — WinINet cannot store them (ERROR_INVALID_PARAMETER).
+func validateWinINetBypassEntry(entry string) error {
+	if entry == "" {
+		return fmt.Errorf("empty bypass entry")
+	}
+
+	if entry == "<local>" {
+		return nil
+	}
+
+	for _, r := range entry {
+		switch {
+		case r == '/':
+			return fmt.Errorf("CIDR-style notation %q is not WinINet bypass syntax", entry)
+		case r == ';':
+			return fmt.Errorf("entry must not embed the list separator ';'")
+		case r == ' ' || r == '\t':
+			return fmt.Errorf("entry must not contain whitespace")
+		}
+	}
+
+	if strings.Contains(entry, "://") {
+		return fmt.Errorf("scheme-prefixed URLs are not WinINet bypass syntax")
+	}
+
+	if strings.Contains(entry, "=") {
+		return fmt.Errorf("scheme-assignment forms are proxy-server syntax, not bypass syntax")
+	}
+
+	return nil
 }
 
 // TestWinINetGlobalFreeIsIdempotent guards the string-freeing

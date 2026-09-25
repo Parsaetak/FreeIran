@@ -9,7 +9,7 @@ configurations.
 **Project:** FreeIran — A SHEYTAN Digital System
 **Architect:** Parsa Tak / SHEYTAN
 **Repository:** https://github.com/Parsaetak/FreeIran
-**Current version:** 0.10.3 (see `VERSION`)
+**Current version:** 0.10.4 (see `VERSION`)
 **Status:** production architecture — multi-core protocol runtime with
 managed installation, multi-level node discovery, Ping/URL test modes
 with measured ranking, verified-connection engine with racing,
@@ -18,6 +18,62 @@ memory control and kernel-level process supervision. TUN mode is
 EXPERIMENTAL and disabled in this release (see "TUN mode" below).
 
 ---
+
+## What's new in v0.10.4
+
+v0.10.4 is a protocol-semantics correction release plus the last
+Windows test defect of the v0.10.3 battery. Every claim below is
+scoped to evidence actually executed for this release: the full Linux
+test matrix (including -race), Windows cross-compile/static checks and
+real-core verification against the pinned sing-box 1.14.0 binary. The
+Windows-native WinINet round-trips run in GitHub Actions CI.
+
+### Windows WinINet — the last full-suite failure, root-caused
+
+- `TestWinINetExplicitProxyRoundTrip` failed BEFORE any assertion ran:
+  its synthetic "original" snapshot carried the bypass entry
+  `10.0.0.0/8` — CIDR notation is NOT WinINet bypass syntax — so
+  InternetSetOption rejected the whole per-connection list with
+  ERROR_INVALID_PARAMETER inside the guaranteed-restore path
+  ("restore runner proxy settings: The parameter is incorrect."). The
+  fixture now uses documented syntax (`192.168.1.*`); production code
+  was not widened to accept CIDR.
+- New `TestWinINetBypassGrammar` documents WinINet's bypass grammar
+  (host names, IP literals, wildcard patterns, `<local>`) and rejects
+  CIDR/separator/scheme forms at grammar level, so an invalid fixture
+  fails with a named cause instead of a syscall error.
+- Documented Windows 7+ query order implemented: the flags are queried
+  through `INTERNET_PER_CONN_FLAGS_UI` first, falling back to
+  `INTERNET_PER_CONN_FLAGS` when a build rejects the UI tag; setting
+  keeps using `INTERNET_PER_CONN_FLAGS`.
+- WinINet syscall failures now carry the failing operation AND the
+  numeric Win32 code (`win32 error 87 (...)`), not just the message.
+- `notifyChanged` failures are routed into the structured diagnostics
+  log per stage (activate / restore / reset-to-direct) instead of being
+  silently discarded — the platform mutation + verification remains the
+  hard correctness gate.
+
+### Protocol semantics — corrected against sing-box v1.14
+
+- TUIC: `udp_relay_mode` domain corrected from the invented
+  "quadratic" to the documented **native | quic**; congestion_control
+  stays cubic | new_reno | bbr; no value ever touches the transport
+  slot. Full variant matrix unit-tested and passed through the real
+  pinned sing-box binary.
+- Hysteria2: the obfs domain now includes the documented
+  **salamander AND gecko** (v0.10.3 rejected gecko); generated JSON
+  remains the object `{"type", "password"}`.
+- Hysteria (v1): the obfs field now generates the documented JSON
+  STRING (the obfuscation password) — v0.10.3 emitted the Hysteria2
+  object shape here and rejected real v1 obfs passwords through the
+  v2 enum. Absent obfs stays omitted. Verified against the real
+  binary.
+- WireGuard: docs truth pass — the fallback local address pair is
+  FreeIran-generated (deterministic, stable), NOT a sing-box
+  "documented default"; local `Address` vs peer `AllowedIPs` semantics
+  unchanged and pinned by tests; `wireguard://` and `wg://` both
+  regression-tested.
+- Fingerprints unchanged — stored configuration IDs remain stable.
 
 ## What's new in v0.10.3
 

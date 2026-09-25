@@ -525,7 +525,11 @@ func TestRecoverStaleProxyRestoresRecordedState(t *testing.T) {
 		Previous: SystemProxySnapshot{
 			Enabled: true,
 			Server:  "proxy.corp.example:8080",
-			Bypass:  []string{"localhost", "10.0.0.0/8"},
+			// WinINet-plausible bypass grammar (v0.10.4): a
+			// recorded previous state is what WinINet once
+			// stored, so the fixture uses documented syntax,
+			// not CIDR notation.
+			Bypass: []string{"localhost", "192.168.1.*"},
 		},
 	}
 

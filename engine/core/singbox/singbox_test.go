@@ -313,6 +313,16 @@ func TestSingBoxSmokeRealBinary(t *testing.T) {
 			tuicConfig(),
 			wireGuardConfig(),
 			hysteriaConfig(),
+			// v0.10.4: every corrected semantic variant must pass
+			// the REAL core as well — TUIC relay modes (the
+			// v0.10.3 "quadratic" was an invented value), the
+			// Hysteria2 gecko obfs and the Hysteria (v1) obfs
+			// JSON-string shape.
+			hysteria2SalamanderConfig(),
+			hysteria2GeckoConfig(),
+			tuicQuicBBRConfig(),
+			tuicNativeCubicConfig(),
+			hysteriaV1ObfsConfig(),
 		},
 		ValidateArgs: func(file string) []string {
 			return []string{"check", "-c", file}
@@ -522,6 +532,55 @@ func hysteriaConfig() config.Config {
 		UpMbps:   100,
 		DownMbps: 500,
 	}
+}
+
+// hysteria2SalamanderConfig is the explicit salamander obfs variant
+// (v0.10.4 real-binary smoke).
+func hysteria2SalamanderConfig() config.Config {
+	cfg := hysteria2Config()
+	cfg.Address = "sb-hy2-sal.example.org"
+	cfg.Obfs = config.ObfsSalamander
+	cfg.ObfsPassword = "synthetic-obfs-password"
+	return cfg
+}
+
+// hysteria2GeckoConfig is the gecko obfs variant the v0.10.3 model
+// rejected even though sing-box 1.14 and the Hysteria2 URI format
+// both document it (v0.10.4 real-binary smoke).
+func hysteria2GeckoConfig() config.Config {
+	cfg := hysteria2Config()
+	cfg.Address = "sb-hy2-gecko.example.org"
+	cfg.Obfs = config.ObfsGecko
+	cfg.ObfsPassword = "synthetic-obfs-password"
+	return cfg
+}
+
+// tuicQuicBBRConfig pins the corrected udp_relay_mode=quic domain
+// (v0.10.4: the v0.10.3 "quadratic" was an invented value).
+func tuicQuicBBRConfig() config.Config {
+	cfg := tuicConfig()
+	cfg.CongestionControl = config.CongestionControlBBR
+	cfg.UDPRelayMode = config.UDPRelayModeQUIC
+	return cfg
+}
+
+// tuicNativeCubicConfig pins the native relay mode with cubic
+// congestion control.
+func tuicNativeCubicConfig() config.Config {
+	cfg := tuicConfig()
+	cfg.CongestionControl = config.CongestionControlCubic
+	cfg.UDPRelayMode = config.UDPRelayModeNative
+	return cfg
+}
+
+// hysteriaV1ObfsConfig is the Hysteria (v1) obfs variant: the obfs
+// value is the obfuscation PASSWORD and must generate the sing-box
+// JSON string shape (v0.10.4).
+func hysteriaV1ObfsConfig() config.Config {
+	cfg := hysteriaConfig()
+	cfg.Address = "sb-hy-obfs.example.org"
+	cfg.Obfs = "synthetic-obfs-password"
+	return cfg
 }
 
 // jsonFieldEquals checks a string field in raw JSON.

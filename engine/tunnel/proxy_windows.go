@@ -12,6 +12,7 @@ import (
 	"unsafe"
 
 	firerrors "github.com/Parsaetak/FreeIran/engine/errors"
+	"github.com/Parsaetak/FreeIran/internal/logging"
 )
 
 // winINetBackend implements SystemProxyBackend using WinINet's
@@ -165,8 +166,11 @@ func (b *winINetBackend) Enable(ctx context.Context, host string, port int, asHT
 			Subsystem, "system_proxy", "set proxy %s", proxyServer)
 	}
 
-	// 4. Notify the system so running apps pick up the change.
-	_ = b.notifyChanged()
+	// 4. Notify the system so running apps pick up the change. The
+	// hard correctness gate is the platform mutation + verification
+	// below; a notification failure is non-fatal but must be
+	// visible in diagnostics (v0.10.4), never silently discarded.
+	b.notifyChangedReported("activate")
 
 	// 5. Verify the platform state actually shows the new proxy
 	// (v0.10.2 transactional activation — in-memory success is not
@@ -196,7 +200,7 @@ func (b *winINetBackend) Disable(ctx context.Context) error {
 				Subsystem, "system_proxy", "reset to direct")
 		}
 
-		_ = b.notifyChanged()
+		b.notifyChangedReported("reset-to-direct")
 		return nil
 	}
 
@@ -214,7 +218,7 @@ func (b *winINetBackend) Disable(ctx context.Context) error {
 			Subsystem, "system_proxy", "verify previous settings restored")
 	}
 
-	_ = b.notifyChanged()
+	b.notifyChangedReported("restore-previous")
 
 	b.hasSaved = false
 	b.saved = SystemProxySnapshot{}
@@ -254,7 +258,7 @@ func (b *winINetBackend) Restore(previous SystemProxySnapshot) error {
 			Subsystem, "recovery", "verify recorded system-proxy restoration")
 	}
 
-	_ = b.notifyChanged()
+	b.notifyChangedReported("recovery-restore")
 
 	return nil
 }
@@ -317,6 +321,9 @@ func (b *winINetBackend) verifyMatches(expected SystemProxySnapshot) error {
 }
 
 // bypassJoin renders the bypass list the way WinINet stores it.
+// Entries MUST already be in WinINet's documented bypass grammar
+// (host names, IP literals, wildcard patterns, "<local>" — never
+// CIDR notation; see Options.Bypass and TestWinINetBypassGrammar).
 func bypassJoin(bypass []string) string {
 	return strings.Join(bypass, ";")
 }
@@ -355,9 +362,27 @@ func (b *winINetBackend) query() (SystemProxySnapshot, error) {
 }
 
 // queryCore queries FLAGS + PROXY_SERVER + PROXY_BYPASS in one call.
+//
+// v0.10.4: the documented Windows 7+ query order is used — the
+// connection's flags are queried through INTERNET_PER_CONN_FLAGS_UI
+// first (the UI-visible state), and only if that query FAILS does the
+// call fall back to the legacy INTERNET_PER_CONN_FLAGS tag. Setting
+// keeps using INTERNET_PER_CONN_FLAGS (setFull), as documented. Both
+// paths return the same PROXY_TYPE_* bits for every state the
+// snapshot algebra models; the fallback keeps pre-7 builds working.
 func (b *winINetBackend) queryCore() (flags uint32, server, bypass string, err error) {
+	flags, server, bypass, err = b.queryCoreWithTag(internetPerConnFlagsUI)
+	if err != nil {
+		flags, server, bypass, err = b.queryCoreWithTag(internetPerConnFlags)
+	}
+
+	return flags, server, bypass, err
+}
+
+// queryCoreWithTag is queryCore for one specific flags option tag.
+func (b *winINetBackend) queryCoreWithTag(flagOption uint32) (flags uint32, server, bypass string, err error) {
 	options := make([]internetPerConnOption, 3)
-	options[0].dwOption = internetPerConnFlags
+	options[0].dwOption = flagOption
 	options[1].dwOption = internetPerConnProxyServer
 	options[2].dwOption = internetPerConnProxyBypass
 
@@ -382,7 +407,7 @@ func (b *winINetBackend) queryCore() (flags uint32, server, bypass string, err e
 	runtime.KeepAlive(&list)
 
 	if ret == 0 {
-		return 0, "", "", callErr
+		return 0, "", "", win32CallError("InternetQueryOption(INTERNET_OPTION_PER_CONNECTION_OPTION)", callErr)
 	}
 
 	// The string options come back as WinINet-allocated
@@ -542,7 +567,7 @@ func (b *winINetBackend) setFull(flags uint32, proxyServer, bypass, autoconfig s
 	runtime.KeepAlive(pacUTF16)
 
 	if ret == 0 {
-		return callErr
+		return win32CallError("InternetSetOption(INTERNET_OPTION_PER_CONNECTION_OPTION)", callErr)
 	}
 
 	return nil
@@ -553,13 +578,40 @@ func (b *winINetBackend) setFull(flags uint32, proxyServer, bypass, autoconfig s
 func (b *winINetBackend) notifyChanged() error {
 	r, _, err := procInternetSetOption.Call(0, uintptr(internetOptionSettingsChanged), 0, 0)
 	if r == 0 {
-		return err
+		return win32CallError("InternetSetOption(INTERNET_OPTION_SETTINGS_CHANGED)", err)
 	}
 	r, _, err = procInternetSetOption.Call(0, uintptr(internetOptionRefresh), 0, 0)
 	if r == 0 {
-		return err
+		return win32CallError("InternetSetOption(INTERNET_OPTION_REFRESH)", err)
 	}
 	return nil
+}
+
+// notifyChangedReported runs notifyChanged and routes a failure into
+// the structured diagnostics log (v0.10.4). The transactional
+// contract treats platform mutation + verification as the hard
+// correctness gate — a failed notification never rolls the state
+// back — but it must not silently disappear either: callers and CI
+// logs see exactly which stage failed and why.
+func (b *winINetBackend) notifyChangedReported(stage string) {
+	if err := b.notifyChanged(); err != nil {
+		logging.W(Subsystem, "proxy_notify_failed",
+			"system-proxy notification after %s failed: %v", stage, err)
+	}
+}
+
+// win32CallError renders a Win32 syscall failure with BOTH the
+// numeric code and the human-readable message (v0.10.4 CI
+// diagnostics): a bare syscall.Errno prints as "The parameter is
+// incorrect." — true, but the errno number (87 =
+// ERROR_INVALID_PARAMETER) and the failing operation are what make
+// an Actions log diagnosable.
+func win32CallError(op string, callErr error) error {
+	if errno, ok := callErr.(syscall.Errno); ok {
+		return fmt.Errorf("%s failed: win32 error %d (%s)", op, errno, errno.Error())
+	}
+
+	return fmt.Errorf("%s failed: %w", op, callErr)
 }
 
 // globalAllocedUTF16 converts a WinINet-allocated (GlobalAlloc)

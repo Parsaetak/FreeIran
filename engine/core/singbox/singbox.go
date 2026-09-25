@@ -73,7 +73,7 @@ func (b *Backend) Capabilities() core.Capabilities {
 			"xtls-rprx-vision flow supported (with uTLS)",
 			"mixed inbound serves SOCKS and HTTP on one port",
 			"hysteria2/tuic/hysteria verified against v1.14.0 (TLS mandatory, QUIC)",
-			"wireguard verified against v1.14.0 (endpoint form, local address auto-generated when absent)",
+			"wireguard verified against v1.14.0 (endpoint form, FreeIran-generated fallback local address when absent)",
 		},
 	}
 }
@@ -299,16 +299,27 @@ type sbOutbound struct {
 	AlterID    int          `json:"alter_id,omitempty"`
 
 	// QUIC family (v0.10.2, verified against sing-box v1.14.0).
-	UpMbps            int     `json:"up_mbps,omitempty"`            // hysteria/hysteria2
-	DownMbps          int     `json:"down_mbps,omitempty"`          // hysteria/hysteria2
-	AuthStr           string  `json:"auth_str,omitempty"`           // hysteria (v1)
-	CongestionControl string  `json:"congestion_control,omitempty"` // tuic
-	UDPRelayMode      string  `json:"udp_relay_mode,omitempty"`     // tuic
-	Obfs              *sbObfs `json:"obfs,omitempty"`               // hysteria/hysteria2 salamander
+	UpMbps            int    `json:"up_mbps,omitempty"`            // hysteria/hysteria2
+	DownMbps          int    `json:"down_mbps,omitempty"`          // hysteria/hysteria2
+	AuthStr           string `json:"auth_str,omitempty"`           // hysteria (v1)
+	CongestionControl string `json:"congestion_control,omitempty"` // tuic
+	UDPRelayMode      string `json:"udp_relay_mode,omitempty"`     // tuic
+
+	// Obfs is the Hysteria-family obfuscation field. The two
+	// protocols have DIFFERENT sing-box shapes and must never
+	// inherit each other's (v0.10.4):
+	//   - Hysteria2: *sbObfs — the object {"type": "salamander"|"gecko",
+	//     "password": "..."}.
+	//   - Hysteria (v1): a plain JSON STRING carrying the obfuscation
+	//     password ("obfs": "obfuscated-password") — the v1 schema has
+	//     no type/password object, and emitting the v2 object shape
+	//     makes the real binary reject the outbound.
+	Obfs any `json:"obfs,omitempty"`
 }
 
-// sbObfs is the salamander obfuscation object of the hysteria
-// outbounds.
+// sbObfs is the obfuscation object of the Hysteria2 outbound
+// ({"type": "salamander"|"gecko", "password": "..."}). Hysteria (v1)
+// uses a plain JSON string instead — see sbOutbound.Obfs.
 type sbObfs struct {
 	Type     string `json:"type"`
 	Password string `json:"password,omitempty"`
@@ -497,10 +508,12 @@ func buildSBOutbound(cfg config.Config, security config.Security) (*sbOutbound, 
 
 	case config.TypeHysteria2:
 		// Verified against v1.14.0: TLS required (checked at startup),
-		// password auth, optional salamander obfs, optional
-		// bandwidth caps. v0.10.3: obfs comes from its OWN fields
+		// password auth, optional salamander OR gecko obfs (v0.10.4:
+		// gecko added — the v0.10.3 enum rejected a documented value),
+		// optional bandwidth caps. obfs comes from its OWN fields
 		// (Obfs/ObfsPassword) — v0.10.2 read it out of Security/Host,
-		// which the parser no longer pollutes.
+		// which the parser no longer pollutes. The generated shape is
+		// the sing-box OBJECT {"type", "password"}.
 		outbound.Type = "hysteria2"
 		outbound.Server = cfg.Address
 		outbound.ServerPort = cfg.Port
@@ -508,10 +521,10 @@ func buildSBOutbound(cfg config.Config, security config.Security) (*sbOutbound, 
 		outbound.UpMbps = cfg.UpMbps
 		outbound.DownMbps = cfg.DownMbps
 
-		if cfg.Obfs != "" && cfg.Obfs != config.ObfsSalamander {
+		if cfg.Obfs != "" && !config.ValidHysteria2Obfs(cfg.Obfs) {
 			return nil, firerrors.New(firerrors.KindInvalidInput,
 				Subsystem, "build",
-				"invalid Hysteria2 obfs %q (allowed: empty or %q)", cfg.Obfs, config.ObfsSalamander)
+				"invalid Hysteria2 obfs %q (allowed: empty or %s)", cfg.Obfs, strings.Join(config.Hysteria2ObfsValues, ", "))
 		}
 
 		if cfg.Obfs != "" {
@@ -561,6 +574,14 @@ func buildSBOutbound(cfg config.Config, security config.Security) (*sbOutbound, 
 		// QUIC transport (the "protocol" field of older schemas is
 		// gone) and MANDATORY up/down bandwidth caps ("missing
 		// upload speed" otherwise).
+		//
+		// v0.10.4: the v1 obfs is a plain JSON STRING — the
+		// obfuscation password itself. v0.10.3 emitted the
+		// Hysteria2-style {"type","password"} OBJECT here (the
+		// protocols share a name, not a schema) and restricted the
+		// value to the salamander enum, which is a v2 concept: the
+		// real binary rejects the object shape for hysteria, and a
+		// real v1 URI's obfs password was rejected at validate time.
 		outbound.Type = "hysteria"
 		outbound.Server = cfg.Address
 		outbound.ServerPort = cfg.Port
@@ -568,14 +589,8 @@ func buildSBOutbound(cfg config.Config, security config.Security) (*sbOutbound, 
 		outbound.UpMbps = cfg.UpMbps
 		outbound.DownMbps = cfg.DownMbps
 
-		if cfg.Obfs != "" && cfg.Obfs != config.ObfsSalamander {
-			return nil, firerrors.New(firerrors.KindInvalidInput,
-				Subsystem, "build",
-				"invalid Hysteria obfs %q (allowed: empty or %q)", cfg.Obfs, config.ObfsSalamander)
-		}
-
 		if cfg.Obfs != "" {
-			outbound.Obfs = &sbObfs{Type: cfg.Obfs, Password: cfg.ObfsPassword}
+			outbound.Obfs = cfg.Obfs
 		}
 
 	case config.TypeSOCKS:
@@ -636,8 +651,12 @@ func buildSBOutbound(cfg config.Config, security config.Security) (*sbOutbound, 
 //
 //   - `address`      — the LOCAL interface address list
 //     (cfg.InterfaceAddress); when the configuration did not record
-//     one, a deterministic link-local-style default pair is
-//     generated (documented, stable across runs).
+//     one, FreeIran generates a deterministic fallback pair
+//     (172.19.0.2/32 + fdfe:dcba:9876::2/128). This pair is a
+//     FreeIran-generated fallback — stable across runs so generated
+//     documents are reproducible — but it is NOT a sing-box
+//     "documented default": sing-box only requires SOME local
+//     address, it does not document these values.
 //   - `peers[].address/port` — the PEER endpoint (cfg.Address/Port).
 //   - `peers[].allowed_ips` — the PEER routing list
 //     (cfg.AllowedIPs, defaulting to 0.0.0.0/0 + ::/0).
@@ -645,9 +664,10 @@ func buildSBWireGuardEndpoint(cfg config.Config) *sbEndpoint {
 	address := cfg.InterfaceAddress
 
 	if len(address) == 0 {
-		// Deterministic local addresses for the generated endpoint
-		// (the documented default when the imported configuration did
-		// not carry an INI Address / URI address parameter).
+		// FreeIran's deterministic fallback local addresses (NOT a
+		// sing-box documented default — see the doc comment above):
+		// the real binary refuses an endpoint with no local address,
+		// so the generator always supplies one.
 		address = []string{"172.19.0.2/32", "fdfe:dcba:9876::2/128"}
 	}
 

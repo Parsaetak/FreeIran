@@ -37,6 +37,7 @@ const Subsystem = "tunnel"
 // platform-neutral snapshot algebra compares them).
 const (
 	internetPerConnFlags              = 1
+	internetPerConnFlagsUI            = 10
 	internetPerConnProxyServer        = 2
 	internetPerConnProxyBypass        = 3
 	internetPerConnAutoconfigURL      = 4
@@ -651,8 +652,14 @@ type Options struct {
 	// SOCKS proxy. Some Windows apps honour HTTP proxy only.
 	AsHTTP bool
 
-	// Bypass is the list of hostnames / IP ranges that should
-	// bypass the proxy (e.g. "localhost", "127.0.0.1", "10.0.0.0/8",
-	// "*.local").
+	// Bypass is the list of hostnames / IP patterns that should
+	// bypass the proxy. On Windows this string reaches WinINet
+	// VERBATIM, and WinINet's documented bypass grammar supports
+	// host names, IP literals, wildcard patterns ("192.168.1.*",
+	// "*.local") and the "<local>" keyword — CIDR notation such as
+	// "10.0.0.0/8" is NOT valid WinINet syntax and makes
+	// InternetSetOption fail with ERROR_INVALID_PARAMETER (the
+	// v0.10.4 test-fixture regression; see
+	// TestWinINetBypassGrammar).
 	Bypass []string
 }
