@@ -159,6 +159,32 @@ func (b *winINetBackend) Snapshot() SystemProxySnapshot {
 	return snap
 }
 
+// Restore applies a previously persisted proxy state (crash
+// recovery, v0.10.1 — see recovery.go). It is the replay of what
+// Disable would have restored, applied without any in-memory saved
+// state: direct when the recorded previous state was direct, the
+// recorded server/bypass otherwise. The change is broadcast so
+// running applications pick it up immediately.
+func (b *winINetBackend) Restore(previous SystemProxySnapshot) error {
+	flags := uint32(proxyTypeDirect)
+	if previous.Enabled && previous.Server != "" {
+		flags = proxyTypeProxy
+	}
+
+	if err := b.set(flags, previous.Server, strings.Join(previous.Bypass, ";")); err != nil {
+		return firerrors.Wrap(err, firerrors.KindEnvironment,
+			Subsystem, "recovery", "restore recorded system-proxy state")
+	}
+
+	if err := b.notifyChanged(); err != nil {
+		// Non-fatal, mirroring Enable/Disable: the settings are
+		// restored; some applications may need a restart to see them.
+		_ = err
+	}
+
+	return nil
+}
+
 // query reads the current per-connection proxy settings.
 func (b *winINetBackend) query() (SystemProxySnapshot, error) {
 	// Allocate options for FLAGS + PROXY_SERVER + PROXY_BYPASS.

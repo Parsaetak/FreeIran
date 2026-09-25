@@ -240,3 +240,28 @@ states, keyboard operation, reduced-motion class, no-candidate
 fallback to the discovery flow, and the one-poll-per-mount rule. The
 Network page suite (v0.9.8.5) pins the identity card's no-auto-run
 contract, the staged ladder rendering and the DNS evidence rows.
+
+## Design system: WHITE / BLACK / RED (v0.10.1)
+
+The visual identity is a three-part system, defined once in the
+centralized token block at the top of
+`frontend/src/styles/index.css` and consumed by every surface:
+
+| Part | Role | Tokens |
+|------|------|--------|
+| BLACK | the surface hierarchy (shell, sidebar, cards, tables, overlays) | `--bg`, `--surface`, `--surface-raised`, `--surface-hover`, `--surface-active`, `--surface-sunken`, `--border*` |
+| WHITE | the text hierarchy | `--text`, `--text-secondary`, `--text-dim`, `--text-faint` |
+| RED | the brand/interactive accent (buttons, focus rings, selection, active states, highlights, links) | `--accent`, `--accent-strong`, `--accent-dim`, `--accent-border`, `--accent-text` |
+
+**Status hues are semantic, not decorative.** Working/connected
+states stay green (`--success`), warnings amber (`--warn`), failures
+red (`--error`). At-a-glance state truth is never traded for palette
+purity — a red "connected" would read as a failure. The brand accent
+(`#e5484d`) and the failure red (`#f87171`) are distinct shades of
+the same family, and the provenance dots (`verified` green, `stale`
+amber, `untested` grey) keep their meaning.
+
+Page-specific styles in the stylesheet's numbered sections may only
+reference tokens — introducing a page-private color literal is a
+review-blocking regression (the v0.10.1 audit found none; the last
+brand-accent change was a token-only edit).

@@ -498,6 +498,28 @@ func New(opts Options) (*App, error) {
 	// process that happens to share an image name.
 	system.SetProcessManifestPath(filepath.Join(layout.Runtime, "managed-processes.txt"))
 
+	// v0.10.1 crash-safe system-proxy restoration: while the
+	// system proxy is FreeIran-owned, a durable marker in the
+	// workspace records the PREVIOUS proxy state. A marker found
+	// HERE proves the last session died without a clean Disable
+	// (crash, kill, power loss) while it still owned the proxy —
+	// the recorded state is restored before any service starts,
+	// so the user never boots into a broken system proxy. The
+	// marker is consumed on success and retried on the next boot
+	// when the platform refuses the restore.
+	tunnel.SetRecoveryMarkerPath(filepath.Join(layout.Runtime, "system-proxy.json"))
+
+	if recovered, recoverErr := tunnel.RecoverStaleProxy(); recovered {
+		if recoverErr == nil {
+			logger.Warn("tunnel", "proxy_recovered",
+				"restored the system-proxy state recorded before an unclean shutdown")
+		} else {
+			logger.Error("tunnel", "proxy_recovery_failed", "recover", "environment",
+				"could not restore the system-proxy state after an unclean shutdown: %v",
+				recoverErr)
+		}
+	}
+
 	st, err := store.Open(store.Options{
 		Path: layout.Data,
 	})

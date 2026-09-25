@@ -1,6 +1,19 @@
 /* ============================================================================
-   FreeIran design system — v0.9.0
-   Dark, professional, high-density desktop UI.
+   FreeIran design system — v0.10.1
+   WHITE / BLACK / RED: clean, technical, professional, high contrast.
+
+   The theme is a three-part system:
+     • BLACK — the surface hierarchy (near-black layers, the shell)
+     • WHITE — the text hierarchy (primary #e9eef5 down to faint)
+     • RED   — the brand/interactive accent (buttons, focus, selection,
+              active states, highlights)
+
+   STATUS HUES ARE SEMANTIC, NOT DECORATIVE: working/connected stays
+   green, warnings amber, failures red — at-a-glance state truth must
+   never be traded for palette purity (a red "connected" would read as
+   a failure). The brand accent and the failure red are distinct
+   shades of the same family by design.
+
    Structure:
      1. Design tokens          5. Data display (stats, tables, badges)
      2. Base & scrollbars      6. Log viewer
@@ -35,12 +48,12 @@
   --text-dim: #7f8a9d;
   --text-faint: #5a6478;
 
-  /* Accent (brand green) */
-  --accent: #3ddc84;
-  --accent-strong: #62e79d;
-  --accent-dim: rgba(61, 220, 132, 0.13);
-  --accent-border: rgba(61, 220, 132, 0.38);
-  --accent-text: #7eeeb4;
+  /* Accent (brand red — the RED of the WHITE/BLACK/RED system) */
+  --accent: #e5484d;
+  --accent-strong: #ff6369;
+  --accent-dim: rgba(229, 72, 77, 0.13);
+  --accent-border: rgba(229, 72, 77, 0.42);
+  --accent-text: #ff8a8e;
 
   /* Status colors */
   --success: #3ddc84;

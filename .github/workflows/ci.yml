@@ -358,8 +358,35 @@ jobs:
       # must prove its file lifecycle (open → use → close → delete
       # temp dir) on the platform where open handles block deletion.
       # No package is skipped and no failure is tolerated.
+      #
+      # v0.10.1 runner-survivability hardening (from run 36074448116,
+      # where this step lost communication with the runner and every
+      # diagnostic with it):
+      #
+      #   -p 2           bounds the number of concurrently RUNNING
+      #                  test binaries. The Windows matrix is
+      #                  process-heavy: system, provider, connection
+      #                  and app tests each supervise real cmd.exe /
+      #                  ping / fake-core children under job objects,
+      #                  and provider's TestMain compiles two more
+      #                  binaries. At the runner's 4 vCPU, the default
+      #                  (-p = GOMAXPROCS = 4) lets four
+      #                  process-spawning suites plus their children
+      #                  starve the runner agent itself; -p 2 keeps
+      #                  headroom so the agent can always heartbeat.
+      #                  This bounds SCHEDULING, not coverage: every
+      #                  test still runs.
+      #   -timeout=20m   an explicit, visible per-binary bound. The
+      #                  Go default (10m) already panics on hangs, but
+      #                  only when the machine is healthy enough to
+      #                  fire it; making the bound explicit documents
+      #                  the intent and turns any recurrence into a
+      #                  goroutine-dump failure instead of a silent
+      #                  45-minute runner death (the panic output —
+      #                  full stacks — is exactly what run 36074448116
+      #                  never delivered).
       - name: Run Go tests
-        run: go test -count=1 ./...
+        run: go test -count=1 -p 2 -timeout=20m ./...
         env:
           CGO_ENABLED: "0"
           FREEIRAN_TEST_CORES: ${{ runner.temp }}\freeiran-test-cores

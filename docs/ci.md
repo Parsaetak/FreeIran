@@ -284,3 +284,37 @@ fake core's SOCKS-relay mode), so no workflow changes were required.
   (rules R1–R6), regardless of Windows monotonic-clock granularity.
   The fix is in the representation, not in relaxed test expectations;
   the full matrix keeps proving it on every push.
+
+## v0.10.1 — Windows matrix survivability (run 36074448116)
+
+The v0.9.15 release commit lost the Windows runner mid-matrix: the
+"Run Go tests" step (`go test -count=1 ./...`) started 23:52:21Z and
+never completed; the run was declared failed at 00:37:18Z with "The
+hosted runner lost communication with the server". Every other job
+(Linux go/frontend/native, protocol-cores) was green, and the full
+Linux matrix including `-race` passes — the failure class is hosted
+runner resource starvation under the full Windows matrix load, not a
+deterministic code failure.
+
+Two changes make the job survivable and diagnosable (coverage is
+unchanged — every test still runs):
+
+- `go test -count=1 -p 2 -timeout=20m ./...`
+- `-p 2` bounds the number of concurrently RUNNING test binaries.
+  The Windows matrix is process-heavy: the `system`, `provider`,
+  `connection` and `app` suites supervise real cmd.exe / ping /
+  fake-core children under kernel job objects, and the provider
+  `TestMain` compiles two more binaries before its tests even start.
+  On the 4-vCPU hosted runner, the default `-p 4` lets four
+  process-spawning suites plus their children contend with the runner
+  agent itself; `-p 2` keeps headroom so the agent can always
+  heartbeat.
+- `-timeout=20m` makes the per-binary bound explicit and visible: a
+  recurrence now panics with a full goroutine dump — an actionable,
+  diagnosable failure — instead of a silent 45-minute runner death
+  that destroys every diagnostic (which is exactly what run
+  36074448116 delivered).
+
+The historical sections below document why the Windows job runs the
+FULL matrix in the first place (the v0.9.6 finalization asymmetry):
+that principle is unchanged — the matrix is bounded, not reduced.

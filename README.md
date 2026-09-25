@@ -9,13 +9,56 @@ configurations.
 **Project:** FreeIran — A SHEYTAN Digital System
 **Architect:** Parsa Tak / SHEYTAN
 **Repository:** https://github.com/Parsaetak/FreeIran
-**Current version:** 0.9.15 (see `VERSION`)
+**Current version:** 0.10.1 (see `VERSION`)
 **Status:** production architecture — multi-core protocol runtime with
 managed installation, multi-level node discovery, Ping/URL test modes
 with measured ranking, verified-connection engine with racing,
 environment intelligence, system proxy mode (WinINet), unified adaptive
 memory control and kernel-level process supervision. TUN mode is
 EXPERIMENTAL and disabled in this release (see "TUN mode" below).
+
+---
+
+## What's new in v0.10.1
+
+v0.10.1 is a trust-boundary release: the system-proxy ownership is
+now durable across crashes, the Windows CI failure class that made
+runs un-diagnosable is addressed at the workflow level, and the
+visual system is reworked into the WHITE/BLACK/RED identity.
+
+### Crash-safe Windows system proxy
+
+- While the system proxy is FreeIran-owned, the tunnel controller
+  persists a durable ownership marker
+  (`<workspace>/runtime/system-proxy.json`) recording the PREVIOUS
+  proxy state — what `Disable` would restore, mirrored to disk so a
+  session that dies without one (crash, kill, power loss) cannot
+  lose it.
+- On boot, a found marker proves the last session ended uncleanly
+  while owning the proxy: the recorded previous state is restored
+  through WinINet BEFORE any service starts. The marker is consumed
+  on success; a refused restore keeps it so the next boot retries.
+  A corrupt marker is removed and surfaced, never restored from.
+  A failed recovery never blocks startup.
+
+### Windows CI survivability and diagnosability
+
+- The failing Windows job (run 36074448116: "the hosted runner lost
+  communication with the server" during `go test ./...`) is
+  addressed at the workflow level: the test matrix now runs with
+  `-p 2` (bounded concurrent test binaries — the matrix is
+  process-heavy on a 4-vCPU hosted runner) and an explicit
+  `-timeout=20m` that turns any recurrence into a goroutine-dump
+  failure instead of a silent 45-minute runner death. Coverage is
+  unchanged.
+
+### WHITE / BLACK / RED visual system
+
+- One coherent three-part identity: BLACK surfaces, WHITE text,
+  RED brand accent (interactive elements, focus, selection,
+  highlights). Status hues remain semantic (connected/working green,
+  warnings amber, failures red) — at-a-glance state truth is never
+  traded for palette purity.
 
 ---
 

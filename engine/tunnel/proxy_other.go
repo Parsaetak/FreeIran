@@ -21,6 +21,14 @@ func (stubSystemProxyBackend) Snapshot() SystemProxySnapshot {
 	return SystemProxySnapshot{}
 }
 
+// Restore reports the honest platform state: a non-Windows build
+// cannot apply WinINet settings. The marker would never be written
+// on this platform (Enable always fails), so this only fires for a
+// workspace carried over from a Windows session.
+func (stubSystemProxyBackend) Restore(previous SystemProxySnapshot) error {
+	return ErrUnsupportedPlatform
+}
+
 // newSystemProxyBackend returns a stub on non-Windows platforms.
 func newSystemProxyBackend() SystemProxyBackend {
 	return stubSystemProxyBackend{}

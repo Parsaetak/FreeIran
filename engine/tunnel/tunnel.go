@@ -95,6 +95,14 @@ type SystemProxyBackend interface {
 
 	// Snapshot returns the current system-proxy state (for the UI).
 	Snapshot() SystemProxySnapshot
+
+	// Restore applies a previously persisted proxy state (crash
+	// recovery). The v0.10.1 recovery path (RecoverStaleProxy)
+	// replays the state recorded before a crashed session took
+	// ownership: exactly what Disable would have restored, applied
+	// without any in-memory context. Implementations that cannot
+	// mutate the platform state return ErrUnsupportedPlatform.
+	Restore(previous SystemProxySnapshot) error
 }
 
 // SystemProxySnapshot is a redacted view of the system proxy state.
@@ -162,8 +170,17 @@ var ErrRequiresElevation = errors.New("tunnel: TUN mode requires administrator p
 // other platforms both are no-op stubs that return
 // ErrUnsupportedPlatform.
 func New() *Controller {
+	return NewWithProxyBackend(newSystemProxyBackend())
+}
+
+// NewWithProxyBackend constructs a Controller with an injected
+// system-proxy backend. The tun backend stays the platform default
+// (TUN is disabled everywhere in this release). The injection point
+// exists for the recovery contract tests, which must prove the
+// marker lifecycle without depending on WinINet.
+func NewWithProxyBackend(sp SystemProxyBackend) *Controller {
 	return &Controller{
-		systemProxy: newSystemProxyBackend(),
+		systemProxy: sp,
 		tun:         newTUNBackend(),
 		state: State{
 			Mode: ModeDirect,
@@ -201,6 +218,14 @@ func (c *Controller) Enable(ctx context.Context, mode Mode, host string, port in
 		if err := c.systemProxy.Enable(ctx, host, port, opts.AsHTTP, opts.Bypass); err != nil {
 			return fmt.Errorf("tunnel: enable system proxy: %w", err)
 		}
+
+		// v0.10.1: durable ownership evidence for the crash-recovery
+		// path (recovery.go). After a successful Enable the backend's
+		// Snapshot() is exactly the PREVIOUS state it saved — the state
+		// Disable would restore and a crashed session would lose.
+		writeRecoveryMarker(c.systemProxy.Snapshot(),
+			fmt.Sprintf("%s:%d", host, port))
+
 		c.state = State{
 			Mode:       mode,
 			Active:     true,
@@ -239,6 +264,10 @@ func (c *Controller) Disable(ctx context.Context) error {
 		if err := c.systemProxy.Disable(ctx); err != nil {
 			return fmt.Errorf("tunnel: disable system proxy: %w", err)
 		}
+
+		// The proxy ownership ended cleanly: the crash-recovery
+		// marker must not outlive the session that wrote it.
+		clearRecoveryMarker()
 	case ModeTUN:
 		if err := c.tun.Disable(ctx); err != nil {
 			return fmt.Errorf("tunnel: disable tun: %w", err)

@@ -12,11 +12,82 @@ The application should feel like a mature desktop connectivity client rather tha
 
 ---
 
+# Roadmap ladder (v0.10.1)
+
+The roadmap is a four-phase ladder. Each phase must be TRUE before the
+next one starts; the acceptance standard is the user-visible pipeline
+below, not internal test counts.
+
+```
+P0 — Fully usable personal connectivity client
+P1 — Competitive Windows client
+P2 — Advanced routing/privacy
+P3 — Multi-platform expansion
+```
+
+## P0 — Fully usable personal connectivity client
+
+The user must be able to:
+
+```
+install → launch → import OWN config/subscription → validate →
+select compatible core → test → connect → real Internet
+verification → usable traffic route → monitor/recover →
+disconnect cleanly → reconnect
+```
+
+| Capability | Status in v0.10.1 |
+|---|---|
+| Personal config import (VLESS, VMess, Trojan, Shadowsocks, Hysteria/Hysteria2, TUIC, WireGuard, SOCKS, HTTP, supported JSON, base64 subscriptions) | Done — parser + validated runtime path per protocol; a parser-recognized protocol whose runtime path does not work is treated as unsupported, not "done" |
+| Subscriptions (add, refresh, parse, deduplicate, persist, imported/rejected counts, real errors; a failed refresh never erases working configs) | Done |
+| Explicit-config connect (the user's own selection is never silently replaced by Quick Connect) | Done |
+| Real protocol→core compatibility (verified against installed cores, not parser recognition) | Done — capability resolution against the live registry |
+| Testing engine (preflight → core validation → startup → listener readiness → handshake → measured latency → Internet verification → persistent evidence; never "connected" because a process launched) | Done — E2E target fetch through the real tunnel |
+| Connection engine (route → core/provider start → local proxy → route traffic → external verification → Connected) | Done — Connected is never reported before verification |
+| Quick Connect (explicit config → THAT config; Auto → fresh test → rank → connect; cooldowns and recovery through the SAME engines) | Done |
+| Recovery (bounded episodes, cooldown decay, re-testing through the one ranking path) | Done |
+| Windows system proxy (connect → listener verified → proxy set → external traffic verified; restore on disconnect/shutdown/crash/reconnect) | Done — including the v0.10.1 crash-safe ownership marker + boot restoration |
+| DNS/IPv4/IPv6 evidence (measured, never fabricated) | Done — staged diagnostics ladder + identity evidence |
+| Core/provider management (install/update/repair/reinstall/verify/remove; truthful installed/version/path/origin/ownership/health) | Done |
+| Windows installer (clean install/upgrade/repair/uninstall; writable workspace; single tree) | Done — Inno Setup path |
+| WHITE/BLACK/RED UI | Done — v0.10.1 token rework |
+
+## P1 — Competitive Windows client
+
+Feature depth of modern v2ray/VPN clients on Windows without
+sacrificing the architecture, trust model, local-first behavior or
+truthful state reporting.
+
+- [x] Viewport-aware menus everywhere (one portal-based surface — v0.9.15)
+- [x] Incremental UI state (queue-driven, no rebuild-the-world — v0.9.15)
+- [x] Tor lifecycle (resolve → verified download → extraction → validation → smoke test → activation → bootstrap → verify) with resumable staging (v0.9.15)
+- [x] Honest Psiphon provider states (managed unavailable is reported as unavailable; user-binary path is first-class)
+- [ ] Performance budget enforcement on every hot path (startup, import, refresh, single/batch test, Quick Connect, core start, connect, disconnect, recovery) — measured baselines exist, continuous enforcement is not wired
+- [ ] TUN mode where GENUINELY supported (transactional implementation with verified rollback; today TUN remains honestly experimental/unavailable — see engine/tunnel/tun_unavailable.go for the defect list that blocked it)
+
+## P2 — Advanced routing/privacy
+
+- [ ] Rule-based routing profiles on top of the managed cores
+- [ ] Deeper leak visibility (route exposure timelines, DNS route history)
+- [ ] Reversible adapter privacy controls where Windows supports them (explicit, reversible, documented, safe — no spoofing, no hardware fingerprint tampering)
+
+## P3 — Multi-platform expansion
+
+- [ ] Linux/macOS desktop parity (the engine is OS-neutral; the
+      tunnel/process layers carry the platform split)
+- [ ] Per-platform installers
+
+The sections below are the historical working documents that produced
+the current state. They remain as the engineering record; the ladder
+above is the commitment.
+
+---
+
 ## Current Baseline
 
 Current main:
 
-* Version: `0.9.12`
+* Version: `0.10.1`
 * Platform focus: Windows x64
 * Runtime: Go + Wails + React/TypeScript (toolchain pair pinned:
   `wails/v3 v3.0.0-beta.19` + `@wailsio/runtime 3.0.0-beta.19`,
@@ -61,8 +132,9 @@ Current main:
   bounded archive extraction via internal/safearchive)
 * HTTP policy: explicit transport proxy modes (direct by default —
   ambient HTTP(S)_PROXY variables are ignored)
-* Tunnel modes: System Proxy (WinINet) production; TUN EXPERIMENTAL
-  and DISABLED (v0.9.8.6 — not a kill switch)
+* Tunnel modes: System Proxy (WinINet) production — with crash-safe
+  ownership marker and boot restoration since v0.10.1; TUN
+  EXPERIMENTAL and DISABLED (v0.9.8.6 — not a kill switch)
 * Logging profiles: enabled (Normal / Detailed / Debug)
 
 ### v0.9.12 — completed historical work

@@ -3,6 +3,85 @@
 Release history for FreeIran. The newest release is documented in the
 [README](README.md); everything older lives here, newest first.
 
+## v0.10.1 — crash-safe system proxy, Windows CI survivability, WHITE/BLACK/RED theme
+
+v0.10.1 is a trust-boundary release: the system-proxy ownership is
+now durable across crashes, the Windows CI failure class that made
+runs un-diagnosable is addressed at the workflow level, and the
+visual system is reworked into the WHITE/BLACK/RED identity. No new
+subsystem; the existing tunnel controller, process supervision and
+design tokens carry every change.
+
+### Crash-safe Windows system proxy (the crash leg of the proxy contract)
+
+- While the system proxy is FreeIran-owned, the tunnel controller now
+  persists a durable ownership marker
+  (`<workspace>/runtime/system-proxy.json`) recording the PREVIOUS
+  proxy state — exactly what `Disable` would restore, mirrored to disk
+  so a session that dies without one (crash, kill, power loss, runner
+  cancellation) cannot lose it.
+- The boot path calls `tunnel.RecoverStaleProxy()` before any service
+  starts: a marker found there proves the last session ended uncleanly
+  while owning the proxy, and the recorded previous state is restored
+  through the platform backend (WinINet on Windows). The marker is
+  consumed on success; a restore that the platform refuses KEEPS the
+  marker so the next boot retries.
+- A corrupt marker is removed and surfaced, never restored from. A
+  failed proxy recovery never blocks application startup (the app
+  boots ready and logs the outcome).
+- `SystemProxyBackend` gains `Restore(snapshot)`: the replay of what
+  `Disable` restores, without in-memory state. The WinINet
+  implementation broadcasts the change so running apps pick it up.
+- Contract tests pin the full lifecycle on every platform: marker
+  written on Enable (with the previous corporate/direct state),
+  cleared on clean Disable, kept on failed Disable, restore retries,
+  corrupt-marker removal, and the no-marker/no-path no-ops.
+
+### Windows CI: survivability and diagnosability (run 36074448116)
+
+- Forensics: the failing job's "Run Go tests" step (`go test -count=1
+  ./...` on windows-latest) started 2026-09-24T23:52:21Z and never
+  completed; the run was declared failed at 00:37:18 with "The hosted
+  runner lost communication with the server". All Linux jobs were
+  green and the full Linux matrix (including `-race`) passes locally,
+  so the failure class is Windows-runner resource starvation, not a
+  deterministic code failure.
+- The Windows job now bounds the matrix load: `-p 2` limits the number
+  of concurrently RUNNING test binaries (the matrix is process-heavy:
+  system/provider/connection/app suites supervise real cmd.exe/ping/
+  fake-core children, and the provider TestMain compiles two more
+  binaries — at the 4-vCPU hosted runner the default `-p 4` can starve
+  the runner agent itself).
+- `-timeout=20m` makes the per-binary bound explicit: a recurrence
+  panics with a full goroutine dump (an actionable failure) instead of
+  a silent 45-minute runner death that destroys every diagnostic.
+  Coverage is unchanged — every test still runs.
+
+### WHITE / BLACK / RED visual system
+
+- The design tokens are reworked into one coherent three-part system:
+  BLACK surfaces (the near-black layer hierarchy), WHITE text (the
+  readability hierarchy), RED brand accent (buttons, focus, selection,
+  active states, highlights: `#e5484d` / `#ff6369`).
+- STATUS HUES ARE SEMANTIC, NOT DECORATIVE: working/connected stays
+  green, warnings amber, failures red — at-a-glance state truth is
+  never traded for palette purity (a red "connected" would read as a
+  failure). The brand accent and the failure red are distinct shades
+  of the same family.
+- Every surface consumes the same centralized tokens (shell, sidebar,
+  headers, controls, tables, cards, menus, dialogs, toasts, badges,
+  loading/error/empty states); no page-private colors were found in
+  the audit and the frontend suite (157 tests) passes unchanged.
+
+### Housekeeping
+
+- Version surfaces synced to 0.10.1 (VERSION, frontend package +
+  lockfile, internal/version, build/winres.json in both release and
+  4-part PE forms); the committed `.syso` resources regenerated from
+  the synced winres source (go-winres).
+- ROADMAP restructured onto the P0–P3 ladder with the current,
+  verified baseline (see ROADMAP.md).
+
 ## v0.9.15 — deep fixes: Tor acquisition root cause, one testing path, incremental UI, shared menu placement
 
 v0.9.15 is a deep-fix release: it repairs the root causes found by a
