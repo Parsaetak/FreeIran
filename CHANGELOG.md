@@ -3,6 +3,112 @@
 Release history for FreeIran. The newest release is documented in the
 [README](README.md); everything older lives here, newest first.
 
+## v0.10.2 — Windows system-proxy repair, transactional ownership, personal import, real QUIC/WireGuard runtime
+
+v0.10.2 fixes the v0.10.1 Windows regression AT ROOT CAUSE (a broken
+WinINet ABI that made every system-proxy activation fail on Windows),
+makes the ownership lifecycle fully transactional, ships a first-class
+personal configuration import flow, and adds REAL runtime support for
+Hysteria2, TUIC, WireGuard and Hysteria through the sing-box adapter —
+schema-verified against the pinned v1.14.0 binary. Nothing is claimed
+"done" beyond what the executed evidence shows.
+
+### Windows regression — root cause (Actions run 36087876076)
+
+- The failure `TestAppBootsAfterCrashedProxySession — marker still
+  present after a successful Windows recovery` was caused by
+  `engine/tunnel/proxy_windows.go` declaring the WinINet
+  `INTERNET_PER_CONN_OPTION` union as `[64]uintptr` — a 520-byte
+  option stride on amd64 where WinINet requires 16. With more than
+  one option, `InternetSetOptionW` read options 2..n from option 1's
+  zeroed padding, saw unknown dwOption values and failed the whole
+  call with `ERROR_INVALID_PARAMETER`. Every multi-option
+  Enable/Disable/Restore failed on Windows; boot recovery therefore
+  kept the ownership marker. The assertion was NOT weakened; the
+  production ABI was repaired.
+- Second latent defect fixed in the same file: `InternetQueryOptionW`'s
+  buffer-length argument is `LPDWORD` (pointer) — v0.10.1 passed the
+  value itself, which WinINet dereferences. Query now also uses the
+  documented WinINet string semantics (WinINet-allocated buffers
+  freed with `GlobalFree`).
+- The Go mirrors of the WinINet structures are pinned byte-exact by a
+  Windows ABI layout test; real-binary roundtrips (direct → FreeIran
+  → direct, explicit → FreeIran → explicit, PAC → FreeIran → PAC,
+  repeated enable/disable, HTTP scheme, crash-marker recovery through
+  the real backend, corrupt marker) run in CI against wininet.dll on
+  GitHub-hosted Windows runners.
+
+### Transactional system-proxy ownership
+
+- Enable is now a transaction: capture the ACTUAL platform state →
+  durably persist the validated recovery record (write → fsync →
+  rename, phase=pending) → activate → verify the resulting WinINet
+  state → mark ownership ACTIVE. A marker-write failure ABORTS the
+  activation before the proxy is touched; an activation or
+  verification failure rolls back (restore previous, consume the
+  marker; a failed rollback keeps the marker and says so).
+- Disable reports an explicit `ErrOwnershipResidual` error when the
+  marker cannot be consumed — never a silent clean outcome while
+  durable ownership residue remains.
+- Boot recovery (`RecoverStaleProxy`) validates the record schema
+  BEFORE any platform mutation, restores, then VERIFIES the actual
+  platform state against the record and only then consumes the
+  marker; verification mismatch, restore failure or marker-cleanup
+  failure each keep the marker and return an explicit error.
+- Marker schema v2 (`schema_version`, `phase`, PAC URL, autodetect,
+  flags) is backward compatible: v0.10.1 (schema-less) markers still
+  recover — pinned by tests, including the exact v0.10.1 literal.
+- New `TunnelService.OwnershipStatus()` surfaces the ownership truth
+  (present/phase/endpoint/saved previous state) in the UI.
+
+### Personal configuration import (P0)
+
+- New ImportService: paste or file → format detection (URL list /
+  base64 subscription / JSON / WireGuard INI) → parse (the ONE
+  parser) → normalize → validate → capability preview (which
+  INSTALLED cores can execute each entry) → redacted preview → Save
+  → Test → Connect. No subscription source required; no second
+  configuration pipeline; saved configs carry the personal-import
+  source and user trust tier; re-import updates in place by
+  fingerprint (never duplicates).
+- Parser repairs that the import surface exposed: SIP002
+  shadowsocks URIs (base64 `method:password` userinfo) no longer
+  fail with "password is empty"; the QUIC family's `insecure=1`,
+  `upmbps`, `downmbps` URI parameters are captured (v0.10.1 dropped
+  them, making most real Hysteria2 configs unusable).
+- Configurations page gains an "Import configurations" dialog with a
+  redacted capability table; the connection UI shows the ownership/
+  recovery status.
+
+### Real protocol runtime (protocol × core truth pass)
+
+- The sing-box adapter now DECLARES and GENERATES real outbounds for
+  Hysteria2, TUIC and Hysteria and a WireGuard ENDPOINT (the
+  v1.11+ form), verified against the pinned sing-box v1.14.0
+  binary with `sing-box check` and the real-binary smoke suite
+  (config accepted → process starts → listener ready): hysteria2
+  (TLS mandatory), tuic (uuid+password, congestion control, native
+  UDP relay), wireguard (endpoint, peer, allowed-IPs default
+  0.0.0.0/0 + ::/0), hysteria v1 (auth_str, MANDATORY up/down
+  bandwidth caps — the real binary refuses otherwise).
+- Deep validation mirrors what the real core enforces (missing
+  hysteria2 password / TUIC uuid / WireGuard keys are rejected at
+  import/validate time, with explicit messages).
+- docs/protocols.md documents the truthful protocol × core matrix
+  with the evidence level per cell.
+
+### CI
+
+- The Windows job runs a repeated crash-recovery regression battery
+  (`-count=5`) over the repaired path; the real-core sing-box smoke
+  now includes the four new protocols automatically.
+
+### Not changed on purpose
+
+- TUN remains unavailable (see ROADMAP): a transactional
+  implementation with verified rollback is still a prerequisite.
+- No push to GitHub was performed by this release work.
+
 ## v0.10.1 — crash-safe system proxy, Windows CI survivability, WHITE/BLACK/RED theme
 
 v0.10.1 is a trust-boundary release: the system-proxy ownership is

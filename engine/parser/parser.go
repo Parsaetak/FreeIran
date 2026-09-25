@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -978,7 +979,17 @@ func parseShadowsocks(u *url.URL) (config.Config, error) {
 	}
 
 	method := u.User.Username()
-	password, _ := u.User.Password()
+	password, hasPassword := u.User.Password()
+
+	if hasPassword && strings.TrimSpace(password) != "" {
+		// Plain "method:password" userinfo.
+	} else if decoded, err := base64.StdEncoding.DecodeString(method); err == nil && bytes.ContainsRune(decoded, ':') {
+		// SIP002 base64 userinfo: base64(method:password)@host:port.
+		// v0.10.1 rejected this common modern form ("password is
+		// empty"), making most real-world ss:// imports unusable.
+		parts := bytes.SplitN(decoded, []byte(":"), 2)
+		method, password = string(parts[0]), string(parts[1])
+	}
 
 	if strings.TrimSpace(method) == "" {
 		return config.Config{}, fmt.Errorf(
@@ -1048,6 +1059,9 @@ func parseHysteria(u *url.URL) (config.Config, error) {
 		ServerName: query.Get("sni"),
 		Security:   query.Get("obfs"),
 		Host:       query.Get("obfs-password"),
+		Insecure:   isTruthy(query.Get("insecure")),
+		UpMbps:     nonNegative(query.Get("upmbps")),
+		DownMbps:   nonNegative(query.Get("downmbps")),
 		Name:       u.Fragment,
 	}, nil
 }
@@ -1100,6 +1114,9 @@ func parseHysteria2(u *url.URL) (config.Config, error) {
 		ServerName: query.Get("sni"),
 		Security:   query.Get("obfs"),
 		Host:       query.Get("obfs-password"),
+		Insecure:   isTruthy(query.Get("insecure")),
+		UpMbps:     nonNegative(query.Get("upmbps")),
+		DownMbps:   nonNegative(query.Get("downmbps")),
 		Name:       u.Fragment,
 	}, nil
 }
@@ -1152,8 +1169,39 @@ func parseTUIC(u *url.URL) (config.Config, error) {
 		Password:   password,
 		ServerName: query.Get("sni"),
 		Network:    query.Get("congestion_control"),
+		Insecure:   isTruthy(query.Get("insecure")),
 		Name:       u.Fragment,
 	}, nil
+}
+
+// nonNegative parses a non-negative integer URI parameter, returning
+// 0 for absent/invalid values (0 = "unspecified" downstream).
+func nonNegative(value string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || n < 0 {
+		return 0
+	}
+
+	return n
+}
+
+// DecodeBase64Subscription reports whether the text looks like a
+// base64 subscription payload and returns the decoded body (exported
+// for the import preview's format detection; the parser itself uses
+// the unexported form).
+func DecodeBase64Subscription(value string) (string, bool) {
+	return decodeBase64Subscription(value)
+}
+
+// isTruthy interprets the URI boolean convention shared by the QUIC
+// family specs: "1", "true", "yes" and "on" are true.
+func isTruthy(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+
+	return false
 }
 
 // parseSOCKS parses SOCKS4, SOCKS4a and SOCKS5 URIs.

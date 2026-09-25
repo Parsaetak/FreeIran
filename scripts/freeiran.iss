@@ -37,7 +37,7 @@
 ;   ISCC.exe /DAPP_VERSION=0.9.8.8 scripts/freeiran.iss
 
 #ifndef APP_VERSION
-  #define APP_VERSION "0.9.8.8"
+  #define APP_VERSION "0.10.2"
 #endif
 
 #define MyAppName "FreeIran"

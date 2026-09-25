@@ -1,5 +1,7 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { useConnectionStore } from "../state/connectionStore";
+// v0.10.2: durable system-proxy ownership surface (crash-recovery truth).
+import * as tunnelOwnership from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/tunnelownership.js";
 import { useConfigsStore, makeSearchRunner } from "../state/stores";
 import { useSettingsStore } from "../state/settingsStore";
 import { call, type BackendView, type CandidateView, type Config } from "../services";
@@ -343,6 +345,21 @@ export function ConnectionPage() {
  * (service existed, was never registered) is closed.
  * Modes require a live session: the tunnel routes system traffic
  * through the connected core's local inbound. */
+interface OwnershipStatusView {
+  present: boolean;
+  phase?: string;
+  schema_version?: number;
+  endpoint?: string;
+  enabled_at_ms?: number;
+  previous?: {
+    enabled?: boolean;
+    server?: string;
+    bypass?: string[];
+    autoconfig_url?: string;
+    autodetect?: boolean;
+  };
+}
+
 function TunnelModeCard({ connected, endpoint }: { connected: boolean; endpoint: string }) {
   const [mode, setMode] = useState<"off" | "system_proxy" | "tun" | "">("");
   const [busy, setBusy] = useState(false);
@@ -353,6 +370,28 @@ function TunnelModeCard({ connected, endpoint }: { connected: boolean; endpoint:
     const parsed = Number.parseInt(endpoint.slice(idx + 1), 10);
     return [endpoint.slice(0, idx), Number.isFinite(parsed) ? parsed : 0];
   }, [endpoint]);
+
+  // v0.10.2 §15: the UI shows the durable ownership truth — whether
+  // FreeIran currently owns the system proxy, and the saved previous
+  // state a disconnect (or a crash recovery) will restore.
+  const [ownership, setOwnership] = useState<OwnershipStatusView | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void call(() => tunnelOwnership.OwnershipStatus())
+      .then((status) => {
+        if (cancelled) return;
+        setOwnership(status);
+      })
+      .catch(() => {
+        if (!cancelled) setOwnership(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [mode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -415,6 +454,16 @@ function TunnelModeCard({ connected, endpoint }: { connected: boolean; endpoint:
         switch: process supervision does not filter packets. A transactional
         implementation is required before it can be enabled.
       </p>
+
+      {ownership?.present && (
+        <p className="card-subtitle ownership-line" role="status">
+          {ownership.phase === "active"
+            ? "FreeIran owns the system proxy (durable ownership active) — disconnect restores the saved previous state."
+            : ownership.phase === "pending"
+              ? "Ownership record pending: if this session crashes, the next boot restores the saved previous state."
+              : `Ownership marker present (${ownership.phase ?? "unknown"}).`}
+        </p>
+      )}
 
       <div className="toolbar">
         <button

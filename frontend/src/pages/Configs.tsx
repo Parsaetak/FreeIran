@@ -46,6 +46,8 @@ import {
   BUILTIN_GROUP_HINTS,
 } from "../state/collectionsStore";
 import { EmptyState, Menu, ResultBadge, SegmentedControl } from "../components/common";
+// v0.10.2: personal configuration import (paste / file → preview → save).
+import { ImportDialog } from "../components/ImportDialog";
 import type { MenuItem } from "../components/common";
 import {
   IconChevronDown,
@@ -159,6 +161,7 @@ export function ConfigsPage() {
   const [groupFilter, setGroupFilter] = useState<string>("");
   const [organizeBy, setOrganizeBy] = useState<"" | "source" | "protocol" | "status">("");
   const [newGroupOpen, setNewGroupOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [newGroupName, setNewGroupName] = useState("");
 
   useEffect(() => {
@@ -919,6 +922,14 @@ export function ConfigsPage() {
        * own dedicated bar below — the two concerns never compete).
        */}
       <div className="toolbar">
+        <button
+          type="button"
+          className="btn sm primary"
+          onClick={() => setImportOpen(true)}
+        >
+          Import configurations
+        </button>
+
         <input
           className="input"
           placeholder="Search by address, name or protocol…"
@@ -1421,6 +1432,17 @@ export function ConfigsPage() {
         </div>
 
         {detail && <DetailPanel detail={detail} row={visibleItems.find((item) => String(item["id"]) === detail.id) ?? null} onClose={() => setDetail(null)} />}
+
+        {/* v0.10.2: personal configuration import flow. onSaved
+            triggers the existing refresh so the new rows appear
+            through the normal store projection. */}
+        <ImportDialog
+          open={importOpen}
+          onClose={() => setImportOpen(false)}
+          onSaved={() => {
+            void useConfigsStore.getState().loadPage(0);
+          }}
+        />
       </div>
 
       {/*

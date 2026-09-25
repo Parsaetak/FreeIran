@@ -828,6 +828,15 @@ func (s *TunnelService) State() tunnel.State {
 	return s.ensureController().State()
 }
 
+// OwnershipStatus exposes the durable system-proxy ownership marker
+// (v0.10.2 § Windows system-proxy UX): whether FreeIran owns the
+// system proxy, the ownership phase, the recorded endpoint and the
+// saved previous state — the facts a recovery will apply, readable
+// without touching the platform proxy.
+func (s *TunnelService) OwnershipStatus() tunnel.OwnershipStatus {
+	return tunnel.CurrentOwnershipStatus()
+}
+
 // EnableSystemProxy sets the Windows system proxy.
 func (s *TunnelService) EnableSystemProxy(host string, port int, asHTTP bool, bypass []string) error {
 	return s.ensureController().Enable(s.app.ctx, tunnel.ModeSystemProxy, host, port, tunnel.Options{

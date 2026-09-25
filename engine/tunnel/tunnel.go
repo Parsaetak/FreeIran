@@ -23,12 +23,34 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 )
 
 // Subsystem identifies the tunnel layer in structured errors.
 const Subsystem = "tunnel"
+
+// WinINet INTERNET_PER_CONN_OPTION tags and PROXY_TYPE_* flag bits
+// (documented in proxy_windows.go; declared here because the
+// platform-neutral snapshot algebra compares them).
+const (
+	internetPerConnFlags         = 1
+	internetPerConnProxyServer   = 2
+	internetPerConnProxyBypass   = 3
+	internetPerConnAutoconfigURL = 4
+
+	proxyTypeDirect       = 1
+	proxyTypeProxy        = 2
+	proxyTypeAutoProxyURL = 4
+	proxyTypeAutoDetect   = 8
+
+	// allProxyTypeFlags masks the four proxy bits of
+	// INTERNET_PER_CONN_FLAGS for faithful capture/restore.
+	allProxyTypeFlags = proxyTypeDirect | proxyTypeProxy |
+		proxyTypeAutoProxyURL | proxyTypeAutoDetect
+)
 
 // Mode is the user-facing tunnel mode.
 type Mode string
@@ -96,6 +118,14 @@ type SystemProxyBackend interface {
 	// Snapshot returns the current system-proxy state (for the UI).
 	Snapshot() SystemProxySnapshot
 
+	// Current reads the ACTUAL platform proxy state right now
+	// (v0.10.2). The transactional ownership contract (recovery.go)
+	// verifies the machine state before and after activation and
+	// during boot recovery — in-memory bookkeeping is never accepted
+	// as evidence. Implementations that cannot read the platform
+	// state return ErrUnsupportedPlatform.
+	Current() (SystemProxySnapshot, error)
+
 	// Restore applies a previously persisted proxy state (crash
 	// recovery). The v0.10.1 recovery path (RecoverStaleProxy)
 	// replays the state recorded before a crashed session took
@@ -112,7 +142,27 @@ type SystemProxySnapshot struct {
 	Bypass   []string `json:"bypass,omitempty"`
 	Override string   `json:"override,omitempty"` // raw override string from WinINet
 	Saved    bool     `json:"saved"`              // previous settings saved?
+
+	// v0.10.2 fidelity fields. The v0.10.1 marker (recovery record)
+	// did not persist these, so legacy markers parse with zero
+	// values and recovery derives the mode from Enabled/Server —
+	// documented as the v1 fidelity limit.
+	//
+	//   AutoConfigURL — the PAC/autoconfig URL (INTERNET_PER_CONN_AUTOCONFIG_URL)
+	//   AutoDetect    — the PROXY_TYPE_AUTO_DETECT flag bit
+	//   Flags         — the raw INTERNET_PER_CONN_FLAGS value (diagnostics)
+	AutoConfigURL string `json:"autoconfig_url,omitempty"`
+	AutoDetect    bool   `json:"autodetect,omitempty"`
+	Flags         uint32 `json:"flags,omitempty"`
 }
+
+// ErrOwnershipResidual is returned when the proxy STATE was restored
+// but the durable ownership marker could not be consumed (v0.10.2).
+// The invariant is "never silently claim a clean outcome while
+// ownership residue remains": the caller must surface this error and
+// the next boot will retry the restoration (which is idempotent — it
+// re-applies exactly the state Disable just applied).
+var ErrOwnershipResidual = errors.New("tunnel: system-proxy ownership marker residue remains")
 
 // TUNBackend is the platform interface for TUN operations. The only
 // implementation in this release is unavailableTUNBackend (see
@@ -165,6 +215,126 @@ var ErrNotEnabled = errors.New("tunnel: not enabled")
 // administrator privileges.
 var ErrRequiresElevation = errors.New("tunnel: TUN mode requires administrator privileges")
 
+// --- platform-neutral snapshot algebra (v0.10.2) ---
+//
+// The transactional ownership contract compares the ACTUAL platform
+// state against the state a record claims. The comparison must be
+// normalized (whitespace, bypass ordering) and must work for legacy
+// (v1) snapshots that carry no Flags/AutoConfigURL fields.
+
+// proxyModeOf derives the canonical proxy mode from a snapshot,
+// preferring the explicit flags when present and falling back to the
+// legacy Enabled/Server pair for v1 records.
+func proxyModeOf(s SystemProxySnapshot) string {
+	if s.Flags != 0 {
+		switch {
+		case s.Flags&proxyTypeAutoProxyURL != 0:
+			return "autoconfig"
+		case s.Flags&proxyTypeProxy != 0:
+			return "explicit"
+		case s.Flags&proxyTypeAutoDetect != 0:
+			return "autodetect"
+		default:
+			return "direct"
+		}
+	}
+
+	// Legacy derivation (v0.10.1 snapshots): explicit proxy when
+	// Enabled + a server string; PAC/autodetect were not captured.
+	if s.Enabled && s.Server != "" {
+		return "explicit"
+	}
+
+	return "direct"
+}
+
+// normalizedProxyState returns a canonical copy: trimmed strings,
+// sorted bypass entries, legacy fields folded into the mode.
+func normalizedProxyState(s SystemProxySnapshot) SystemProxySnapshot {
+	out := SystemProxySnapshot{
+		Server:        strings.TrimSpace(s.Server),
+		AutoConfigURL: strings.TrimSpace(s.AutoConfigURL),
+		AutoDetect:    s.AutoDetect,
+	}
+
+	if len(s.Bypass) > 0 {
+		out.Bypass = make([]string, 0, len(s.Bypass))
+		for _, entry := range s.Bypass {
+			entry = strings.TrimSpace(entry)
+			if entry != "" {
+				out.Bypass = append(out.Bypass, entry)
+			}
+		}
+		sort.Strings(out.Bypass)
+	}
+
+	out.Flags = s.Flags & (proxyTypeDirect | proxyTypeProxy | proxyTypeAutoProxyURL | proxyTypeAutoDetect)
+	if out.Server != "" && out.Flags == 0 && proxyModeOf(s) == "explicit" {
+		// keep legacy semantics visible to comparison via Enabled
+		out.Enabled = true
+	}
+
+	return out
+}
+
+// proxyStatesEqual compares two snapshots in normalized form: the
+// canonical MODE must match, then server, PAC URL, autodetect and the
+// bypass set (order-insensitive).
+func proxyStatesEqual(a, b SystemProxySnapshot) bool {
+	na, nb := normalizedProxyState(a), normalizedProxyState(b)
+
+	if proxyModeOf(na) != proxyModeOf(nb) {
+		return false
+	}
+
+	if na.Server != nb.Server || na.AutoConfigURL != nb.AutoConfigURL || na.AutoDetect != nb.AutoDetect {
+		return false
+	}
+
+	if len(na.Bypass) != len(nb.Bypass) {
+		return false
+	}
+
+	for i := range na.Bypass {
+		if na.Bypass[i] != nb.Bypass[i] {
+			return false
+		}
+	}
+
+	return true
+}
+
+// systemProxyActivated reports whether the observed platform state
+// proves FreeIran's explicit proxy at host:port is live. This is the
+// activation verification of the transactional ownership contract —
+// TCP reachability is NOT enough; the WinINet state itself must show
+// the explicit proxy.
+func systemProxyActivated(observed SystemProxySnapshot, host string, port int) bool {
+	if observed.Flags != 0 {
+		if observed.Flags&proxyTypeProxy == 0 {
+			return false
+		}
+	} else if !observed.Enabled {
+		return false
+	}
+
+	endpoint := fmt.Sprintf("%s:%d", host, port)
+
+	// The server string may be scheme-prefixed ("socks=...") or a
+	// multi-scheme list; the endpoint must appear as a component.
+	for _, part := range strings.Split(observed.Server, ";") {
+		part = strings.TrimSpace(part)
+		if _, after, ok := strings.Cut(part, "="); ok {
+			part = strings.TrimSpace(after)
+		}
+		if part == endpoint {
+			return true
+		}
+	}
+
+	return false
+}
+
 // New constructs a Controller with the platform-default backends.
 // On Windows, systemProxy wraps WinINet and tun wraps Wintun; on
 // other platforms both are no-op stubs that return
@@ -191,10 +361,20 @@ func NewWithProxyBackend(sp SystemProxyBackend) *Controller {
 // Enable activates one tunnel mode against the given endpoint.
 //
 // For ModeSystemProxy the endpoint is a SOCKS5 (or HTTP) listener on
-// the active core. The function saves the previous system-proxy
-// settings, sets the new proxy with the bypass list, and updates
-// State. On failure the previous settings are NOT modified (the
-// function returns before any state mutation).
+// the active core. v0.10.2 makes the ownership TRANSACTIONAL
+// (recovery.go § "transactional ownership"):
+//
+//	capture previous state
+//	→ durably persist the validated recovery record
+//	→ activate FreeIran proxy
+//	→ verify the resulting platform state
+//	→ mark ownership ACTIVE
+//
+// so the invariant "FreeIran changed the system proxy ⇒ durable
+// ownership evidence already exists" holds at every instant. On any
+// activation or verification failure the previous state is restored
+// (best-effort) and the marker is consumed; a rollback that cannot
+// clean up keeps the marker and reports the residual explicitly.
 //
 // For ModeTUN the function returns ErrTunExperimental: TUN is
 // disabled in this release (v0.9.8.6) because its implementation was
@@ -215,21 +395,55 @@ func (c *Controller) Enable(ctx context.Context, mode Mode, host string, port in
 
 	switch mode {
 	case ModeSystemProxy:
-		if err := c.systemProxy.Enable(ctx, host, port, opts.AsHTTP, opts.Bypass); err != nil {
-			return fmt.Errorf("tunnel: enable system proxy: %w", err)
+		endpoint := fmt.Sprintf("%s:%d", host, port)
+
+		// 1. Capture the ACTUAL platform state (never in-memory
+		// bookkeeping) as the state a crash recovery must restore.
+		previous, err := c.systemProxy.Current()
+		if err != nil {
+			return fmt.Errorf("tunnel: enable system proxy: capture current platform state: %w", err)
 		}
 
-		// v0.10.1: durable ownership evidence for the crash-recovery
-		// path (recovery.go). After a successful Enable the backend's
-		// Snapshot() is exactly the PREVIOUS state it saved — the state
-		// Disable would restore and a crashed session would lose.
-		writeRecoveryMarker(c.systemProxy.Snapshot(),
-			fmt.Sprintf("%s:%d", host, port))
+		// 2. Durably persist the validated recovery record BEFORE the
+		// proxy is touched. A crash anywhere after this point leaves a
+		// restorable workspace. A persistence failure must abort the
+		// activation: enabling without durable ownership evidence is
+		// exactly the defect class v0.10.1 shipped.
+		if err := writeRecoveryMarker(previous, endpoint); err != nil {
+			return fmt.Errorf("tunnel: enable system proxy: persist ownership evidence: %w", err)
+		}
+
+		// 3. Activate the FreeIran proxy.
+		if err := c.systemProxy.Enable(ctx, host, port, opts.AsHTTP, opts.Bypass); err != nil {
+			return c.rollbackEnable(previous, fmt.Errorf("tunnel: enable system proxy: %w", err))
+		}
+
+		// 4. Verify the resulting WinINet state actually shows the new
+		// explicit proxy. A state that cannot be verified did not
+		// (verifiably) happen.
+		observed, err := c.systemProxy.Current()
+		if err != nil {
+			return c.rollbackEnable(previous,
+				fmt.Errorf("tunnel: enable system proxy: verify activation: %w", err))
+		}
+
+		if !systemProxyActivated(observed, host, port) {
+			return c.rollbackEnable(previous,
+				fmt.Errorf("tunnel: enable system proxy: verification failed: platform state does not show the activated proxy"))
+		}
+
+		// 5. Mark ownership ACTIVE. The durable evidence already exists
+		// (step 2), so a failure here only downgrades the record's
+		// phase label — recovery treats pending and active alike and
+		// the residual is logged, never silent.
+		if err := markOwnershipActive(endpoint); err != nil {
+			markerLog("marker_active_update_failed", err)
+		}
 
 		c.state = State{
 			Mode:       mode,
 			Active:     true,
-			Endpoint:   fmt.Sprintf("%s:%d", host, port),
+			Endpoint:   endpoint,
 			BypassList: opts.Bypass,
 			StartedAt:  time.Now().UTC(),
 		}
@@ -246,6 +460,27 @@ func (c *Controller) Enable(ctx context.Context, mode Mode, host string, port in
 	default:
 		return fmt.Errorf("tunnel: unknown mode %q", mode)
 	}
+}
+
+// rollbackEnable unwinds a failed system-proxy activation: the
+// previous state is restored (best-effort — a restore failure keeps
+// the marker so the next boot retries, which is safe because the
+// record holds exactly the state being restored), the marker is
+// consumed on success, and the composed error is returned.
+func (c *Controller) rollbackEnable(previous SystemProxySnapshot, cause error) error {
+	if restoreErr := c.systemProxy.Restore(previous); restoreErr != nil {
+		markerLog("rollback_restore_failed", restoreErr)
+
+		return fmt.Errorf("%w (rollback restore also failed: %v; ownership marker kept for next-boot recovery)", cause, restoreErr)
+	}
+
+	if err := clearRecoveryMarker(); err != nil {
+		markerLog("rollback_marker_cleanup_failed", err)
+
+		return fmt.Errorf("%w (rollback restored the previous state but %v)", cause, err)
+	}
+
+	return cause
 }
 
 // Disable deactivates the active tunnel mode and restores the
@@ -267,7 +502,21 @@ func (c *Controller) Disable(ctx context.Context) error {
 
 		// The proxy ownership ended cleanly: the crash-recovery
 		// marker must not outlive the session that wrote it.
-		clearRecoveryMarker()
+		//
+		// v0.10.2: a marker that cannot be removed is an explicit
+		// residual error, never a silent success — the next boot
+		// would otherwise "recover" a state that is already exactly
+		// current (harmless, but the ownership residue must be
+		// visible to the user and to diagnostics).
+		if err := clearRecoveryMarker(); err != nil {
+			c.state = State{
+				Mode:    ModeDirect,
+				Details: "system proxy restored, but ownership marker cleanup failed: " + err.Error(),
+			}
+			c.enabled = false
+
+			return fmt.Errorf("tunnel: disable system proxy: %w", ErrOwnershipResidual)
+		}
 	case ModeTUN:
 		if err := c.tun.Disable(ctx); err != nil {
 			return fmt.Errorf("tunnel: disable tun: %w", err)

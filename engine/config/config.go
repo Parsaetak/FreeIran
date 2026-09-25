@@ -81,6 +81,14 @@ type Config struct {
 	PublicKey          string `json:"public_key,omitempty"`
 	ShortID            string `json:"short_id,omitempty"`
 
+	// Insecure is the user-supplied "skip TLS verification" request
+	// (v0.10.2: captured for the QUIC family — hysteria/hysteria2/
+	// tuic — whose URI spec carries insecure=1; v0.10.1 silently
+	// dropped it, making most real-world Hysteria2 configs
+	// unusable). Deliberately NOT part of the fingerprint: it
+	// changes TLS behavior, not the configuration identity.
+	Insecure bool `json:"insecure,omitempty"`
+
 	// Protocol details consumed by core backends. Parsers capture them
 	// and backend adapters read them, but they are deliberately NOT part
 	// of the fingerprint: identity is endpoint + credentials + transport,
@@ -100,6 +108,14 @@ type Config struct {
 	DNS                 []string `json:"dns,omitempty"`
 	MTU                 int      `json:"mtu,omitempty"`
 	PersistentKeepalive int      `json:"persistent_keepalive,omitempty"`
+
+	// Bandwidth caps for the QUIC family (v0.10.2). Hysteria (v1)
+	// REQUIRES both — the pinned sing-box v1.14.0 refuses the
+	// outbound without them ("missing upload speed") — while
+	// Hysteria2 treats them as optional. Not part of the
+	// fingerprint (link tuning, not identity).
+	UpMbps   int `json:"up_mbps,omitempty"`
+	DownMbps int `json:"down_mbps,omitempty"`
 
 	// Source information.
 	Source string `json:"source,omitempty"`

@@ -4999,3 +4999,92 @@ html.reduced-motion .qc-mode-chip {
   text-transform: none;
   letter-spacing: 0;
 }
+
+/* ---- v0.10.2 personal configuration import ----------------------------- */
+
+.dialog-wide {
+  width: min(680px, calc(100vw - 48px));
+}
+
+.import-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.import-textarea {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  background: var(--bg-inset, rgba(0, 0, 0, 0.06));
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  color: var(--text-primary);
+  padding: 10px 12px;
+  resize: vertical;
+  min-height: 140px;
+}
+
+.import-textarea:focus {
+  outline: none;
+  border-color: var(--accent, #d43a3a);
+}
+
+.import-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  align-items: center;
+}
+
+.import-table {
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  overflow: auto;
+  max-height: 300px;
+}
+
+.import-row {
+  display: grid;
+  grid-template-columns: 32px minmax(120px, 1.4fr) 90px minmax(120px, 1fr) 110px;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 10px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.import-row:last-child {
+  border-bottom: none;
+}
+
+.import-row.import-head {
+  position: sticky;
+  top: 0;
+  background: var(--bg-raised, inherit);
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+}
+
+.import-rejections {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  max-height: 96px;
+  overflow: auto;
+}
+
+.import-error {
+  margin: 0;
+  font-size: 12px;
+  color: var(--danger, #d43a3a);
+}
+
+.import-warning {
+  color: var(--warning, #c7891d);
+  cursor: help;
+}

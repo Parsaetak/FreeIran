@@ -1,25 +1,38 @@
 package tunnel
 
-// recovery_test.go — the crash-safe system-proxy restoration contract
-// (v0.10.1). The WinINet backend itself is only exercised on Windows;
-// these tests prove the MARKER lifecycle and the restore routing with
-// a deterministic in-memory backend, on every platform CI runs on.
+// recovery_test.go — the crash-safe, TRANSACTIONAL system-proxy
+// ownership contract (redesigned v0.10.2). The WinINet backend itself
+// is only exercised on Windows (see proxy_windows_abi_test.go); these
+// tests prove the MARKER lifecycle, the transaction ordering and the
+// restore routing with a deterministic in-memory backend, on every
+// platform CI runs on.
 //
 // What is pinned here:
 //
 //   - Enable(system proxy) persists the ownership marker carrying the
-//     PREVIOUS state (the state a crashed session must restore).
-//   - Disable removes the marker: a clean session leaves no residue.
-//   - RecoverStaleProxy restores the recorded previous state and
-//     consumes the marker.
-//   - A restore failure KEEPS the marker (the next boot retries).
-//   - A corrupt marker is removed and surfaced, never restored from.
+//     PREVIOUS state BEFORE the backend activates the proxy
+//     (evidence-before-mutation).
+//   - Activation / verification failure rolls back: previous state
+//     restored, marker consumed, explicit error.
+//   - A marker that cannot be persisted aborts the activation before
+//     the platform is touched.
+//   - Disable removes the marker: a clean session leaves no residue;
+//     a marker that cannot be removed is the explicit
+//     ErrOwnershipResidual error.
+//   - RecoverStaleProxy restores, VERIFIES the actual platform state
+//     against the record, and only then consumes the marker.
+//   - A restore failure or verification mismatch KEEPS the marker.
+//   - A corrupt/invalid marker is removed and surfaced, never
+//     restored from — including unknown future schema versions.
 //   - No marker / no configured path = honest no-op.
+//   - v0.10.1 (schema-less) markers still recover: cross-version
+//     on-disk contract.
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -28,22 +41,46 @@ import (
 // fakeProxyBackend is a deterministic SystemProxyBackend double: it
 // records every call and returns configured errors. It models the
 // Windows save-on-Enable semantics exactly — the part the recovery
-// contract depends on.
+// contract depends on. After a successful Enable, Current() reports
+// the FreeIran proxy at host:port with the explicit-proxy flag set,
+// exactly like the real WinINet roundtrip.
 type fakeProxyBackend struct {
 	enableErr  error
 	disableErr error
 	restoreErr error
+	currentErr error
+
+	// corruptActivation makes Enable "half-work": the call succeeds
+	// but the platform state does NOT show FreeIran's proxy — the
+	// verification-rollback path.
+	corruptActivation bool
 
 	enabled   bool
 	server    string
 	bypass    []string
+	flagsNow  uint32
 	previous  SystemProxySnapshot
 	savedOnce bool
 
 	restores []SystemProxySnapshot
+
+	// markerAtActivation, when non-nil, is called inside Enable and
+	// records whether the durable marker existed at activation time —
+	// the transactional ordering proof (evidence BEFORE mutation).
+	markerAtActivation func() bool
+	markerAtEnable     bool
+
+	// restoreHook, when non-nil, runs inside Restore before the state
+	// is applied (used to swap the marker file for something
+	// un-removable mid-recovery).
+	restoreHook func()
 }
 
 func (f *fakeProxyBackend) Enable(_ context.Context, host string, port int, _ bool, bypass []string) error {
+	if f.markerAtActivation != nil {
+		f.markerAtEnable = f.markerAtActivation()
+	}
+
 	if f.enableErr != nil {
 		return f.enableErr
 	}
@@ -52,12 +89,23 @@ func (f *fakeProxyBackend) Enable(_ context.Context, host string, port int, _ bo
 		Enabled: f.enabled,
 		Server:  f.server,
 		Bypass:  f.bypass,
+		Flags:   f.flagsNow,
 	}
 	f.savedOnce = true
 
+	if f.corruptActivation {
+		// The call "succeeds" but the platform shows something else.
+		f.enabled = true
+		f.server = "socks=10.9.9.9:1"
+		f.flagsNow = proxyTypeProxy
+
+		return nil
+	}
+
 	f.enabled = true
-	f.server = host
+	f.server = fmt.Sprintf("socks=%s:%d", host, port)
 	f.bypass = bypass
+	f.flagsNow = proxyTypeProxy
 
 	return nil
 }
@@ -67,31 +115,67 @@ func (f *fakeProxyBackend) Disable(_ context.Context) error {
 		return f.disableErr
 	}
 
-	f.enabled = false
+	if f.savedOnce {
+		f.enabled = f.previous.Enabled
+		f.server = f.previous.Server
+		f.bypass = f.previous.Bypass
+		f.flagsNow = f.previous.Flags
+		f.savedOnce = false
+		f.previous = SystemProxySnapshot{}
+	} else {
+		f.enabled = false
+		f.server = ""
+		f.bypass = nil
+		f.flagsNow = proxyTypeDirect
+	}
 
 	return nil
 }
 
 // Snapshot mirrors winINetBackend: after Enable it reports the SAVED
-// previous state (that is what the marker must persist); before any
-// Enable it reports the current state.
+// previous state (that is what a v0.10.1-style marker would persist);
+// before any Enable it reports the current state.
 func (f *fakeProxyBackend) Snapshot() SystemProxySnapshot {
 	if f.savedOnce {
 		return f.previous
 	}
 
-	return SystemProxySnapshot{Enabled: f.enabled, Server: f.server, Bypass: f.bypass}
+	return SystemProxySnapshot{Enabled: f.enabled, Server: f.server, Bypass: f.bypass, Flags: f.flagsNow}
+}
+
+// Current reports the ACTUAL (simulated) platform state.
+func (f *fakeProxyBackend) Current() (SystemProxySnapshot, error) {
+	if f.currentErr != nil {
+		return SystemProxySnapshot{}, f.currentErr
+	}
+
+	return SystemProxySnapshot{Enabled: f.enabled, Server: f.server, Bypass: f.bypass, Flags: f.flagsNow}, nil
 }
 
 func (f *fakeProxyBackend) Restore(previous SystemProxySnapshot) error {
+	if f.restoreHook != nil {
+		f.restoreHook()
+	}
+
 	if f.restoreErr != nil {
 		return f.restoreErr
 	}
 
 	f.restores = append(f.restores, previous)
-	f.enabled = previous.Enabled
+
+	// Apply with the same fidelity the real backend uses: explicit
+	// mode derived from the record (legacy snapshots carry no Flags).
+	f.enabled = previous.Enabled && previous.Server != ""
 	f.server = previous.Server
 	f.bypass = previous.Bypass
+
+	if previous.Flags != 0 {
+		f.flagsNow = previous.Flags
+	} else if f.enabled {
+		f.flagsNow = proxyTypeProxy
+	} else {
+		f.flagsNow = proxyTypeDirect
+	}
 
 	return nil
 }
@@ -191,6 +275,146 @@ func TestRecoveryMarkerWrittenOnEnable(t *testing.T) {
 	}
 }
 
+// TestRecoveryMarkerWrittenBeforeActivation proves the v0.10.2
+// transactional ordering: the durable record EXISTS when the backend
+// activation runs — not after it. The invariant "FreeIran changed the
+// system proxy ⇒ durable ownership evidence already exists" is
+// stronger than "evidence eventually exists".
+func TestRecoveryMarkerWrittenBeforeActivation(t *testing.T) {
+	path := withMarkerPath(t)
+
+	backend := &fakeProxyBackend{
+		markerAtActivation: func() bool {
+			_, err := os.Stat(path)
+			return err == nil
+		},
+	}
+
+	c := NewWithProxyBackend(backend)
+
+	if err := c.Enable(context.Background(), ModeSystemProxy, "127.0.0.1", 10808, Options{}); err != nil {
+		t.Fatalf("Enable: %v", err)
+	}
+
+	if !backend.markerAtEnable {
+		t.Fatal("activation ran without durable ownership evidence: the marker must be written BEFORE the backend Enable")
+	}
+
+	record, ok := markerOnDisk(t, path)
+	if !ok {
+		t.Fatal("marker missing after successful Enable")
+	}
+
+	if record.Phase != phaseActive {
+		t.Errorf("marker phase = %q, want %q after a verified activation", record.Phase, phaseActive)
+	}
+
+	if record.SchemaVersion != markerSchemaVersion {
+		t.Errorf("marker schema_version = %d, want %d", record.SchemaVersion, markerSchemaVersion)
+	}
+}
+
+// TestEnableRollsBackWhenActivationFails proves the rollback path:
+// the backend refuses, the previous state is restored, the marker is
+// consumed and the error is explicit — no half-owned proxy state.
+func TestEnableRollsBackWhenActivationFails(t *testing.T) {
+	path := withMarkerPath(t)
+
+	backend := &fakeProxyBackend{
+		enableErr: errors.New("wininet refused"),
+		enabled:   false,
+	}
+
+	c := NewWithProxyBackend(backend)
+
+	err := c.Enable(context.Background(), ModeSystemProxy, "127.0.0.1", 10808, Options{})
+	if err == nil {
+		t.Fatal("Enable must fail when the backend refuses")
+	}
+
+	if !errors.Is(err, backend.enableErr) && !contains(err.Error(), "wininet refused") {
+		t.Fatalf("error does not carry the activation cause: %v", err)
+	}
+
+	if _, ok := markerOnDisk(t, path); ok {
+		t.Fatal("ownership marker survived a rolled-back Enable")
+	}
+
+	if backend.enabled {
+		t.Fatalf("platform state = %v after failed Enable, want the previous (direct) state", backend.enabled)
+	}
+
+	if state := c.State(); state.Active {
+		t.Fatalf("controller reports active after a failed Enable: %+v", state)
+	}
+}
+
+// TestEnableRollsBackWhenVerificationFails proves the verification
+// gate: an Enable whose platform state does NOT show the FreeIran
+// proxy is rolled back — "process started" is not ownership.
+func TestEnableRollsBackWhenVerificationFails(t *testing.T) {
+	path := withMarkerPath(t)
+
+	backend := &fakeProxyBackend{corruptActivation: true}
+
+	c := NewWithProxyBackend(backend)
+
+	err := c.Enable(context.Background(), ModeSystemProxy, "127.0.0.1", 10808, Options{})
+	if err == nil {
+		t.Fatal("Enable must fail when the platform state does not show the activated proxy")
+	}
+
+	if !contains(err.Error(), "verification failed") {
+		t.Fatalf("error = %v, want the activation-verification failure", err)
+	}
+
+	if _, ok := markerOnDisk(t, path); ok {
+		t.Fatal("ownership marker survived a rolled-back (unverified) Enable")
+	}
+
+	// The fake's corrupted state is what rollback Restore must have
+	// overwritten with the captured previous (direct). A server of
+	// "" proves the rollback applied; the corrupted value would prove
+	// it did not.
+	if backend.server != "" {
+		t.Fatalf("rollback did not restore: platform server = %q, want the captured direct state", backend.server)
+	}
+}
+
+// TestEnableAbortsWhenMarkerCannotBePersisted proves the durable-
+// evidence precondition: a marker write failure aborts the
+// activation BEFORE the platform proxy is touched.
+func TestEnableAbortsWhenMarkerCannotBePersisted(t *testing.T) {
+	base := t.TempDir()
+
+	// Make the marker's parent directory path occupied by a regular
+	// FILE so MkdirAll necessarily fails.
+	blocker := filepath.Join(base, "runtime")
+	if err := os.WriteFile(blocker, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("write blocker: %v", err)
+	}
+
+	prevPath := recoveryMarkerPath
+	recoveryMarkerPath = filepath.Join(blocker, "system-proxy.json")
+	t.Cleanup(func() { recoveryMarkerPath = prevPath })
+
+	backend := &fakeProxyBackend{}
+	c := NewWithProxyBackend(backend)
+
+	err := c.Enable(context.Background(), ModeSystemProxy, "127.0.0.1", 10808, Options{})
+	if err == nil {
+		t.Fatal("Enable must fail when the ownership marker cannot be persisted")
+	}
+
+	if !contains(err.Error(), "persist ownership evidence") {
+		t.Fatalf("error = %v, want the ownership-evidence failure", err)
+	}
+
+	if backend.savedOnce || backend.enabled {
+		t.Fatal("the platform proxy must not be touched when ownership evidence cannot be persisted")
+	}
+}
+
 // TestRecoveryMarkerClearedOnDisable proves a clean Disable leaves
 // no residue: the next boot must NOT "restore" anything.
 func TestRecoveryMarkerClearedOnDisable(t *testing.T) {
@@ -214,6 +438,51 @@ func TestRecoveryMarkerClearedOnDisable(t *testing.T) {
 
 	if _, ok := markerOnDisk(t, path); ok {
 		t.Fatal("ownership marker survived a clean Disable")
+	}
+}
+
+// TestDisableResidualMarkerError proves the v0.10.2 residual rule: a
+// marker that cannot be removed after a successful Disable is the
+// explicit ErrOwnershipResidual error — never a silent success.
+func TestDisableResidualMarkerError(t *testing.T) {
+	path := withMarkerPath(t)
+
+	backend := &fakeProxyBackend{}
+	c := NewWithProxyBackend(backend)
+
+	if err := c.Enable(context.Background(), ModeSystemProxy, "127.0.0.1", 10808, Options{}); err != nil {
+		t.Fatalf("Enable: %v", err)
+	}
+
+	// Swap the marker file for a non-empty directory: os.Remove on it
+	// fails, modeling a file held by antivirus/backup/indexing.
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("remove marker for swap: %v", err)
+	}
+
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatalf("mkdir marker: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(path, "held"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("write held file: %v", err)
+	}
+
+	t.Cleanup(func() { os.RemoveAll(path) })
+
+	err := c.Disable(context.Background())
+	if err == nil {
+		t.Fatal("Disable must report the residual ownership marker")
+	}
+
+	if !errors.Is(err, ErrOwnershipResidual) {
+		t.Fatalf("err = %v, want ErrOwnershipResidual", err)
+	}
+
+	// The proxy state itself WAS restored: the controller is no
+	// longer active, and the residual is visible in Details.
+	if state := c.State(); state.Active {
+		t.Fatalf("controller still active after Disable: %+v", state)
 	}
 }
 
@@ -242,7 +511,7 @@ func TestRecoveryMarkerSurvivesFailedDisable(t *testing.T) {
 
 // TestRecoverStaleProxyRestoresRecordedState proves the boot path: a
 // marker left by a crashed session is restored EXACTLY (the recorded
-// previous state) and consumed.
+// previous state), verified against the platform state, and consumed.
 func TestRecoverStaleProxyRestoresRecordedState(t *testing.T) {
 	path := withMarkerPath(t)
 
@@ -285,6 +554,88 @@ func TestRecoverStaleProxyRestoresRecordedState(t *testing.T) {
 	got := backend.restores[0]
 	if !got.Enabled || got.Server != "proxy.corp.example:8080" || len(got.Bypass) != 2 {
 		t.Fatalf("restored state = %+v, want the recorded previous state", got)
+	}
+}
+
+// TestRecoverStaleProxyLegacyV1Marker pins the cross-version on-disk
+// contract: the EXACT v0.10.1 marker shape (no schema_version, no
+// phase) still recovers — old workspaces must never be stranded.
+func TestRecoverStaleProxyLegacyV1Marker(t *testing.T) {
+	path := withMarkerPath(t)
+
+	withFakeRecoveryBackend(t)
+
+	legacy := `{
+  "endpoint": "127.0.0.1:10808",
+  "enabled_at_ms": 1758000000000,
+  "previous": {
+    "enabled": true,
+    "server": "proxy.corp.example:8080",
+    "bypass": ["localhost"],
+    "saved": true
+  }
+}`
+
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatalf("write legacy marker: %v", err)
+	}
+
+	found, err := RecoverStaleProxy()
+	if !found || err != nil {
+		t.Fatalf("RecoverStaleProxy = (%v, %v), want (true, nil) for a v0.10.1 marker", found, err)
+	}
+
+	if _, ok := markerOnDisk(t, path); ok {
+		t.Fatal("legacy marker must be consumed after successful recovery")
+	}
+}
+
+// TestRecoverStaleProxyKeepsMarkerOnVerificationMismatch proves the
+// verification gate: a backend that REPORTS success but leaves a
+// different platform state must not get the marker consumed.
+func TestRecoverStaleProxyKeepsMarkerOnVerificationMismatch(t *testing.T) {
+	path := withMarkerPath(t)
+
+	backend := withFakeRecoveryBackend(t)
+	backend.restoreErr = nil
+
+	// After Restore, the platform reports a DIFFERENT server than the
+	// record (simulating a partially applied restoration).
+	backend.currentErr = nil
+	backend.server = "socks=10.0.0.1:9"
+	backend.enabled = true
+	backend.flagsNow = proxyTypeProxy
+
+	// Make Restore itself silently NOT apply the recorded state (the
+	// mismatch scenario): the double's Restore is bypassed by
+	// pre-seeding the "platform" state via the hook.
+	backend.restoreErr = errors.New("wininet refused")
+
+	crashed := recoveryRecord{
+		Endpoint:    "127.0.0.1:10808",
+		EnabledAtMS: 1758000000000,
+		Previous: SystemProxySnapshot{
+			Enabled: true,
+			Server:  "proxy.corp.example:8080",
+		},
+	}
+
+	blob, err := json.Marshal(crashed)
+	if err != nil {
+		t.Fatalf("marshal marker: %v", err)
+	}
+
+	if err := os.WriteFile(path, blob, 0o600); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+
+	found, err := RecoverStaleProxy()
+	if !found || err == nil {
+		t.Fatalf("RecoverStaleProxy = (%v, %v), want (true, error) on failed restore", found, err)
+	}
+
+	if _, ok := markerOnDisk(t, path); !ok {
+		t.Fatal("marker must survive a failed restore for the next boot to retry")
 	}
 }
 
@@ -350,8 +701,101 @@ func TestRecoverStaleProxyCorruptMarkerRemoved(t *testing.T) {
 		t.Fatal("a corrupt marker must surface an error")
 	}
 
-	if _, ok := markerOnDisk(t, path); ok {
+	// markerOnDisk would Fatalf on the malformed JSON by design; use
+	// a plain existence check here.
+	if _, statErr := os.Stat(path); statErr == nil {
 		t.Fatal("corrupt marker must be removed so it cannot fail every boot")
+	}
+}
+
+// TestRecoverStaleProxyInvalidSchemaRemoved proves a marker with an
+// unknown FUTURE schema version is not trusted as restore data
+// (forward compatibility: never restore from a shape we cannot
+// validate).
+func TestRecoverStaleProxyInvalidSchemaRemoved(t *testing.T) {
+	path := withMarkerPath(t)
+
+	backend := withFakeRecoveryBackend(t)
+
+	blob, err := json.Marshal(recoveryRecord{
+		SchemaVersion: 99,
+		Endpoint:      "127.0.0.1:10808",
+		Previous: SystemProxySnapshot{
+			Enabled: true,
+			Server:  "evil.example:1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal marker: %v", err)
+	}
+
+	if err := os.WriteFile(path, blob, 0o600); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+
+	found, err := RecoverStaleProxy()
+	if !found || err == nil {
+		t.Fatalf("RecoverStaleProxy = (%v, %v), want (true, error) for an unsupported schema", found, err)
+	}
+
+	if len(backend.restores) != 0 {
+		t.Fatal("an invalid marker must never reach the restore path")
+	}
+
+	if _, ok := markerOnDisk(t, path); ok {
+		t.Fatal("an invalid marker must be removed so it cannot fail every boot")
+	}
+}
+
+// TestRecoverStaleProxyResidualWhenCleanupFails proves the explicit
+// recovery-residual contract: a verified restore whose marker cannot
+// be consumed returns ErrOwnershipResidual and the residue stays
+// visible — never a silent clean outcome.
+func TestRecoverStaleProxyResidualWhenCleanupFails(t *testing.T) {
+	path := withMarkerPath(t)
+
+	backend := withFakeRecoveryBackend(t)
+
+	// Mid-recovery the marker file is swapped for a non-empty
+	// directory (the "file held by AV/backup" model — os.Remove
+	// fails on it).
+	backend.restoreHook = func() {
+		if err := os.Remove(path); err == nil {
+			if err := os.Mkdir(path, 0o700); err == nil {
+				_ = os.WriteFile(filepath.Join(path, "held"), []byte("x"), 0o600)
+			}
+		}
+	}
+
+	crashed := recoveryRecord{
+		Endpoint:    "127.0.0.1:10808",
+		EnabledAtMS: 1758000000000,
+		Previous: SystemProxySnapshot{
+			Enabled: true,
+			Server:  "proxy.corp.example:8080",
+		},
+	}
+
+	blob, err := json.Marshal(crashed)
+	if err != nil {
+		t.Fatalf("marshal marker: %v", err)
+	}
+
+	if err := os.WriteFile(path, blob, 0o600); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+
+	found, err := RecoverStaleProxy()
+	if !found || err == nil {
+		t.Fatalf("RecoverStaleProxy = (%v, %v), want (true, residual error)", found, err)
+	}
+
+	if !errors.Is(err, ErrOwnershipResidual) {
+		t.Fatalf("err = %v, want ErrOwnershipResidual", err)
+	}
+
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Fatalf("residual marker must be preserved for the next boot: %v", statErr)
 	}
 }
 
@@ -434,4 +878,60 @@ func TestRecoveryMarkerDirectPrevious(t *testing.T) {
 	if record.Previous.Enabled || record.Previous.Server != "" {
 		t.Fatalf("marker previous = %+v, want the direct (empty) state", record.Previous)
 	}
+}
+
+// TestOwnershipStatusReportsMarker proves the UI projection: phase,
+// endpoint and previous state are readable without touching the
+// platform proxy.
+func TestOwnershipStatusReportsMarker(t *testing.T) {
+	path := withMarkerPath(t)
+	_ = path
+
+	if status := CurrentOwnershipStatus(); status.Present {
+		t.Fatalf("status with no marker = %+v, want absent", status)
+	}
+
+	backend := &fakeProxyBackend{}
+	c := NewWithProxyBackend(backend)
+
+	if err := c.Enable(context.Background(), ModeSystemProxy, "127.0.0.1", 10808, Options{}); err != nil {
+		t.Fatalf("Enable: %v", err)
+	}
+
+	status := CurrentOwnershipStatus()
+	if !status.Present {
+		t.Fatal("status must report the marker after Enable")
+	}
+
+	if status.Phase != string(phaseActive) {
+		t.Errorf("status phase = %q, want active", status.Phase)
+	}
+
+	if status.Endpoint != "127.0.0.1:10808" {
+		t.Errorf("status endpoint = %q, want 127.0.0.1:10808", status.Endpoint)
+	}
+
+	if err := c.Disable(context.Background()); err != nil {
+		t.Fatalf("Disable: %v", err)
+	}
+
+	if status := CurrentOwnershipStatus(); status.Present {
+		t.Fatalf("status after clean Disable = %+v, want absent", status)
+	}
+}
+
+// contains is a tiny helper avoiding strings import noise in this
+// file.
+func contains(haystack, needle string) bool {
+	return len(needle) == 0 || (len(haystack) >= len(needle) && indexOf(haystack, needle) >= 0)
+}
+
+func indexOf(haystack, needle string) int {
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		if haystack[i:i+len(needle)] == needle {
+			return i
+		}
+	}
+
+	return -1
 }

@@ -135,6 +135,8 @@ func main() {
 			// preference sets over the EXISTING settings + connection
 			// engine; activation runs through the one settings path.
 			application.NewService(app.NewProfileService(applicationInstance)),
+			// v0.10.2: first-class personal configuration import.
+			application.NewService(app.NewImportService(applicationInstance)),
 		},
 		Assets: application.AssetOptions{
 			Handler: versionedAssetCache(application.BundledAssetFileServer(assets)),

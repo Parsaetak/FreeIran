@@ -1,0 +1,79 @@
+# Protocol × core capability matrix (v0.10.2)
+
+This document is the truthful statement of what FreeIran can execute.
+Status levels:
+
+- **tested** — verified against the pinned real binary in CI or in
+  the real-binary smoke suite (config accepted → process starts →
+  listener ready).
+- **implemented** — runtime document generation + capability
+  declaration exist and are unit-tested, but the real-binary smoke
+  did not cover this exact shape in this release cycle.
+- **parser-only** — a share link is recognized and importable, but no
+  installed core can execute it (shown honestly in the import
+  preview as "not runnable").
+
+Traffic-through-tunnel and Internet verification are NOT claims this
+matrix makes for any protocol: those run at connect time against the
+user's real server through the standard verification gate. CI proves
+everything up to listener readiness with controlled local fixtures
+and the pinned core binaries — never "connected because a process
+launched", never fabricated public-IP evidence.
+
+Pinned core versions (engine/core/versions.go): xray 26.3.27,
+v2ray 5.53.0, sing-box 1.14.0.
+
+## Outbound protocols
+
+| Protocol | Parsed | Validated | Xray runtime | V2Ray runtime | Sing-box runtime | Evidence |
+|---|---|---|---|---|---|---|
+| VLESS (incl. REALITY, vision, ws/grpc/http/httpupgrade) | yes | yes | tested | tested | tested | real-binary smoke suites |
+| VMess (ws/grpc/quic/h2) | yes | yes | tested | tested | tested | real-binary smoke suites |
+| Trojan (TLS mandatory) | yes | yes | tested | tested | tested | real-binary smoke suites |
+| Shadowsocks | yes | yes | tested | tested | tested | real-binary smoke suites |
+| SOCKS | yes | yes | tested | tested | tested | real-binary smoke suites |
+| HTTP | yes | yes | tested | tested | tested | real-binary smoke suites |
+| Hysteria2 | yes (v0.10.2: insecure captured) | yes | not supported by this core | not supported by this core | **tested (new in v0.10.2)** | sing-box 1.14.0 real-binary smoke |
+| TUIC | yes | yes | not supported by this core | not supported by this core | **tested (new in v0.10.2)** | sing-box 1.14.0 real-binary smoke |
+| WireGuard | yes | yes | not supported by this core | not supported by this core | **tested (new in v0.10.2, endpoint form)** | sing-box 1.14.0 real-binary smoke |
+| Hysteria (v1) | yes (v0.10.2: up/down captured) | yes | not supported by this core | not supported by this core | **tested (new in v0.10.2)** | sing-box 1.14.0 real-binary smoke |
+
+Notes on the QUIC family and WireGuard (all verified against the real
+pinned binary with `sing-box check` and smoke startup):
+
+- Hysteria2 / TUIC / Hysteria are TLS-mandatory in sing-box; the
+  adapter always emits `tls.enabled = true` for them. `insecure=1`
+  from the URI is honored (surfaced as a warning in the import
+  preview).
+- Hysteria (v1) REQUIRES `up_mbps`/`down_mbps` — the binary refuses
+  the outbound otherwise ("missing upload speed"). Import/validate
+  reject configurations without them, with the reason.
+- WireGuard uses the sing-box ENDPOINT form (`"type": "wireguard"` in
+  `endpoints`; the `"wireguard"` OUTBOUND was removed in sing-box
+  1.11). Both local keys are required at validate time; the local
+  interface address is optional (the endpoint auto-generates one when
+  absent). AllowedIPs default to `0.0.0.0/0` + `::/0` when the
+  configuration omits them.
+- WireGuard execution additionally depends on the sing-box build
+  tags `with_wireguard`/`with_gvisor` — present in every official
+  release binary the core manager installs.
+
+## Payload formats (personal import)
+
+| Format | Detected | Notes |
+|---|---|---|
+| URL list (one share link per line) | yes | mixed protocols allowed |
+| base64 subscription | yes | decoded, then parsed as a URL list |
+| v2ray-style JSON | yes | outbound → config conversion |
+| WireGuard INI (`[Interface]`/`[Peer]`) | yes | importable without any subscription source |
+
+## What this matrix does NOT claim
+
+- No "VPN works everywhere" claim: reachability and handshake success
+  depend on the user's server, network and censorship environment.
+- CI smoke proves local acceptance/readiness with controlled
+  fixtures; it does not contact user servers or fabricate Internet
+  evidence.
+- A protocol the installed core cannot execute is displayed as "not
+  runnable" in the import preview — never silently saved as
+  connectable.

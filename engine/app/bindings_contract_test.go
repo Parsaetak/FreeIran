@@ -70,6 +70,8 @@ func registeredServices(t *testing.T) map[string]any {
 		"github.com/Parsaetak/FreeIran/engine/app.CollectionService": NewCollectionService(a),
 		// v0.9.11: Connection Profiles (P2 §18).
 		"github.com/Parsaetak/FreeIran/engine/app.ProfileService": NewProfileService(a),
+		// v0.10.2: personal configuration import.
+		"github.com/Parsaetak/FreeIran/engine/app.ImportService": NewImportService(a),
 	}
 }
 

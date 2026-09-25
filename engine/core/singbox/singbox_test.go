@@ -31,10 +31,11 @@ func TestContract(t *testing.T) {
 			{Name: "socks", Config: socksConfig()},
 			{Name: "http", Config: httpConfig()},
 		},
-		Unsupported: []contract.Case{
-			{Name: "hysteria2-unsupported-in-v0.4", Config: hysteria2Config()},
-			{Name: "tuic-unsupported-in-v0.4", Config: tuicConfig()},
-		},
+		// v0.10.2: hysteria2/tuic/wireguard/hysteria moved from the
+		// v0.4 "unsupported" pin to SUPPORTED — the adapter now emits
+		// real outbounds/endpoint for them, schema-verified against the
+		// pinned v1.14.0 binary (see BuildSingBoxDocument tests and the
+		// real-core smoke suite).
 	})
 }
 
@@ -286,6 +287,13 @@ func TestSingBoxSmokeRealBinary(t *testing.T) {
 			h2Config(),
 			socksConfig(),
 			httpConfig(),
+			// v0.10.2: the QUIC family + WireGuard ride the real
+			// binary too — each generated document must pass
+			// `sing-box check` AND reach listener readiness.
+			hysteria2Config(),
+			tuicConfig(),
+			wireGuardConfig(),
+			hysteriaConfig(),
 		},
 		ValidateArgs: func(file string) []string {
 			return []string{"check", "-c", file}
@@ -294,13 +302,39 @@ func TestSingBoxSmokeRealBinary(t *testing.T) {
 	})
 }
 
-// TestValidateRejectsHysteria2 documents the v0.4 boundary: the
-// adapter does not yet emit hysteria2/tuic outbounds.
-func TestValidateRejectsHysteria2(t *testing.T) {
+// TestValidateRejectsIncompleteQUICConfigs pins the deep validation
+// the adapter now performs for the QUIC family and WireGuard (the
+// same requirements the real v1.14.0 binary enforces at startup).
+func TestValidateRejectsIncompleteQUICConfigs(t *testing.T) {
 	backend := singbox.New()
+	ctx := context.Background()
 
-	if err := backend.Validate(context.Background(), hysteria2Config()); err == nil {
-		t.Fatal("hysteria2 should be rejected by the v0.4 sing-box adapter")
+	incompleteHY2 := hysteria2Config()
+	incompleteHY2.Password = ""
+
+	if err := backend.Validate(ctx, incompleteHY2); err == nil {
+		t.Fatal("hysteria2 without an auth password must be rejected")
+	}
+
+	incompleteTUIC := tuicConfig()
+	incompleteTUIC.UUID = ""
+
+	if err := backend.Validate(ctx, incompleteTUIC); err == nil {
+		t.Fatal("TUIC without a UUID must be rejected")
+	}
+
+	incompleteWG := wireGuardConfig()
+	incompleteWG.PrivateKey = ""
+
+	if err := backend.Validate(ctx, incompleteWG); err == nil {
+		t.Fatal("WireGuard without a private key must be rejected")
+	}
+
+	keylessWG := wireGuardConfig()
+	keylessWG.PublicKey = ""
+
+	if err := backend.Validate(ctx, keylessWG); err == nil {
+		t.Fatal("WireGuard without a peer public key must be rejected")
 	}
 }
 
@@ -439,6 +473,34 @@ func tuicConfig() config.Config {
 		Port:     443,
 		UUID:     "99999999-9999-9999-9999-999999999999",
 		Password: "synthetic-tuic-password",
+	}
+}
+
+// wireGuardConfig is the synthetic endpoint fixture (the keys are
+// syntactically valid base64 test vectors, never real credentials).
+func wireGuardConfig() config.Config {
+	return config.Config{
+		Type: config.TypeWireGuard,
+		// 192.0.2.1 is the RFC 5737 documentation address: resolvable
+		// as a literal (the endpoint starts) but never routes — the
+		// smoke proves config acceptance + startup, never a tunnel.
+		Address:    "192.0.2.1",
+		Port:       51820,
+		PrivateKey: "eCtXsJZ27+4PbhDkHnB923tkUn2Gj59wZw5wFA75MnU=",
+		PublicKey:  "Cr8hWlKvtDt7nrvf+f0brNQQzabAqrjfBvas9pmowjo=",
+	}
+}
+
+// hysteriaConfig is the synthetic Hysteria (v1) fixture.
+func hysteriaConfig() config.Config {
+	return config.Config{
+		Type:     config.TypeHysteria,
+		Address:  "sb-hy.example.org",
+		Port:     443,
+		Password: "synthetic-hy-password",
+		// Mandatory in sing-box v1.14 ("missing upload speed").
+		UpMbps:   100,
+		DownMbps: 500,
 	}
 }
 

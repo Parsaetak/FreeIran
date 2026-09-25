@@ -31,6 +31,9 @@ import * as collectionService from "../../bindings/github.com/Parsaetak/FreeIran
 // wails3 generator cannot run on the current host; the contract test
 // verifies every method name against the Go service).
 import * as profileService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/profileservice.js";
+// v0.10.2: personal configuration import (hand-maintained ByName
+// binding, same contract-test discipline).
+import * as importService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/importservice.js";
 import * as loggingModels from "../../bindings/github.com/Parsaetak/FreeIran/internal/logging/models.js";
 
 export {
@@ -51,6 +54,7 @@ export {
   toolsService,
   collectionService,
   profileService,
+  importService,
   loggingModels,
 };
 
@@ -79,6 +83,9 @@ export type LogPage = import("../../bindings/github.com/Parsaetak/FreeIran/engin
 export type Settings = import("../../bindings/github.com/Parsaetak/FreeIran/engine/app/models.js").Settings;
 export type ProfileView = import("../../bindings/github.com/Parsaetak/FreeIran/engine/app/profiletypes.js").ProfileView;
 export type ProfileSpec = import("../../bindings/github.com/Parsaetak/FreeIran/engine/app/profiletypes.js").ProfileSpec;
+export type ImportPreview = import("../../bindings/github.com/Parsaetak/FreeIran/engine/app/importtypes.js").ImportPreview;
+export type ImportResult = import("../../bindings/github.com/Parsaetak/FreeIran/engine/app/importtypes.js").ImportResult;
+export type ImportedConfigView = import("../../bindings/github.com/Parsaetak/FreeIran/engine/app/importtypes.js").ImportedConfigView;
 
 /**
  * Wraps a binding call so UI code receives a single, readable error.

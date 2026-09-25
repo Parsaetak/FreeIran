@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/Parsaetak/FreeIran/engine/config"
 	"github.com/Parsaetak/FreeIran/engine/core"
@@ -35,8 +36,16 @@ func (b *Backend) Name() string { return "sing-box" }
 
 // Capabilities declares the verified sing-box feature set. Verified
 // against sing-box v1.14.0: all listed protocols and transports pass
-// `sing-box check`; REALITY and vision are supported through the
-// tls/utls/reality objects.
+// `sing-box check` (and the real-binary smoke suite); REALITY and
+// vision are supported through the tls/utls/reality objects.
+//
+// v0.10.2: Hysteria2, TUIC, WireGuard and Hysteria are DECLARED and
+// GENERATED here after schema verification against the pinned v1.14.0
+// binary (`sing-box check`): hysteria2/tuic/hysteria require TLS
+// enabled, WireGuard uses the endpoint form (the outbound form was
+// removed in sing-box 1.11). WireGuard support additionally requires
+// the gvisor/wireguard build tag — present in every official release
+// binary the core manager installs.
 func (b *Backend) Capabilities() core.Capabilities {
 	return core.Capabilities{
 		Protocols: []config.Type{
@@ -44,6 +53,10 @@ func (b *Backend) Capabilities() core.Capabilities {
 			config.TypeVMess,
 			config.TypeTrojan,
 			config.TypeShadowsocks,
+			config.TypeHysteria2,
+			config.TypeTUIC,
+			config.TypeWireGuard,
+			config.TypeHysteria,
 			config.TypeSOCKS,
 			config.TypeHTTP,
 		},
@@ -59,6 +72,8 @@ func (b *Backend) Capabilities() core.Capabilities {
 			"REALITY supported through tls.reality",
 			"xtls-rprx-vision flow supported (with uTLS)",
 			"mixed inbound serves SOCKS and HTTP on one port",
+			"hysteria2/tuic/hysteria verified against v1.14.0 (TLS mandatory, QUIC)",
+			"wireguard verified against v1.14.0 (endpoint form, local address auto-generated when absent)",
 		},
 	}
 }
@@ -95,6 +110,44 @@ func (b *Backend) Validate(_ context.Context, cfg config.Config) error {
 			return firerrors.New(firerrors.KindInvalidInput,
 				Subsystem, "validate",
 				"xtls-rprx-vision requires plain TCP transport (got %q)", network)
+		}
+	}
+
+	// v0.10.2 QUIC-family and WireGuard deep validation — the same
+	// requirements the real v1.14.0 binary enforces at startup.
+	switch cfg.Type {
+	case config.TypeHysteria2:
+		if strings.TrimSpace(cfg.Password) == "" {
+			return firerrors.New(firerrors.KindInvalidInput,
+				Subsystem, "validate",
+				"Hysteria2 configuration requires an auth password")
+		}
+
+	case config.TypeTUIC:
+		if strings.TrimSpace(cfg.UUID) == "" {
+			return firerrors.New(firerrors.KindInvalidInput,
+				Subsystem, "validate",
+				"TUIC configuration requires a UUID")
+		}
+
+	case config.TypeHysteria:
+		if cfg.UpMbps <= 0 || cfg.DownMbps <= 0 {
+			return firerrors.New(firerrors.KindInvalidInput,
+				Subsystem, "validate",
+				"Hysteria (v1) requires upmbps and downmbps bandwidth caps")
+		}
+
+	case config.TypeWireGuard:
+		if strings.TrimSpace(cfg.PrivateKey) == "" {
+			return firerrors.New(firerrors.KindInvalidInput,
+				Subsystem, "validate",
+				"WireGuard configuration requires the local private key")
+		}
+
+		if strings.TrimSpace(cfg.PublicKey) == "" {
+			return firerrors.New(firerrors.KindInvalidInput,
+				Subsystem, "validate",
+				"WireGuard configuration requires the peer public key")
 		}
 	}
 
@@ -214,6 +267,7 @@ type sbDocument struct {
 	Log       *sbLog       `json:"log,omitempty"`
 	Inbounds  []sbInbound  `json:"inbounds"`
 	Outbounds []sbOutbound `json:"outbounds"`
+	Endpoints []sbEndpoint `json:"endpoints,omitempty"`
 	Route     *sbRoute     `json:"route,omitempty"`
 }
 
@@ -243,6 +297,45 @@ type sbOutbound struct {
 	Version    string       `json:"version,omitempty"`  // socks outbound
 	Security   string       `json:"security,omitempty"` // vmess cipher
 	AlterID    int          `json:"alter_id,omitempty"`
+
+	// QUIC family (v0.10.2, verified against sing-box v1.14.0).
+	UpMbps            int     `json:"up_mbps,omitempty"`            // hysteria/hysteria2
+	DownMbps          int     `json:"down_mbps,omitempty"`          // hysteria/hysteria2
+	AuthStr           string  `json:"auth_str,omitempty"`           // hysteria (v1)
+	CongestionControl string  `json:"congestion_control,omitempty"` // tuic
+	UDPRelayMode      string  `json:"udp_relay_mode,omitempty"`     // tuic
+	Obfs              *sbObfs `json:"obfs,omitempty"`               // hysteria/hysteria2 salamander
+}
+
+// sbObfs is the salamander obfuscation object of the hysteria
+// outbounds.
+type sbObfs struct {
+	Type     string `json:"type"`
+	Password string `json:"password,omitempty"`
+}
+
+// sbEndpoint is the sing-box endpoint form (v1.11+): WireGuard is an
+// ENDPOINT, not an outbound — the "wireguard" outbound type was
+// removed in sing-box 1.11.0 and the pinned v1.14.0 accepts only
+// this shape (verified with `sing-box check`).
+type sbEndpoint struct {
+	Type       string     `json:"type"`
+	Tag        string     `json:"tag"`
+	System     bool       `json:"system"`
+	Address    []string   `json:"address,omitempty"`
+	PrivateKey string     `json:"private_key"`
+	MTU        int        `json:"mtu,omitempty"`
+	Peers      []sbWGPeer `json:"peers"`
+}
+
+// sbWGPeer is one WireGuard peer inside an endpoint.
+type sbWGPeer struct {
+	Address                     string   `json:"address"`
+	Port                        int      `json:"port"`
+	PublicKey                   string   `json:"public_key"`
+	PreSharedKey                string   `json:"pre_shared_key,omitempty"`
+	AllowedIPs                  []string `json:"allowed_ips"`
+	PersistentKeepaliveInterval int      `json:"persistent_keepalive_interval,omitempty"`
 }
 
 type sbTLS struct {
@@ -308,9 +401,16 @@ func BuildSingBoxDocument(cfg config.Config, opts core.RuntimeOptions) ([]byte, 
 			"local port must be allocated before generation")
 	}
 
-	proxyOutbound, err := buildSBOutbound(cfg, security)
-	if err != nil {
-		return nil, "", err
+	var proxyOutbound *sbOutbound
+
+	if cfg.Type != config.TypeWireGuard {
+		// WireGuard rides the endpoint form and has no outbound.
+		built, err := buildSBOutbound(cfg, security)
+		if err != nil {
+			return nil, "", err
+		}
+
+		proxyOutbound = built
 	}
 
 	doc := sbDocument{
@@ -324,7 +424,6 @@ func BuildSingBoxDocument(cfg config.Config, opts core.RuntimeOptions) ([]byte, 
 			},
 		},
 		Outbounds: []sbOutbound{
-			*proxyOutbound,
 			{Type: "direct", Tag: "direct"},
 			{Type: "block", Tag: "block"},
 		},
@@ -334,6 +433,15 @@ func BuildSingBoxDocument(cfg config.Config, opts core.RuntimeOptions) ([]byte, 
 			},
 			Final: "proxy",
 		},
+	}
+
+	if cfg.Type == config.TypeWireGuard {
+		// WireGuard rides the v1.11+ ENDPOINT form: the proxy target is
+		// an endpoint, and the outbounds are only the plumbing. The
+		// route's final "proxy" tag addresses the endpoint directly.
+		doc.Endpoints = []sbEndpoint{*buildSBWireGuardEndpoint(cfg)}
+	} else {
+		doc.Outbounds = append([]sbOutbound{*proxyOutbound}, doc.Outbounds...)
 	}
 
 	data, err := json.MarshalIndent(doc, "", "  ")
@@ -387,6 +495,49 @@ func buildSBOutbound(cfg config.Config, security config.Security) (*sbOutbound, 
 		outbound.Method = cfg.Method
 		outbound.Password = cfg.Password
 
+	case config.TypeHysteria2:
+		// Verified against v1.14.0: TLS required (checked at startup),
+		// password auth, optional salamander obfs, optional
+		// bandwidth caps.
+		outbound.Type = "hysteria2"
+		outbound.Server = cfg.Address
+		outbound.ServerPort = cfg.Port
+		outbound.Password = cfg.Password
+		outbound.UpMbps = cfg.UpMbps
+		outbound.DownMbps = cfg.DownMbps
+
+		if cfg.Security != "" && cfg.Security != string(config.SecurityNone) {
+			outbound.Obfs = &sbObfs{Type: cfg.Security, Password: cfg.Host}
+		}
+
+	case config.TypeTUIC:
+		// Verified against v1.14.0: TLS required, uuid+password (v5
+		// auth), congestion control from the URI's congestion_control
+		// (parsed into Network by the parser), native UDP relay.
+		outbound.Type = "tuic"
+		outbound.Server = cfg.Address
+		outbound.ServerPort = cfg.Port
+		outbound.UUID = cfg.UUID
+		outbound.Password = cfg.Password
+		outbound.CongestionControl = cfg.Network
+		outbound.UDPRelayMode = "native"
+
+	case config.TypeHysteria:
+		// Verified against v1.14.0: TLS required, auth_str auth,
+		// QUIC transport (the "protocol" field of older schemas is
+		// gone) and MANDATORY up/down bandwidth caps ("missing
+		// upload speed" otherwise).
+		outbound.Type = "hysteria"
+		outbound.Server = cfg.Address
+		outbound.ServerPort = cfg.Port
+		outbound.AuthStr = cfg.Password
+		outbound.UpMbps = cfg.UpMbps
+		outbound.DownMbps = cfg.DownMbps
+
+		if cfg.Security != "" && cfg.Security != string(config.SecurityNone) {
+			outbound.Obfs = &sbObfs{Type: cfg.Security, Password: cfg.Host}
+		}
+
 	case config.TypeSOCKS:
 		outbound.Type = "socks"
 		outbound.Server = cfg.Address
@@ -413,6 +564,15 @@ func buildSBOutbound(cfg config.Config, security config.Security) (*sbOutbound, 
 		return outbound, nil
 	}
 
+	if cfg.Type == config.TypeHysteria2 || cfg.Type == config.TypeTUIC || cfg.Type == config.TypeHysteria {
+		// The QUIC family is TLS-mandatory (the real binary refuses
+		// otherwise: "initialize outbound: TLS required"). Insecure is
+		// the user's explicit choice from the URI.
+		outbound.TLS = buildSBTLS(cfg, config.SecurityTLS)
+
+		return outbound, nil
+	}
+
 	if security == config.SecurityTLS || security == config.SecurityReality {
 		outbound.TLS = buildSBTLS(cfg, security)
 	}
@@ -424,12 +584,40 @@ func buildSBOutbound(cfg config.Config, security config.Security) (*sbOutbound, 
 	return outbound, nil
 }
 
+// buildSBWireGuardEndpoint converts a normalized WireGuard
+// configuration into the sing-box endpoint form.
+func buildSBWireGuardEndpoint(cfg config.Config) *sbEndpoint {
+	endpoint := &sbEndpoint{
+		Type:       "wireguard",
+		Tag:        "proxy",
+		System:     false,
+		PrivateKey: cfg.PrivateKey,
+		MTU:        cfg.MTU,
+		Peers: []sbWGPeer{
+			{
+				Address:                     cfg.Address,
+				Port:                        cfg.Port,
+				PublicKey:                   cfg.PublicKey,
+				AllowedIPs:                  cfg.AllowedIPs,
+				PersistentKeepaliveInterval: cfg.PersistentKeepalive,
+			},
+		},
+	}
+
+	if len(endpoint.Peers[0].AllowedIPs) == 0 {
+		endpoint.Peers[0].AllowedIPs = []string{"0.0.0.0/0", "::/0"}
+	}
+
+	return endpoint
+}
+
 // buildSBTLS renders the sing-box TLS object including uTLS and
 // REALITY. Trojan implies TLS (sing-box enforces it at runtime).
 func buildSBTLS(cfg config.Config, security config.Security) *sbTLS {
 	tls := &sbTLS{
 		Enabled:    true,
 		ServerName: tlsServerName(cfg),
+		Insecure:   cfg.Insecure,
 	}
 
 	if len(cfg.ALPN) > 0 {

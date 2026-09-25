@@ -9,7 +9,7 @@ configurations.
 **Project:** FreeIran — A SHEYTAN Digital System
 **Architect:** Parsa Tak / SHEYTAN
 **Repository:** https://github.com/Parsaetak/FreeIran
-**Current version:** 0.10.1 (see `VERSION`)
+**Current version:** 0.10.2 (see `VERSION`)
 **Status:** production architecture — multi-core protocol runtime with
 managed installation, multi-level node discovery, Ping/URL test modes
 with measured ranking, verified-connection engine with racing,
@@ -18,6 +18,61 @@ memory control and kernel-level process supervision. TUN mode is
 EXPERIMENTAL and disabled in this release (see "TUN mode" below).
 
 ---
+
+## What's new in v0.10.2
+
+v0.10.2 is a repair-and-truth release: it fixes the v0.10.1 Windows
+system-proxy regression at root cause (a broken WinINet ABI — every
+multi-option proxy activation failed on Windows, which is why the
+crash-recovery CI test saw the ownership marker survive), makes the
+ownership lifecycle fully transactional, ships a first-class personal
+configuration import flow, and adds real sing-box runtime support for
+Hysteria2, TUIC, WireGuard and Hysteria — verified against the pinned
+v1.14.0 binary.
+
+### Windows system proxy — root-cause repair
+
+- Root cause (Actions run 36087876076): the Go mirror of WinINet's
+  `INTERNET_PER_CONN_OPTION` declared the value union as `[64]uintptr`
+  — a 520-byte option stride where WinINet requires 16 on amd64 — so
+  every multi-option `InternetSetOption` call failed with
+  `ERROR_INVALID_PARAMETER`. The ABI is now byte-exact (pinned by a
+  Windows layout test), query uses the documented `LPDWORD`/GlobalFree
+  semantics, and PAC/autoconfig + autodetect state is captured and
+  restored faithfully.
+- Ownership is transactional: the recovery record is durably written
+  BEFORE activation; activation is verified against the real WinINet
+  state; boot recovery validates, restores, verifies again and only
+  then consumes the marker — cleanup failure is an explicit
+  `ErrOwnershipResidual` error, never a silent success.
+- The UI shows the durable ownership status (active/pending, saved
+  previous state) on the Connection page.
+- The assertion in `TestAppBootsAfterCrashedProxySession` was never
+  weakened — the production bug behind it was fixed, and CI now runs
+  the recovery battery repeatedly (-count=5).
+
+### Personal configuration import (no subscription required)
+
+- Configurations page → "Import configurations": paste or choose a
+  file (share-link list, base64 subscription, JSON, WireGuard INI) →
+  format detection → parse → validate → redacted capability preview
+  that says per entry whether an installed core can EXECUTE it →
+  Save → Test → Connect. Saved configs carry the personal-import
+  source and user trust tier; re-import updates in place.
+- Parser repairs surfaced by the import flow: SIP002 shadowsocks
+  URIs parse again (base64 `method:password` userinfo), and the QUIC
+  family's `insecure`/`upmbps`/`downmbps` URI parameters are captured
+  instead of dropped.
+
+### Real protocol runtime additions (sing-box adapter)
+
+- Hysteria2, TUIC, Hysteria (v1) and WireGuard now generate real
+  sing-box runtime configurations, verified against the pinned
+  sing-box v1.14.0 binary (`sing-box check` + real-binary smoke:
+  config accepted → process starts → listener ready). WireGuard uses
+  the v1.11+ endpoint form; Hysteria v1 requires up/down bandwidth
+  caps (validated at import time). See docs/protocols.md for the
+  full, evidence-annotated protocol × core matrix.
 
 ## What's new in v0.10.1
 

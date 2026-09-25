@@ -391,6 +391,18 @@ jobs:
           CGO_ENABLED: "0"
           FREEIRAN_TEST_CORES: ${{ runner.temp }}\freeiran-test-cores
 
+      # v0.10.2: targeted repetition for the REPAIRED Windows
+      # crash-recovery path. The v0.10.1 regression
+      # (TestAppBootsAfterCrashedProxySession, "marker still present
+      # after a successful Windows recovery") was caused by a broken
+      # WinINet INTERNET_PER_CONN_OPTION ABI in proxy_windows.go;
+      # this step runs the boot-recovery test battery repeatedly so a
+      # flaky pass can never masquerade as a fix.
+      - name: Crash-recovery regression battery (repeated)
+        run: go test -count=5 -timeout=10m -run "TestAppBootsAfterCrashedProxySession|TestAppBootsWithoutProxyResidue|TestRecoverStaleProxy.*|TestRecoveryMarker.*|TestEnable.*|TestDisable.*|TestWinINet.*" ./engine/tunnel/ ./engine/app/
+        env:
+          CGO_ENABLED: "0"
+
       - name: Runtime smoke test
         shell: pwsh
         # Headless application smoke test: boot the engine, verify the

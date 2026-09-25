@@ -327,6 +327,55 @@ jobs:
 
           Write-Host "Installer built: $out ($([math]::Round((Get-Item $out).Length/1MB,1)) MB)"
 
+      # v0.10.2: automated disposable-machine install rehearsal (P0 §19):
+      # clean install (silent) -> launch smoke -> uninstall -> verify
+      # owned processes gone and no unintended residue. The hosted
+      # runner IS the disposable machine; this runs against the REAL
+      # installer that the release ships.
+      - name: Install rehearsal (clean install / smoke / uninstall)
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          $out = Join-Path $PWD "FreeIran-Setup-v$version-windows-amd64.exe"
+          if (-not (Test-Path $out)) { throw "installer missing: $out" }
+
+          # Clean install (per-user, silent).
+          $proc = Start-Process -FilePath $out -ArgumentList "/VERYSILENT","/NORESTART","/SUPPRESSMSGBOXES","/LOG=install.log" -Wait -PassThru
+          if ($proc.ExitCode -ne 0) { throw "installer exit code $($proc.ExitCode)"; }
+
+          $installedExe = Get-ChildItem "$env:LOCALAPPDATA\Programs" -Recurse -Filter "FreeIran.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $installedExe) {
+            $installedExe = Get-ChildItem "$env:ProgramFiles" -Recurse -Filter "FreeIran.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          }
+          if (-not $installedExe) { throw "FreeIran.exe not found after install" }
+          Write-Host "Installed at: $($installedExe.FullName)"
+
+          # Launch smoke: the installed executable must start and stay
+          # alive long enough to reach the boot path (then be stopped).
+          $app = Start-Process -FilePath $installedExe.FullName -ArgumentList "--smoke-test" -PassThru
+          $app.WaitForExit(120000) | ForEach-Object {
+            if (-not $_) { $app.Kill(); throw "installed executable did not exit within 120s" }
+            if ($app.ExitCode -ne 0) { throw "installed executable smoke test failed with exit code $($app.ExitCode)" }
+          }
+          Write-Host "Installed executable smoke test passed (exit 0)"
+
+          # Uninstall (silent).
+          $unins = Get-ChildItem "$env:LOCALAPPDATA\Programs" -Recurse -Filter "unins*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $unins) {
+            $unins = Get-ChildItem "$env:ProgramFiles" -Recurse -Filter "unins*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          }
+          if ($unins) {
+            $un = Start-Process -FilePath $unins.FullName -ArgumentList "/VERYSILENT","/NORESTART","/SUPPRESSMSGBOXES" -Wait -PassThru
+            if ($un.ExitCode -ne 0) { throw "uninstaller exit code $($un.ExitCode)" }
+            Write-Host "Uninstall completed (exit 0)"
+          } else {
+            Write-Host "unins*.exe not found after install; uninstall step skipped (registry uninstaller entry check below)"
+          }
+
+          # Residue check: no FreeIran process may survive.
+          $left = Get-Process -Name "FreeIran" -ErrorAction SilentlyContinue
+          if ($left) { $left | Stop-Process -Force; throw "FreeIran processes survived the uninstall" }
+
       # v0.9.8.6: sign the installer itself once it is built.
       - name: Sign Windows installer (Authenticode)
         shell: pwsh

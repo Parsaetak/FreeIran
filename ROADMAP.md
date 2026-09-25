@@ -12,7 +12,7 @@ The application should feel like a mature desktop connectivity client rather tha
 
 ---
 
-# Roadmap ladder (v0.10.1)
+# Roadmap ladder (v0.10.2)
 
 The roadmap is a four-phase ladder. Each phase must be TRUE before the
 next one starts; the acceptance standard is the user-visible pipeline
@@ -38,15 +38,15 @@ disconnect cleanly → reconnect
 
 | Capability | Status in v0.10.1 |
 |---|---|
-| Personal config import (VLESS, VMess, Trojan, Shadowsocks, Hysteria/Hysteria2, TUIC, WireGuard, SOCKS, HTTP, supported JSON, base64 subscriptions) | Done — parser + validated runtime path per protocol; a parser-recognized protocol whose runtime path does not work is treated as unsupported, not "done" |
+| Personal config import (VLESS, VMess, Trojan, Shadowsocks, Hysteria/Hysteria2, TUIC, WireGuard, SOCKS, HTTP, supported JSON, base64 subscriptions) | Done in v0.10.2 — first-class Import flow (paste/file → detect → parse → validate → redacted capability preview → Save → Test → Connect); no subscription source needed, no second pipeline. v0.10.1's claim of a "validated runtime path per protocol" was FALSE for hysteria2/tuic/wireguard (parser-only, no core could execute them) — repaired in v0.10.2 |
 | Subscriptions (add, refresh, parse, deduplicate, persist, imported/rejected counts, real errors; a failed refresh never erases working configs) | Done |
 | Explicit-config connect (the user's own selection is never silently replaced by Quick Connect) | Done |
-| Real protocol→core compatibility (verified against installed cores, not parser recognition) | Done — capability resolution against the live registry |
+| Real protocol→core compatibility (verified against installed cores, not parser recognition) | Done — capability resolution against the live registry. v0.10.2 adds REAL sing-box runtime for Hysteria2/TUIC/WireGuard/Hysteria, schema-verified against the pinned v1.14.0 binary (see docs/protocols.md for the per-protocol matrix and evidence level) |
 | Testing engine (preflight → core validation → startup → listener readiness → handshake → measured latency → Internet verification → persistent evidence; never "connected" because a process launched) | Done — E2E target fetch through the real tunnel |
 | Connection engine (route → core/provider start → local proxy → route traffic → external verification → Connected) | Done — Connected is never reported before verification |
 | Quick Connect (explicit config → THAT config; Auto → fresh test → rank → connect; cooldowns and recovery through the SAME engines) | Done |
 | Recovery (bounded episodes, cooldown decay, re-testing through the one ranking path) | Done |
-| Windows system proxy (connect → listener verified → proxy set → external traffic verified; restore on disconnect/shutdown/crash/reconnect) | Done — including the v0.10.1 crash-safe ownership marker + boot restoration |
+| Windows system proxy (connect → listener verified → proxy set → external traffic verified; restore on disconnect/shutdown/crash/reconnect) | Repaired + hardened in v0.10.2. v0.10.1's WinINet ABI was broken on Windows (every multi-option activation failed — the crash-recovery CI failure); the ABI is now byte-exact, ownership is transactional (durable record BEFORE activation, verified restoration before the marker is consumed, explicit residual errors), and the recovery battery runs repeatedly in CI |
 | DNS/IPv4/IPv6 evidence (measured, never fabricated) | Done — staged diagnostics ladder + identity evidence |
 | Core/provider management (install/update/repair/reinstall/verify/remove; truthful installed/version/path/origin/ownership/health) | Done |
 | Windows installer (clean install/upgrade/repair/uninstall; writable workspace; single tree) | Done — Inno Setup path |
@@ -132,8 +132,10 @@ Current main:
   bounded archive extraction via internal/safearchive)
 * HTTP policy: explicit transport proxy modes (direct by default —
   ambient HTTP(S)_PROXY variables are ignored)
-* Tunnel modes: System Proxy (WinINet) production — with crash-safe
-  ownership marker and boot restoration since v0.10.1; TUN
+* Tunnel modes: System Proxy (WinINet) production — transactional
+  ownership since v0.10.2 (durable record BEFORE activation, verified
+  restoration before marker consumption, explicit residual errors;
+  v0.10.1's WinINet ABI defect repaired at root cause); TUN
   EXPERIMENTAL and DISABLED (v0.9.8.6 — not a kill switch)
 * Logging profiles: enabled (Normal / Detailed / Debug)
 
