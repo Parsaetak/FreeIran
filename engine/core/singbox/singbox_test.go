@@ -322,6 +322,11 @@ func TestSingBoxSmokeRealBinary(t *testing.T) {
 			hysteria2GeckoConfig(),
 			tuicQuicBBRConfig(),
 			tuicNativeCubicConfig(),
+			// v0.10.5: the remaining congestion-control domain value
+			// (new_reno) rides the REAL core too — the full cc domain
+			// is no longer validated only against the unit-mocked
+			// generator.
+			tuicNewRenoConfig(),
 			hysteriaV1ObfsConfig(),
 		},
 		ValidateArgs: func(file string) []string {
@@ -570,6 +575,17 @@ func tuicNativeCubicConfig() config.Config {
 	cfg := tuicConfig()
 	cfg.CongestionControl = config.CongestionControlCubic
 	cfg.UDPRelayMode = config.UDPRelayModeNative
+	return cfg
+}
+
+// tuicNewRenoConfig pins the remaining congestion-control domain
+// value (new_reno) so the FULL documented cc domain (bbr | cubic |
+// new_reno) is exercised against the real core, not only the
+// unit-mocked generator (v0.10.5).
+func tuicNewRenoConfig() config.Config {
+	cfg := tuicConfig()
+	cfg.CongestionControl = config.CongestionControlNewReno
+	cfg.UDPRelayMode = config.UDPRelayModeQUIC
 	return cfg
 }
 

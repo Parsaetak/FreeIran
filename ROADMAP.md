@@ -12,11 +12,39 @@ The application should feel like a mature desktop connectivity client rather tha
 
 ---
 
-# Roadmap ladder (v0.10.4)
+# Roadmap ladder (v0.10.5)
 
 The roadmap is a four-phase ladder. Each phase must be TRUE before the
 next one starts; the acceptance standard is the user-visible pipeline
 below, not internal test counts.
+
+### v0.10.5 current-release status (factual)
+
+v0.10.5 repairs the security scanner at the root: the raw-text
+suspicious-pattern scan (which failed on a protocol documentation
+comment in validate.go) is replaced by a comment-aware tokenizing
+scanner (tools/gosecscan) whose executable-text detection domain is
+byte-identical to the old scan's; the child-process audit moves from a
+line-oriented comment filter to the same structural tokenization with
+its allowlist unchanged; and the discovery start flow's automatic
+selection now enforces the v0.9.8.6 route-trust boundary (trusted
+routes only unless untrusted public routes are explicitly allowed).
+
+Evidence actually executed for v0.10.5: full Linux Go suite, `-race`
+full suite, frontend npm ci/typecheck/tests/build/embed validation,
+real-core verification with the three SHA-256-pinned cores (Xray
+26.3.27, V2Ray 5.53.0, sing-box 1.14.0 — `check`/`test` + startup +
+listener readiness for the full TUIC/Hysteria/Hysteria2/WireGuard
+semantic matrix including the new_reno variant), and windows/amd64
+cross-build with PE windowsgui-subsystem verification from Linux.
+
+NOT yet executed at release: the Windows-native CI gate (WinINet
+round-trip battery, Windows runtime smoke, Windows desktop build on a
+Windows runner) — it runs when this tree is pushed and must pass
+before the release is described as Windows-verified. No Internet
+verification over a live tunnel was performed for this release (the
+real-core battery validates generated documents and listener
+readiness, not remote reachability).
 
 ### v0.10.4 current-release status (factual)
 

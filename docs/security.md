@@ -81,9 +81,9 @@ the job.
      netsh, route, Start-Process, Invoke-WebRequest,
      Expand-Archive, bitsadmin, certutil, mshta) in product Go code
      — allowlist-based, every exception justified inline (v0.9.8.6).
-   - v0.9.86 placeholder
-   - `password=` / `secret=` literals in non-test Go code (allowing the
-     existing `REDACT` marker for deliberate tests/documentation).
+   - `password=` / `secret=` literals in non-test executable Go code
+     (v0.10.5: matched through the comment-aware tokenizing scanner
+     described below, not raw grep — see the v0.10.5 section).
 
    Every branch of the scan exits non-zero on a match. The v0.2
    version of this step ended in `|| true`, which made the entire check
@@ -169,6 +169,40 @@ surface:
 - **No secrets in new settings.** Settings persist non-sensitive
   preferences only (backend name, intervals, log limits, motion
   preference) under the config directory with 0600 permissions.
+
+## v0.10.5 — comment-aware suspicious-pattern scanning
+
+The v0.10.4-and-earlier suspicious-pattern scan matched raw text and
+could not distinguish DOCUMENTATION from executable code: the Static
+analysis job failed on `engine/config/validate.go:105` — a protocol
+documentation comment describing the Hysteria2 URI form
+(`obfs-password=<pw>`). The inverse defect sat in the child-process
+check's line-oriented comment filter: inline comments and block-
+comment interior lines not starting with `*` could false-positive,
+while raw-string lines starting with `//` were invisible to it
+(executable string data escaping the scan).
+
+The scan now runs `tools/gosecscan`, which tokenizes each Go file
+with `go/scanner` and reconstructs the source with every comment span
+removed — multiline block comments keep their line count, so reported
+`file:line` references stay true — then matches the SAME patterns
+against the remaining executable text:
+
+- Documentation (line/block/inline comments) can never trigger the
+  credential gate again.
+- The executable-text domain is byte-identical to the old raw scan's
+  (spacing and string-literal contents included) — no weaker, no
+  stronger.
+- Fail-closed in both failure dimensions: a pattern match exits 1; a
+  file that cannot be tokenized exits 2; the workflow refuses an
+  empty file list rather than passing vacuously.
+- No allowlists, no `|| true`, no `continue-on-error`, no disabled
+  checks. Gitleaks and govulncheck are untouched.
+- The regression suite (`tools/gosecscan/scan_test.go`) pins both
+  directions: documentation classes accepted (including the exact
+  validate.go shape and a scan of the real file), executable-finding
+  classes rejected with line-number assertions, and the CLI
+  exit-code contract (0 clean / 1 violations / 2 operational).
 
 ## v0.9.4 — release checksums and the application-update checker
 

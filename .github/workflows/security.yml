@@ -78,23 +78,73 @@ jobs:
       - name: go vet (desktop package, windows target)
         run: GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go vet ./cmd/...
 
-      - name: Suspicious pattern scan
+      - name: Suspicious pattern scan (comment-aware, v0.10.5)
         run: |
           # Guard rails against accidental credential logging and
           # unsafe exec patterns in engine code. Every check below is
           # a REAL failure condition — nothing is silenced.
-          if grep -rn 'exec.Command("sh", "-c"' ./engine ./system --include='*.go'; then
+          #
+          # v0.10.5 ROOT-CAUSE REPAIR: the previous raw-text greps
+          # could not distinguish documentation from executable code
+          # and failed on validate.go:105 — a protocol documentation
+          # COMMENT describing the Hysteria2 URI form (obfs-password=
+          # <pw>). The line-oriented comment filter used by the
+          # child-process check had the inverse defect: inline
+          # comments, non-star-prefixed block-comment interior lines
+          # and raw-string lines starting with "//" confused it in
+          # both directions (false positives AND false negatives).
+          #
+          # Both checks now go through tools/gosecscan, which
+          # TOKENIZES each Go file with go/scanner and matches
+          # patterns ONLY against non-comment token text:
+          #   - documentation (line/block/inline comments) is
+          #     structurally excluded — it can never trigger again;
+          #   - every executable token is still scanned, INCLUDING
+          #     verbatim string-literal contents — a real hardcoded
+          #     credential still fails the job;
+          #   - FAIL-CLOSED both ways: any pattern match exits 1, and
+          #     a file that cannot be tokenized exits 2 (an
+          #     unscannable file never passes silently). No
+          #     allowlists, no '|| true', no continue-on-error.
+
+          # -- Check 1: shell-injection surface (exec via sh -c). --
+          # The pattern is spacing-tolerant (the old raw grep matched only
+          # ONE exact source spelling), and comment-aware, so protocol
+          # documentation that MENTIONS the call shape cannot trigger.
+          sh_c_files=$(find ./engine ./system -name '*.go' -type f ! -name '*_test.go' | sort)
+          if [ -z "$sh_c_files" ]; then
+            echo "suspicious-pattern scan: no files found — refusing to pass vacuously" >&2
+            exit 1
+          fi
+          # shellcheck disable=SC2086
+          sh_c_out=$(go run ./tools/gosecscan -e 'exec\.Command\(\s*"sh"\s*,\s*"-c"' $sh_c_files)
+          sh_c_status=$?
+          if [ "$sh_c_status" -ne 0 ]; then
+            echo "$sh_c_out" >&2
             echo "Found sh -c exec pattern (shell injection surface)" >&2
             exit 1
           fi
 
-          if grep -rniE 'password=|secret=' --include='*.go' \
-              ./engine ./system | grep -v _test.go | grep -v 'REDACT'; then
+          # -- Check 2: credential patterns in non-test product code. --
+          # Documentation no longer triggers (comments are structurally
+          # excluded); an executable password=/secret= literal still
+          # fails exactly as before. The REDACT exclusion is gone: it
+          # was a textual pre-filter of the same fragile class.
+          cred_files=$(find ./engine ./system -name '*.go' -type f ! -name '*_test.go' | sort)
+          if [ -z "$cred_files" ]; then
+            echo "suspicious-pattern scan: no files found — refusing to pass vacuously" >&2
+            exit 1
+          fi
+          # shellcheck disable=SC2086
+          cred_out=$(go run ./tools/gosecscan -i -e 'password=' -e 'secret=' $cred_files)
+          cred_status=$?
+          if [ "$cred_status" -ne 0 ]; then
+            echo "$cred_out" >&2
             echo "Potential hardcoded credentials found (see above)" >&2
             exit 1
           fi
 
-          echo "Pattern scan clean."
+          echo "Pattern scan clean (comment-aware tokenizing scan)."
 
       # v0.9.8.6: allowlist-based audit of the REAL Windows/child
       # command surface. The product code (engine/, system/,
@@ -133,28 +183,34 @@ jobs:
 
           PATTERNS='powershell|pwsh|invoke-webrequest|iwr |start-process|expand-archive|netsh|route add|route delete|bitsadmin|certutil|mshta|curl |wget |cmd /c|cmd\.exe'
 
-          violations=0
+          # v0.10.5: comment handling moved from the line-oriented
+          # grep -vE '^(//|/\*|\*)' filter (inline comments, block-
+          # comment interiors and raw-string lines starting with //
+          # confused it) to the same structural tokenization as the
+          # credential scan above: gosecscan drops comments at the
+          # TOKEN level and keeps original line numbers for the
+          # file:line reports. The allowlist below is unchanged.
+          files=()
           while IFS= read -r file; do
             case "$file" in *_test.go) continue;; esac
             # The contract package builds the deterministic fake test
             # core through the go toolchain — justified, test-only.
             case "$file" in engine/core/contract/*) continue;; esac
             case "$file" in ./system/resolve_windows.go) continue;; esac
-
-            # Comment lines are documentation (the tun_unavailable.go
-            # defect list NAMES the removed tools); only executable
-            # code may violate.
-            if grep -vE '^\s*(//|/\*|\*)' "$file" | \
-               grep -niE "$PATTERNS" >/tmp/scan_hits 2>/dev/null; then
-              echo "---- $file ----" >&2
-              cat /tmp/scan_hits >&2
-              violations=$((violations+1))
-            fi
+            files+=("$file")
           done < <(find ./engine ./system ./internal ./cmd -name '*.go' -type f)
 
-          if [ "$violations" -gt 0 ]; then
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "child-process scan: no files found — refusing to pass vacuously" >&2
+            exit 1
+          fi
+
+          cp_out=$(go run ./tools/gosecscan -i -e "$PATTERNS" "${files[@]}")
+          cp_status=$?
+          if [ "$cp_status" -ne 0 ]; then
+            echo "$cp_out" >&2
             echo "" >&2
-            echo "Dangerous child-process patterns found in $violations file(s)." >&2
+            echo "Dangerous child-process patterns found (see file:line reports above)." >&2
             echo "Product code must not shell out to PowerShell/cmd/curl/wget/netsh/route" >&2
             echo "or archive-extraction commands. If a use is genuinely required, add a" >&2
             echo "JUSTIFIED entry to the allowlist in this workflow step and note it in" >&2

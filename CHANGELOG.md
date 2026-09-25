@@ -3,6 +3,94 @@
 Release history for FreeIran. The newest release is documented in the
 [README](README.md); everything older lives here, newest first.
 
+## v0.10.5 — comment-aware security scanning, discovery route-trust policy
+
+v0.10.5 is a security-tooling correctness release plus one trust-policy
+gap fix. It replaces the raw-text suspicious-pattern scan — which could
+not distinguish documentation from executable code and failed on a
+protocol documentation comment — with a tokenizing, comment-aware
+scanner whose detection domain on executable code is EXACTLY the old
+scan's domain. Every claim below is scoped to evidence actually
+executed for this release: the full Linux suite (plus `-race`), the
+frontend battery, real-core verification with the three pinned cores,
+and windows/amd64 cross-build + PE-subsystem verification from Linux.
+The Windows-native battery (WinINet round-trips, Windows runtime smoke,
+desktop build on a Windows runner) is NOT claimed — it runs in CI when
+this tree is pushed.
+
+### Security scanning — root cause, not symptom
+
+- The Static analysis job failed on `engine/config/validate.go:105` —
+  a documentation COMMENT describing the Hysteria2 URI form
+  (`obfs-password=<pw>`). The raw grep (`password=|secret=`) cannot
+  tell documentation from executable code. The failure was reproduced
+  locally with the exact CI command before anything was changed: the
+  failure surface was exactly that one comment line, and no real
+  finding hid behind it.
+- New tool `tools/gosecscan`: tokenizes each Go file with `go/scanner`
+  and reconstructs the source with every comment span removed
+  (multiline block comments keep their line count, so reported
+  `file:line` references stay true), then matches the SAME patterns
+  against the remaining executable text — byte-identical to the old
+  scan's domain on executable code, including verbatim string-literal
+  contents.
+  - Documentation (line/block/inline comments) can never trigger the
+    credential gate again.
+  - A real hardcoded credential in executable text still fails the
+    job — regression-tested for interpreted strings, multiline raw
+    strings and no-space assignment shapes.
+  - Fail-closed both ways: any match exits 1; a file that cannot be
+    tokenized exits 2 (an unscannable file never passes silently);
+    the workflow refuses an empty file list (no vacuous pass).
+  - No allowlists, no `|| true`, no `continue-on-error`, no disabled
+    checks. Gitleaks and govulncheck are untouched.
+- The dangerous child-process scan moves from the line-oriented
+  comment filter — which false-positived on inline comments and
+  non-star-prefixed block-comment interiors, and missed raw-string
+  lines starting with `//` — to the same structural tokenization.
+  The allowlist (tests, `engine/core/contract`, the validated cmd.exe
+  PATH resolver) is unchanged and the pattern set is unchanged. The
+  `sh -c` check becomes spacing-tolerant: the old grep matched one
+  exact source spelling only.
+- Regression suite `tools/gosecscan/scan_test.go` pins BOTH
+  directions: six documentation classes accepted (including the exact
+  validate.go:105 shape, plus a test that scans the real file), four
+  executable-finding classes rejected with line-number assertions,
+  the spacing-tolerant `sh -c` pattern, and the CLI exit-code
+  contract (0 clean / 1 violations / 2 operational).
+- CI vet/test coverage extended to `./tools/...` so the scanner's
+  regression suite runs on the Linux gate as well.
+
+### Discovery flow — route-trust policy gap closed
+
+- `DiscoveryService.StartFlow`'s AUTOMATIC selection connected the
+  best ranked candidate with no trust filter — a gap against the
+  v0.9.8.6 route-trust boundary ("Quick Connect and Auto connect
+  through trusted routes only, unless the user explicitly enables
+  untrusted public routes"): discovery-driven auto-connect IS an
+  automatic selection path. The flow now filters ranked candidates to
+  trusted routes (official/user) unless `AllowUntrustedPublicRoutes`
+  is set, and reports `FlowStageNoUsable` with the exclusion count in
+  the diagnostics log when only untrusted candidates remain. MANUAL
+  selection is explicit user choice and is never filtered — public
+  nodes stay fully reachable through explicit selection.
+
+### Real-core coverage
+
+- TUIC `new_reno` now rides the real sing-box binary: the full
+  congestion-control domain (bbr | cubic | new_reno) is exercised
+  through `sing-box check` + startup + listener readiness, not only
+  the unit-mocked generator.
+
+### Known states (documented, not fixed)
+
+- `TestReleaseMetadataConcurrentRequestsDeduplicated`
+  (engine/coremgr, `-race`) is load-sensitive: under the fully
+  parallel race suite the deduplication window can observe 2 API
+  hits. It passed on the v0.10.4 tree, in isolation (11/11) and on a
+  second full run of this tree; a pre-existing timing sensitivity,
+  not a regression. No test was weakened.
+
 ## v0.10.4 — TUIC/Hysteria semantic corrections, WinINet bypass-grammar fix, documented query order
 
 v0.10.4 is a protocol-semantics correction release. It fixes the last

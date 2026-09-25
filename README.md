@@ -9,7 +9,7 @@ configurations.
 **Project:** FreeIran — A SHEYTAN Digital System
 **Architect:** Parsa Tak / SHEYTAN
 **Repository:** https://github.com/Parsaetak/FreeIran
-**Current version:** 0.10.4 (see `VERSION`)
+**Current version:** 0.10.5 (see `VERSION`)
 **Status:** production architecture — multi-core protocol runtime with
 managed installation, multi-level node discovery, Ping/URL test modes
 with measured ranking, verified-connection engine with racing,
@@ -18,6 +18,45 @@ memory control and kernel-level process supervision. TUN mode is
 EXPERIMENTAL and disabled in this release (see "TUN mode" below).
 
 ---
+
+## What's new in v0.10.5
+
+v0.10.5 is a security-tooling correctness release plus one trust-policy
+gap fix. Every claim below is scoped to evidence actually executed for
+this release: the full Linux test matrix (including -race), the
+frontend battery, real-core verification with the three pinned cores,
+and windows/amd64 cross-build + PE-subsystem verification from Linux.
+The Windows-native battery runs in GitHub Actions CI.
+
+- **Comment-aware security scanning (root-cause repair).** The
+  suspicious-pattern scan matched raw text and could not distinguish
+  documentation from executable code — Static analysis failed on a
+  protocol documentation comment in `engine/config/validate.go`
+  (the Hysteria2 URI form `obfs-password=<pw>`). The new
+  `tools/gosecscan` tokenizes each Go file with `go/scanner`,
+  reconstructs the source with every comment span removed, and
+  matches the same patterns against the remaining executable text:
+  documentation can never trigger the gate again, while a real
+  hardcoded credential — including string-literal contents — still
+  fails the job with the original line numbers. Fail-closed both
+  ways (a match exits 1; an unscannable file exits 2; no allowlists,
+  no `|| true`, no `continue-on-error`); Gitleaks and govulncheck
+  untouched. The dangerous child-process scan rides the same
+  tokenization (its old line-oriented filter false-positived on
+  inline comments and missed raw-string lines starting with `//`);
+  its allowlist and pattern set are unchanged, and the `sh -c` check
+  is now spacing-tolerant. A regression suite pins both directions,
+  including a test that scans the real validate.go.
+- **Discovery route-trust policy gap closed.** The discovery start
+  flow's automatic selection connected the best ranked candidate with
+  no trust filter — a gap against the v0.9.8.6 route-trust boundary.
+  Automatic selection now considers trusted routes (official/user)
+  only unless untrusted public routes are explicitly allowed; manual
+  selection is never filtered.
+- **Real-core coverage.** TUIC `new_reno` rides the pinned real
+  sing-box binary — the full congestion-control domain (bbr | cubic |
+  new_reno) is validated through `sing-box check` + startup +
+  listener readiness.
 
 ## What's new in v0.10.4
 

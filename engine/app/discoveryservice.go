@@ -435,6 +435,45 @@ func (s *DiscoveryService) RunStartFlow(manualFingerprint string) (*StartFlowRes
 	// ---- 5. CONNECT (manual override) -----------------------------
 	connStart := time.Now()
 
+	// Route-trust policy (v0.9.8.6, extended to the discovery flow in
+	// v0.10.5): the AUTOMATIC selection path considers TRUSTED routes
+	// only — official and user-configured sources — unless the user
+	// explicitly allowed untrusted public routes. This is the same
+	// boundary Quick Connect enforces (quickconnect.go): a reachable
+	// public node is not automatically trusted, and discovery-driven
+	// auto-connect is exactly the path the policy governs. MANUAL
+	// selection (manualFingerprint) is explicit user choice and is
+	// never filtered — public nodes stay fully reachable through
+	// explicit selection.
+	if manualFingerprint == "" && !s.app.currentSettings().AllowUntrustedPublicRoutes {
+		trusted := make([]config.Config, 0, len(ranked))
+		excludedPublic := 0
+
+		for _, cfg := range ranked {
+			if cfg.RouteTrusted() {
+				trusted = append(trusted, cfg)
+			} else {
+				excludedPublic++
+			}
+		}
+
+		if len(trusted) == 0 && excludedPublic > 0 {
+			s.app.logger.Warn("discovery", "startflow_untrusted_only",
+				"%d candidates from untrusted public sources were excluded by the route-trust policy",
+				excludedPublic)
+
+			result.DurationMS = time.Since(started).Milliseconds()
+
+			s.finishFlow(FlowStageNoUsable,
+				"all ranked candidates came from untrusted public sources and automatic selection is restricted to trusted routes",
+				result)
+
+			return result, nil
+		}
+
+		ranked = trusted
+	}
+
 	var connected *config.Config
 
 	if manualFingerprint != "" {
