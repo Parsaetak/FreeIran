@@ -4,6 +4,7 @@
 
 export {
     FailureCategory,
+    LiveStateView,
     Mode,
     Result,
     Stats,

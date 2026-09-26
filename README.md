@@ -9,15 +9,72 @@ configurations.
 **Project:** FreeIran — A SHEYTAN Digital System
 **Architect:** Parsa Tak / SHEYTAN
 **Repository:** https://github.com/Parsaetak/FreeIran
-**Current version:** 0.10.5 (see `VERSION`)
+**Current version:** 0.11.0 (see `VERSION`)
 **Status:** production architecture — multi-core protocol runtime with
 managed installation, multi-level node discovery, Ping/URL test modes
 with measured ranking, verified-connection engine with racing,
 environment intelligence, system proxy mode (WinINet), unified adaptive
-memory control and kernel-level process supervision. TUN mode is
-EXPERIMENTAL and disabled in this release (see "TUN mode" below).
+memory control and kernel-level process supervision, evidence-based
+failure classification with transport-agile route selection, and
+schema-verified ECH support through sing-box. TUN mode is EXPERIMENTAL
+and disabled in this release (see "TUN mode" below).
 
 ---
+
+## What's new in v0.11.0
+
+v0.11.0 is a CI-architecture and transport-resilience-foundation
+release. Every claim below is scoped to evidence actually executed
+for this release: the full Linux test matrix (including -race), the
+frontend battery, real-core verification with the three pinned cores
+(including the new ECH shapes), the security battery, windows/amd64
+cross-build + PE-subsystem verification from Linux, and a Windows
+compile-surface proof from Linux. The Windows-native CI gate (the new
+matrix itself) runs in GitHub Actions CI when this tree is pushed.
+
+- **Compact Windows CI — a measured two-layer proof.** The v0.10.5
+  Windows step re-executed the ENTIRE Go matrix under `-p 1`;
+  profiling showed the time goes to platform-neutral suites Linux
+  already proves twice (connection 42.3 s, testqueue 31.1 s,
+  provider 31.1 s, app 30.4 s, coremgr 28.7 s, netcheck 15.3 s on
+  Linux, multiplied by Windows runner overhead). The Windows job now
+  proves: Layer A — the COMPLETE Windows test surface compiles and
+  links (`go test -run '^$' ./...`, including every
+  `//go:build windows` file and TestMain fixture build); Layer B —
+  the Windows-SENSITIVE behavior executes (tunnel/system/store/httpx
+  full packages — every package with a documented Windows defect
+  history — plus targeted coremgr/netcheck/app/connection patterns);
+  Layer C — the repeated WinINet/recovery battery, unchanged scope.
+  Bounded timeouts per layer; the Linux job (+ `-race`) remains the
+  platform-neutral authority; no Windows-specific coverage removed.
+- **Failure classification + route freshness.** A nine-class
+  failure vocabulary (dns/tcp/tls/handshake/listener/verify/reset/
+  timeout/transport) derived from observations only, recorded per
+  configuration and per history observation, with a bounded
+  freshness tuple (last verified / last failure / recent class /
+  verification age).
+- **Transport agility without a second failover engine.** A streak of
+  ≥2 protocol-specific failures (tls/handshake/transport) demotes a
+  candidate in both ranking surfaces — Quick Connect, recovery and
+  discovery then naturally prefer a different already-supported
+  transport. Bounded, saturating, explainable; no confidence score.
+- **ECH (Encrypted Client Hello) — schema-verified through
+  sing-box.** Four dedicated fields map onto sing-box 1.14's
+  `tls.ech`; PEM form, REALITY conflict and TLS requirements all
+  encode empirically verified binary behavior; the capability
+  matcher routes ECH configs to sing-box ONLY (V2Ray 5.53.0 ignores
+  the field; Xray 26.3.27 does not content-validate it — neither is
+  claimable). All three shapes ride the real-binary smoke suite.
+  Evidence scope: schema-level acceptance (check + startup), NOT
+  live ECH negotiation — stated everywhere the feature appears.
+- **Machine-generated bindings restored.** The pinned wails3 CLI was
+  rebuilt and every binding regenerated (byte-identical on a second
+  run); the v0.9.11 hand-maintained binding files are gone, and the
+  generated models are pinned field-for-field to the Go structs by a
+  contract test.
+- **Android strategy documented (plan only).** docs/android.md is the
+  implementation-ready architecture note; no Android product exists
+  and TUN stays experimental/disabled.
 
 ## What's new in v0.10.5
 

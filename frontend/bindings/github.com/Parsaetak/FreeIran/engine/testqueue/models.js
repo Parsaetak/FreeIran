@@ -36,6 +36,71 @@ export const FailureCategory = {
 };
 
 /**
+ * LiveStateView is the UI-facing one-call queue-state projection:
+ * the complete live fingerprint set, the change version and the
+ * aggregate state (stats + pause flag) the progress panel renders.
+ * It is the payload of TestQueueService.LiveState and of the
+ * freeiran:queuestate event — one shape everywhere, so the event
+ * stream and the recovery read can never disagree about semantics.
+ */
+export class LiveStateView {
+    /**
+     * Creates a new LiveStateView instance.
+     * @param {Partial<LiveStateView>} [$$source = {}] - The source object to create the LiveStateView.
+     */
+    constructor($$source = {}) {
+        if (!("version" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["version"] = 0;
+        }
+        if (!("fingerprints" in $$source)) {
+            /**
+             * @member
+             * @type {string[]}
+             */
+            this["fingerprints"] = [];
+        }
+        if (!("stats" in $$source)) {
+            /**
+             * @member
+             * @type {Stats}
+             */
+            this["stats"] = (new Stats());
+        }
+        if (!("paused" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["paused"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new LiveStateView instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {LiveStateView}
+     */
+    static createFrom($$source = {}) {
+        const $$createField1_0 = $$createType0;
+        const $$createField2_0 = $$createType1;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("fingerprints" in $$parsedSource) {
+            $$parsedSource["fingerprints"] = $$createField1_0($$parsedSource["fingerprints"]);
+        }
+        if ("stats" in $$parsedSource) {
+            $$parsedSource["stats"] = $$createField2_0($$parsedSource["stats"]);
+        }
+        return new LiveStateView(/** @type {Partial<LiveStateView>} */($$parsedSource));
+    }
+}
+
+/**
  * Mode selects the testing mode. Each mode presets Concurrency,
  * Timeout, MaxAttempts and MeasurementSamples.
  * @readonly
@@ -89,67 +154,6 @@ export const Mode = {
      */
     ModeContinuous: "continuous",
 };
-
-/**
- * LiveStateView is the UI-facing one-call queue-state projection:
- * the complete live fingerprint set, the change version and the
- * aggregate state (stats + pause flag) the progress panel renders.
- * It is the payload of TestQueueService.LiveState and of the
- * freeiran:queuestate event — one shape everywhere, so the event
- * stream and the recovery read can never disagree about semantics.
- */
-export class LiveStateView {
-    /**
-     * Creates a new LiveStateView instance.
-     * @param {Partial<LiveStateView>} [$$source = {}] - The source object to create the LiveStateView.
-     */
-    constructor($$source = {}) {
-        if (!("version" in $$source)) {
-            /**
-             * @member
-             * @type {number}
-             */
-            this["version"] = 0;
-        }
-        if (!("fingerprints" in $$source)) {
-            /**
-             * @member
-             * @type {string[]}
-             */
-            this["fingerprints"] = [];
-        }
-        if (!("stats" in $$source)) {
-            /**
-             * @member
-             * @type {Stats}
-             */
-            this["stats"] = new Stats();
-        }
-        if (!("paused" in $$source)) {
-            /**
-             * @member
-             * @type {boolean}
-             */
-            this["paused"] = false;
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new LiveStateView instance from a string or object.
-     * @param {any} [$$source = {}]
-     * @returns {LiveStateView}
-     */
-    static createFrom($$source = {}) {
-        const $$createField2_0 = Stats.createFrom;
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        if ("stats" in $$parsedSource) {
-            $$parsedSource["stats"] = $$createField2_0($$parsedSource["stats"]);
-        }
-        return new LiveStateView(/** @type {Partial<LiveStateView>} */($$parsedSource));
-    }
-}
 
 /**
  * Result is the outcome of one test.
@@ -407,7 +411,7 @@ export class Stats {
      * @returns {Stats}
      */
     static createFrom($$source = {}) {
-        const $$createField10_0 = $$createType0;
+        const $$createField10_0 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("per_backend" in $$parsedSource) {
             $$parsedSource["per_backend"] = $$createField10_0($$parsedSource["per_backend"]);
@@ -521,8 +525,8 @@ export class TaskSnapshot {
      * @returns {TaskSnapshot}
      */
     static createFrom($$source = {}) {
-        const $$createField3_0 = $$createType1;
-        const $$createField11_0 = $$createType2;
+        const $$createField3_0 = $$createType0;
+        const $$createField11_0 = $$createType3;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("backends" in $$parsedSource) {
             $$parsedSource["backends"] = $$createField3_0($$parsedSource["backends"]);
@@ -587,6 +591,7 @@ export const TaskState = {
 };
 
 // Private type creation functions
-const $$createType0 = $Create.Map($Create.Any, $Create.Any);
-const $$createType1 = $Create.Array($Create.Any);
-const $$createType2 = Result.createFrom;
+const $$createType0 = $Create.Array($Create.Any);
+const $$createType1 = Stats.createFrom;
+const $$createType2 = $Create.Map($Create.Any, $Create.Any);
+const $$createType3 = Result.createFrom;

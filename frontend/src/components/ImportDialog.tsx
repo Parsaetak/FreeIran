@@ -5,7 +5,7 @@ import { describeError, toast } from "../state/toastStore";
 import type {
   ImportedConfigView,
   ImportPreview,
-} from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/importtypes.js";
+} from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/models.js";
 
 interface ImportDialogProps {
   open: boolean;

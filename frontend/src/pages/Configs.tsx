@@ -1712,6 +1712,90 @@ function DetailPanel({
           </dl>
         </section>
 
+        {/* ---- FAILURE EVIDENCE (v0.11.0) ---- */}
+        {(Number(detail.failure_streak ?? 0) > 0 || Boolean(detail.last_failure_class)) && (
+          <section className={rowClass}>
+            <h4 className="detail-section-title">Failure evidence</h4>
+            <dl className="detail-grid">
+              <dt>Failure streak</dt>
+              <dd className="mono-cell">{Number(detail.failure_streak ?? 0) || "—"}</dd>
+
+              <dt>Recent failure class</dt>
+              <dd className="mono-cell">{detail.last_failure_class || "unclassified"}</dd>
+
+              {detail.last_failure_reason && (
+                <>
+                  <dt>Failure detail</dt>
+                  <dd className="mono-cell">{detail.last_failure_reason}</dd>
+                </>
+              )}
+
+              {Number(detail.last_failure_at ?? 0) > 0 && (
+                <>
+                  <dt>Last failure</dt>
+                  <dd>{relativeTime(Number(detail.last_failure_at))}</dd>
+                </>
+              )}
+
+              {Number(detail.last_success_at ?? 0) > 0 && (
+                <>
+                  <dt>Last verified</dt>
+                  <dd>{relativeTime(Number(detail.last_success_at))}</dd>
+                </>
+              )}
+            </dl>
+            <p className="detail-note">
+              Evidence is recorded from observed test outcomes; repeated protocol-class failures
+              (tls / handshake / transport) demote this candidate in automatic selection so other
+              transports are preferred.
+            </p>
+          </section>
+        )}
+
+        {/* ---- ENCRYPTED CLIENT HELLO (v0.11.0) ---- */}
+        {detail.ech_configured && (
+          <section className={rowClass}>
+            <h4 className="detail-section-title">Encrypted Client Hello</h4>
+            <dl className="detail-grid">
+              <dt>Configuration</dt>
+              <dd>
+                <span className="badge success">configured</span>
+              </dd>
+
+              <dt>Core support</dt>
+              <dd>
+                {detail.ech_backend_support ? (
+                  <span className="badge success">installed core with verified ECH schema</span>
+                ) : (
+                  <span className="badge error">no installed core with verified ECH support</span>
+                )}
+              </dd>
+
+              <dt>Core acceptance</dt>
+              <dd>
+                {detail.ech_core_verified ? (
+                  <span className="badge success">ECH document accepted, tunnel verified</span>
+                ) : (
+                  <span className="badge neutral">not yet verified through an ECH-capable core</span>
+                )}
+              </dd>
+
+              <dt>Connectivity</dt>
+              <dd>
+                {testedAt
+                  ? detail.working
+                    ? "verified usable (through tunnel)"
+                    : "failed — see health"
+                  : "not tested"}
+              </dd>
+            </dl>
+            <p className="detail-note">
+              ECH support is schema-level evidence (config check + core startup with the pinned
+              sing-box), not proof of live ECH negotiation with the remote server.
+            </p>
+          </section>
+        )}
+
         {/* ---- SOURCE ---- */}
         {detail.source && (
           <section className={rowClass}>

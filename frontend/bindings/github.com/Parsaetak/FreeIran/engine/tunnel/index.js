@@ -4,5 +4,7 @@
 
 export {
     Mode,
-    State
+    OwnershipStatus,
+    State,
+    SystemProxySnapshot
 } from "./models.js";

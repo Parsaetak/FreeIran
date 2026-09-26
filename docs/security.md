@@ -396,3 +396,16 @@ not even once — and makes the checksum MANDATORY:
   in CI. Without the secrets the release ships UNSIGNED and every
   artifact, `SIGNING-STATUS.txt` and the release notes say so —
   signing is never fabricated.
+
+## v0.11.0 — CI change scope (no security reduction)
+
+The v0.11.0 Windows test-matrix redesign (docs/ci.md) touches ONLY
+ci.yml's Windows job. The Security workflow is unchanged and remains
+a separate trigger surface: govulncheck (engine + windows-target
+desktop scan), Gitleaks, go vet (pure-Go + windows target), the
+comment-aware gosecscan pattern scans and the dangerous child-process
+allowlist audit all run exactly as in v0.10.5. No scan was disabled,
+weakened, re-scoped or made conditional on the Windows job; the
+allowlist remains empty-by-design with the same three justified
+bounded skips (tests, the contract fake-core builder, the validated
+cmd.exe PATH resolver).

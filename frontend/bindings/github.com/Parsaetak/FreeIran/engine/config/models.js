@@ -143,6 +143,19 @@ export class Config {
         }
         if (/** @type {any} */(false)) {
             /**
+             * Insecure is the user-supplied "skip TLS verification" request
+             * (v0.10.2: captured for the QUIC family — hysteria/hysteria2/
+             * tuic — whose URI spec carries insecure=1; v0.10.1 silently
+             * dropped it, making most real-world Hysteria2 configs
+             * unusable). Deliberately NOT part of the fingerprint: it
+             * changes TLS behavior, not the configuration identity.
+             * @member
+             * @type {boolean | undefined}
+             */
+            this["insecure"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
              * Protocol details consumed by core backends. Parsers capture them
              * and backend adapters read them, but they are deliberately NOT part
              * of the fingerprint: identity is endpoint + credentials + transport,
@@ -197,11 +210,126 @@ export class Config {
         }
         if (/** @type {any} */(false)) {
             /**
+             * v0.10.3 protocol-detail fields. v0.10.2 overloaded unrelated
+             * slots (TUIC congestion_control → Network; Hysteria obfs →
+             * Security; obfs-password → Host), which corrupted BOTH meanings:
+             * the capability matcher treated "bbr" as a transport, and the
+             * WS host header slot carried an obfuscation password. Each
+             * value now lives in its semantic field and generates the
+             * correct sing-box JSON. Not part of the fingerprint (tuning,
+             * not identity).
+             * v0.10.4 semantics note: Obfs means different things for the
+             * two Hysteria protocols, matching each actual wire format:
+             *   - Hysteria2: the obfs TYPE ("" | salamander | gecko) and
+             *     ObfsPassword carries the obfuscation password — generated
+             *     as the sing-box object {"type", "password"}.
+             *   - Hysteria (v1): the obfuscation PASSWORD string itself
+             *     (the v1 format has no type concept) — generated as the
+             *     sing-box JSON string `"obfs": "..."`, omitted when empty.
+             * TUIC: bbr | cubic | new_reno.
+             * @member
+             * @type {string | undefined}
+             */
+            this["congestion_control"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * TUIC: native | quic.
+             * @member
+             * @type {string | undefined}
+             */
+            this["udp_relay_mode"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * Hysteria2: salamander | gecko; Hysteria v1: obfs password string.
+             * @member
+             * @type {string | undefined}
+             */
+            this["obfs"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * Hysteria2 obfs password (object shape).
+             * @member
+             * @type {string | undefined}
+             */
+            this["obfs_password"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * v0.11.0 Encrypted Client Hello (TLS-layer detail, sing-box
+             * tls.ech — verified against the pinned v1.14.0 binary).
+             * 
+             * Semantic model — one dedicated field per sing-box knob,
+             * overloading nothing (Host/Network/Security/Fingerprint/
+             * SpiderX stay untouched):
+             *   ECHEnabled         → ech.enabled
+             *   ECHConfig          → ech.config        (PEM "ECH CONFIGS")
+             *   ECHConfigPath      → ech.config_path   (file containing the PEM)
+             *   ECHQueryServerName → ech.query_server_name (DNS HTTPS query)
+             * 
+             * ECHConfig carries the canonical PEM form after Normalize:
+             * a raw base64 ECHConfigList (the DNS HTTPS record `ech=`
+             * payload shape) is wrapped into the PEM envelope during
+             * normalization, because the pinned sing-box v1.14.0 accepts
+             * ONLY the PEM form ("invalid ECH configs pem" otherwise —
+             * verified empirically, see docs/protocols.md). Not part of
+             * the fingerprint: ECH changes the TLS layer's negotiation,
+             * not the configuration identity (same rationale as ALPN and
+             * Insecure).
+             * 
+             * EVIDENCE SCOPE (do not upgrade): support is schema-level —
+             * `sing-box check` + startup acceptance. No live ECH
+             * negotiation with a real ECH server is claimed anywhere.
+             * @member
+             * @type {boolean | undefined}
+             */
+            this["ech_enabled"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["ech_config"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["ech_config_path"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["ech_query_server_name"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
              * WireGuard.
+             * 
+             * v0.10.3 semantics split: InterfaceAddress is the LOCAL
+             * interface address list (the WireGuard INI "Address" — what the
+             * tun interface gets); AllowedIPs is the PEER routing list (what
+             * traffic the peer accepts). They are distinct concepts and must
+             * never overload each other: v0.10.2 dropped the interface
+             * address entirely and generated a WireGuard endpoint with no
+             * local address at all.
              * @member
              * @type {string | undefined}
              */
             this["private_key"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string[] | undefined}
+             */
+            this["interface_address"] = undefined;
         }
         if (/** @type {any} */(false)) {
             /**
@@ -230,6 +358,25 @@ export class Config {
              * @type {number | undefined}
              */
             this["persistent_keepalive"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * Bandwidth caps for the QUIC family (v0.10.2). Hysteria (v1)
+             * REQUIRES both — the pinned sing-box v1.14.0 refuses the
+             * outbound without them ("missing upload speed") — while
+             * Hysteria2 treats them as optional. Not part of the
+             * fingerprint (link tuning, not identity).
+             * @member
+             * @type {number | undefined}
+             */
+            this["up_mbps"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {number | undefined}
+             */
+            this["down_mbps"] = undefined;
         }
         if (/** @type {any} */(false)) {
             /**
@@ -368,6 +515,32 @@ export class Config {
              */
             this["last_failure_reason"] = undefined;
         }
+        if (/** @type {any} */(false)) {
+            /**
+             * LastFailureAt is the time of the most recent FAILED
+             * verification (Unix milliseconds; 0 = no recorded failure).
+             * Together with LastSuccessAt it gives the ranking layer an
+             * honest verification age on both sides (fresh success vs
+             * fresh failure). Runtime-only.
+             * @member
+             * @type {number | undefined}
+             */
+            this["last_failure_at"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * LastFailureClass is the FAILURE CLASS of the most recent
+             * failure — one of the FailureClass* constants (dns, tcp,
+             * tls, handshake, listener, verify, reset, timeout,
+             * transport). Unlike LastFailureReason (free text), the class
+             * is a stable vocabulary the ranking layer and recovery
+             * pipeline can reason over ("after two handshake-class
+             * failures prefer a different transport"). Runtime-only.
+             * @member
+             * @type {string | undefined}
+             */
+            this["last_failure_class"] = undefined;
+        }
 
         Object.assign(this, $$source);
     }
@@ -378,34 +551,38 @@ export class Config {
      * @returns {Config}
      */
     static createFrom($$source = {}) {
-        const $$createField22_0 = $$createType0;
-        const $$createField25_0 = $$createType0;
-        const $$createField26_0 = $$createType0;
-        const $$createField37_0 = $$createType2;
-        const $$createField38_0 = $$createType4;
-        const $$createField39_0 = $$createType6;
-        const $$createField40_0 = $$createType8;
+        const $$createField23_0 = $$createType0;
+        const $$createField34_0 = $$createType0;
+        const $$createField35_0 = $$createType0;
+        const $$createField36_0 = $$createType0;
+        const $$createField49_0 = $$createType2;
+        const $$createField50_0 = $$createType4;
+        const $$createField51_0 = $$createType6;
+        const $$createField52_0 = $$createType8;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("alpn" in $$parsedSource) {
-            $$parsedSource["alpn"] = $$createField22_0($$parsedSource["alpn"]);
+            $$parsedSource["alpn"] = $$createField23_0($$parsedSource["alpn"]);
+        }
+        if ("interface_address" in $$parsedSource) {
+            $$parsedSource["interface_address"] = $$createField34_0($$parsedSource["interface_address"]);
         }
         if ("allowed_ips" in $$parsedSource) {
-            $$parsedSource["allowed_ips"] = $$createField25_0($$parsedSource["allowed_ips"]);
+            $$parsedSource["allowed_ips"] = $$createField35_0($$parsedSource["allowed_ips"]);
         }
         if ("dns" in $$parsedSource) {
-            $$parsedSource["dns"] = $$createField26_0($$parsedSource["dns"]);
+            $$parsedSource["dns"] = $$createField36_0($$parsedSource["dns"]);
         }
         if ("test_history" in $$parsedSource) {
-            $$parsedSource["test_history"] = $$createField37_0($$parsedSource["test_history"]);
+            $$parsedSource["test_history"] = $$createField49_0($$parsedSource["test_history"]);
         }
         if ("ping" in $$parsedSource) {
-            $$parsedSource["ping"] = $$createField38_0($$parsedSource["ping"]);
+            $$parsedSource["ping"] = $$createField50_0($$parsedSource["ping"]);
         }
         if ("url_test" in $$parsedSource) {
-            $$parsedSource["url_test"] = $$createField39_0($$parsedSource["url_test"]);
+            $$parsedSource["url_test"] = $$createField51_0($$parsedSource["url_test"]);
         }
         if ("handshake" in $$parsedSource) {
-            $$parsedSource["handshake"] = $$createField40_0($$parsedSource["handshake"]);
+            $$parsedSource["handshake"] = $$createField52_0($$parsedSource["handshake"]);
         }
         return new Config(/** @type {Partial<Config>} */($$parsedSource));
     }
@@ -647,6 +824,19 @@ export class TestObservation {
              * @type {string | undefined}
              */
             this["backend"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * FailureClass is the v0.11.0 classification of a failed
+             * observation (one of the FailureClass* constants; "" for
+             * successes and unclassifiable failures). It is derived from
+             * the same observed error text as LastFailureReason — never
+             * invented — so per-class evidence accumulates in the bounded
+             * history ring the ranking layer already scores from.
+             * @member
+             * @type {string | undefined}
+             */
+            this["failure_class"] = undefined;
         }
 
         Object.assign(this, $$source);

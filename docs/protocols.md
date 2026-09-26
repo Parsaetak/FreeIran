@@ -1,4 +1,4 @@
-# Protocol × core capability matrix (v0.10.4)
+# Protocol × core capability matrix (v0.11.0)
 
 This document is the truthful statement of what FreeIran can execute.
 Status levels:
@@ -82,6 +82,84 @@ pinned binary with `sing-box check` and smoke startup):
   tags `with_wireguard`/`with_gvisor` — present in every official
   release binary the core manager installs.
 
+## Encrypted Client Hello — ECH (v0.11.0)
+
+ECH is a TLS-layer feature. FreeIran models it with four dedicated
+fields (`ech_enabled`, `ech_config`, `ech_config_path`,
+`ech_query_server_name` → sing-box `tls.ech.{enabled, config,
+config_path, query_server_name}`); nothing overloads Host, Network,
+Security, FingerprintProfile or SpiderX. ECH is NOT part of the
+configuration fingerprint (same rationale as ALPN/Insecure: TLS-layer
+tuning, not identity).
+
+Evidence table — every row was probed against the PINNED real
+binaries before a single line of support was declared:
+
+| Case | sing-box 1.14.0 | xray 26.3.27 | v2ray 5.53.0 |
+|---|---|---|---|
+| `ech.enabled` + `ech.config` (PEM `-----BEGIN ECH CONFIGS-----`) | **accepted** (check + startup) | `echConfigList` field exists in schema but content is NOT validated by `xray run -test` | field silently IGNORED (wrong-typed value passes `v2ray test`) |
+| `ech.config` raw base64 (no PEM envelope) | rejected: "invalid ECH configs pem" | — | — |
+| `ech.config` PEM body not valid base64 | rejected: "invalid ECH configs pem" | — | — |
+| PEM header spellings `ECH CONFIG` / `ECHCONFIG` | rejected | — | — |
+| `ech.config_path` (file with the PEM) | **accepted** (check + startup) | — | — |
+| `ech.query_server_name` (DNS HTTPS discovery) | **accepted** (check + startup) | — | — |
+| `ech.enabled` alone (no config/path/name) | **accepted** — upstream DNS-discovery default | — | — |
+| ECH + REALITY on one TLS object | rejected: "Reality is conflict with ECH" | — | — |
+| ECH + uTLS fingerprint | **accepted** | — | — |
+| ECH on the QUIC family (hysteria2, TLS-mandatory) | **accepted** | — | — |
+
+Declared capability: **sing-box only.** The capability matcher routes
+ECH-enabled configurations exclusively to sing-box; handing them to
+Xray (whose field exists but is unverifiable at check level) or V2Ray
+(which ignores it) would connect WITHOUT the encrypted client hello
+the user configured — silently discarding a privacy feature is a lie
+FreeIran does not tell. The core cards and the configuration detail
+view surface this fact.
+
+FreeIran-side validation encodes the same verified rules: ECH
+requires TLS security (rejected on plaintext protocols and on
+WireGuard, which has no TLS layer); REALITY + ECH is rejected before
+generation; `ech.config` XOR `ech.config_path` (both set is
+ambiguous); the config must be a PEM `ECH CONFIGS` block with a
+base64 body. Normalization accepts the raw base64 ECHConfigList (the
+DNS HTTPS record `ech=` payload shape) and wraps it into the PEM
+envelope the pinned binary requires.
+
+**Evidence scope — do not upgrade:** "accepted" means the pinned
+sing-box 1.14.0 PEM-parses and base64-decodes the config at `check`
+time and the core completes a full startup + listener-ready cycle
+with the ECH object present (all three shapes ride the real-binary
+smoke suite in CI). It does NOT mean live ECH negotiation with a real
+ECH-capable server was observed, and nothing in the UI or docs claims
+censorship resistance from ECH. The ECHConfigList BYTES are validated
+by the core at connection time, not at check time (a syntactically
+valid envelope with a structurally invalid list passes `check`) —
+FreeIran's own validation therefore checks the envelope form exactly
+as the core does, no more.
+
+Import surface: ECH enters through the structured/JSON representation
+(`ech_enabled`, `ech_config`, `ech_config_path`,
+`ech_query_server_name` on the universal config object). The URI
+share formats carry NO standardized ECH parameter — the ecosystem has
+not agreed on one — and FreeIran does not invent one (a fake `ech=`
+URI parameter is pinned as NOT parsed by test).
+
+## Failure classification (v0.11.0)
+
+Test/verification failures are classified into a stable nine-class
+vocabulary derived from observations only: dns, tcp, tls, handshake,
+listener, verify, reset, timeout, transport. The class is derived
+from the failed-facet shape (handshake metrics, ping all-timeout),
+the URL-test's own canonical vocabulary (Timeout flag; "HTTP <code>
+via tunnel" → verify), and the error text — never from invented
+signals, and the URL-test phase TIMINGS are explicitly not used as
+failure evidence (they do not mark the failing phase). The most
+recent failure class is stored per configuration
+(`last_failure_class`) and per history observation, and repeated
+protocol-specific streaks (tls/handshake/transport) demote a
+candidate in automatic selection so a different already-supported
+transport is preferred (see docs/architecture.md).
+
 ## Payload formats (personal import)
 
 | Format | Detected | Notes |
@@ -90,6 +168,7 @@ pinned binary with `sing-box check` and smoke startup):
 | base64 subscription | yes | decoded, then parsed as a URL list |
 | v2ray-style JSON | yes | outbound → config conversion |
 | WireGuard INI (`[Interface]`/`[Peer]`) | yes | importable without any subscription source |
+| FreeIran structured JSON (single object or array) | yes | the universal config representation; v0.11.0: carries the ECH fields |
 
 ## What this matrix does NOT claim
 

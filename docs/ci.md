@@ -32,11 +32,16 @@ protocol-cores (ubuntu)         │
 └─ sing-box adapter smoke      │  ← sing-box check + run + stop
                        │
                        ▼ (needs: go + frontend + protocol-cores)
-              windows (windows-latest)
+              windows (windows-latest, v0.11.0 two-layer proof)
               ├─ npm ci && npm run build:embed
-              ├─ go test -count=1 ./...      ← full matrix, incl. store
-              ├─ desktop build (ldflags version)
-              ├─ executable smoke check
+              ├─ Layer A: go test -run '^$' ./...   ← compile EVERYTHING
+              ├─ Layer B: platform-critical packages (tunnel/system/
+              │   store/httpx full) + targeted Windows-sensitive tests
+              │   (coremgr exec, netcheck ladder, app boots, connection
+              │   lifecycle) — focused -run patterns, bounded timeouts
+              ├─ Layer C: repeated WinINet/recovery battery (×5)
+              ├─ runtime smoke + desktop build (ldflags version)
+              ├─ executable + PE-subsystem verification
               └─ artifact upload
 ```
 
@@ -66,16 +71,88 @@ No public proxy server is ever contacted: the smoke tests exercise
 config acceptance and the local runtime lifecycle only, so CI
 correctness never depends on external infrastructure.
 
-### Why the Windows job runs the full test matrix
+### v0.11.0 — the Windows two-layer proof (and why the full matrix was retired)
+
+The v0.10.x Windows job ran the ENTIRE Go test matrix
+(`go test -count=1 -p 1 -timeout=20m ./...`). Measured on Linux
+(per-package, `-count=1`), the suite's time goes to platform-NEUTRAL
+suites: connection 42.3s, testqueue 31.1s, provider 31.1s, app 30.4s,
+coremgr 28.7s, netcheck 15.3s — every one of them also executed by the
+Linux `go` job AND again under `-race`. On the Windows runner those
+numbers multiply (process-spawn and I/O overhead) and `-p 1`
+serializes them, which is why the step was the job's bottleneck. The
+Windows-ONLY surface — `//go:build windows` test files
+(tunnel/proxy_windows_abi_test.go, coremgr/exec_windows_test.go,
+system/process_windows_test.go helpers, cmd/freeiran/
+gui_check_windows_test.go) plus the runtime-GOOS-guarded paths — is a
+small fraction of that time.
+
+The v0.11.0 job replaces blind full execution with a two-layer proof
+(plus the unchanged repeated battery):
+
+- **Layer A — compile the COMPLETE Windows test surface.**
+  `go test -run '^$' -count=1 -p 1 -timeout=10m ./...` compiles and
+  links every package and test binary — including every
+  `//go:build windows` test file the Linux job never compiles — and
+  runs each `TestMain` (provider's fixture build included, which also
+  proves faketor/fakepsiphon compile for Windows). A Windows-specific
+  compile error anywhere still fails the job loudly. Nothing that
+  "ran on Windows before" is silently gone; what stops is re-EXECUTING
+  platform-neutral test bodies that Linux already proves (twice).
+- **Layer B — execute the Windows-sensitive behavior.**
+  - Full packages (their Windows behavior IS the point):
+    `engine/tunnel` (real WinINet ABI round-trips + recovery
+    machinery), `system` (process/job supervision, hidden console,
+    cmd.exe resolver, workspace lifecycle, executable discovery),
+    `engine/store` (file lifecycle on the platform where an open
+    handle blocks deletion — the documented v0.3.0 defect class),
+    `internal/httpx` (the v0.9.6 read-only-open + Sync finalization
+    asymmetry that ONLY Windows exhibits).
+  - Targeted `-run` patterns on packages whose Windows-material subset
+    is small: coremgr (exec_windows tests), netcheck (environment +
+    staged diagnostics ladder on the Windows network stack,
+    traceroute privilege guard), app (boots/shutdown/boot phases,
+    crash-recovery boots against the REAL WinINet backend),
+    connection (process supervision lifecycle: hung-core teardown
+    with image release, mid-session crash, cancel/deadline survival,
+    reconnect replacement, provider sessions).
+- **Layer C — repeated battery (unchanged scope, v0.10.3 design).**
+  The WinINet round-trips, recovery markers, stale recovery and app
+  crash-boots run `-count=5 -p 1` as a flakiness detector, `if:
+  always()` so a failing layer above never hides the repeated
+  evidence. `-v` was dropped: failures print full diagnostics
+  regardless, and 5× verbose passes buried the signal.
+
+Every step carries an explicit bounded timeout (10m compile-all,
+10m platform-critical, 4–8m per targeted group, 10m battery) — no
+20-minute blanket hiding an unknown slow test. The division of
+evidence:
+
+```text
+Linux go job:        platform-neutral behavioral correctness (+ race)
+Windows job:         complete compile surface + Windows-specific behavior
+protocol-cores job:  real-core schema/runtime evidence
+security workflow:   independent security evidence (never depends on Windows)
+```
+
+The job dependency graph is unchanged and deliberately so: `windows`
+needs `[go, frontend]` (it embeds the frontend and rebuilds the
+engine), `protocol-cores` runs independently (real binaries are not
+needed to prove Windows behavior), and the Security workflow is a
+separate trigger surface entirely — a Windows slowdown can never
+block security evidence.
+
+### Historical note: why the full matrix existed (v0.8.0–v0.10.5)
 
 `engine/store` owns file descriptors, and Windows is the only platform
-where an open handle blocks file deletion. The lifecycle tests
-(`open → use → close → delete temp dir`, repeated open/close, cache
-eviction, compaction + close, concurrent read + close) therefore only
-prove what they claim on the Windows runner. Skipping `engine/store`
-there — or marking its failures allowed — would hide exactly the class
-of regression that broke CI before v0.3.0. The v0.3.0 store passes the
-full matrix on both platforms.
+where an open handle blocks file deletion; `internal/httpx` shipped a
+v0.9.5 finalization bug invisible on POSIX (fsync accepts O_RDONLY)
+and fatal on Windows (FlushFileBuffers requires GENERIC_WRITE). Those
+defect classes are exactly why store and httpx still run their FULL
+suites on Windows in Layer B today — the two-layer proof kept every
+package with a documented Windows-specific defect history EXECUTING
+its Windows-relevant tests, and retired only the duplicated
+platform-neutral execution.
 
 ### Toolchain pinning
 
@@ -179,9 +256,10 @@ Properties:
 
 ## v0.8.0 — Windows lifecycle battery in the standard matrix
 
-The Windows job (`Windows tests and desktop build`) runs
-`go test -count=1 ./...`, which now includes the process-supervision
-lifecycle battery in `system/process_test.go` (15 tests):
+From v0.8.0 to v0.10.5 the Windows job ran the full
+`go test -count=1 ./...` matrix, which included the process-supervision
+lifecycle battery in `system/process_test.go` (15 tests; the full
+`system` package still runs on Windows in v0.11.0's Layer B):
 
 - launch with no visible console (behavioural: the child never
   attaches to the parent console; `GetConsoleProcessList`)
@@ -296,8 +374,9 @@ Linux matrix including `-race` passes — the failure class is hosted
 runner resource starvation under the full Windows matrix load, not a
 deterministic code failure.
 
-Two changes make the job survivable and diagnosable (coverage is
-unchanged — every test still runs):
+Two changes made the job survivable and diagnosable at v0.10.1
+(coverage unchanged at that point — every test still ran; v0.11.0
+later replaced the full matrix with the two-layer proof above):
 
 - `go test -count=1 -p 2 -timeout=20m ./...`
 - `-p 2` bounds the number of concurrently RUNNING test binaries.
@@ -315,6 +394,8 @@ unchanged — every test still runs):
   that destroys every diagnostic (which is exactly what run
   36074448116 delivered).
 
-The historical sections below document why the Windows job runs the
+The historical sections above document why the Windows job ran the
 FULL matrix in the first place (the v0.9.6 finalization asymmetry):
-that principle is unchanged — the matrix is bounded, not reduced.
+the v0.11.0 two-layer proof keeps that principle — every
+Windows-specific behavior still executes on Windows — while retiring
+the duplicated platform-neutral execution.

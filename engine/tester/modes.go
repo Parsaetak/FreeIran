@@ -3,6 +3,7 @@ package tester
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Parsaetak/FreeIran/engine/config"
@@ -418,23 +419,73 @@ func ApplyModeOutcome(cfg *config.Config, out ModeOutcome) {
 	cfg.TestedAt = out.TestedAt.UnixMilli()
 	cfg.TestBackend = out.Backend
 
+	failureClass := ""
+
 	if out.Working {
 		cfg.LastSuccessAt = out.TestedAt.UnixMilli()
 		cfg.FailureStreak = 0
 		cfg.LastFailureReason = ""
+		cfg.LastFailureAt = 0
+		cfg.LastFailureClass = ""
 		cfg.LatencyMS = out.Latency.Milliseconds()
 	} else {
+		failureClass = ClassifyOutcomeFailure(out)
+
 		cfg.FailureStreak++
 		cfg.LastFailureReason = out.LastError
+		cfg.LastFailureAt = out.TestedAt.UnixMilli()
+		cfg.LastFailureClass = failureClass
 	}
 
 	cfg.AppendTestObservation(config.TestObservation{
-		At:        out.TestedAt.UnixMilli(),
-		Working:   out.Working,
-		LatencyMS: out.Latency.Milliseconds(),
-		TimedOut:  !out.Working && isTimeoutOutcome(out),
-		Backend:   out.Backend,
+		At:           out.TestedAt.UnixMilli(),
+		Working:      out.Working,
+		LatencyMS:    out.Latency.Milliseconds(),
+		TimedOut:     !out.Working && isTimeoutOutcome(out),
+		Backend:      out.Backend,
+		FailureClass: failureClass,
 	})
+}
+
+// ClassifyOutcomeFailure derives the failure class of a failed mode
+// outcome from the OBSERVED evidence, in precedence order:
+//
+//  1. the failed-facet SHAPE (handshake metrics failed → the core
+//     never became ready; ping facet all-timeout → the path
+//     black-holed) — structural evidence, not text;
+//  2. the URL-test canonical short forms (classifyURLFailure's
+//     own vocabulary: Timeout flag → timeout; an "HTTP <code> via
+//     tunnel" error means the tunnel FORWARDED the request but
+//     the response was not usable connectivity → verify);
+//  3. the error TEXT of the last failing facet through the shared
+//     config.ClassifyFailure classifier (covers DNS failures,
+//     resets, transport errors and the raw fallback).
+//
+// The phase TIMINGS are deliberately NOT used as failure evidence:
+// DNSMS is 0 for proxied requests (remote DNS is part of connect),
+// TLSMS is -1 for plain-HTTP targets regardless of success, and
+// ConnectMS is measured even when the dial fails — none of them
+// marks the failing phase. The class is never invented: when no
+// evidence distinguishes a class it stays "" (unclassified).
+func ClassifyOutcomeFailure(out ModeOutcome) string {
+	if out.Handshake != nil && !out.Handshake.OK {
+		return config.FailureClassHandshake
+	}
+
+	if out.Ping != nil && out.Ping.Timeouts > 0 && out.Ping.Samples == 0 {
+		return config.FailureClassTimeout
+	}
+
+	if out.URLTest != nil && !out.URLTest.OK {
+		switch {
+		case out.URLTest.Timeout:
+			return config.FailureClassTimeout
+		case strings.HasPrefix(out.URLTest.Error, "HTTP "):
+			return config.FailureClassVerify
+		}
+	}
+
+	return config.ClassifyFailure(out.LastError)
 }
 
 func isTimeoutOutcome(out ModeOutcome) bool {

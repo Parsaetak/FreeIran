@@ -121,6 +121,17 @@ type Score struct {
 	TestedAt          int64    `json:"tested_at,omitempty"`
 	Connectable       bool     `json:"connectable"`
 	Explanation       []string `json:"explanation,omitempty"`
+
+	// v0.11.0 failure evidence (bounded, observed — never invented):
+	// FailureStreak counts the CONSECUTIVE TRAILING failures in the
+	// recent window (0 when the freshest observation succeeded), and
+	// RecentFailureClass is the failure class those trailing failures
+	// SHARE ("" when they carry mixed or unattributed classes). The
+	// transport-preference demotion below reasons over exactly this
+	// tuple, and the UI surfaces it verbatim — no derived "confidence"
+	// number anywhere.
+	FailureStreak      int    `json:"failure_streak,omitempty"`
+	RecentFailureClass string `json:"recent_failure_class,omitempty"`
 }
 
 // Evaluate scores one candidate from its actual observations.
@@ -248,6 +259,27 @@ func Evaluate(c Candidate, now time.Time) Score {
 	// waste a whole startup cycle before failing.
 	composite *= 1 - 0.5*timeoutRate
 
+	// --- v0.11.0 repeated protocol-specific failure evidence ------
+	//
+	// Transport agility WITHOUT a second failover engine: when the
+	// FRESHEST observations are a streak of failures that all share
+	// one PROTOCOL-SPECIFIC class (tls / handshake / transport), the
+	// evidence says this transport is broken for this path — not a
+	// transient network event (those scatter across classes or time
+	// out). The demotion makes Quick Connect, recovery and discovery
+	// ranking — which all select through THIS scoring path — naturally
+	// prefer a DIFFERENT already-supported transport/configuration,
+	// with no parallel failover machinery. The penalty is bounded and
+	// explainable: 2 shared-class failures ×0.85, 3 ×0.70, ≥4 ×0.55.
+	streak, failureClass := trailingFailureEvidence(window)
+
+	score.FailureStreak = streak
+	score.RecentFailureClass = failureClass
+
+	if streak >= 2 && isProtocolSpecificClass(failureClass) {
+		composite *= protocolFailureFactor(streak)
+	}
+
 	score.Score = composite * 100
 
 	score.Class = classify(successRate, stability, latencyFactor, age)
@@ -257,6 +289,12 @@ func Evaluate(c Candidate, now time.Time) Score {
 	}
 
 	score.Explanation = explain(score, median, age, len(working))
+
+	if streak >= 2 && isProtocolSpecificClass(failureClass) {
+		score.Explanation = append(score.Explanation,
+			fmt.Sprintf("last %d tests failed with %s-class failures — preferring other transports",
+				streak, failureClass))
+	}
 
 	return score
 }
@@ -280,6 +318,66 @@ func classify(
 	}
 
 	return ClassUnstable
+}
+
+// isProtocolSpecificClass reports whether a failure class points at
+// the TRANSPORT/protocol layer itself rather than the path or the
+// ambient network: TLS negotiation failures, protocol-handshake
+// failures and transport-specific errors. Repeated failures of these
+// classes are the evidence that makes the ranking prefer a DIFFERENT
+// already-supported transport. DNS/TCP/timeout/reset/verify failures
+// are deliberately EXCLUDED: they describe the path or the target,
+// and switching transport does not follow from them.
+func isProtocolSpecificClass(class string) bool {
+	switch class {
+	case config.FailureClassTLS,
+		config.FailureClassHandshake,
+		config.FailureClassTransport:
+		return true
+	default:
+		return false
+	}
+}
+
+// trailingFailureEvidence inspects the END of the recent window (the
+// freshest observations): streak counts the consecutive trailing
+// failures and class is the failure class those trailing failures
+// SHARE. "" means the trailing failures carry mixed or unattributed
+// classes — evidence that does not point at one layer must never
+// drive transport preference.
+func trailingFailureEvidence(window []config.TestObservation) (streak int, class string) {
+	for i := len(window) - 1; i >= 0; i-- {
+		if window[i].Working {
+			break
+		}
+
+		streak++
+
+		if streak == 1 {
+			class = window[i].FailureClass
+			continue
+		}
+
+		if class == "" || window[i].FailureClass == "" ||
+			window[i].FailureClass != class {
+			class = ""
+		}
+	}
+
+	return streak, class
+}
+
+// protocolFailureFactor is the bounded demotion for a streak of
+// same-class protocol-specific failures: 2 ×0.85, 3 ×0.70, ≥4 ×0.55.
+// The curve saturates — a longer streak never zeroes the candidate
+// (a manual, explicit user selection still works; only AUTOMATIC
+// preference moves to other transports).
+func protocolFailureFactor(streak int) float64 {
+	if streak > 4 {
+		streak = 4
+	}
+
+	return 1.0 - 0.15*float64(streak-1)
 }
 
 // SelectBest deterministically picks the best viable candidate:

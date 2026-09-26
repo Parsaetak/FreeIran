@@ -59,6 +59,12 @@ func (b *Backend) Capabilities() core.Capabilities {
 			"REALITY supported",
 			"xtls-rprx-vision flow supported",
 			"plain QUIC/HTTP2 transports removed in current releases (XHTTP replaces them)",
+			// v0.11.0: ECH is NOT declared for Xray. The pinned Xray-core
+			// 26.3.27 accepts an echConfigList field in schema (a wrong
+			// type fails decode naming the field), but `xray run -test`
+			// does not content-validate it and no ECH negotiation is
+			// provable at check level — claiming support would be a lie.
+			// ECH-enabled configurations route to sing-box only.
 		},
 	}
 }

@@ -68,12 +68,24 @@ func (b *Backend) Capabilities() core.Capabilities {
 		TLSMandatory: []config.Type{
 			config.TypeTrojan,
 		},
+		// v0.11.0: ECH is DECLARED here because the pinned v1.14.0
+		// binary was schema-verified for every ech shape FreeIran
+		// generates — enabled+config (PEM), enabled+config_path,
+		// enabled+query_server_name and enabled bare — through BOTH
+		// `sing-box check` and a full startup cycle (see
+		// TestSingBoxSmokeRealBinary's ECH cases and docs/protocols.md).
+		// Xray/V2Ray do not declare ECH: the pinned V2Ray 5.53.0
+		// ignores the field entirely, and Xray 26.3.27's echConfigList
+		// is not content-validated at config-check time — neither is
+		// claimable as verified ECH support.
+		ECH: true,
 		Notes: []string{
 			"REALITY supported through tls.reality",
 			"xtls-rprx-vision flow supported (with uTLS)",
 			"mixed inbound serves SOCKS and HTTP on one port",
 			"hysteria2/tuic/hysteria verified against v1.14.0 (TLS mandatory, QUIC)",
 			"wireguard verified against v1.14.0 (endpoint form, FreeIran-generated fallback local address when absent)",
+			"ECH verified against v1.14.0 at schema level (check + startup; PEM 'ECH CONFIGS' form; REALITY conflicts)",
 		},
 	}
 }
@@ -356,6 +368,22 @@ type sbTLS struct {
 	ALPN       []string   `json:"alpn,omitempty"`
 	UTLS       *sbUTLS    `json:"utls,omitempty"`
 	Reality    *sbReality `json:"reality,omitempty"`
+	ECH        *sbECH     `json:"ech,omitempty"`
+}
+
+// sbECH is the sing-box v1.14 tls.ech object — Encrypted Client
+// Hello for TLS-enabled outbounds. Every field maps 1:1 onto the
+// pinned binary's schema (verified with `sing-box check` + startup:
+// config must be a PEM "ECH CONFIGS" block, config_path a file
+// containing one, query_server_name the DNS HTTPS query name used
+// for discovery; REALITY and ECH are mutually exclusive — the
+// binary rejects the combination with "Reality is conflict with
+// ECH", which config validation enforces before generation).
+type sbECH struct {
+	Enabled         bool   `json:"enabled"`
+	Config          string `json:"config,omitempty"`
+	ConfigPath      string `json:"config_path,omitempty"`
+	QueryServerName string `json:"query_server_name,omitempty"`
 }
 
 type sbUTLS struct {
@@ -696,8 +724,9 @@ func buildSBWireGuardEndpoint(cfg config.Config) *sbEndpoint {
 	return endpoint
 }
 
-// buildSBTLS renders the sing-box TLS object including uTLS and
-// REALITY. Trojan implies TLS (sing-box enforces it at runtime).
+// buildSBTLS renders the sing-box TLS object including uTLS,
+// REALITY and ECH. Trojan implies TLS (sing-box enforces it at
+// runtime).
 func buildSBTLS(cfg config.Config, security config.Security) *sbTLS {
 	tls := &sbTLS{
 		Enabled:    true,
@@ -727,6 +756,23 @@ func buildSBTLS(cfg config.Config, security config.Security) *sbTLS {
 		// fingerprint was published.
 		if tls.UTLS == nil {
 			tls.UTLS = &sbUTLS{Enabled: true, Fingerprint: "chrome"}
+		}
+	}
+
+	// v0.11.0 ECH: emitted ONLY when the user enabled it — a
+	// structurally valid config reaching this point has already been
+	// screened by config validation (TLS required, REALITY excluded,
+	// config XOR config_path, PEM form), so the object mirrors the
+	// four semantic fields verbatim. An ECH-enabled config that
+	// somehow reaches here with REALITY set still generates a
+	// document the pinned binary will reject loudly at startup — no
+	// silent ECH loss is possible either way.
+	if cfg.ECHEnabled {
+		tls.ECH = &sbECH{
+			Enabled:         true,
+			Config:          cfg.ECHConfig,
+			ConfigPath:      cfg.ECHConfigPath,
+			QueryServerName: cfg.ECHQueryServerName,
 		}
 	}
 

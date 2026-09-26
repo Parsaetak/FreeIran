@@ -209,6 +209,35 @@ type Config struct {
 	Obfs              string `json:"obfs,omitempty"`               // Hysteria2: salamander | gecko; Hysteria v1: obfs password string.
 	ObfsPassword      string `json:"obfs_password,omitempty"`      // Hysteria2 obfs password (object shape).
 
+	// v0.11.0 Encrypted Client Hello (TLS-layer detail, sing-box
+	// tls.ech — verified against the pinned v1.14.0 binary).
+	//
+	// Semantic model — one dedicated field per sing-box knob,
+	// overloading nothing (Host/Network/Security/Fingerprint/
+	// SpiderX stay untouched):
+	//   ECHEnabled         → ech.enabled
+	//   ECHConfig          → ech.config        (PEM "ECH CONFIGS")
+	//   ECHConfigPath      → ech.config_path   (file containing the PEM)
+	//   ECHQueryServerName → ech.query_server_name (DNS HTTPS query)
+	//
+	// ECHConfig carries the canonical PEM form after Normalize:
+	// a raw base64 ECHConfigList (the DNS HTTPS record `ech=`
+	// payload shape) is wrapped into the PEM envelope during
+	// normalization, because the pinned sing-box v1.14.0 accepts
+	// ONLY the PEM form ("invalid ECH configs pem" otherwise —
+	// verified empirically, see docs/protocols.md). Not part of
+	// the fingerprint: ECH changes the TLS layer's negotiation,
+	// not the configuration identity (same rationale as ALPN and
+	// Insecure).
+	//
+	// EVIDENCE SCOPE (do not upgrade): support is schema-level —
+	// `sing-box check` + startup acceptance. No live ECH
+	// negotiation with a real ECH server is claimed anywhere.
+	ECHEnabled         bool   `json:"ech_enabled,omitempty"`
+	ECHConfig          string `json:"ech_config,omitempty"`
+	ECHConfigPath      string `json:"ech_config_path,omitempty"`
+	ECHQueryServerName string `json:"ech_query_server_name,omitempty"`
+
 	// WireGuard.
 	//
 	// v0.10.3 semantics split: InterfaceAddress is the LOCAL
@@ -292,6 +321,168 @@ type Config struct {
 	// failure (timeout/refused/reset/handshake/verify), stored
 	// without credentials. Runtime-only.
 	LastFailureReason string `json:"last_failure_reason,omitempty"`
+
+	// v0.11.0 failure-evidence model (bounded, derived — never a
+	// magical "confidence score"):
+
+	// LastFailureAt is the time of the most recent FAILED
+	// verification (Unix milliseconds; 0 = no recorded failure).
+	// Together with LastSuccessAt it gives the ranking layer an
+	// honest verification age on both sides (fresh success vs
+	// fresh failure). Runtime-only.
+	LastFailureAt int64 `json:"last_failure_at,omitempty"`
+
+	// LastFailureClass is the FAILURE CLASS of the most recent
+	// failure — one of the FailureClass* constants (dns, tcp,
+	// tls, handshake, listener, verify, reset, timeout,
+	// transport). Unlike LastFailureReason (free text), the class
+	// is a stable vocabulary the ranking layer and recovery
+	// pipeline can reason over ("after two handshake-class
+	// failures prefer a different transport"). Runtime-only.
+	LastFailureClass string `json:"last_failure_class,omitempty"`
+}
+
+// Failure-class vocabulary (v0.11.0). The classes are derived from
+// actual observations — the transport error text, the URL-test phase
+// that failed and the supervision events — never invented. They are
+// deliberately coarse: fine-grained taxonomies drift as cores change
+// their error strings, while these nine classes map onto distinct
+// ENGINE behaviors (retry, switch transport, wait, or surface).
+const (
+	// FailureClassDNS: name resolution failed (no such host,
+	// servfail, resolver unreachable).
+	FailureClassDNS = "dns"
+	// FailureClassTCP: TCP connection failed before TLS (refused,
+	// unreachable, no route).
+	FailureClassTCP = "tcp"
+	// FailureClassTLS: TLS negotiation failed (certificate,
+	// alert, version, ECH/REALITY layer).
+	FailureClassTLS = "tls"
+	// FailureClassHandshake: the protocol-core handshake failed
+	// (inbound never became ready, core exited during startup).
+	FailureClassHandshake = "handshake"
+	// FailureClassListener: the local inbound listener could not
+	// be established (port in use, bind failure).
+	FailureClassListener = "listener"
+	// FailureClassVerify: the tunnel came up but external
+	// verification failed (through-tunnel fetch rejected).
+	FailureClassVerify = "verify"
+	// FailureClassReset: the remote side reset an established
+	// connection mid-stream.
+	FailureClassReset = "reset"
+	// FailureClassTimeout: a bounded operation exceeded its
+	// deadline (path blackholing, unresponsive endpoint).
+	FailureClassTimeout = "timeout"
+	// FailureClassTransport: a transport/protocol-specific failure
+	// the other classes do not cover (SOCKS errors, core protocol
+	// errors, unsupported feature) — the class that should make
+	// the system prefer a DIFFERENT transport after repetition.
+	FailureClassTransport = "transport"
+)
+
+// AllFailureClasses is the exhaustive failure-class domain.
+var AllFailureClasses = []string{
+	FailureClassDNS,
+	FailureClassTCP,
+	FailureClassTLS,
+	FailureClassHandshake,
+	FailureClassListener,
+	FailureClassVerify,
+	FailureClassReset,
+	FailureClassTimeout,
+	FailureClassTransport,
+}
+
+// ValidFailureClass reports whether v is a known failure class.
+func ValidFailureClass(v string) bool {
+	for _, ok := range AllFailureClasses {
+		if v == ok {
+			return true
+		}
+	}
+
+	return false
+}
+
+// ClassifyFailure maps an observed failure description onto the
+// failure-class vocabulary. The input is the same credential-free
+// error text stored in LastFailureReason ("dial tcp ...: connection
+// refused", "handshake timeout", "core exited during startup",
+// ...). Classification is ordered: the most specific classes are
+// matched first, timeout LAST — a "TLS handshake timeout" is a TLS
+// failure with a deadline, but the observable failure mode (TLS
+// never completing) is the actionable fact for transport selection;
+// TLS likewise outranks the core-handshake class because "tls:
+// handshake failure" is a TLS alert, while core readiness failures
+// surface as startup/exit events. Unknown text yields ""
+// (unclassified), never a wrong class.
+// Unknown text yields "" (unclassified), never a wrong class.
+func ClassifyFailure(reason string) string {
+	text := strings.ToLower(strings.TrimSpace(reason))
+
+	if text == "" {
+		return ""
+	}
+
+	switch {
+	case containsAny(text,
+		"no such host", "dns", "lookup ", "name resolution",
+		"servfail", "nxdomain", "resolver"):
+		return FailureClassDNS
+
+	case containsAny(text,
+		"listener", "bind", "address already in use", "port in use"):
+		return FailureClassListener
+
+	// TLS is matched BEFORE the core-handshake class: a "tls: handshake
+	// failure" is a TLS alert (the actionable fact for transport
+	// selection is that TLS never negotiated), while core-handshake
+	// failures surface as readiness/startup events, not the word
+	// "handshake" alone.
+	case containsAny(text,
+		"tls", "certificate", "x509", "alert", "reality",
+		"ech", "cipher", "ssl"):
+		return FailureClassTLS
+
+	case containsAny(text,
+		"handshake timeout", "not ready", "startup timeout",
+		"core exited", "process exited during startup"):
+		return FailureClassHandshake
+
+	case containsAny(text,
+		"connection reset", "reset", "broken pipe", "eof",
+		"connection aborted"):
+		return FailureClassReset
+
+	case containsAny(text,
+		"refused", "unreachable", "no route", "network is down"):
+		return FailureClassTCP
+
+	case containsAny(text,
+		"verify", "verification", "quorum", "target fetch"):
+		return FailureClassVerify
+
+	case containsAny(text,
+		"socks", "proxy", "protocol", "transport", "unsupported",
+		"malformed", "invalid "):
+		return FailureClassTransport
+
+	case containsAny(text,
+		"timeout", "deadline", "timed out", "i/o timeout"):
+		return FailureClassTimeout
+	}
+
+	return ""
+}
+
+func containsAny(text string, needles ...string) bool {
+	for _, needle := range needles {
+		if strings.Contains(text, needle) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // TestHistoryLimit caps the per-config observation ring. Twelve
@@ -317,6 +508,14 @@ type TestObservation struct {
 
 	// Backend is the core that executed the test (informational).
 	Backend string `json:"backend,omitempty"`
+
+	// FailureClass is the v0.11.0 classification of a failed
+	// observation (one of the FailureClass* constants; "" for
+	// successes and unclassifiable failures). It is derived from
+	// the same observed error text as LastFailureReason — never
+	// invented — so per-class evidence accumulates in the bounded
+	// history ring the ranking layer already scores from.
+	FailureClass string `json:"failure_class,omitempty"`
 }
 
 // AppendTestObservation records one outcome in the bounded history
@@ -333,6 +532,93 @@ func (c *Config) AppendTestObservation(obs TestObservation) {
 		c.TestHistory = append([]TestObservation(nil),
 			c.TestHistory[excess:]...)
 	}
+}
+
+// FailureEvidence reports the bounded freshness/evidence tuple the
+// ranking layer reasons over (v0.11.0). All values are actual
+// observations: last_verified_at is the last VERIFIED-usable time
+// (LastSuccessAt), last_failure_at the last failed-verification
+// time, recent_failure_class the class of that failure, and
+// verification_age the distance to whichever of the two is more
+// recent. Zero times mean "never observed", never "unknown magic".
+type FailureEvidence struct {
+	LastVerifiedAt     int64
+	LastFailureAt      int64
+	RecentFailureClass string
+	VerificationAgeMS  int64
+}
+
+// Evidence derives the bounded freshness/evidence tuple from the
+// recorded observations. nowMS is the current Unix time in
+// milliseconds (passed in so tests are deterministic).
+func (c *Config) Evidence(nowMS int64) FailureEvidence {
+	ev := FailureEvidence{
+		LastVerifiedAt:     c.LastSuccessAt,
+		LastFailureAt:      c.LastFailureAt,
+		RecentFailureClass: c.LastFailureClass,
+	}
+
+	switch {
+	case c.LastSuccessAt >= c.LastFailureAt && c.LastSuccessAt > 0:
+		ev.VerificationAgeMS = nowMS - c.LastSuccessAt
+	case c.LastFailureAt > 0:
+		ev.VerificationAgeMS = nowMS - c.LastFailureAt
+	}
+
+	if ev.VerificationAgeMS < 0 {
+		ev.VerificationAgeMS = 0
+	}
+
+	return ev
+}
+
+// ECHPEMBegin is the ONLY PEM header the pinned sing-box v1.14.0
+// accepts for the ECH config list (verified empirically: "ECH
+// CONFIG" and "ECHCONFIG" spellings are rejected with "invalid ECH
+// configs pem").
+const ECHPEMBegin = "-----BEGIN ECH CONFIGS-----"
+
+// ECHPEMEnd closes the ECH config PEM envelope.
+const ECHPEMEnd = "-----END ECH CONFIGS-----"
+
+// normalizeECHConfig canonicalizes an ECH config value. A value that
+// already carries the PEM envelope passes through (whitespace
+// trimmed). A raw base64 body (the DNS HTTPS record `ech=` payload
+// shape) is wrapped into the envelope. A value that is neither is
+// returned unchanged and rejected later by Validate with the precise
+// reason — normalization never silently mangles user input.
+func normalizeECHConfig(value string) string {
+	if value == "" || strings.Contains(value, ECHPEMBegin) {
+		return value
+	}
+
+	body := strings.Join(strings.Fields(value), "")
+	if body == "" || !isContinuedBase64(body) {
+		return value
+	}
+
+	return ECHPEMBegin + "\n" + body + "\n" + ECHPEMEnd + "\n"
+}
+
+// isContinuedBase64 reports whether s is decodable standard base64
+// after stripping embedded whitespace/newlines (PEM bodies are
+// line-wrapped).
+func isContinuedBase64(s string) bool {
+	compact := strings.Join(strings.Fields(s), "")
+
+	if len(compact) == 0 || len(compact)%4 != 0 {
+		return false
+	}
+
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
+
+	for _, r := range compact {
+		if !strings.ContainsRune(alphabet, r) {
+			return false
+		}
+	}
+
+	return true
 }
 
 // Normalize prepares a configuration for comparison and fingerprinting.
@@ -368,9 +654,27 @@ func (c *Config) Normalize() {
 	c.Obfs = strings.ToLower(strings.TrimSpace(c.Obfs))
 	c.ObfsPassword = strings.TrimSpace(c.ObfsPassword)
 
+	// v0.11.0 ECH normalization: trim, and canonicalize a raw
+	// base64 ECHConfigList (the DNS HTTPS `ech=` payload shape)
+	// into the PEM envelope the pinned sing-box v1.14.0 requires.
+	// Already-PEM values pass through unchanged; values that are
+	// neither PEM nor decodable base64 are left as-is — Validate
+	// rejects them with the precise reason.
+	c.ECHConfig = normalizeECHConfig(strings.TrimSpace(c.ECHConfig))
+	c.ECHConfigPath = strings.TrimSpace(c.ECHConfigPath)
+	c.ECHQueryServerName = strings.TrimSpace(c.ECHQueryServerName)
+
 	c.ALPN = compactStrings(c.ALPN)
 
 	c.PrivateKey = strings.TrimSpace(c.PrivateKey)
+
+	// v0.11.0: a fresh failure class must stay inside the known
+	// vocabulary; legacy/garbage values are dropped rather than
+	// trusted (ranking reasons over classes, so an unknown class
+	// would silently degrade transport preference).
+	if !ValidFailureClass(c.LastFailureClass) {
+		c.LastFailureClass = ""
+	}
 
 	for i := range c.AllowedIPs {
 		c.AllowedIPs[i] = strings.TrimSpace(c.AllowedIPs[i])

@@ -205,6 +205,16 @@ func configFromJSON(value map[string]any) (config.Config, bool) {
 		return 0
 	}
 
+	getBool := func(key string) bool {
+		raw, ok := value[key]
+		if !ok {
+			return false
+		}
+
+		result, ok := raw.(bool)
+		return ok && result
+	}
+
 	protocol := strings.ToLower(
 		strings.TrimSpace(getString("type")),
 	)
@@ -233,6 +243,15 @@ func configFromJSON(value map[string]any) (config.Config, bool) {
 		PublicKey:          getString("public_key"),
 		ShortID:            getString("short_id"),
 		Source:             getString("source"),
+
+		// v0.11.0 ECH fields — the canonical structured representation.
+		// The URI share formats carry NO standardized ECH parameter
+		// (the ecosystem has not agreed on one), so ECH enters through
+		// this structured JSON form only; nothing is invented for URIs.
+		ECHEnabled:         getBool("ech_enabled"),
+		ECHConfig:          getString("ech_config"),
+		ECHConfigPath:      getString("ech_config_path"),
+		ECHQueryServerName: getString("ech_query_server_name"),
 	}
 
 	return cfg, true

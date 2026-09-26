@@ -36,6 +36,24 @@ export class CoreBinary {
              */
             this["version"] = undefined;
         }
+        if (/** @type {any} */(false)) {
+            /**
+             * Origin is where the executable was found (managed, path,
+             * system, user) — v0.9.14 ownership/origin reporting.
+             * @member
+             * @type {string | undefined}
+             */
+            this["origin"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * Ownership distinguishes FreeIran-managed binaries from external
+             * ones (external binaries are only referenced, never modified).
+             * @member
+             * @type {string | undefined}
+             */
+            this["ownership"] = undefined;
+        }
 
         Object.assign(this, $$source);
     }

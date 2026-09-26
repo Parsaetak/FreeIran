@@ -376,6 +376,42 @@ type ConfigDetail struct {
 	Source       string   `json:"source,omitempty"`
 	Display      string   `json:"display"`
 	Backends     []string `json:"compatible_backends,omitempty"`
+
+	// v0.11.0 failure evidence (from the stored record; verbatim,
+	// never scored into a magic number here). FailureStreak counts
+	// consecutive failed verifications; LastFailureClass is the
+	// classified cause of the most recent failure (dns/tcp/tls/
+	// handshake/listener/verify/reset/timeout/transport); LastFailureAt
+	// and LastSuccessAt bound the verification age on both sides.
+	FailureStreak     int    `json:"failure_streak,omitempty"`
+	LastFailureClass  string `json:"last_failure_class,omitempty"`
+	LastFailureReason string `json:"last_failure_reason,omitempty"`
+	LastFailureAt     int64  `json:"last_failure_at,omitempty"`
+	LastSuccessAt     int64  `json:"last_success_at,omitempty"`
+
+	// v0.11.0 ECH states — four DISTINCT states, never merged into a
+	// badge (docs/ui.md):
+	//
+	//   ECHConfigured    the stored record carries ech_enabled (user
+	//                    intent — nothing more).
+	//   ECHBackendSupport an INSTALLED, AVAILABLE backend that
+	//                    Supports() this exact configuration also
+	//                    declares ECH (capability level; today that
+	//                    is sing-box, schema-verified against the
+	//                    pinned v1.14.0).
+	//   ECHCoreVerified  the LAST test executed through an
+	//                    ECH-declaring backend SUCCEEDED — the real
+	//                    core accepted the generated ECH document
+	//                    (check + startup) and the tunnel verified.
+	//                    This is schema/runtime evidence, NOT live
+	//                    ECH negotiation with an ECH server.
+	//   "actually verified" is the generic Working + LastSuccessAt
+	//                    pair above — usable connectivity through the
+	//                    tunnel, exactly like every other config; ECH
+	//                    adds no separate claim.
+	ECHConfigured     bool `json:"ech_configured,omitempty"`
+	ECHBackendSupport bool `json:"ech_backend_support,omitempty"`
+	ECHCoreVerified   bool `json:"ech_core_verified,omitempty"`
 }
 
 // ConfigDetails renders the details view for one stored
@@ -408,17 +444,50 @@ func (s *ConnectionService) ConfigDetails(configID string) (*ConfigDetail, error
 		TestedAt:     cfg.TestedAt,
 		Source:       cfg.Source,
 		Display:      cfg.DisplayURL(),
+
+		// v0.11.0 failure evidence, verbatim from the record.
+		FailureStreak:     cfg.FailureStreak,
+		LastFailureClass:  cfg.LastFailureClass,
+		LastFailureReason: cfg.LastFailureReason,
+		LastFailureAt:     cfg.LastFailureAt,
+		LastSuccessAt:     cfg.LastSuccessAt,
+
+		// v0.11.0 ECH state #1: configured (user intent).
+		ECHConfigured: cfg.ECHEnabled,
 	}
 
 	// Compatible backends through the registry — the same
 	// deterministic resolution the connection manager uses.
+	echCapableBackend := false
+
 	for _, info := range s.app.coreRegistry.Backends() {
-		if backend, ok := s.app.coreRegistry.Get(info.Name); ok {
-			if backend.Supports(*cfg) {
-				detail.Backends = append(detail.Backends, info.Name)
+		backend, ok := s.app.coreRegistry.Get(info.Name)
+		if !ok || !backend.Supports(*cfg) {
+			continue
+		}
+
+		detail.Backends = append(detail.Backends, info.Name)
+
+		if provider, ok := backend.(interface{ Capabilities() core.Capabilities }); ok &&
+			provider.Capabilities().ECH {
+			echCapableBackend = true
+
+			// ECH state #3: the last test executed through an
+			// ECH-declaring backend and SUCCEEDED — the real core
+			// accepted the generated ECH document and the tunnel
+			// verified end-to-end. A failure anywhere earlier
+			// keeps this false (no upgrade of evidence).
+			if cfg.ECHEnabled && cfg.Working && cfg.TestBackend == info.Name {
+				detail.ECHCoreVerified = true
 			}
 		}
 	}
+
+	// ECH state #2: an installed, available backend that supports
+	// this exact configuration declares ECH (capability level — a
+	// pure registry fact, reported the same way whether or not this
+	// particular config carries ECH).
+	detail.ECHBackendSupport = echCapableBackend
 
 	return detail, nil
 }

@@ -12,11 +12,74 @@ The application should feel like a mature desktop connectivity client rather tha
 
 ---
 
-# Roadmap ladder (v0.10.5)
+# Roadmap ladder (v0.11.0)
 
 The roadmap is a four-phase ladder. Each phase must be TRUE before the
 next one starts; the acceptance standard is the user-visible pipeline
 below, not internal test counts.
+
+### v0.11.0 current-release status (factual)
+
+v0.11.0 is a CI-architecture + transport-resilience-foundation
+release. The Windows CI bottleneck (the full Go matrix re-executed on
+a Windows runner under `-p 1`) is replaced by a measured two-layer
+proof: Layer A compiles the COMPLETE Windows test surface
+(`go test -run '^$' ./...`), Layer B executes the Windows-SENSITIVE
+behavior (tunnel/system/store/httpx full packages + targeted
+coremgr/netcheck/app/connection patterns), Layer C keeps the repeated
+WinINet/recovery battery (`-count=5 -p 1`), each layer with explicit
+bounded timeouts (10m/10m/4-8m/10m). Platform-neutral behavioral
+correctness remains the Linux job's authority (full suite + `-race`).
+No Windows-specific coverage was removed: every package with a
+documented Windows defect history still executes its Windows-relevant
+tests, and the whole surface still compiles.
+
+The resilience foundation: a nine-class failure taxonomy derived from
+observations (dns/tcp/tls/handshake/listener/verify/reset/timeout/
+transport) recorded per configuration and per history observation; a
+bounded freshness/evidence tuple (last_verified_at, last_failure_at,
+recent_failure_class, verification_age); and transport agility
+WITHOUT a second failover engine — a trailing streak of ≥2
+protocol-specific failures (tls/handshake/transport) demotes a
+candidate in both ranking surfaces so Quick Connect/recovery/
+discovery naturally prefer a different already-supported transport.
+
+ECH (Encrypted Client Hello): modeled with four dedicated fields
+(ech_enabled/ech_config/ech_config_path/ech_query_server_name →
+sing-box tls.ech), capability-routed to sing-box ONLY (verified
+against the pinned v1.14.0: PEM "ECH CONFIGS" form, REALITY conflict,
+query_server_name DNS discovery; Xray's field is not
+content-validated at check level and V2Ray 5.53.0 ignores it —
+neither is claimed). Evidence is SCHEMA-LEVEL (check + startup, all
+three shapes ride the real-binary smoke suite); no live ECH
+negotination is claimed anywhere. See docs/protocols.md for the full
+evidence table.
+
+Also in this release: the wails3 bindings are fully machine-generated
+again (the v0.9.11 hand-maintained files were removed after
+regeneration with the pinned CLI; reproducibility verified; the
+models are pinned field-for-field to the Go structs), and
+docs/android.md documents the implementation-ready Android
+architecture note (plan only — no Android product, TUN stays
+experimental/disabled).
+
+Evidence actually executed for v0.11.0: full Linux Go suite,
+`-race` full suite, frontend typecheck/tests/production
+build/embed validation, real-core verification with the three
+SHA-256-pinned cores (v2ray 5.53.0, xray 26.3.27, sing-box 1.14.0 —
+including the new ECH smoke shapes: inline PEM config, config_path
+file, query_server_name), the gosecscan/Gitleaks/govulncheck/go-vet
+security battery, Windows-amd64 cross-build with PE
+windowsgui-subsystem verification from Linux, and a Windows
+compile-surface proof (all test binaries compile for GOOS=windows)
+from Linux.
+
+NOT yet executed at release: the Windows-NATIVE CI gate (the new
+two-layer matrix + battery + runtime smoke + desktop build on a
+Windows runner) — it runs when this tree is pushed and must pass
+before the release is described as Windows-verified. No Internet
+verification over a live tunnel was performed; ECH support is
+schema-level evidence, not live-negotiation evidence.
 
 ### v0.10.5 current-release status (factual)
 

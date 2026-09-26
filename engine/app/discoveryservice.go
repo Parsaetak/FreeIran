@@ -645,6 +645,12 @@ func (s *DiscoveryService) rankCandidates(nodes []discovery.Node) []config.Confi
 			Handshake:     n.Handshake,
 			LastSuccessAt: n.LastSuccessAt,
 			FailureStreak: n.FailureStreak,
+
+			// v0.11.0 failure evidence (from the embedded config
+			// record) feeds the same protocol-specific demotion as
+			// the classic ranking surface.
+			LastFailureAt:    n.LastFailureAt,
+			LastFailureClass: n.LastFailureClass,
 		})
 	}
 

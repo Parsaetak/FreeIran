@@ -437,3 +437,44 @@ The new subsystems keep the bounded-concurrency discipline:
   retry adds at most ~775 ms and ONLY in the transient-lock case;
   healthy finalizations are unchanged (sync + rename, one extra
   open-for-write compared to the broken v0.9.5 form).
+
+## 15. v0.11.0 — CI Windows test-matrix timing (the measurement behind the two-layer proof)
+
+The v0.11.0 Windows CI redesign (docs/ci.md) was driven by
+measurement, not assumption. Per-package wall time of the FULL Go
+suite, measured sequentially with `-count=1` on the Linux CI runner
+(2 vCPU class, the same class the Windows job's suites run on after
+the `-p 1` serialization):
+
+| Package | Linux wall time | Windows-specific content |
+|---|---|---|
+| engine/connection | 42.3 s | lifecycle/image-release paths (Layer B targeted) |
+| engine/testqueue | 31.1 s | none (pure queue logic) |
+| engine/provider | 31.1 s | POSIX fixtures SKIP on Windows (TestMain also compiles faketor/fakepsiphon) |
+| engine/app | 30.4 s | boots/crash recovery (Layer B targeted) |
+| engine/coremgr | 28.7 s | exec_windows tests (Layer B targeted) |
+| engine/netcheck | 15.3 s | environment/staged ladder (Layer B targeted) |
+| internal/httpx | 7.7 s | finalization asymmetry (Layer B full) |
+| engine/source | 3.8 s | none |
+| engine/socks5 | 3.3 s | none |
+| system | 2.8 s | process/job supervision (Layer B full) |
+| all remaining packages | < 2 s each | — |
+| engine/tunnel | 0.3 s on Linux | the 13-test real-WinINet battery runs ONLY on Windows (Layer B full) |
+| engine/store | 0.7 s | file-handle deletion semantics (Layer B full) |
+
+Reading: the top-six packages (≈179 s on Linux) are dominated by
+platform-NEUTRAL behavior that the Linux `go` job already proves and
+proves again under `-race`; the Windows runner executes them a second
+time with 2–3× process-spawn/I/O overhead and `-p 1` serialization.
+The packages with documented Windows-specific defect history (store
+0.7 s, httpx 7.7 s, system 2.8 s, tunnel 0.3 s on Linux) are CHEAP on
+Linux and stay FULLY EXECUTED on Windows in Layer B.
+
+Estimated Windows job budget after the redesign (Layer A compile-all
++ Layer B + Layer C battery + smoke + build + verify): ~15–20 minutes
+versus ~25–40 minutes for the v0.10.5 full-matrix design, with every
+Windows-specific behavior still executed and the complete Windows
+compile surface still proven. Each layer carries an explicit bounded
+timeout (10m / 10m / 4–8m / 10m) so a slow or hung test fails its own
+layer with a diagnosable bound instead of hiding under a 20-minute
+blanket.

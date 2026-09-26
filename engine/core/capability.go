@@ -32,6 +32,20 @@ type Capabilities struct {
 	// this backend (e.g. trojan on sing-box).
 	TLSMandatory []config.Type
 
+	// ECH (v0.11.0) declares whether the backend can execute a
+	// configuration carrying Encrypted Client Hello fields. A
+	// backend that does not declare ECH silently IGNORES the ECH
+	// layer if handed such a config (verified: V2Ray 5.53.0
+	// ignores an echConfigList field entirely; Xray 26.3.27 accepts
+	// the field in schema but does not validate its content at
+	// config-check time) — so the capability matcher routes
+	// ECH-enabled configurations ONLY to backends that both
+	// declare ECH and were schema-verified against the pinned
+	// real binary. Today that is sing-box 1.14.0 only. This is a
+	// declared FACT, not an aspiration; see docs/protocols.md
+	// for the per-core evidence table.
+	ECH bool
+
 	// Notes are human-readable capability notes surfaced in
 	// diagnostics (e.g. "REALITY: yes (xray verified v26)").
 	Notes []string
@@ -45,7 +59,17 @@ func (c Capabilities) Matches(cfg config.Config) bool {
 	return c.SupportsProtocol(cfg.Type) &&
 		c.SupportsTransport(cfg.Network) &&
 		c.SupportsSecurity(cfg.Security) &&
-		c.SupportsFlow(cfg.Flow)
+		c.SupportsFlow(cfg.Flow) &&
+		c.SupportsECH(cfg)
+}
+
+// SupportsECH reports whether the backend may execute a
+// configuration carrying ECH fields. An ECH-disabled configuration
+// needs no ECH support; an ECH-enabled one is routed only to
+// ECH-declared backends — anything else would silently connect
+// WITHOUT the encrypted client hello the user configured.
+func (c Capabilities) SupportsECH(cfg config.Config) bool {
+	return !cfg.ECHEnabled || c.ECH
 }
 
 // SupportsProtocol reports whether the backend declares a protocol.

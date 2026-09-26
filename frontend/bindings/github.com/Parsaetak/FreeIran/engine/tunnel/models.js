@@ -40,6 +40,79 @@ export const Mode = {
 };
 
 /**
+ * OwnershipStatus is the redacted ownership view for the UI: whether
+ * a marker exists, its phase, endpoint, age and the recorded previous
+ * state — the "FreeIran proxy ownership / saved previous state /
+ * recovery status" surface (v0.10.2 § Windows system-proxy UX).
+ */
+export class OwnershipStatus {
+    /**
+     * Creates a new OwnershipStatus instance.
+     * @param {Partial<OwnershipStatus>} [$$source = {}] - The source object to create the OwnershipStatus.
+     */
+    constructor($$source = {}) {
+        if (!("present" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["present"] = false;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["phase"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {number | undefined}
+             */
+            this["schema_version"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["endpoint"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {number | undefined}
+             */
+            this["enabled_at_ms"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {SystemProxySnapshot | undefined}
+             */
+            this["previous"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new OwnershipStatus instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {OwnershipStatus}
+     */
+    static createFrom($$source = {}) {
+        const $$createField5_0 = $$createType0;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("previous" in $$parsedSource) {
+            $$parsedSource["previous"] = $$createField5_0($$parsedSource["previous"]);
+        }
+        return new OwnershipStatus(/** @type {Partial<OwnershipStatus>} */($$parsedSource));
+    }
+}
+
+/**
  * State is the current tunnel state surfaced to the UI.
  */
 export class State {
@@ -129,7 +202,7 @@ export class State {
      * @returns {State}
      */
     static createFrom($$source = {}) {
-        const $$createField4_0 = $$createType0;
+        const $$createField4_0 = $$createType1;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("bypass_list" in $$parsedSource) {
             $$parsedSource["bypass_list"] = $$createField4_0($$parsedSource["bypass_list"]);
@@ -138,5 +211,117 @@ export class State {
     }
 }
 
+/**
+ * SystemProxySnapshot is a redacted view of the system proxy state.
+ */
+export class SystemProxySnapshot {
+    /**
+     * Creates a new SystemProxySnapshot instance.
+     * @param {Partial<SystemProxySnapshot>} [$$source = {}] - The source object to create the SystemProxySnapshot.
+     */
+    constructor($$source = {}) {
+        if (!("enabled" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["enabled"] = false;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["server"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string[] | undefined}
+             */
+            this["bypass"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * raw override string from WinINet
+             * @member
+             * @type {string | undefined}
+             */
+            this["override"] = undefined;
+        }
+        if (!("saved" in $$source)) {
+            /**
+             * previous settings saved?
+             * @member
+             * @type {boolean}
+             */
+            this["saved"] = false;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * v0.10.2 fidelity fields. The v0.10.1 marker (recovery record)
+             * did not persist these, so legacy markers parse with zero
+             * values and recovery derives the mode from Enabled/Server —
+             * documented as the v1 fidelity limit.
+             * 
+             *   AutoConfigURL — the PAC/autoconfig URL (INTERNET_PER_CONN_AUTOCONFIG_URL)
+             *   AutoDetect    — the PROXY_TYPE_AUTO_DETECT flag bit
+             *   Flags         — the raw INTERNET_PER_CONN_FLAGS value (diagnostics)
+             * @member
+             * @type {string | undefined}
+             */
+            this["autoconfig_url"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {boolean | undefined}
+             */
+            this["autodetect"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {number | undefined}
+             */
+            this["flags"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * v0.10.3 fidelity field: the connection's autodiscovery
+             * settings (INTERNET_PER_CONN_AUTODISCOVERY_FLAGS, option 5 —
+             * the AUTO_PROXY_FLAG_* mask that Windows keeps BESIDE the
+             * PROXY_TYPE_AUTO_DETECT flag bit). v0.10.2 never captured or
+             * restored it, so a session could not faithfully restore the
+             * WPAD autodetection state it had saved: the AUTO_PROXY flags
+             * live in this option, not in INTERNET_PER_CONN_FLAGS, and
+             * Windows re-derives the AUTO_DETECT flag bit from it on query.
+             * Zero = not captured (legacy v1 records) — the comparison
+             * algebra treats zero as "unknown", never as "absent".
+             * @member
+             * @type {number | undefined}
+             */
+            this["autodiscovery_flags"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SystemProxySnapshot instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {SystemProxySnapshot}
+     */
+    static createFrom($$source = {}) {
+        const $$createField2_0 = $$createType1;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("bypass" in $$parsedSource) {
+            $$parsedSource["bypass"] = $$createField2_0($$parsedSource["bypass"]);
+        }
+        return new SystemProxySnapshot(/** @type {Partial<SystemProxySnapshot>} */($$parsedSource));
+    }
+}
+
 // Private type creation functions
-const $$createType0 = $Create.Array($Create.Any);
+const $$createType0 = SystemProxySnapshot.createFrom;
+const $$createType1 = $Create.Array($Create.Any);

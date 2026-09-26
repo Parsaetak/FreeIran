@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { useConnectionStore } from "../state/connectionStore";
 // v0.10.2: durable system-proxy ownership surface (crash-recovery truth).
-import * as tunnelOwnership from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/tunnelownership.js";
+import * as tunnelOwnership from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/tunnelservice.js";
 import { useConfigsStore, makeSearchRunner } from "../state/stores";
 import { useSettingsStore } from "../state/settingsStore";
 import { call, type BackendView, type CandidateView, type Config } from "../services";

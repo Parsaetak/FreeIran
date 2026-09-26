@@ -725,8 +725,12 @@ func (s *TestQueueService) EnqueueByFilter(filter TestFilter) (TestBatchResult, 
 		case "timed_out":
 			// v0.9.15: the classified failure reason makes "retry timed
 			// out" a REAL scope instead of a synonym for "failed".
+			// v0.11.0: the failure CLASS is the primary evidence; the
+			// legacy free-text match remains as the fallback for
+			// records stored before classes existed.
 			return cfg.TestedAt > 0 && !cfg.Working &&
-				strings.Contains(strings.ToLower(cfg.LastFailureReason), "timeout")
+				(cfg.LastFailureClass == config.FailureClassTimeout ||
+					strings.Contains(strings.ToLower(cfg.LastFailureReason), "timeout"))
 		case "working":
 			return cfg.TestedAt > 0 && cfg.Working
 		default: // "all", "selected"

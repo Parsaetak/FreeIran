@@ -3,6 +3,156 @@
 Release history for FreeIran. The newest release is documented in the
 [README](README.md); everything older lives here, newest first.
 
+## v0.11.0 — compact Windows CI (two-layer proof), failure classification, transport agility, ECH foundation
+
+v0.11.0 is a CI-architecture and resilience-foundation release. Every
+claim below is scoped to evidence actually executed for this release
+(full Linux suite + `-race`, frontend battery, real-core verification
+with the three pinned cores including the new ECH shapes, the security
+battery, windows/amd64 cross-build + PE verification from Linux, and a
+Windows compile-surface proof from Linux). The Windows-native CI gate
+(the NEW two-layer matrix itself) is NOT claimed as executed — it runs
+in CI when this tree is pushed.
+
+### Windows CI — measured, redesigned, no hidden coverage reduction
+
+- The bottleneck was measured, not guessed: the v0.10.5 step
+  `go test -count=1 -p 1 -timeout=20m ./...` spent its time on
+  platform-NEUTRAL suites the Linux `go` job already runs (and runs
+  again under `-race`) — connection 42.3 s, testqueue 31.1 s,
+  provider 31.1 s, app 30.4 s, coremgr 28.7 s, netcheck 15.3 s on
+  Linux — multiplied by Windows runner overhead and serialized by
+  `-p 1` (docs/performance.md §15 carries the table).
+- Layer A — compile the COMPLETE Windows test surface:
+  `go test -run '^$' -count=1 -p 1 -timeout=10m ./...`. Every package
+  and test binary compiles and links for Windows, including every
+  `//go:build windows` test file Linux never compiles, and every
+  TestMain runs (provider's fixture build included — the fixtures
+  must compile for Windows too).
+- Layer B — execute the Windows-sensitive behavior: the four
+  platform-critical packages run FULL (engine/tunnel — real WinINet
+  round-trips + recovery machinery; system — process/job supervision,
+  hidden console, cmd.exe resolver, workspace lifecycle, executable
+  discovery; engine/store — the open-handle-blocks-deletion defect
+  class; internal/httpx — the v0.9.6 read-only Sync finalization
+  asymmetry), and targeted `-run` patterns cover the Windows-material
+  subset of coremgr (exec_windows), netcheck (environment/staged
+  diagnostics ladder, traceroute privilege guard), app
+  (boots/shutdown/boot phases, crash-recovery boots against the real
+  backend) and connection (hung-core teardown with image release,
+  mid-session crash, cancel/deadline survival, reconnect replacement,
+  goroutine-leak cycles, provider sessions).
+- Layer C — the repeated WinINet/recovery battery is UNCHANGED in
+  scope (`-count=5 -p 1`, `if: always()` so a failing layer never
+  hides the repeated evidence). `-v` was dropped: failures print full
+  diagnostics regardless and 5× verbose passes buried the signal.
+- Every layer has an explicit bounded timeout (10m compile-all, 10m
+  platform-critical, 4–8m per targeted group, 10m battery) — no
+  20-minute blanket hiding an unknown slow test.
+- Job dependencies audited and deliberately unchanged: windows needs
+  [go, frontend]; protocol-cores and the Security workflow stay
+  independent (security evidence never waits on Windows).
+
+### Failure classification + route freshness (evidence model)
+
+- A stable nine-class failure vocabulary (dns, tcp, tls, handshake,
+  listener, verify, reset, timeout, transport) derived from
+  observations only, in precedence order: failed-facet shape → the
+  URL-test's own canonical vocabulary → classified error text. The
+  URL-test phase timings are explicitly NOT failure evidence
+  (documented why: none of them marks the failing phase).
+- Per-configuration evidence: `last_failure_at`, `last_failure_class`
+  and a bounded freshness tuple (`Evidence()`: last_verified_at,
+  last_failure_at, recent_failure_class, verification_age). History
+  observations carry their class. Unknown classes are dropped by
+  normalization rather than trusted.
+- The `timed_out` scope filter consults the class first (legacy
+  free-text fallback preserved for old records).
+
+### Transport agility — preference, not a second failover engine
+
+- A trailing streak of ≥2 failures sharing one PROTOCOL-SPECIFIC
+  class (tls/handshake/transport) demotes the candidate in BOTH
+  ranking surfaces by a bounded, saturating factor (2 ×0.85, 3 ×0.70,
+  ≥4 ×0.55) with an explicit explanation line. Quick Connect,
+  recovery and discovery all select through this scoring, so repeated
+  protocol-specific evidence naturally moves automatic preference to
+  a different already-supported transport. Mixed or unattributed
+  trailing classes do NOT demote; the factor never zeroes a candidate
+  (manual selection still works); no "confidence score" exists
+  anywhere.
+
+### ECH (Encrypted Client Hello) — verified, scoped, honestly declared
+
+- Four dedicated config fields map 1:1 onto sing-box 1.14's
+  `tls.ech` (enabled/config/config_path/query_server_name); nothing
+  overloads Host/Network/Security/Fingerprint/SpiderX; not part of
+  the fingerprint. Validation encodes EMPIRICALLY VERIFIED binary
+  behavior: PEM "ECH CONFIGS" envelope with a base64 body (raw
+  base64/hex/other header spellings rejected by the binary), REALITY
+  conflict rejected before generation, TLS required, config XOR
+  config_path. Normalization wraps the raw base64 ECHConfigList (the
+  DNS HTTPS `ech=` payload shape) into the PEM envelope.
+- Capability-routed to sing-box ONLY: the pinned V2Ray 5.53.0
+  silently ignores an `echConfigList` field (wrong-typed values pass
+  `v2ray test`), and Xray 26.3.27 accepts the field in schema but
+  does not content-validate it at check level — neither is claimable,
+  so the matcher never routes ECH configs to them (silently
+  connecting without ECH would be a lie).
+- Real-core proof: the three ECH shapes (inline PEM config,
+  config_path file, query_server_name) ride the pinned sing-box
+  1.14.0 smoke suite (`check` + startup + listener readiness).
+  EVIDENCE SCOPE: schema-level acceptance, NOT live ECH negotiation
+  with an ECH-capable server — stated in the UI, the capability
+  notes and docs/protocols.md.
+- Import surface: the structured/JSON representation carries the ECH
+  fields; NO URI parameter is invented (the ecosystem has no
+  standardized ECH URI parameter — pinned by test).
+
+### Machine-generated bindings restored (hand-maintained layer removed)
+
+- The pinned wails3 v3.0.0-beta.19 CLI was built (CGO-free, per the
+  v0.9.8.7 procedure) and the bindings regenerated: a second
+  generation is byte-identical (reproducibility contract re-verified).
+- The v0.9.11 hand-maintained files (profiletypes.js, importtypes.js,
+  tunnelownership.js) are REMOVED — the generator covers their entire
+  surface. `TestProfileBindingModelsMatchGoStructs` was repurposed
+  (not deleted): it now pins the machine-generated models.js
+  ProfileView/ProfileSpec field-for-field against the Go structs, so
+  a stale committed binding still fails loudly.
+- Frontend migrated to the generated surface (ImportDialog, Connection
+  ownership calls, profile type imports, QuickConnect ProfileSpec
+  construction); 157/157 frontend tests pass, typecheck clean.
+
+### UI evidence surfaces (no fake badges)
+
+- The configuration detail panel gains a "Failure evidence" section
+  (streak, class, credential-free detail, last-failure/last-verified
+  times) and an ECH section with FOUR distinct states — configured /
+  core support / core acceptance / connectivity — each rendered from
+  recorded facts, with a truth note bounding the ECH claim to
+  schema-level evidence.
+
+### Android strategy (plan only)
+
+- docs/android.md: an implementation-ready architecture note (shared
+  Go engine, VPNService tunnel boundary with the same transactional
+  ownership contract as WinINet, UI bridge, pinned per-ABI core
+  distribution, verification and permission requirements, and a
+  six-step independently-verifiable ladder). No Android product
+  exists, no Android code is claimed, and TUN remains
+  experimental/disabled (an Android TUN must be a new transactional
+  implementation that passes real rollback/recovery tests).
+
+### Known states (documented, not fixed)
+
+- `TestReleaseMetadataConcurrentRequestsDeduplicated` (engine/coremgr,
+  `-race`) remains load-sensitive as documented in v0.10.5; no test
+  was weakened.
+- The Windows-native gate for THIS tree runs in CI when pushed; until
+  it passes, v0.11.0 is not "Windows-verified" (same honest scoping
+  as every previous release).
+
 ## v0.10.5 — comment-aware security scanning, discovery route-trust policy
 
 v0.10.5 is a security-tooling correctness release plus one trust-policy

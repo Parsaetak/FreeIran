@@ -28,6 +28,11 @@ export function Get() {
 /**
  * Save validates, persists and applies new settings. The saved value
  * is returned so the UI can reconcile.
+ * 
+ * v0.9.12: Save and persistSettings share ONE write mutex — the whole
+ * read→validate→write→memory-update cycle is serialized, so
+ * concurrent settings writers can never interleave and leave memory
+ * and disk diverging.
  * @param {$models.Settings} settings
  * @returns {$CancellablePromise<$models.Settings>}
  */

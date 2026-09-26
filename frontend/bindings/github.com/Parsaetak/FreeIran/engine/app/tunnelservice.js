@@ -51,14 +51,29 @@ export function EnableTUN(host, port) {
 }
 
 /**
+ * OwnershipStatus exposes the durable system-proxy ownership marker
+ * (v0.10.2 § Windows system-proxy UX): whether FreeIran owns the
+ * system proxy, the ownership phase, the recorded endpoint and the
+ * saved previous state — the facts a recovery will apply, readable
+ * without touching the platform proxy.
+ * @returns {$CancellablePromise<tunnel$0.OwnershipStatus>}
+ */
+export function OwnershipStatus() {
+    return $Call.ByID(3429419992).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType0($result);
+    }));
+}
+
+/**
  * State returns the current tunnel state.
  * @returns {$CancellablePromise<tunnel$0.State>}
  */
 export function State() {
     return $Call.ByID(3419848110).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType0($result);
+        return $$createType1($result);
     }));
 }
 
 // Private type creation functions
-const $$createType0 = tunnel$0.State.createFrom;
+const $$createType0 = tunnel$0.OwnershipStatus.createFrom;
+const $$createType1 = tunnel$0.State.createFrom;

@@ -1940,6 +1940,16 @@ button {
   color: var(--text-faint);
 }
 
+/* v0.11.0: evidence-scope notes under detail sections (ECH states,
+   failure evidence). Truth notes are muted, never badge-like — they
+   bound what the numbers above actually prove. */
+.detail-note {
+  margin: 8px 0 0;
+  font-size: var(--text-11, 11px);
+  line-height: 1.45;
+  color: var(--text-faint);
+}
+
 /*
  * v0.9.13 Cores page: update-size callout + runtime status section.
  */

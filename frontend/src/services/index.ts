@@ -81,11 +81,11 @@ export type LogEntry = import("../../bindings/github.com/Parsaetak/FreeIran/inte
 export type LogFilter = import("../../bindings/github.com/Parsaetak/FreeIran/engine/app/models.js").LogFilter;
 export type LogPage = import("../../bindings/github.com/Parsaetak/FreeIran/engine/app/models.js").LogPage;
 export type Settings = import("../../bindings/github.com/Parsaetak/FreeIran/engine/app/models.js").Settings;
-export type ProfileView = import("../../bindings/github.com/Parsaetak/FreeIran/engine/app/profiletypes.js").ProfileView;
-export type ProfileSpec = import("../../bindings/github.com/Parsaetak/FreeIran/engine/app/profiletypes.js").ProfileSpec;
-export type ImportPreview = import("../../bindings/github.com/Parsaetak/FreeIran/engine/app/importtypes.js").ImportPreview;
-export type ImportResult = import("../../bindings/github.com/Parsaetak/FreeIran/engine/app/importtypes.js").ImportResult;
-export type ImportedConfigView = import("../../bindings/github.com/Parsaetak/FreeIran/engine/app/importtypes.js").ImportedConfigView;
+export type ProfileView = import("../../bindings/github.com/Parsaetak/FreeIran/engine/app/models.js").ProfileView;
+export type ProfileSpec = import("../../bindings/github.com/Parsaetak/FreeIran/engine/app/models.js").ProfileSpec;
+export type ImportPreview = import("../../bindings/github.com/Parsaetak/FreeIran/engine/app/models.js").ImportPreview;
+export type ImportResult = import("../../bindings/github.com/Parsaetak/FreeIran/engine/app/models.js").ImportResult;
+export type ImportedConfigView = import("../../bindings/github.com/Parsaetak/FreeIran/engine/app/models.js").ImportedConfigView;
 
 /**
  * Wraps a binding call so UI code receives a single, readable error.

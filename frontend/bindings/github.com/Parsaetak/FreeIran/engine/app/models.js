@@ -252,6 +252,20 @@ export class BackendView {
              */
             this["source"] = undefined;
         }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["origin"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["ownership"] = undefined;
+        }
 
         Object.assign(this, $$source);
     }
@@ -730,6 +744,88 @@ export class ConfigDetail {
              */
             this["compatible_backends"] = undefined;
         }
+        if (/** @type {any} */(false)) {
+            /**
+             * v0.11.0 failure evidence (from the stored record; verbatim,
+             * never scored into a magic number here). FailureStreak counts
+             * consecutive failed verifications; LastFailureClass is the
+             * classified cause of the most recent failure (dns/tcp/tls/
+             * handshake/listener/verify/reset/timeout/transport); LastFailureAt
+             * and LastSuccessAt bound the verification age on both sides.
+             * @member
+             * @type {number | undefined}
+             */
+            this["failure_streak"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["last_failure_class"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["last_failure_reason"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {number | undefined}
+             */
+            this["last_failure_at"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {number | undefined}
+             */
+            this["last_success_at"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * v0.11.0 ECH states — four DISTINCT states, never merged into a
+             * badge (docs/ui.md):
+             * 
+             *   ECHConfigured    the stored record carries ech_enabled (user
+             *                    intent — nothing more).
+             *   ECHBackendSupport an INSTALLED, AVAILABLE backend that
+             *                    Supports() this exact configuration also
+             *                    declares ECH (capability level; today that
+             *                    is sing-box, schema-verified against the
+             *                    pinned v1.14.0).
+             *   ECHCoreVerified  the LAST test executed through an
+             *                    ECH-declaring backend SUCCEEDED — the real
+             *                    core accepted the generated ECH document
+             *                    (check + startup) and the tunnel verified.
+             *                    This is schema/runtime evidence, NOT live
+             *                    ECH negotiation with an ECH server.
+             *   "actually verified" is the generic Working + LastSuccessAt
+             *                    pair above — usable connectivity through the
+             *                    tunnel, exactly like every other config; ECH
+             *                    adds no separate claim.
+             * @member
+             * @type {boolean | undefined}
+             */
+            this["ech_configured"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {boolean | undefined}
+             */
+            this["ech_backend_support"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {boolean | undefined}
+             */
+            this["ech_core_verified"] = undefined;
+        }
 
         Object.assign(this, $$source);
     }
@@ -957,6 +1053,12 @@ export class ConnectBestResult {
 /**
  * CoreLifecycleView is the complete UI-facing lifecycle projection of
  * one managed core (manifest + registry discovery + failure text).
+ * 
+ * v0.9.14: Origin and Ownership surface WHERE the active binary came
+ * from and whether FreeIran owns it or only references an external
+ * installation; StatusNote carries honest non-failure remarks ("newer
+ * than stable"); LastDecision is the reuse decision of the last
+ * install call.
  */
 export class CoreLifecycleView {
     /**
@@ -1005,6 +1107,34 @@ export class CoreLifecycleView {
              * @type {string | undefined}
              */
             this["failure_message"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["origin"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["ownership"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["status_note"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["last_decision"] = undefined;
         }
 
         Object.assign(this, $$source);
@@ -1456,6 +1586,302 @@ export class GroupsOverview {
 }
 
 /**
+ * ImportPreview is the full preview result.
+ */
+export class ImportPreview {
+    /**
+     * Creates a new ImportPreview instance.
+     * @param {Partial<ImportPreview>} [$$source = {}] - The source object to create the ImportPreview.
+     */
+    constructor($$source = {}) {
+        if (!("format" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["format"] = "";
+        }
+        if (!("total" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["total"] = 0;
+        }
+        if (!("imported" in $$source)) {
+            /**
+             * @member
+             * @type {ImportedConfigView[]}
+             */
+            this["imported"] = [];
+        }
+        if (!("rejected" in $$source)) {
+            /**
+             * @member
+             * @type {ImportRejected[]}
+             */
+            this["rejected"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ImportPreview instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {ImportPreview}
+     */
+    static createFrom($$source = {}) {
+        const $$createField2_0 = $$createType19;
+        const $$createField3_0 = $$createType21;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("imported" in $$parsedSource) {
+            $$parsedSource["imported"] = $$createField2_0($$parsedSource["imported"]);
+        }
+        if ("rejected" in $$parsedSource) {
+            $$parsedSource["rejected"] = $$createField3_0($$parsedSource["rejected"]);
+        }
+        return new ImportPreview(/** @type {Partial<ImportPreview>} */($$parsedSource));
+    }
+}
+
+/**
+ * ImportRejected explains one entry that could not be parsed or
+ * validated. Snippet is a bounded, redacted fragment for recognition.
+ */
+export class ImportRejected {
+    /**
+     * Creates a new ImportRejected instance.
+     * @param {Partial<ImportRejected>} [$$source = {}] - The source object to create the ImportRejected.
+     */
+    constructor($$source = {}) {
+        if (!("index" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["index"] = 0;
+        }
+        if (!("reason" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["reason"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["snippet"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ImportRejected instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {ImportRejected}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ImportRejected(/** @type {Partial<ImportRejected>} */($$parsedSource));
+    }
+}
+
+/**
+ * ImportResult reports what SaveImportedConfigs persisted.
+ */
+export class ImportResult {
+    /**
+     * Creates a new ImportResult instance.
+     * @param {Partial<ImportResult>} [$$source = {}] - The source object to create the ImportResult.
+     */
+    constructor($$source = {}) {
+        if (!("saved_count" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["saved_count"] = 0;
+        }
+        if (!("updated_count" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["updated_count"] = 0;
+        }
+        if (!("rejected_count" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["rejected_count"] = 0;
+        }
+        if (!("config_ids" in $$source)) {
+            /**
+             * @member
+             * @type {string[]}
+             */
+            this["config_ids"] = [];
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string[] | undefined}
+             */
+            this["executable_ids"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ImportResult instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {ImportResult}
+     */
+    static createFrom($$source = {}) {
+        const $$createField3_0 = $$createType4;
+        const $$createField4_0 = $$createType4;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("config_ids" in $$parsedSource) {
+            $$parsedSource["config_ids"] = $$createField3_0($$parsedSource["config_ids"]);
+        }
+        if ("executable_ids" in $$parsedSource) {
+            $$parsedSource["executable_ids"] = $$createField4_0($$parsedSource["executable_ids"]);
+        }
+        return new ImportResult(/** @type {Partial<ImportResult>} */($$parsedSource));
+    }
+}
+
+/**
+ * ImportedConfigView is the redacted preview row for one parsed
+ * configuration: identity + capability truth, no credentials.
+ */
+export class ImportedConfigView {
+    /**
+     * Creates a new ImportedConfigView instance.
+     * @param {Partial<ImportedConfigView>} [$$source = {}] - The source object to create the ImportedConfigView.
+     */
+    constructor($$source = {}) {
+        if (!("index" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["index"] = 0;
+        }
+        if (!("name" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["name"] = "";
+        }
+        if (!("protocol" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["protocol"] = "";
+        }
+        if (!("address" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["address"] = "";
+        }
+        if (!("port" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["port"] = 0;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["transport"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["security"] = undefined;
+        }
+        if (!("redacted" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["redacted"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string[] | undefined}
+             */
+            this["backends"] = undefined;
+        }
+        if (!("executable" in $$source)) {
+            /**
+             * Executable is TRUE only when at least one INSTALLED backend
+             * both declares the protocol and accepts the config (deep
+             * validation). This is the "will it actually run" answer.
+             * @member
+             * @type {boolean}
+             */
+            this["executable"] = false;
+        }
+        if (!("config_id" in $$source)) {
+            /**
+             * ConfigID is the deterministic fingerprint ID the config will
+             * carry after saving (connect-from-paste targets THIS id).
+             * @member
+             * @type {string}
+             */
+            this["config_id"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * Warnings carries honesty notes (e.g. insecure TLS requested).
+             * @member
+             * @type {string[] | undefined}
+             */
+            this["warnings"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ImportedConfigView instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {ImportedConfigView}
+     */
+    static createFrom($$source = {}) {
+        const $$createField8_0 = $$createType4;
+        const $$createField11_0 = $$createType4;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("backends" in $$parsedSource) {
+            $$parsedSource["backends"] = $$createField8_0($$parsedSource["backends"]);
+        }
+        if ("warnings" in $$parsedSource) {
+            $$parsedSource["warnings"] = $$createField11_0($$parsedSource["warnings"]);
+        }
+        return new ImportedConfigView(/** @type {Partial<ImportedConfigView>} */($$parsedSource));
+    }
+}
+
+/**
  * LastCleanupTask reports one task of the last cleanup pass.
  */
 export class LastCleanupTask {
@@ -1658,7 +2084,7 @@ export class LogPage {
      * @returns {LogPage}
      */
     static createFrom($$source = {}) {
-        const $$createField0_0 = $$createType19;
+        const $$createField0_0 = $$createType23;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("entries" in $$parsedSource) {
             $$parsedSource["entries"] = $$createField0_0($$parsedSource["entries"]);
@@ -1731,8 +2157,8 @@ export class MemorySnapshot {
      * @returns {MemorySnapshot}
      */
     static createFrom($$source = {}) {
-        const $$createField0_0 = $$createType20;
-        const $$createField1_0 = $$createType21;
+        const $$createField0_0 = $$createType24;
+        const $$createField1_0 = $$createType25;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pressure" in $$parsedSource) {
             $$parsedSource["pressure"] = $$createField0_0($$parsedSource["pressure"]);
@@ -1915,6 +2341,196 @@ export class OverallSourceHealth {
     static createFrom($$source = {}) {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new OverallSourceHealth(/** @type {Partial<OverallSourceHealth>} */($$parsedSource));
+    }
+}
+
+/**
+ * ProfileSpec is the create/update payload (no credentials).
+ */
+export class ProfileSpec {
+    /**
+     * Creates a new ProfileSpec instance.
+     * @param {Partial<ProfileSpec>} [$$source = {}] - The source object to create the ProfileSpec.
+     */
+    constructor($$source = {}) {
+        if (!("name" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["name"] = "";
+        }
+        if (!("mode" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["mode"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["config_id"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["preferred_backend"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {number | undefined}
+             */
+            this["local_socks_port"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {number | undefined}
+             */
+            this["local_http_port"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {boolean | null | undefined}
+             */
+            this["auto_recovery"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ProfileSpec instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {ProfileSpec}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ProfileSpec(/** @type {Partial<ProfileSpec>} */($$parsedSource));
+    }
+}
+
+/**
+ * ProfileView is the credential-free UI projection of one profile.
+ * ConfigName is resolved live from the store at view time so a stale
+ * reference is visible instead of invented.
+ */
+export class ProfileView {
+    /**
+     * Creates a new ProfileView instance.
+     * @param {Partial<ProfileView>} [$$source = {}] - The source object to create the ProfileView.
+     */
+    constructor($$source = {}) {
+        if (!("id" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["id"] = "";
+        }
+        if (!("name" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["name"] = "";
+        }
+        if (!("mode" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["mode"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["config_id"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["config_name"] = undefined;
+        }
+        if (!("config_available" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["config_available"] = false;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["preferred_backend"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {number | undefined}
+             */
+            this["local_socks_port"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {number | undefined}
+             */
+            this["local_http_port"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {boolean | null | undefined}
+             */
+            this["auto_recovery"] = undefined;
+        }
+        if (!("active" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["active"] = false;
+        }
+        if (!("default" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["default"] = false;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {number | undefined}
+             */
+            this["created_at"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ProfileView instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {ProfileView}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ProfileView(/** @type {Partial<ProfileView>} */($$parsedSource));
     }
 }
 
@@ -2490,7 +3106,7 @@ export class Settings {
      */
     static createFrom($$source = {}) {
         const $$createField2_0 = $$createType4;
-        const $$createField3_0 = $$createType22;
+        const $$createField3_0 = $$createType26;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("tor_bridge_lines" in $$parsedSource) {
             $$parsedSource["tor_bridge_lines"] = $$createField2_0($$parsedSource["tor_bridge_lines"]);
@@ -2847,8 +3463,8 @@ export class SourceReliabilityReport {
      * @returns {SourceReliabilityReport}
      */
     static createFrom($$source = {}) {
-        const $$createField1_0 = $$createType23;
-        const $$createField2_0 = $$createType25;
+        const $$createField1_0 = $$createType27;
+        const $$createField2_0 = $$createType29;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("overall" in $$parsedSource) {
             $$parsedSource["overall"] = $$createField1_0($$parsedSource["overall"]);
@@ -3122,8 +3738,8 @@ export class StartFlowStatus {
      * @returns {StartFlowStatus}
      */
     static createFrom($$source = {}) {
-        const $$createField6_0 = $$createType26;
-        const $$createField7_0 = $$createType28;
+        const $$createField6_0 = $$createType30;
+        const $$createField7_0 = $$createType32;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("environment" in $$parsedSource) {
             $$parsedSource["environment"] = $$createField6_0($$parsedSource["environment"]);
@@ -3593,7 +4209,7 @@ export class TorOptionsView {
      */
     static createFrom($$source = {}) {
         const $$createField0_0 = $$createType4;
-        const $$createField1_0 = $$createType22;
+        const $$createField1_0 = $$createType26;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("bridge_lines" in $$parsedSource) {
             $$parsedSource["bridge_lines"] = $$createField0_0($$parsedSource["bridge_lines"]);
@@ -3794,7 +4410,7 @@ export class stagingEntry {
      * @returns {stagingEntry}
      */
     static createFrom($$source = {}) {
-        const $$createField3_0 = $$createType29;
+        const $$createField3_0 = $$createType33;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("provenance" in $$parsedSource) {
             $$parsedSource["provenance"] = $$createField3_0($$parsedSource["provenance"]);
@@ -3822,15 +4438,19 @@ const $$createType14 = BuiltinGroupView.createFrom;
 const $$createType15 = $Create.Array($$createType14);
 const $$createType16 = UserGroupView.createFrom;
 const $$createType17 = $Create.Array($$createType16);
-const $$createType18 = logging$0.Entry.createFrom;
+const $$createType18 = ImportedConfigView.createFrom;
 const $$createType19 = $Create.Array($$createType18);
-const $$createType20 = mempressure$0.Snapshot.createFrom;
-const $$createType21 = booster$0.Settings.createFrom;
-const $$createType22 = $Create.Map($Create.Any, $Create.Any);
-const $$createType23 = OverallSourceHealth.createFrom;
-const $$createType24 = SourceHealthEntry.createFrom;
-const $$createType25 = $Create.Array($$createType24);
-const $$createType26 = $Create.Array($Create.Any);
-const $$createType27 = StartFlowResult.createFrom;
-const $$createType28 = $Create.Nullable($$createType27);
-const $$createType29 = discovery$0.Provenance.createFrom;
+const $$createType20 = ImportRejected.createFrom;
+const $$createType21 = $Create.Array($$createType20);
+const $$createType22 = logging$0.Entry.createFrom;
+const $$createType23 = $Create.Array($$createType22);
+const $$createType24 = mempressure$0.Snapshot.createFrom;
+const $$createType25 = booster$0.Settings.createFrom;
+const $$createType26 = $Create.Map($Create.Any, $Create.Any);
+const $$createType27 = OverallSourceHealth.createFrom;
+const $$createType28 = SourceHealthEntry.createFrom;
+const $$createType29 = $Create.Array($$createType28);
+const $$createType30 = $Create.Array($Create.Any);
+const $$createType31 = StartFlowResult.createFrom;
+const $$createType32 = $Create.Nullable($$createType31);
+const $$createType33 = discovery$0.Provenance.createFrom;

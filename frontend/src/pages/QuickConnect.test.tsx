@@ -108,6 +108,19 @@ vi.mock("../services", () => ({
 
 vi.mock("@wailsio/runtime", () => ({
   Events: { On: vi.fn(() => () => undefined), Emit: vi.fn() },
+  // v0.11.0: the regenerated bindings import the Create factory from
+  // the runtime for typed model reconstruction; the mock mirrors the
+  // real factory's shape (pass-through transforms, no-op defaults).
+  Create: Object.assign(
+    (type: unknown) => type,
+    {
+      Array: (fn: unknown) => fn,
+      Nullable: (fn: unknown) => fn,
+      Map: (fnK: unknown, _fnV: unknown) => fnK,
+      Any: undefined,
+      Default: (fn: unknown) => fn,
+    },
+  ),
 }));
 
 function candidate(fingerprint: string, latency: number, overrides: Partial<CandidateView> = {}): CandidateView {

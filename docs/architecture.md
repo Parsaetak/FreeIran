@@ -857,3 +857,76 @@ Connect picker all honour the contract.
 
 Full details: docs/providers.md, docs/internet-tools.md and
 docs/latency.md.
+
+## v0.11.0 additions — failure classification, route freshness, transport agility, ECH
+
+### Failure classification (evidence, not taxonomy theater)
+
+Every failed test/verification is classified into a NINE-class stable
+vocabulary (`engine/config`): `dns`, `tcp`, `tls`, `handshake`,
+`listener`, `verify`, `reset`, `timeout`, `transport`. The class is
+DERIVED from observations, in precedence order
+(`engine/tester.ClassifyOutcomeFailure`):
+
+1. the failed-facet SHAPE (handshake metrics failed → the core never
+   became ready; ping facet all-timeout → path blackholing);
+2. the URL-test's own canonical vocabulary (Timeout flag → timeout;
+   "HTTP <code> via tunnel" → the tunnel forwarded but the response
+   was not usable → verify);
+3. the classified error TEXT through `config.ClassifyFailure`
+   (ordered needles; TLS outranks handshake — "tls: handshake
+   failure" is a TLS alert — and timeout matches LAST).
+
+The URL-test phase TIMINGS are deliberately NOT failure evidence:
+DNSMS is 0 for proxied requests, TLSMS is −1 for plain-HTTP targets
+regardless of success, and ConnectMS is measured even on dial failure
+— none of them marks the failing phase. Unclassifiable evidence stays
+`""` rather than guessing a class.
+
+### Route freshness / evidence tuple
+
+Per configuration, the bounded observed tuple
+(`config.Config.Evidence`): `last_verified_at` (LastSuccessAt),
+`last_failure_at`, `recent_failure_class`, `verification_age`
+(distance to whichever of the two is more recent). All values are
+actual observations; zero means "never observed", never "unknown".
+These surface in the ranking scores (both surfaces), the connection
+detail view, and the `timed_out` scope filter (class first, legacy
+free-text fallback).
+
+### Transport agility — preference, not a second failover engine
+
+Repeated evidence of a PROTOCOL-SPECIFIC failure (a trailing streak
+of ≥2 failures all sharing class `tls`, `handshake` or `transport`)
+demotes a candidate in BOTH ranking surfaces
+(`engine/ranking.Evaluate` and `EvaluateMetrics`) by a bounded factor
+(2 ×0.85, 3 ×0.70, ≥4 ×0.55) with an explicit explanation line
+("last N tests failed with X-class failures — preferring other
+transports"). Quick Connect, recovery and discovery selection all
+flow through this scoring, so after repeated protocol-specific
+failures the system NATURALLY prefers a different already-supported
+transport/configuration. There is no parallel failover engine, no
+confidence score, and the demotion never zeroes a candidate (manual,
+explicit selection still works). Mixed/unattributed trailing classes
+do NOT demote — evidence that does not point at one layer must not
+drive transport preference.
+
+### Encrypted Client Hello
+
+ECH is modeled with four dedicated fields mapped 1:1 onto sing-box
+1.14's `tls.ech` object, capability-routed to sing-box ONLY (Xray's
+`echConfigList` exists in schema but is not content-validated at
+check level; V2Ray 5.53.0 ignores it — neither is claimable). The
+full evidence table, validation rules and the honest evidence scope
+(schema-level, not live ECH negotiation) are in docs/protocols.md.
+
+### Android strategy
+
+Android is an engineered PLAN, not a feature: see docs/android.md for
+the implementation-ready architecture note (shared Go engine,
+platform tunnel boundary via VPNService with the same transactional
+ownership contract as WinINet, UI bridge, pinned per-ABI core
+distribution, verification and permission requirements). The desktop
+TUN experiment remains EXPERIMENTAL/DISABLED — an Android TUN must be
+a new transactional implementation that passes real rollback/recovery
+tests, never a re-enable of the old code.

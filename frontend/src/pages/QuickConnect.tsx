@@ -4,8 +4,9 @@ import { useQuickConnectStore } from "../state/quickConnectStore";
 import { useStartFlowStore } from "../state/startflowStore";
 import { useSettingsStore, effectiveReducedMotion } from "../state/settingsStore";
 import { useProviderStore, PROVIDER_MODE_LABELS, type ProviderMode } from "../state/providerStore";
-import { useProfilesStore, PROFILE_MODE_LABELS, type ProfileMode } from "../state/profilesStore";
-import { call, providerService } from "../services";
+import { useProfilesStore, PROFILE_MODE_LABELS, normalizeProfileMode, type ProfileMode } from "../state/profilesStore";
+import { call, providerService, type ProfileSpec } from "../services";
+import { ProfileSpec as ProfileSpecModel } from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/models.js";
 import type { Page } from "../types/ui";
 import { formatLatency, truncate } from "../utilities/format";
 import {
@@ -555,12 +556,15 @@ interface ProfileDraft {
 
 function draftFromProfile(
   id: string | null,
-  profile?: { name: string; mode: ProfileMode; local_socks_port?: number; local_http_port?: number },
+  profile?: { name: string; mode: string; local_socks_port?: number; local_http_port?: number },
 ): ProfileDraft {
   return {
     id,
     name: profile?.name ?? "",
-    mode: profile?.mode ?? "auto",
+    // The generated ProfileView carries mode as a plain string; the
+    // local editor works on the narrow union (normalized here, never
+    // trusted blindly).
+    mode: normalizeProfileMode(profile?.mode),
     socks: profile?.local_socks_port ? String(profile.local_socks_port) : "",
     http: profile?.local_http_port ? String(profile.local_http_port) : "",
   };
@@ -596,12 +600,16 @@ function ProfileManager({
   const onSave = () => {
     if (!draft || busy) return;
 
-    const spec = {
+    // v0.11.0: the machine-generated binding models define the
+    // ProfileSpec payload as a class; constructing it explicitly keeps
+    // the wire format identical (only the provided fields serialize)
+    // while satisfying the generated signature.
+    const spec = new ProfileSpecModel({
       name: draft.name,
       mode: draft.mode,
       local_socks_port: draft.socks ? Number(draft.socks) : 0,
       local_http_port: draft.http ? Number(draft.http) : 0,
-    };
+    }) as ProfileSpec;
 
     setBusy(true);
     setLocalError(null);
@@ -653,7 +661,7 @@ function ProfileManager({
               {active?.id === profile.id && <span className="badge success">Active</span>}
             </span>
             <span className="qc-profile-meta">
-              {PROFILE_MODE_LABELS[profile.mode]}
+              {PROFILE_MODE_LABELS[normalizeProfileMode(profile.mode)]}
               {profile.local_socks_port ? ` · SOCKS ${profile.local_socks_port}` : ""}
               {profile.local_http_port ? ` · HTTP ${profile.local_http_port}` : ""}
             </span>

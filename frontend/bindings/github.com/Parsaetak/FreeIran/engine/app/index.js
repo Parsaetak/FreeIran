@@ -9,9 +9,11 @@ import * as CoreService from "./coreservice.js";
 import * as DataService from "./dataservice.js";
 import * as DiagnosticsService from "./diagnosticsservice.js";
 import * as DiscoveryService from "./discoveryservice.js";
+import * as ImportService from "./importservice.js";
 import * as InternetToolsService from "./internettoolsservice.js";
 import * as LogService from "./logservice.js";
 import * as NetworkService from "./networkservice.js";
+import * as ProfileService from "./profileservice.js";
 import * as ProviderService from "./providerservice.js";
 import * as SettingsService from "./settingsservice.js";
 import * as SourceService from "./sourceservice.js";
@@ -26,9 +28,11 @@ export {
     DataService,
     DiagnosticsService,
     DiscoveryService,
+    ImportService,
     InternetToolsService,
     LogService,
     NetworkService,
+    ProfileService,
     ProviderService,
     SettingsService,
     SourceService,
@@ -53,12 +57,18 @@ export {
     DiagnosticReport,
     EnqueueItem,
     GroupsOverview,
+    ImportPreview,
+    ImportRejected,
+    ImportResult,
+    ImportedConfigView,
     LastCleanupTask,
     LogFilter,
     LogPage,
     MemorySnapshot,
     NetworkIdentityRequest,
     OverallSourceHealth,
+    ProfileSpec,
+    ProfileView,
     ProviderChoice,
     ProviderModeView,
     RecoveryStatus,

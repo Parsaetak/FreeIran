@@ -159,7 +159,9 @@ export function RecoveryStatus() {
 
 /**
  * RefreshBackends re-runs executable discovery synchronously (the
- * user pressed "refresh" on the cores panel).
+ * user pressed "refresh" on the cores panel). This is an EXPLICIT user
+ * action, so it bypasses the discovery freshness windows (RefreshForce)
+ * — the bounded caches still serve every implicit refresh.
  * @returns {$CancellablePromise<$models.BackendView[]>}
  */
 export function RefreshBackends() {

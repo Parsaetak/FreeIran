@@ -1,6 +1,7 @@
 package ranking
 
 import (
+	"fmt"
 	"sort"
 	"time"
 
@@ -149,6 +150,14 @@ type MetricScores struct {
 	MeasuredURLMS    int64   `json:"measured_url_ms"`
 	LastVerifiedAt   int64   `json:"last_verified_at,omitempty"`
 
+	// v0.11.0 failure evidence surfaced verbatim for the UI (no
+	// derived confidence number): the consecutive trailing failure
+	// count, the failure class they share ("" when mixed) and the
+	// last failure time (Unix ms, 0 = never).
+	FailureStreak      int
+	RecentFailureClass string
+	LastFailureAt      int64
+
 	// Explanation lists the human-readable reasons, in order of
 	// weight, that produced the ranking.
 	Explanation []string `json:"explanation,omitempty"`
@@ -171,6 +180,14 @@ type RichCandidate struct {
 	// FailureStreak counts consecutive failures since the last
 	// success.
 	FailureStreak int
+
+	// v0.11.0 failure evidence: the last FAILED-verification time
+	// (Unix milliseconds; 0 = never) and the class of that failure
+	// (config.FailureClass*; "" = unattributed). Mirrors the classic
+	// Candidate surface's per-observation classes and feeds the same
+	// protocol-specific demotion below.
+	LastFailureAt    int64
+	LastFailureClass string
 }
 
 // pingProvenance decides where a ping number comes from.
@@ -347,6 +364,26 @@ func EvaluateMetrics(c RichCandidate, now time.Time) MetricScores {
 		0.08*m.FreshnessScore +
 		0.04*m.SourceScore +
 		0.03*m.CompatibilityScore
+
+	// --- v0.11.0 repeated protocol-specific failure evidence ------
+	// Same rule as the classic ranking surface (ranking.go): a streak
+	// of trailing failures sharing one protocol-specific class (tls /
+	// handshake / transport) is evidence the TRANSPORT is broken for
+	// this path, so the composite is demoted (2 ×0.85, 3 ×0.70, ≥4
+	// ×0.55) and alternative transports win automatic preference.
+	streak, class := trailingFailureEvidence(recentWindow(c.History, 8))
+
+	m.FailureStreak = streak
+	m.RecentFailureClass = class
+	m.LastFailureAt = c.LastFailureAt
+
+	if streak >= 2 && isProtocolSpecificClass(class) {
+		m.OverallScore *= protocolFailureFactor(streak)
+
+		m.Explanation = append(m.Explanation,
+			fmt.Sprintf("last %d tests failed with %s-class failures — preferring other transports",
+				streak, class))
+	}
 
 	m.Explanation = explainMetrics(m, c, pingProv, urlProv, ping)
 

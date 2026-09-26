@@ -299,6 +299,15 @@ export class Manifest {
             /**
              * LatestKnown is the newest upstream version seen by the last
              * update check ("update available" without a re-query).
+             * 
+             * v0.9.13: the retained upstream snapshot is COMPLETED with the
+             * release tag and the selected platform asset's download size, so
+             * the UI can show the real update target and size across restarts
+             * without re-querying the release API. All three fields are
+             * optional (omitempty): manifests written by older versions load
+             * unchanged, and a zero size honestly means "unavailable" — the
+             * UI shows a fallback, never a guess. A channel change clears the
+             * snapshot because it was selected under the previous channel.
              * @member
              * @type {string | undefined}
              */
@@ -306,8 +315,6 @@ export class Manifest {
         }
         if (/** @type {any} */(false)) {
             /**
-             * LatestTag is the release tag of the retained upstream
-             * snapshot (v0.9.13).
              * @member
              * @type {string | undefined}
              */
@@ -315,12 +322,99 @@ export class Manifest {
         }
         if (/** @type {any} */(false)) {
             /**
-             * LatestAssetSize is the retained platform asset download
-             * size in bytes; 0/absent means unavailable (v0.9.13).
              * @member
              * @type {number | undefined}
              */
             this["latest_asset_size"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * ---- v0.9.14: ownership, provenance and reuse evidence ----------
+             * 
+             * All fields are optional: manifests written by v0.9.12/v0.9.13
+             * load unchanged (unknown fields are never erased), and an empty
+             * Ownership means the historical default — a FreeIran-managed
+             * binary.
+             * 
+             * Ownership is "managed" (FreeIran-owned, installed/updated/
+             * removed by the workspace) or "external" (an already-installed
+             * binary FreeIran only REFERENCES — never deleted, renamed or
+             * overwritten; Disable/Remove/Rollback clear the reference and
+             * preserve the file).
+             * @member
+             * @type {string | undefined}
+             */
+            this["ownership"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * Origin records where the active binary came from: "managed",
+             * "path" (OS PATH lookup), "system" (known platform installation
+             * location) or "user" (user-supplied adoption).
+             * @member
+             * @type {string | undefined}
+             */
+            this["origin"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * ExternalPath is the canonical path of the referenced external
+             * executable (equal to BinaryPath while the external reference is
+             * active). When it disappears the runtime rediscoveres
+             * alternatives instead of trusting a false "ready" state.
+             * @member
+             * @type {string | undefined}
+             */
+            this["external_path"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * Trust distinguishes "upstream-verified" (SHA-256 matches the
+             * authoritative upstream asset digest) from "locally-validated"
+             * (probes and passes its smoke test, no authoritative digest
+             * match available). A matching version string alone is NEVER
+             * proof of provenance.
+             * @member
+             * @type {string | undefined}
+             */
+            this["trust"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * StatusNote carries an honest, non-failure status remark, e.g.
+             * "newer than stable; automatic downgrade refused".
+             * @member
+             * @type {string | undefined}
+             */
+            this["status_note"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * BinarySize/BinaryModTime are the file identity the manifest was
+             * written under; the reuse-first install path compares them to
+             * prove the binary is unchanged before trusting recorded evidence.
+             * @member
+             * @type {number | undefined}
+             */
+            this["binary_size"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["binary_mod_time"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * LastDecision is the v0.9.14 reuse decision of the last install
+             * call (managed-current, system-current, system-newer,
+             * system-older-but-working, managed-healthy, needs-update,
+             * needs-download, invalid-local, not-found).
+             * @member
+             * @type {string | undefined}
+             */
+            this["last_decision"] = undefined;
         }
         if (!("updated_at" in $$source)) {
             /**

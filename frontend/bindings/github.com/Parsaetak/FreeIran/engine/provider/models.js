@@ -332,18 +332,18 @@ export class Info {
      * @returns {Info}
      */
     static createFrom($$source = {}) {
-        const $$createField10_0 = $$createType1;
-        const $$createField11_0 = $$createType2;
-        const $$createField13_0 = $$createType3;
+        const $$createField11_0 = $$createType1;
+        const $$createField12_0 = $$createType2;
+        const $$createField14_0 = $$createType3;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("endpoints" in $$parsedSource) {
-            $$parsedSource["endpoints"] = $$createField10_0($$parsedSource["endpoints"]);
+            $$parsedSource["endpoints"] = $$createField11_0($$parsedSource["endpoints"]);
         }
         if ("capabilities" in $$parsedSource) {
-            $$parsedSource["capabilities"] = $$createField11_0($$parsedSource["capabilities"]);
+            $$parsedSource["capabilities"] = $$createField12_0($$parsedSource["capabilities"]);
         }
         if ("bootstrap" in $$parsedSource) {
-            $$parsedSource["bootstrap"] = $$createField13_0($$parsedSource["bootstrap"]);
+            $$parsedSource["bootstrap"] = $$createField14_0($$parsedSource["bootstrap"]);
         }
         return new Info(/** @type {Partial<Info>} */($$parsedSource));
     }

@@ -134,9 +134,21 @@ anything extracted from downloaded configuration data.
 Commit the regenerated bindings together with the backend change so the
 frontend contract stays in sync (frontend/backend contract rule).
 Binding method IDs are FNV-32a of the fully-qualified
-`package.Service.Method` name, so hand-maintaining a single added
-method (as done for `DiagnosticsService.StoreDiagnostics` in v0.3.0)
-follows the generator's own scheme.
+`package.Service.Method` name.
+
+v0.11.0: ALL committed bindings are machine-generated again. The
+v0.9.11-era hand-maintained files (`profiletypes.js`,
+`importtypes.js`, `tunnelownership.js`) were removed when the pinned
+wails3 v3.0.0-beta.19 CLI (buildable without CGO, see above) was run
+against the current tree — the generator now covers their entire
+surface, a second generation is byte-identical (reproducibility
+contract), and the regenerated models are pinned field-for-field to
+the Go structs by `TestProfileBindingModelsMatchGoStructs`. When a
+service signature changes, regenerate; hand-patching a binding file
+is a review-blocking regression. NOTE: `wails3 generate bindings
+-clean` deletes files it does not generate — the hand-maintained
+files are gone, so a clean regeneration is now safe, but re-read this
+section if a new hand-maintained file is ever introduced.
 
 ## Daily workflow
 

@@ -108,12 +108,20 @@ export function SetConfigOrder(ids) {
 }
 
 /**
- * TestConfig enqueues ONE configuration through the app's ONE
- * authoritative testing engine (testqueue → worker → tester →
- * persistence) and returns promptly with the config's current
- * snapshot. Duplicate requests collapse into the queued task. The
- * result is persisted by the queue's own result path; the UI observes
- * it incrementally (no full-list refresh).
+ * TestConfig enqueues ONE configuration for testing through the app's
+ * ONE authoritative testing engine (testqueue → worker → tester →
+ * persistence) and returns PROMPTLY with the config's current
+ * snapshot — v0.9.15: the UI never blocks on a synchronous network
+ * test, and single tests share every queue guarantee bulk testing has
+ * (deduplication, priority, per-backend concurrency, supervised core
+ * processes, cancellation, retry, honest persistence).
+ * 
+ * The enqueue is idempotent: a repeated click on an already
+ * queued/running config collapses into the existing task (ErrDuplicate
+ * is success), so redundant work is never created. The outcome reaches
+ * the UI through the queue's own result path (the adapter persists the
+ * result with the config), which the frontend observes incrementally —
+ * no full-list refresh anywhere.
  * @param {string} id
  * @returns {$CancellablePromise<config$0.Config | null>}
  */

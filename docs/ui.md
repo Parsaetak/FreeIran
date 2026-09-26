@@ -265,3 +265,38 @@ Page-specific styles in the stylesheet's numbered sections may only
 reference tokens — introducing a page-private color literal is a
 review-blocking regression (the v0.10.1 audit found none; the last
 brand-accent change was a token-only edit).
+
+## v0.11.0 — ECH states, failure evidence, and truth notes
+
+The configuration detail panel renders two new evidence sections,
+both driven ONLY by recorded facts:
+
+**Failure evidence** (shown when a failure streak or class exists):
+the consecutive trailing failure count, the classified cause of the
+most recent failure (the nine-class vocabulary), the credential-free
+failure detail, and the last-failure / last-verified times. A muted
+note states what the evidence DOES: repeated protocol-class failures
+(tls/handshake/transport) demote the candidate in automatic selection
+so other transports are preferred.
+
+**Encrypted Client Hello** (shown only for ECH-configured records):
+FOUR DISTINCT states, deliberately never merged into one badge:
+
+1. **Configuration** — the stored record carries `ech_enabled`
+   (user intent; nothing more).
+2. **Core support** — an installed, available backend that supports
+   this exact configuration also declares ECH (today: sing-box,
+   schema-verified against the pinned v1.14.0). Rendered as an
+   explicit failure state when absent.
+3. **Core acceptance** — the last test executed through an
+   ECH-declaring backend SUCCEEDED (the real core accepted the
+   generated ECH document and the tunnel verified). Rendered
+   honestly as "not yet verified through an ECH-capable core" when
+   absent.
+4. **Connectivity** — the generic working/failed state every
+   configuration has; ECH adds no separate claim.
+
+A truth note under the section bounds the claim: ECH support is
+schema-level evidence (config check + core startup), not proof of
+live ECH negotiation. No "secure", "censorship-resistant" or
+"unblockable" language appears anywhere in the ECH UI.

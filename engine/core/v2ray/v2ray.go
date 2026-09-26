@@ -60,6 +60,11 @@ func (b *Backend) Capabilities() core.Capabilities {
 			"V2Fly edition (v2fly/v2ray-core), v5 series",
 			"no REALITY support (Xray-only feature)",
 			"no xtls-rprx-vision flow (Xray-only feature)",
+			// v0.11.0: ECH is NOT declared for V2Ray. The pinned v2fly
+			// v2ray-core 5.53.0 silently IGNORES an echConfigList field
+			// (a wrong-typed value passes `v2ray test` untouched) — the
+			// binary connects without ECH. ECH-enabled configurations
+			// route to sing-box only.
 		},
 	}
 }

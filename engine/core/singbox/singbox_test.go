@@ -328,6 +328,15 @@ func TestSingBoxSmokeRealBinary(t *testing.T) {
 			// generator.
 			tuicNewRenoConfig(),
 			hysteriaV1ObfsConfig(),
+			// v0.11.0: the ECH domain rides the REAL core — inline
+			// PEM config, config_path file and query_server_name DNS
+			// discovery each pass `sing-box check` AND a full
+			// startup + listener-ready cycle. EVIDENCE SCOPE: this
+			// proves schema acceptance and startup viability, NOT a
+			// live ECH negotiation with a real ECH-capable server.
+			echExplicitConfig(),
+			echPathConfig(t),
+			echQueryConfig(),
 		},
 		ValidateArgs: func(file string) []string {
 			return []string{"check", "-c", file}

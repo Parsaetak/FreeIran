@@ -324,17 +324,25 @@ func jsDocProperties(content, typedefName string) (map[string]bool, bool) {
 	return out, true
 }
 
-// TestProfileBindingModelsMatchGoStructs pins profiletypes.js to the
-// Go structs field-for-field: same JSON names, same optionality. The
-// hand-maintained model stays a VERIFIED mirror instead of an
-// unverified hidden dependency (§12 of the v0.9.12 closure).
+// TestProfileBindingModelsMatchGoStructs pins the MACHINE-GENERATED
+// binding models (frontend/bindings/.../engine/app/models.js) to the
+// Go structs field-for-field: same JSON names, same optionality.
+//
+// History: v0.9.11 hand-maintained profiletypes.js as a verified
+// mirror because the wails3 generator could not run on that host;
+// v0.11.0 regenerated ALL bindings with the pinned wails3
+// v3.0.0-beta.19 CLI (reproducibility verified: a second generation
+// is byte-identical), which removed the last hand-maintained binding
+// files. The field-for-field check is KEPT — a stale committed
+// models.js (service signatures changed in Go but bindings not
+// regenerated) must still fail loudly instead of silently drifting.
 func TestProfileBindingModelsMatchGoStructs(t *testing.T) {
 	root := repoRoot(t)
 
 	raw, err := os.ReadFile(filepath.Join(root,
-		"frontend", "bindings", "github.com", "Parsaetak", "FreeIran", "engine", "app", "profiletypes.js"))
+		"frontend", "bindings", "github.com", "Parsaetak", "FreeIran", "engine", "app", "models.js"))
 	if err != nil {
-		t.Fatalf("read profiletypes.js: %v", err)
+		t.Fatalf("read models.js: %v", err)
 	}
 
 	content := string(raw)
@@ -344,10 +352,10 @@ func TestProfileBindingModelsMatchGoStructs(t *testing.T) {
 		"ProfileSpec": reflect.TypeOf(ProfileSpec{}),
 	}
 
-	for typedefName, goType := range goModels {
-		jsFields, ok := jsDocProperties(content, typedefName)
+	for className, goType := range goModels {
+		jsFields, ok := generatedModelClassFields(content, className)
 		if !ok {
-			t.Errorf("profiletypes.js: @typedef {Object} %s not found", typedefName)
+			t.Errorf("models.js: export class %s not found", className)
 
 			continue
 		}
@@ -357,21 +365,61 @@ func TestProfileBindingModelsMatchGoStructs(t *testing.T) {
 		for name, goOptional := range goFields {
 			jsOptional, present := jsFields[name]
 			if !present {
-				t.Errorf("%s: Go field %q (json %q) is missing from the JS model", typedefName, name, name)
+				t.Errorf("%s: Go field %q (json %q) is missing from the generated JS model", className, name, name)
 
 				continue
 			}
 
 			if goOptional != jsOptional {
-				t.Errorf("%s: field %q optionality mismatch: Go optional=%v, JS optional=%v",
-					typedefName, name, goOptional, jsOptional)
+				t.Errorf("%s: field %q optionality mismatch: Go optional=%v, generated JS optional=%v",
+					className, name, goOptional, jsOptional)
 			}
 		}
 
 		for name := range jsFields {
 			if _, ok := goFields[name]; !ok {
-				t.Errorf("%s: JS model declares field %q that does not exist on the Go struct", typedefName, name)
+				t.Errorf("%s: generated JS model declares field %q that does not exist on the Go struct", className, name)
 			}
 		}
 	}
+}
+
+// generatedModelClassFields parses one generated models.js class
+// body into field name → optional. The generator emits REQUIRED
+// fields as `if (!("name" in $$source)) { ... this["name"] = <default>; }`
+// and OPTIONAL (omitempty / pointer) fields as
+// `if (false)) { ... this["name"] = undefined; }`.
+func generatedModelClassFields(content, className string) (map[string]bool, bool) {
+	anchor := "export class " + className + " {"
+
+	idx := strings.Index(content, anchor)
+	if idx < 0 {
+		return nil, false
+	}
+
+	rest := content[idx:]
+
+	if next := strings.Index(rest[len(anchor):], "\nexport class "); next >= 0 {
+		rest = rest[:len(anchor)+next]
+	}
+
+	// Line-based field extraction. The generator writes REQUIRED
+	// fields as `this["name"] = <default>;` (string/number/bool
+	// default) and OPTIONAL fields as `this["name"] = undefined;`
+	// inside a statically-dead `if (false)` branch — the value
+	// assigned IS the optionality marker.
+	out := make(map[string]bool)
+
+	assignPattern := regexp.MustCompile(`this\["([a-zA-Z0-9_]+)"\] = `)
+
+	for _, line := range strings.Split(rest, "\n") {
+		m := assignPattern.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+
+		out[m[1]] = strings.Contains(line, "= undefined;")
+	}
+
+	return out, len(out) > 0
 }
