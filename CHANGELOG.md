@@ -53,6 +53,68 @@ in CI when this tree is pushed.
   [go, frontend]; protocol-cores and the Security workflow stay
   independent (security evidence never waits on Windows).
 
+### Runtime work: bounded admission, compact Normal logging, group root-fixes, dense Configs table, Black/White/Red icon
+
+Engineering pass on the v0.11.0 runtime behavior itself (same tree,
+same version — the release notes above document the CI/classification
+work; this section documents the runtime pass):
+
+- **Bounded batch admission** (engine/testqueue): the queue owns a
+  deferred-admission backlog. A bulk plan materializes a small
+  bounded batch (default 200) and admits more only while the queue
+  drains under the admission floor (default 1000). The old
+  `Limit <= 0 → 10000` burst is gone: the runtime log line
+  "untested enqueued=10000" can no longer materialize as 10,000
+  queued tasks. Explicit user tests keep the 10,000 planning ceiling;
+  automatic/background testing defaults to a 500 total with a lower
+  priority (`TestFilter.Origin` distinguishes them). Cancellation
+  drops the backlog with the live tasks and reports dropped
+  candidates honestly.
+- **Memory-aware backpressure**: from HIGH memory pressure upward the
+  controller holds deferred admission (queue drains, never refills
+  under stress); recovery to elevated or better resumes it. Queues
+  created while pressure is high/critical start held. The adaptive
+  booster still floors worker concurrency at critical; the
+  core-process cap (2, hard max 4) is untouched.
+- **Bulk-log aggregation + Normal-profile compaction**: bulk tests
+  emit `bulk_test_start` / throttled `bulk_test_progress` (one per
+  10 s window) / exactly one `bulk_test_complete` with honest totals.
+  Successful PROBE core launches (`core_ready`) are lifecycle-tier
+  records — suppressed by Normal, retained with full structured
+  evidence by Detailed/Debug; failures stay individually diagnosable
+  in every profile. Message/field duplication audited out. The JSONL
+  format, redaction, rotation and structured fields are preserved.
+- **Advanced Logging settings**: the existing profile/level/size/
+  backups controls gain an explicit age-retention knob
+  (`log_retention_days`, applied live via the logger's existing
+  age-sweep) with concrete per-profile explanations in Settings.
+- **User configuration groups root-fixed**: group filtering no longer
+  re-locks and re-scans collections PER RECORD (the 20k-records ×
+  group-membership quadratic trap) — membership is snapshotted once
+  per listing into a set and answered O(1) per record, semantics
+  unchanged. The frontend "Add selected to group" path no longer
+  swallows per-item errors: all-succeeded → success, partial →
+  diagnostic with the backend error preserved, all-failed → error
+  (regression-tested: a group-action failure cannot produce a
+  success toast). Group membership continues to ride the one stable
+  identity (store fingerprint → Config.ID → selection → collections)
+  — never row indices. Rename joins create/delete on the group rail;
+  deletion still never touches configurations.
+- **Dense Configs table**: wide viewports render a professional
+  single-line node table (36 px rows, sticky sortable header:
+  favorite/protocol/name/endpoint/transport/latency/status/source)
+  with the full testing lifecycle per row (Idle → Queued → Preparing
+  → Testing → Measuring → Passed/Failed/Timed out/Cancelled) from
+  measured evidence. Sorting rides the one server-side pipeline;
+  virtualization is retained; narrow viewports keep the two-line
+  cards. Bulk actions are scope-aware and explicitly user-origin.
+- **Application icon**: the canonical asset (assets/freeiran-icon.svg)
+  and the whole derivative chain (PNG, ICO, embedded appicon PNG,
+  Windows .syso resource) moved from the old brand-green accent to
+  the project's strict BLACK / WHITE / RED visual language (white
+  bolt, red lower facet, red ring on near-black). Unrelated UI
+  components were not recolored.
+
 ### Failure classification + route freshness (evidence model)
 
 - A stable nine-class failure vocabulary (dns, tcp, tls, handshake,

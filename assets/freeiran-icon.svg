@@ -2,13 +2,8 @@
   <!-- FreeIran application icon (canonical asset).
        Geometry mirrors the in-app brand mark (frontend/src/components/Icons.tsx).
        Regenerate derivatives with: python3 scripts/genicon.py -->
-  <defs>
-    <linearGradient id="bolt" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#7eeeb4"/>
-      <stop offset="1" stop-color="#3ddc84"/>
-    </linearGradient>
-  </defs>
-  <rect x="4" y="4" width="248" height="248" rx="56" fill="#0b0e13"/>
-  <rect x="16" y="16" width="224" height="224" rx="48" fill="#10141b" stroke="#3ddc84" stroke-opacity="0.43" stroke-width="5"/>
-  <polygon points="138.67,17.07 49.07,142.93 116.27,142.93 102.40,238.93 206.93,106.67 131.20,106.67" fill="url(#bolt)"/>
+  <rect x="4" y="4" width="248" height="248" rx="56" fill="#0a0a0c"/>
+  <rect x="16" y="16" width="224" height="224" rx="48" fill="#121215" stroke="#e02030" stroke-width="5"/>
+  <polygon points="138.67,17.07 49.07,142.93 116.27,142.93 102.40,238.93 206.93,106.67 131.20,106.67" fill="#f5f5f5"/>
+  <polygon points="102.40,238.93 206.93,106.67 131.20,106.67" fill="#e02030"/>
 </svg>

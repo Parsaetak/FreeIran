@@ -106,7 +106,27 @@ type RuntimeOptions struct {
 	// process (asset directories, test failure injection). It is
 	// never derived from untrusted source data.
 	Env []string
+
+	// Purpose classifies WHY this core process exists (v0.11.0 bulk-log
+	// aggregation). "probe" marks a routine test-probe launch (the test
+	// queue's core probe chain); every other value (empty, "connection",
+	// ...) is a user-visible launch. The lifecycle logger uses this to
+	// keep the Normal profile compact: a successful probe readiness is
+	// routine repeated activity, summarized at the batch level by the
+	// bulk-test aggregator instead of one info line per launch. Probe
+	// failures still emit individually diagnosable error records.
+	Purpose string
 }
+
+// Core purposes (RuntimeOptions.Purpose).
+const (
+	// PurposeProbe marks a temporary test-probe launch (bulk or single
+	// configuration testing through the test queue).
+	PurposeProbe = "probe"
+
+	// PurposeConnection marks a launch that backs a user connection.
+	PurposeConnection = "connection"
+)
 
 // WithDefaults returns a copy of the options with defaults applied.
 func (o RuntimeOptions) WithDefaults() RuntimeOptions {
@@ -282,21 +302,42 @@ func (i *Instance) markReady(err error) {
 
 		if err == nil {
 			// v0.9.7: readiness is the interesting lifecycle moment;
-			// the earlier core_start becomes a debug record so a
-			// routine launch emits ONE info line, not two. The
-			// startup duration and the listener ride structured
-			// fields — never only the message.
-			logging.LogR(logging.Record{
+			// the earlier core_start is a debug record so a routine
+			// launch emits ONE info line, not two.
+			//
+			// v0.11.0 bulk-log aggregation: a successful PROBE
+			// readiness is routine repeated activity — one info
+			// record per tested config flooded the Normal profile
+			// during bulk testing (the 10k-untested log storm).
+			// The probe record is lifecycle-tagged: Normal
+			// summarizes the run through the bulk-test aggregator
+			// (bulk_test_start/progress/complete), Detailed and
+			// Debug retain every per-launch record with full
+			// structured evidence. A CONNECTION launch keeps its
+			// Normal-profile info line: a user-visible connect is
+			// never routine. Failures stay error records in every
+			// profile — individually diagnosable.
+			//
+			// Dedupe audit (v0.11.0): the message no longer
+			// repeats the pid/listener the structured fields
+			// already carry.
+			readyRecord := logging.Record{
 				Level:      logging.LevelInfo,
 				Subsystem:  "core",
 				Event:      "core_ready",
-				Message:    fmt.Sprintf("core %s (pid %d) ready on %s in %d ms", name, pid, i.listen, readyMS),
+				Message:    fmt.Sprintf("core %s ready in %d ms", name, readyMS),
 				Core:       name,
 				PID:        pid,
 				Listener:   i.listen,
 				DurationMS: readyMS,
 				Status:     "ready",
-			})
+			}
+
+			if i.opts.Purpose == PurposeProbe {
+				readyRecord.Lifecycle = true
+			}
+
+			logging.LogR(readyRecord)
 		} else {
 			logging.LogR(logging.Record{
 				Level:     logging.LevelError,
@@ -304,10 +345,13 @@ func (i *Instance) markReady(err error) {
 				Event:     "core_error",
 				Operation: "wait_ready",
 				ErrorKind: "process",
-				Message:   fmt.Sprintf("core %s (pid %d) failed to become ready: %v", name, pid, err),
-				Core:      name,
-				PID:       pid,
-				Status:    "start_failed",
+				// pid rides the structured field; the message
+				// keeps the actionable failure reason
+				// (dedupe audit, v0.11.0).
+				Message: fmt.Sprintf("core %s failed to become ready: %v", name, err),
+				Core:    name,
+				PID:     pid,
+				Status:  "start_failed",
 			})
 		}
 
@@ -461,7 +505,7 @@ func (i *Instance) Close() error {
 				Level:      logging.LevelWarn,
 				Subsystem:  "core",
 				Event:      "core_exit",
-				Message:    fmt.Sprintf("core %s (pid %d) stop returned an error: %v", name, i.proc.PID(), err),
+				Message:    fmt.Sprintf("core %s stop returned an error: %v", name, err),
 				Core:       name,
 				PID:        i.proc.PID(),
 				DurationMS: time.Since(i.started).Milliseconds(),
@@ -497,7 +541,7 @@ func (i *Instance) Close() error {
 		Subsystem:  "core",
 		Event:      "core_exit",
 		Lifecycle:  true, // v0.9.8.4: visible in the Detailed profile
-		Message:    fmt.Sprintf("core %s (pid %d) stopped cleanly", name, pid),
+		Message:    fmt.Sprintf("core %s stopped cleanly after %d ms", name, lifetimeMS),
 		Core:       name,
 		PID:        pid,
 		DurationMS: lifetimeMS,
@@ -595,12 +639,14 @@ func Launch(
 
 	// v0.9.7: routine launch is debug-level; core_ready carries the
 	// full structured start record (listener, duration, pid).
+	// v0.11.0: the message no longer repeats the pid/listener the
+	// structured fields carry (dedupe audit).
 	logging.LogR(logging.Record{
 		Level:     logging.LevelDebug,
 		Subsystem: "core",
 		Event:     "core_start",
 		Lifecycle: true, // v0.9.8.4: visible in the Detailed profile
-		Message:   fmt.Sprintf("core %s starting (pid %d, listener %s)", backend.Name(), proc.PID(), listen),
+		Message:   fmt.Sprintf("core %s starting", backend.Name()),
 		Core:      backend.Name(),
 		PID:       proc.PID(),
 		Listener:  listen,

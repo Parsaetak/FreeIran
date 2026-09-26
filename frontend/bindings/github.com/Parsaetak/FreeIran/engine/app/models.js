@@ -2928,6 +2928,18 @@ export class Settings {
              */
             this["log_max_backups"] = undefined;
         }
+        if (/** @type {any} */(false)) {
+            /**
+             * LogRetentionDays bounds how many DAYS rotated log files are kept
+             * before an age-based retention sweep prunes them (0 = default 7).
+             * v0.11.0 Advanced Logging: the logger already implemented age
+             * sweeps — this exposes the existing knob to the user without a
+             * restart (applied live through SetMaxAgeDays on save).
+             * @member
+             * @type {number | undefined}
+             */
+            this["log_retention_days"] = undefined;
+        }
         if (!("reduced_motion" in $$source)) {
             /**
              * ReducedMotion asks the UI to minimize animation (accessibility).
@@ -4004,10 +4016,31 @@ export class TestBatchResult {
     constructor($$source = {}) {
         if (!("enqueued" in $$source)) {
             /**
+             * Enqueued is the number of tasks MATERIALIZED into the queue
+             * right now (the bounded first admission batch).
              * @member
              * @type {number}
              */
             this["enqueued"] = 0;
+        }
+        if (!("planned" in $$source)) {
+            /**
+             * Planned is the total the batch will run: materialized tasks
+             * PLUS deferred backlog candidates that are admitted as the
+             * queue drains (v0.11.0 bounded admission — a huge store no
+             * longer implies a huge task burst).
+             * @member
+             * @type {number}
+             */
+            this["planned"] = 0;
+        }
+        if (!("deferred" in $$source)) {
+            /**
+             * Deferred = Planned - Enqueued (still waiting in the backlog).
+             * @member
+             * @type {number}
+             */
+            this["deferred"] = 0;
         }
         if (!("skipped" in $$source)) {
             /**
@@ -4022,6 +4055,13 @@ export class TestBatchResult {
              * @type {string}
              */
             this["scope"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["batch_id"] = undefined;
         }
 
         Object.assign(this, $$source);
@@ -4082,8 +4122,9 @@ export class TestFilter {
         }
         if (/** @type {any} */(false)) {
             /**
-             * Limit bounds the batch (0 = 10000; the queue's duplicate
-             * suppression keeps huge batches safe).
+             * Limit bounds the batch TOTAL (0 = 10000 for explicit user
+             * batches, 500 for automatic ones). v0.11.0: the total is
+             * admission-planned, not materialized at once — see Origin.
              * @member
              * @type {number | undefined}
              */
@@ -4096,6 +4137,20 @@ export class TestFilter {
              * @type {number | undefined}
              */
             this["priority"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * Origin distinguishes WHO asked for the test (v0.11.0):
+             * "automatic" (background refresh / policy-driven testing) is
+             * conservative — a small default total and a lower priority —
+             * while an explicit user action ("user", "" = default) may
+             * plan the full bounded batch. Both respect queue capacity,
+             * worker limits, memory pressure, the active-core ceiling and
+             * cancellation.
+             * @member
+             * @type {string | undefined}
+             */
+            this["origin"] = undefined;
         }
 
         Object.assign(this, $$source);

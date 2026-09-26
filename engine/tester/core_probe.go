@@ -179,6 +179,10 @@ func (p *CoreProbe) testOne(
 		BinaryPath:      p.Registry.BinaryPath(backend.Name()),
 		StartupTimeout:  timeout,
 		DisableGenCache: true,
+		// v0.11.0: this launch is a routine test probe — the lifecycle
+		// logger keeps it out of the Normal profile (the bulk-test
+		// aggregator summarizes the run); failures still log.
+		Purpose: core.PurposeProbe,
 	}
 
 	instance, err := backend.Start(ctx, cfg, opts)

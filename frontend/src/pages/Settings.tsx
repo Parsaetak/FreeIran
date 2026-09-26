@@ -34,17 +34,17 @@ const LOGGING_PROFILES: Array<{
   {
     value: "normal",
     label: "Normal",
-    description: "Recommended for everyday use. Compact operational records: connections, verification, failures, recovery. Routine diagnostics are suppressed.",
+    description: "Compact operational log. Answers: what happened, is the app healthy, what failed. Bulk testing is summarized (start / progress / completion), routine per-config core launches are not recorded one by one; failures always are.",
   },
   {
     value: "detailed",
     label: "Detailed",
-    description: "More lifecycle information for troubleshooting: core and provider start/stop detail plus per-record identity. No high-frequency spam.",
+    description: "Troubleshooting detail on top of Normal: per-launch core lifecycle (start/ready/exit), correlation ids, queue and recovery diagnostics. Bounded — no per-test spam.",
   },
   {
     value: "debug",
     label: "Debug",
-    description: "Verbose diagnostics and correlation information: detailed subsystem fields and identifiers that tie connection and recovery episodes together. Produces more logs (still rotated and bounded).",
+    description: "Full diagnostic verbosity: every subsystem record with structured identifiers. Still redacted, rotated, deduplicated and retention-bounded.",
   },
 ];
 
@@ -54,6 +54,8 @@ const LOG_MB_MIN = 1;
 const LOG_MB_MAX = 512;
 const LOG_BACKUPS_MIN = 1;
 const LOG_BACKUPS_MAX = 16;
+const LOG_RETENTION_MIN = 1;
+const LOG_RETENTION_MAX = 365;
 const QUEUE_WORKERS_MAX = 64;
 const NET_TIMEOUT_MAX = 120;
 
@@ -64,6 +66,7 @@ function normalize(settings: Settings): Settings {
     refresh_interval_minutes: settings.refresh_interval_minutes || REFRESH_MIN,
     log_max_bytes_mb: settings.log_max_bytes_mb || 5,
     log_max_backups: settings.log_max_backups || 4,
+    log_retention_days: settings.log_retention_days || 7,
     logging_profile: settings.logging_profile || "normal",
     local_socks_port: settings.local_socks_port || 0,
     local_http_port: settings.local_http_port || 0,
@@ -79,6 +82,7 @@ function sameSettings(a: Settings, b: Settings): boolean {
     a.logging_profile === b.logging_profile &&
     a.log_max_bytes_mb === b.log_max_bytes_mb &&
     a.log_max_backups === b.log_max_backups &&
+    a.log_retention_days === b.log_retention_days &&
     a.local_socks_port === b.local_socks_port &&
     a.local_http_port === b.local_http_port &&
     a.reduced_motion === b.reduced_motion &&
@@ -762,6 +766,28 @@ export function SettingsPage() {
                 <span className="field-error">{fieldError(errors, "log_backups")}</span>
               )}
             </div>
+
+            <div className={`field ${fieldError(errors, "log_retention") ? "invalid" : ""}`}>
+              <label className="field-label" htmlFor="log-retention-days">
+                Retention (days)
+              </label>
+
+              <input
+                id="log-retention-days"
+                className="input"
+                type="number"
+                min={LOG_RETENTION_MIN}
+                max={LOG_RETENTION_MAX}
+                value={draft.log_retention_days}
+                onChange={(event) =>
+                  update({ log_retention_days: Number(event.target.value) })
+                }
+              />
+
+              {fieldError(errors, "log_retention") && (
+                <span className="field-error">{fieldError(errors, "log_retention")}</span>
+              )}
+            </div>
           </div>
         </ActionRow>
 
@@ -1195,6 +1221,20 @@ function validateDraft(draft: Settings | null): Array<{ key: string; message: st
     errors.push({
       key: "log_backups",
       message: `Log backups must be between ${LOG_BACKUPS_MIN} and ${LOG_BACKUPS_MAX}.`,
+    });
+  }
+
+  const logRetention = draft.log_retention_days;
+
+  if (
+    logRetention === undefined ||
+    !Number.isInteger(logRetention) ||
+    logRetention < LOG_RETENTION_MIN ||
+    logRetention > LOG_RETENTION_MAX
+  ) {
+    errors.push({
+      key: "log_retention",
+      message: `Log retention must be between ${LOG_RETENTION_MIN} and ${LOG_RETENTION_MAX} days.`,
     });
   }
 

@@ -478,3 +478,45 @@ compile surface still proven. Each layer carries an explicit bounded
 timeout (10m / 10m / 4–8m / 10m) so a slow or hung test fails its own
 layer with a diagnosable bound instead of hiding under a 20-minute
 blanket.
+
+## 16. v0.11.0 — bounded test admission, memory-aware backpressure, bulk-log aggregation
+
+**The runtime evidence.** The v0.11.0 runtime log on a large store
+showed the cost model of the old admission design: 16,873 configs at
+startup, 20,311 after refresh, 6,423 persisted by ONE refresh, 10,000
+untested configs enqueued in one burst, many Xray processes launched,
+heap peaking around 1.1 GiB, memory pressure repeatedly entering
+high/critical. The root cause was not "the log is verbose": the
+admission path materialized the whole bulk plan as tasks at once, and
+per-probe lifecycle logging multiplied the churn.
+
+**Bounded batch admission (engine/testqueue).** The queue now owns a
+deferred-admission backlog: a bulk plan materializes a small bounded
+batch (default 200) and admits the next batch only while
+pending+inflight stays under the admission floor (default 1000,
+clamped to MaxQueueSize). 20,000 stored configs never imply 20,000
+materialized tasks. The live queue, the core-probe pool (2, hard max
+4) and cancellation are unchanged; `CancelAll` also drops the backlog
+and reports the dropped candidates honestly.
+
+**Memory-aware backpressure.** From HIGH pressure upward the memory
+controller HOLDS deferred admission (the queue drains instead of
+refilling); on recovery to elevated or better it resumes. The
+adaptive booster independently floors worker concurrency at critical.
+A queue created (or re-created by SetMode) while pressure is
+high/critical starts with admission already held. Worker concurrency
+no longer grows into the storm: growth requires Normal pressure.
+
+**Bulk-log aggregation.** See docs/architecture.md §9 (logging
+model): bulk_test_start / bulk_test_progress (>= 10 s cadence) /
+bulk_test_complete, probe launches demoted to lifecycle-tier records
+(Detailed/Debug retain them; Normal summarizes), message/field
+dedupe. Normal-profile output for repetitive bulk activity is now
+materially smaller; the JSONL format and every structured field a
+tool may rely on are preserved.
+
+**Regression coverage:** engine/testqueue/backlog_test.go pins the
+bounded admission, the drain-and-admit loop, the pressure gate,
+duplicate suppression across the backlog, honest cancellation
+accounting, the exactly-one completion event and the bounded progress
+emission.

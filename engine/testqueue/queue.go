@@ -189,6 +189,12 @@ type Task struct {
 	// if not in the heap. Guarded by q.mu (not task.mu) because the
 	// heap is owned by the queue.
 	heapIdx int
+
+	// batchID is the bulk-test batch this task belongs to ("") for
+	// standalone enqueues; used by the v0.11.0 batch aggregator for
+	// bounded bulk-test progress records. Set at admission; never
+	// mutated afterwards (no lock needed for reads after admission).
+	batchID string
 }
 
 // Result is the outcome of one test.
@@ -358,6 +364,17 @@ type Config struct {
 	// OnlyFailed filters the input to only tasks with a previous
 	// failed/timed_out result.
 	OnlyFailed bool
+
+	// AdmissionBatch bounds how many backlog candidates materialize
+	// per admission step (v0.11.0 bounded batch admission; default
+	// 200). 0 = default; negative = admission batching disabled (the
+	// backlog admits everything the queue can hold immediately).
+	AdmissionBatch int
+
+	// AdmissionFloor is the pending+inflight bound under which
+	// backlog admission continues (default 1000, clamped to
+	// MaxQueueSize). 0 = default.
+	AdmissionFloor int
 }
 
 // DefaultConfig returns the Balanced defaults.
@@ -498,6 +515,28 @@ type Queue struct {
 	// paused gates task pickup: while paused, workers block in
 	// Dequeue and pending tasks stay queued (v0.9.7 bulk UX).
 	paused atomic.Bool
+
+	// --- v0.11.0 bounded batch admission (backlog.go) ---------------
+
+	// backlog holds deferred candidates not yet materialized as
+	// tasks. It is NOT a second queue: no workers, no execution, no
+	// states — only deferred admission. Guarded by mu.
+	backlog []backlogItem
+
+	// backlogSeen dedupes candidates across the backlog (one test per
+	// fingerprint). Guarded by mu.
+	backlogSeen map[string]bool
+
+	// admissionHeld gates deferred admission (memory controller
+	// backpressure at high/critical pressure).
+	admissionHeld atomic.Bool
+
+	// batch is the ONE open bulk-test aggregation session (nil = no
+	// batch). Guarded by mu.
+	batch *batchState
+
+	// reporter receives throttled batch progress events. Guarded by mu.
+	reporter reporterFunc
 }
 
 // New constructs a Queue. The queue is not started; call Start.
@@ -536,6 +575,9 @@ func New(tester Tester, config Config) *Queue {
 	if config.MaxQueueSize == 0 {
 		config.MaxQueueSize = 10000
 	}
+	if config.AdmissionBatch == 0 {
+		config.AdmissionBatch = DefaultAdmissionBatch
+	}
 
 	q := &Queue{
 		tester:        tester,
@@ -548,6 +590,7 @@ func New(tester Tester, config Config) *Queue {
 		startedAt:     time.Now().UTC(),
 		notifyCh:      make(chan struct{}),
 		resizeCh:      make(chan struct{}),
+		backlogSeen:   make(map[string]bool),
 	}
 	q.pending.heap = make([]*Task, 0, 64)
 	q.desiredWorkers.Store(int32(config.Concurrency))
@@ -702,6 +745,9 @@ func (q *Queue) Stop() {
 	}
 	// Wake any blocked Dequeue callers so workers can observe ctx.Done.
 	q.notifyLocked()
+	// v0.11.0: a stopped queue drops the admission backlog — deferred
+	// candidates never outlive the queue.
+	q.dropBacklogLocked()
 	q.mu.Unlock()
 
 	q.workersWG.Wait()
@@ -947,10 +993,16 @@ func (q *Queue) CancelByFingerprint(fp string) int {
 
 // CancelAll cancels every queued AND in-flight task. In-flight tasks
 // have their test context cancelled. Returns the number of tasks
-// cancelled by this call.
+// cancelled by this call. The v0.11.0 admission backlog is dropped
+// with it: cancelling the queue cancels the whole bulk plan, and the
+// dropped candidates are reported in the batch completion event.
 func (q *Queue) CancelAll() int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+
+	// Deferred candidates never ran: drop them and account for the
+	// drop honestly in the completion report.
+	q.dropBacklogLocked()
 
 	cancelled := 0
 	// Drain the heap.
@@ -1059,6 +1111,26 @@ func (q *Queue) finishTaskLocked(task *Task, state TaskState, result Result) boo
 		q.backendMu.Unlock()
 	}
 
+	// v0.11.0 batch aggregation: a batch task reached a terminal
+	// state — count it, emit the throttled progress record and
+	// detect batch completion (all materialized tasks terminal,
+	// backlog empty).
+	if task.batchID != "" && q.batch != nil && q.batch.id == task.batchID && !q.batch.finished {
+		switch state {
+		case StatePassed:
+			q.batch.passed++
+		case StateFailed:
+			q.batch.failed++
+		case StateTimedOut:
+			q.batch.timedOut++
+		case StateCancelled:
+			q.batch.cancelled++
+		}
+
+		q.batchProgressLocked(false)
+		q.batchCompletedLocked()
+	}
+
 	// Latency bookkeeping for the §5 live progress block.
 	// v0.9.8.1: Measured is the authority (not ms > 0). Sub-ms
 	// measurements are quantized to 1 ms for these coarse whole-ms
@@ -1127,6 +1199,10 @@ func (q *Queue) worker(id int) {
 		}
 
 		q.runTask(task)
+
+		// v0.11.0: one task terminal — capacity freed. Feed the next
+		// bounded admission batch from the backlog (no-op without one).
+		q.admit()
 	}
 }
 

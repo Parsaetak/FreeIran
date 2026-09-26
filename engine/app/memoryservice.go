@@ -36,6 +36,7 @@ import (
 	"github.com/Parsaetak/FreeIran/engine/booster"
 	"github.com/Parsaetak/FreeIran/engine/mempressure"
 	"github.com/Parsaetak/FreeIran/engine/store"
+	"github.com/Parsaetak/FreeIran/engine/testqueue"
 	"github.com/Parsaetak/FreeIran/internal/logging"
 )
 
@@ -222,6 +223,25 @@ func newMemoryService(a *App) *MemoryService {
 	pressure.SetListener(func(old, new mempressure.State, snap mempressure.Snapshot) {
 		level := storePressureLevel(new)
 
+		// v0.11.0 memory-aware admission backpressure: from HIGH
+		// pressure upward, deferred admission is HELD — the test
+		// queue drains instead of refilling while the heap is
+		// under stress, and the adaptive booster independently
+		// cuts worker concurrency (critical floors it). On any
+		// recovery to elevated or better, admission resumes.
+		a.initMu.Lock()
+		gateQueue := a.testQueue
+		a.initMu.Unlock()
+
+		if gateQueue != nil {
+			switch new {
+			case mempressure.StateHigh, mempressure.StateCritical:
+				gateQueue.PauseAdmission()
+			default:
+				gateQueue.ResumeAdmission()
+			}
+		}
+
 		if a.store != nil {
 			if a.store.ApplyPressure(level) {
 				records, bytes, chunkTarget := a.store.PressureLimits()
@@ -314,6 +334,76 @@ func (m *MemoryService) currentSettings() booster.Settings {
 	}
 
 	return m.boost.Settings()
+}
+
+// wireQueueReporter connects a queue's bounded batch-aggregation
+// events to the ONE runtime logger (v0.11.0). Bulk testing emits at
+// most one progress record per cadence window plus one completion
+// record per batch — routine per-task lifecycle detail stays out of
+// the aggregate stream (the Detailed profile retains the per-launch
+// core records instead).
+func (a *App) wireQueueReporter(q *testqueue.Queue) {
+	if q == nil || a.logger == nil {
+		return
+	}
+
+	q.SetReporter(func(ev testqueue.ProgressEvent) {
+		fields := map[string]any{
+			"batch_id":          ev.BatchID,
+			"planned":           ev.Planned,
+			"completed":         ev.Completed,
+			"passed":            ev.Passed,
+			"failed":            ev.Failed,
+			"timed_out":         ev.TimedOut,
+			"cancelled":         ev.Cancelled,
+			"dropped":           ev.Dropped,
+			"backlog_remaining": ev.BacklogRemaining,
+			"elapsed_ms":        ev.ElapsedMS,
+		}
+
+		if ev.Phase == "complete" {
+			a.logger.Log(logging.Record{
+				Level:     logging.LevelInfo,
+				Subsystem: "testqueue",
+				Event:     "bulk_test_complete",
+				Message: fmt.Sprintf("bulk test %s complete: %d/%d done (passed %d, failed %d, timed out %d, cancelled %d, dropped %d) in %d ms",
+					ev.BatchID, ev.Completed, ev.Planned, ev.Passed, ev.Failed, ev.TimedOut, ev.Cancelled, ev.Dropped, ev.ElapsedMS),
+				BatchID: ev.BatchID,
+				Fields:  fields,
+			})
+
+			return
+		}
+
+		a.logger.Log(logging.Record{
+			Level:     logging.LevelInfo,
+			Subsystem: "testqueue",
+			Event:     "bulk_test_progress",
+			Message: fmt.Sprintf("bulk test %s: %d/%d done (passed %d, failed %d), %d still deferred",
+				ev.BatchID, ev.Completed, ev.Planned, ev.Passed, ev.Failed, ev.BacklogRemaining),
+			BatchID: ev.BatchID,
+			Fields:  fields,
+		})
+	})
+}
+
+// applyAdmissionGate holds a queue's deferred admission when memory
+// pressure is already high/critical at queue creation or recreation
+// (SetMode) — a fresh queue must not resume admission the controller
+// holds for the old one.
+func (a *App) applyAdmissionGate(q *testqueue.Queue) {
+	if q == nil {
+		return
+	}
+
+	if a.memory == nil {
+		return
+	}
+
+	switch a.memory.pressure.Snapshot().State {
+	case mempressure.StateHigh, mempressure.StateCritical:
+		q.PauseAdmission()
+	}
 }
 
 // Start launches the sampler and booster goroutines.

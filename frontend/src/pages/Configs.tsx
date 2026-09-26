@@ -112,6 +112,69 @@ const LIVE_STATE_TITLES: Record<LiveTestState, string> = {
   measuring: "Measuring latency",
 };
 
+/**
+ * v0.11.0: the FULL testing lifecycle rendered on every row — the
+ * live queue states while a test runs, then the persisted terminal
+ * outcome (Passed / Failed / Timed out) from measured evidence, and
+ * Idle for configurations that were never tested. Cancelled is the
+ * queue's explicit cancellation class.
+ */
+export type TestStatus =
+  | "idle"
+  | "queued"
+  | "preparing"
+  | "testing"
+  | "measuring"
+  | "passed"
+  | "failed"
+  | "timed_out"
+  | "cancelled";
+
+const TEST_STATUS_LABELS: Record<TestStatus, string> = {
+  idle: "Idle",
+  queued: "Queued",
+  preparing: "Preparing",
+  testing: "Testing",
+  measuring: "Measuring",
+  passed: "Passed",
+  failed: "Failed",
+  timed_out: "Timed out",
+  cancelled: "Cancelled",
+};
+
+/** The truthful status of one configuration row (evidence, never guesses). */
+function statusOf(config: Config, live: LiveTestState | undefined): TestStatus {
+  if (live) {
+    return live;
+  }
+
+  const testedAt = Number(config["tested_at"] ?? 0);
+
+  if (testedAt <= 0) {
+    return "idle";
+  }
+
+  if (config["working"]) {
+    return "passed";
+  }
+
+  // v0.11.0: the classified failure reason distinguishes a timeout
+  // from other failures; the legacy free-text fallback covers older
+  // records stored before classes existed.
+  const failureClass = String(config["last_failure_class"] ?? "");
+  const failureReason = String(config["last_failure_reason"] ?? "");
+
+  if (failureClass === "timeout" || failureReason.toLowerCase().includes("timeout")) {
+    return "timed_out";
+  }
+
+  if (failureClass === "cancelled") {
+    return "cancelled";
+  }
+
+  return "failed";
+}
+
 /** Inline chip for a config's live test state (row secondary line). */
 function LiveTestChip({ state }: { state: LiveTestState | undefined }) {
   if (!state || state === "queued") {
@@ -163,6 +226,13 @@ export function ConfigsPage() {
   const [newGroupOpen, setNewGroupOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [newGroupName, setNewGroupName] = useState("");
+  // v0.11.0: first-class group management — inline rename and
+  // membership removal from the active user group.
+  const [renamingGroup, setRenamingGroup] = useState<{ id: string; name: string } | null>(null);
+  // v0.11.0: membership changes bump this to re-run the server-side
+  // filtered view immediately (list + counts reconcile without a
+  // full page reload).
+  const [viewVersion, setViewVersion] = useState(0);
 
   useEffect(() => {
     void loadCollections();
@@ -177,7 +247,8 @@ export function ConfigsPage() {
 
   // v0.9.0: server-side status filter + sorting and bulk-test state.
   const [statusFilter, setStatusFilter] = useState<"" | "working" | "failed" | "untested">("");
-  const [sortBy, setSortBy] = useState<"" | "latency" | "tested_at" | "protocol">("");
+  const [sortBy, setSortBy] = useState<"" | "latency" | "tested_at" | "protocol" | "address" | "source">("");
+  const [sortDesc, setSortDesc] = useState(false);
   const [filtered, setFiltered] = useState<Config[] | null>(null);
   const [filteredTotal, setFilteredTotal] = useState(0);
   const [filteredLoading, setFilteredLoading] = useState(false);
@@ -217,6 +288,14 @@ export function ConfigsPage() {
   // (the previous array.includes scanned per visible row per render;
   // with the real dataset size the row is rendered dozens of times).
   const favoriteSet = useMemo(() => new Set(favorites), [favorites]);
+
+  // v0.11.0: the active browsing scope as a user group (null when the
+  // scope is a built-in group or nothing) — drives scope-aware
+  // membership actions (remove selected from THIS group).
+  const activeUserGroupForBar = useMemo(
+    () => userGroups.find((group) => group.id === groupFilter) ?? null,
+    [userGroups, groupFilter],
+  );
 
   // The array actually rendered: the server-filtered result when one
   // exists, otherwise the client-side protocol filter over items.
@@ -281,12 +360,31 @@ export function ConfigsPage() {
     return () => media.removeEventListener("change", onChange);
   }, []);
 
+  // v0.11.0: the wide surface is a DENSE single-line table (36px rows,
+  // v2rayN-class information density) — the two-line card layout stays
+  // for narrow viewports. The sticky header labels the columns and
+  // drives server-side sorting.
   const virtualizer = useVirtualizer({
     count: renderItems.length,
-    estimateSize: (index) => (renderItems[index]?.kind === "header" ? 32 : narrow ? 88 : 50),
+    estimateSize: (index) => (renderItems[index]?.kind === "header" ? 32 : narrow ? 88 : 36),
     overscan: 12,
     getScrollElement: () => parentRef.current,
   });
+
+  /** v0.11.0: a column header click applies the matching server-side
+   * sort (the ONE filtering pipeline — never client-side re-sorting of
+   * a bounded window). Clicking the active column flips direction. */
+  const sortColumn = (by: "latency" | "tested_at" | "protocol" | "address" | "source") => {
+    if (sortBy === by) {
+      setSortBy("");
+      setSortDesc(false);
+
+      return;
+    }
+
+    setSortBy(by);
+    setSortDesc(false);
+  };
 
   // Protocol options present in the loaded window (stable order).
   const protocolOptions = useMemo(() => {
@@ -327,7 +425,7 @@ export function ConfigsPage() {
             status: statusFilter || undefined,
             query: searchQuery || undefined,
             sort_by: sortBy || undefined,
-            sort_desc: sortBy === "latency",
+            sort_desc: sortDesc,
             source: undefined,
             backend: undefined,
             group: groupFilter || undefined,
@@ -344,11 +442,11 @@ export function ConfigsPage() {
     } finally {
       setFilteredLoading(false);
     }
-  }, [protocol, statusFilter, sortBy, searchQuery, groupFilter]);
+  }, [protocol, statusFilter, sortBy, sortDesc, searchQuery, groupFilter]);
 
   useEffect(() => {
     void loadFiltered(1000);
-  }, [loadFiltered]);
+  }, [loadFiltered, viewVersion]);
 
   // Live queue state while a batch is running. v0.9.15: the previous
   // Stats + Paused + Snapshot(200) triple is replaced by ONE
@@ -552,6 +650,10 @@ export function ConfigsPage() {
           source: undefined,
           limit: undefined,
           priority: undefined,
+          // v0.11.0: the UI's testing actions are EXPLICIT user
+          // actions — "Test selected" can never silently become a
+          // background untested sweep.
+          origin: "user",
         }),
       );
 
@@ -717,6 +819,37 @@ export function ConfigsPage() {
       firstGroup = false;
     }
 
+    // v0.11.0: when browsing a user group, the row menu offers honest
+    // membership removal — the group scope is the visible membership
+    // contract, so removal acts on the ACTIVE group only.
+    const activeUserGroup = userGroups.find((group) => group.id === groupFilter);
+
+    if (activeUserGroup) {
+      items.push({
+        id: "remove-from-active-group",
+        label: `Remove from ${activeUserGroup.name}`,
+        separatorBefore: true,
+        onSelect: () => {
+          void useCollectionsStore
+            .getState()
+            .removeFromGroup(activeUserGroup.id, id)
+            .then(() => {
+              toast("success", `Removed from ${activeUserGroup.name}`);
+
+              // Membership changed: the filtered view, selection, group
+              // counts and the detail panel must reconcile immediately —
+              // without a full page reload. Bumping the view version
+              // re-runs the ONE server-side filter; the collections
+              // reload refreshed the counts.
+              setViewVersion((v) => v + 1);
+            })
+            .catch((error: unknown) => {
+              toast("error", "Could not remove from group", describeError(error));
+            });
+        },
+      });
+    }
+
     items.push(
       {
         id: "move-up",
@@ -846,6 +979,16 @@ export function ConfigsPage() {
               type="button"
               className="fav-toggle"
               style={{ width: 18, height: 18, fontSize: 11 }}
+              aria-label={`Rename group ${group.name}`}
+              title="Rename this group"
+              onClick={() => setRenamingGroup({ id: group.id, name: group.name })}
+            >
+              ✎
+            </button>
+            <button
+              type="button"
+              className="fav-toggle"
+              style={{ width: 18, height: 18, fontSize: 11 }}
               aria-label={`Delete group ${group.name}`}
               title="Delete this group (configurations are kept)"
               onClick={() => {
@@ -912,6 +1055,45 @@ export function ConfigsPage() {
             Create
           </button>
           <button type="button" className="btn sm" onClick={() => setNewGroupOpen(false)}>
+            Cancel
+          </button>
+        </div>
+      )}
+
+      {renamingGroup && (
+        <div className="toolbar">
+          <input
+            className="input"
+            placeholder="New group name"
+            aria-label="Rename group"
+            value={renamingGroup.name}
+            autoFocus
+            onChange={(event) => setRenamingGroup({ ...renamingGroup, name: event.target.value })}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") setRenamingGroup(null);
+            }}
+          />
+          <button
+            type="button"
+            className="btn primary sm"
+            disabled={!renamingGroup.name.trim()}
+            onClick={() => {
+              const { id, name } = renamingGroup;
+
+              setRenamingGroup(null);
+
+              void useCollectionsStore
+                .getState()
+                .renameUserGroup(id, name.trim())
+                .then(() => toast("success", "Group renamed"))
+                .catch((error: unknown) => {
+                  toast("error", "Could not rename group", describeError(error));
+                });
+            }}
+          >
+            Rename
+          </button>
+          <button type="button" className="btn sm" onClick={() => setRenamingGroup(null)}>
             Cancel
           </button>
         </div>
@@ -1036,13 +1218,32 @@ export function ConfigsPage() {
 
               event.target.value = ""; // reset for the next use
 
-              void Promise.all(
-                ids.map((id) =>
-                  useCollectionsStore.getState().addToGroup(groupID, id).catch(() => undefined),
-                ),
-              ).then(() => {
-                toast("success", `Added ${ids.length} to group`);
-              });
+              // v0.11.0 honest result handling: a partial or total
+              // failure must NEVER produce a success toast. The outcome
+              // is reported truthfully with the backend error preserved.
+              void useCollectionsStore
+                .getState()
+                .addManyToGroup(groupID, ids)
+                .then(({ added, failed, firstError }) => {
+                  const groupName =
+                    userGroups.find((group) => group.id === groupID)?.name ?? "group";
+
+                  if (failed === 0) {
+                    toast("success", `Added ${added} to ${groupName}`);
+                  } else if (added > 0) {
+                    toast(
+                      "warn",
+                      `Added ${added} of ${ids.length} to ${groupName}`,
+                      `${failed} failed${firstError ? `: ${firstError}` : ""}`,
+                    );
+                  } else {
+                    toast(
+                      "error",
+                      `Could not add to ${groupName}`,
+                      firstError ?? "All additions failed.",
+                    );
+                  }
+                });
             }}
           >
             <option value="">Add to group…</option>
@@ -1052,6 +1253,39 @@ export function ConfigsPage() {
               </option>
             ))}
           </select>
+        )}
+
+        {/* v0.11.0: scope-aware membership removal — while browsing a
+            user group, the selected rows can leave that group. The
+            action acts on the ACTIVE group only (never a guess). */}
+        {selected.size > 0 && activeUserGroupForBar && (
+          <button
+            type="button"
+            className="btn sm"
+            disabled={filteredLoading}
+            onClick={() => {
+              const group = activeUserGroupForBar;
+              const ids = [...selected];
+
+              void useCollectionsStore
+                .getState()
+                .removeManyFromGroup(group.id, ids)
+                .then(({ removed, failed, firstError }) => {
+                  if (failed === 0) {
+                    toast("success", `Removed ${removed} from ${group.name}`);
+                  } else if (removed > 0) {
+                    toast("warn", `Removed ${removed} of ${ids.length}`, `${failed} failed${firstError ? `: ${firstError}` : ""}`);
+                  } else {
+                    toast("error", `Could not remove from ${group.name}`, firstError ?? "All removals failed.");
+                  }
+
+                  setSelected(new Set());
+                  setViewVersion((v) => v + 1);
+                });
+            }}
+          >
+            Remove from {activeUserGroupForBar.name} ({selected.size})
+          </button>
         )}
 
         <div className="toolbar-spacer" />
@@ -1172,14 +1406,42 @@ export function ConfigsPage() {
       <div className={`configs-layout ${detail ? "with-panel" : ""}`}>
         <div className="card flush mb-0">
           {/*
-           * v0.9.13 COMPACT ROW (§2 Configuration surface): the
-           * primary browsing surface is a two-line hierarchy —
-           * line 1: name · protocol · health; line 2: endpoint ·
-           * measured ping. Transport, security, URL-test internals,
-           * test backend, source and timestamps live in the detail
-           * panel and the row context menu, NOT in the scan surface.
-           * No column-header row: the row itself is the label.
+           * v0.11.0 DENSE TABLE (§2 Configuration surface): the wide
+           * browsing surface is a professional single-line node table
+           * with a sticky, sortable header row — the familiar
+           * configuration-manager interaction model (v2rayN-class
+           * density on FreeIran's own architecture and trust model):
+           *
+           *   ★ | Protocol | Name | Address:Port | Transport |
+           *   Ping | Status | Source | ⋮
+           *
+           * Deep technical data (security, URL-test internals, test
+           * backend, timestamps) stays in the detail panel. Narrow
+           * viewports keep the two-line card row. Virtualization is
+           * retained on every path.
            */}
+          {!narrow && (
+            <div className="config-table-header" role="row" aria-label="Column headers">
+              <span className="th th-fav" aria-hidden>★</span>
+              <button type="button" className="th sortable" onClick={() => sortColumn("protocol")}>
+                Protocol {sortBy === "protocol" ? (sortDesc ? "▾" : "▴") : ""}
+              </button>
+              <button type="button" className="th sortable" onClick={() => sortColumn("address")}>
+                Name / Endpoint {sortBy === "address" ? (sortDesc ? "▾" : "▴") : ""}
+              </button>
+              <span className="th th-transport">Transport</span>
+              <button type="button" className="th sortable" onClick={() => sortColumn("latency")}>
+                Latency {sortBy === "latency" ? (sortDesc ? "▾" : "▴") : ""}
+              </button>
+              <button type="button" className="th sortable" onClick={() => sortColumn("tested_at")}>
+                Test status {sortBy === "tested_at" ? (sortDesc ? "▾" : "▴") : ""}
+              </button>
+              <button type="button" className="th sortable" onClick={() => sortColumn("source")}>
+                Source {sortBy === "source" ? (sortDesc ? "▾" : "▴") : ""}
+              </button>
+              <span className="th th-actions" aria-hidden>⋮</span>
+            </div>
+          )}
           <div
             ref={parentRef}
             className="config-scroll"
@@ -1249,7 +1511,7 @@ export function ConfigsPage() {
                       key={id}
                       role="listitem"
                       aria-selected={detail?.id === id}
-                      className={`row selectable config-row-v3 ${detail?.id === id ? "selected" : ""} ${selected.has(id) ? "bulk-selected" : ""}`}
+                      className={`row selectable config-row-v3 ${narrow ? "" : "config-row-table"} ${detail?.id === id ? "selected" : ""} ${selected.has(id) ? "bulk-selected" : ""}`}
                       tabIndex={0}
                       onClick={() => void showDetails(config)}
                       onKeyDown={(event) => {
@@ -1330,24 +1592,61 @@ export function ConfigsPage() {
                         {protocolLabel(String(config["type"]))}
                       </span>
 
-                      {/*
-                       * TWO-LINE HIERARCHY (§2): primary = name +
-                       * health state; secondary = endpoint + measured
-                       * ping (+ one small contextual indicator).
-                       */}
-                      <span className="cell-main">
-                        <span className="cell-line">
-                          <span className="cell-title">{name}</span>
-                          <HealthBadge config={config} />
-                        </span>
-                        <span className="cell-line">
-                          <span className="cell-sub">
-                            {truncate(String(config["address"]), 40)}:{String(config["port"])}
+                      {narrow ? (
+                        <>
+                          {/*
+                           * TWO-LINE HIERARCHY (v0.9.13, narrow): primary =
+                           * name + health state; secondary = endpoint +
+                           * measured ping.
+                           */}
+                          <span className="cell-main">
+                            <span className="cell-line">
+                              <span className="cell-title">{name}</span>
+                              <HealthBadge config={config} />
+                            </span>
+                            <span className="cell-line">
+                              <span className="cell-sub">
+                                {truncate(String(config["address"]), 40)}:{String(config["port"])}
+                              </span>
+                              <LiveTestChip state={testStates[id]} />
+                              <PingCell config={config} />
+                            </span>
                           </span>
-                          <LiveTestChip state={testStates[id]} />
-                          <PingCell config={config} />
-                        </span>
-                      </span>
+                        </>
+                      ) : (
+                        <>
+                          {/*
+                           * DENSE TABLE CELLS (v0.11.0, wide): one line,
+                           * professional node-manager density. Status is
+                           * the FULL testing lifecycle (idle → queued →
+                           * preparing → testing → measuring → passed /
+                           * failed / timed out / cancelled) from measured
+                           * evidence only.
+                           */}
+                          <span className="cell-name" title={name}>
+                            {name}
+                          </span>
+                          <span className="cell-endpoint mono" title={`${String(config["address"])}:${String(config["port"])}`}>
+                            {truncate(String(config["address"]), 34)}:{String(config["port"])}
+                          </span>
+                          <span className="cell-transport mono">
+                            {[String(config["network"] || "tcp"), String(config["security"] || "none")].join("/")}
+                          </span>
+                          <span className="cell-ping">
+                            <PingCell config={config} />
+                          </span>
+                          <span className={`cell-status status-${statusOf(config, testStates[id]).replace("_", "-")}`}>
+                            {testStates[id] ? (
+                              <LiveTestChip state={testStates[id]} />
+                            ) : (
+                              TEST_STATUS_LABELS[statusOf(config, testStates[id])]
+                            )}
+                          </span>
+                          <span className="cell-source" title={String(config["source"] ?? "")}>
+                            {truncate(String(config["source"] ?? "—"), 18)}
+                          </span>
+                        </>
+                      )}
 
                       {/*
                        * ACTIONS cell (v0.9.7 §6): a dedicated wrapper —

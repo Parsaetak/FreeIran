@@ -15,6 +15,7 @@ import (
 	"github.com/Parsaetak/FreeIran/engine/tester"
 	"github.com/Parsaetak/FreeIran/engine/testqueue"
 	"github.com/Parsaetak/FreeIran/engine/tunnel"
+	"github.com/Parsaetak/FreeIran/internal/logging"
 )
 
 // CoreLifecycleView is the complete UI-facing lifecycle projection of
@@ -381,6 +382,12 @@ func (a *App) ensureTestQueue() (*testqueue.Queue, error) {
 
 	a.testQueue = q
 
+	// v0.11.0: bounded bulk-test progress records (bulk_test_progress
+	// / bulk_test_complete) flow through the ONE logger, and the
+	// current pressure regime gates deferred admission from the start.
+	a.wireQueueReporter(q)
+	a.applyAdmissionGate(q)
+
 	// v0.9.15: the ONE queue-change pump starts with the ONE queue.
 	// From here every queue transition is pushed to the UI as a
 	// coalesced, complete LiveStateView event (freeiran:queuestate);
@@ -564,6 +571,12 @@ func (s *TestQueueService) SetMode(mode testqueue.Mode) {
 	// (the pointer was already swapped, but the caller holds a
 	// reference to the old *Queue).
 	s.app.testQueue = q
+
+	// v0.11.0: the replacement queue gets the same batch reporter
+	// wiring and the current pressure admission gate.
+	s.app.wireQueueReporter(q)
+	s.app.applyAdmissionGate(q)
+
 	if old != nil {
 		old.Stop()
 	}
@@ -672,41 +685,93 @@ type TestFilter struct {
 	// Source restricts the batch to one source id ("" = all).
 	Source string `json:"source,omitempty"`
 
-	// Limit bounds the batch (0 = 10000; the queue's duplicate
-	// suppression keeps huge batches safe).
+	// Limit bounds the batch TOTAL (0 = 10000 for explicit user
+	// batches, 500 for automatic ones). v0.11.0: the total is
+	// admission-planned, not materialized at once — see Origin.
 	Limit int `json:"limit,omitempty"`
 
 	// Priority enqueued for the batch (user batches get a boost).
 	Priority int `json:"priority,omitempty"`
+
+	// Origin distinguishes WHO asked for the test (v0.11.0):
+	// "automatic" (background refresh / policy-driven testing) is
+	// conservative — a small default total and a lower priority —
+	// while an explicit user action ("user", "" = default) may
+	// plan the full bounded batch. Both respect queue capacity,
+	// worker limits, memory pressure, the active-core ceiling and
+	// cancellation.
+	Origin string `json:"origin,omitempty"`
 }
+
+// Test batch admission defaults (v0.11.0). Explicit user bulk tests
+// keep the historical 10,000 total ceiling but materialize it through
+// the queue's bounded admission; automatic testing never plans more
+// than 500 tests in one batch.
+const (
+	TestBatchLimitUser      = 10000
+	TestBatchLimitAutomatic = 500
+
+	// TestPriorityAutomatic sits below user bulk tests (+400):
+	// a person clicked beats a background policy.
+	TestPriorityAutomatic = 200
+)
 
 // TestBatchResult reports what a bulk test enqueued.
 type TestBatchResult struct {
-	Enqueued int    `json:"enqueued"`
+	// Enqueued is the number of tasks MATERIALIZED into the queue
+	// right now (the bounded first admission batch).
+	Enqueued int `json:"enqueued"`
+
+	// Planned is the total the batch will run: materialized tasks
+	// PLUS deferred backlog candidates that are admitted as the
+	// queue drains (v0.11.0 bounded admission — a huge store no
+	// longer implies a huge task burst).
+	Planned int `json:"planned"`
+
+	// Deferred = Planned - Enqueued (still waiting in the backlog).
+	Deferred int    `json:"deferred"`
 	Skipped  int    `json:"skipped"`
 	Scope    string `json:"scope"`
+	BatchID  string `json:"batch_id,omitempty"`
 }
 
-// EnqueueByFilter scans the store and enqueues every matching
-// configuration. Bounded, streaming, and safe for tens of thousands
-// of records (the queue's duplicate suppression collapses repeats).
+// EnqueueByFilter scans the store and admits every matching
+// configuration into the ONE test queue through bounded batch
+// admission (v0.11.0): the queue materializes a small first batch and
+// defers the rest, admitting further batches only when capacity
+// permits and memory pressure allows. A 20,000-config store no longer
+// implies 20,000 materialized tasks or an unbounded core-process
+// burst — the queue, the core-probe ceiling and the memory controller
+// stay in charge the whole time.
 func (s *TestQueueService) EnqueueByFilter(filter TestFilter) (TestBatchResult, error) {
 	q, err := s.ensureQueue()
 	if err != nil {
 		return TestBatchResult{}, err
 	}
 
+	automatic := filter.Origin == "automatic"
+
 	limit := filter.Limit
 	if limit <= 0 {
-		limit = 10000
+		if automatic {
+			limit = TestBatchLimitAutomatic
+		} else {
+			limit = TestBatchLimitUser
+		}
 	}
 
 	priority := filter.Priority
 	if priority <= 0 {
-		priority = 400 // user-driven bulk test: above discovery, below single test
+		if automatic {
+			priority = TestPriorityAutomatic
+		} else {
+			priority = 400 // user-driven bulk test: above discovery, below single test
+		}
 	}
 
-	result := TestBatchResult{Scope: filter.Scope}
+	batchID := fmt.Sprintf("batch-%d", time.Now().UnixNano())
+
+	result := TestBatchResult{Scope: filter.Scope, BatchID: batchID}
 
 	want := func(cfg config.Config) bool {
 		if filter.Protocol != "" && string(cfg.Type) != filter.Protocol {
@@ -738,11 +803,34 @@ func (s *TestQueueService) EnqueueByFilter(filter TestFilter) (TestBatchResult, 
 		}
 	}
 
+	// v0.11.0: the scan COLLECTS matching candidates (fingerprints
+	// are ~100 bytes each — a 20k scan is a couple of MiB, not the
+	// old 20k-task materialization) and hands them to the queue's
+	// admission backlog, which materializes the bounded first batch
+	// immediately and admits the rest as the queue drains.
+	candidates := make([]testqueue.BacklogCandidate, 0, min(limit, 1024))
+
+	collect := func(fp, protocol, source string) bool {
+		if len(candidates) >= limit {
+			return false // plan full: stop scanning
+		}
+
+		candidates = append(candidates, testqueue.BacklogCandidate{
+			Fingerprint: fp,
+			Protocol:    protocol,
+			Source:      source,
+		})
+
+		return true
+	}
+
 	switch filter.Scope {
 	case "selected":
 		for _, fp := range filter.Fingerprints {
-			if result.Enqueued >= limit {
-				break
+			if len(candidates) >= limit {
+				result.Skipped++
+
+				continue
 			}
 
 			cfg, err := s.app.storeGetConfig(fp)
@@ -758,18 +846,14 @@ func (s *TestQueueService) EnqueueByFilter(filter TestFilter) (TestBatchResult, 
 				continue
 			}
 
-			if _, err := q.Enqueue(fp, string(cfg.Type), nil, priority, cfg.Source, testqueue.EnqueueDefault); err == nil {
-				result.Enqueued++
-			} else {
-				result.Skipped++
-			}
+			collect(fp, string(cfg.Type), cfg.Source)
 		}
 	default:
 		ctx, cancel := context.WithTimeout(s.app.ctx, 2*time.Minute)
 		defer cancel()
 
 		err := s.app.store.Iterate(ctx, func(fp string, raw []byte) error {
-			if result.Enqueued >= limit {
+			if len(candidates) >= limit {
 				return context.Canceled
 			}
 
@@ -782,11 +866,7 @@ func (s *TestQueueService) EnqueueByFilter(filter TestFilter) (TestBatchResult, 
 				return nil
 			}
 
-			if _, err := q.Enqueue(fp, string(cfg.Type), nil, priority, cfg.Source, testqueue.EnqueueDefault); err == nil {
-				result.Enqueued++
-			} else {
-				result.Skipped++
-			}
+			collect(fp, string(cfg.Type), cfg.Source)
 
 			return nil
 		})
@@ -796,8 +876,35 @@ func (s *TestQueueService) EnqueueByFilter(filter TestFilter) (TestBatchResult, 
 		}
 	}
 
-	s.app.logger.Info("testqueue", "batch_enqueued",
-		"bulk test scope=%s enqueued=%d skipped=%d", result.Scope, result.Enqueued, result.Skipped)
+	// One batch session correlates the start record, the throttled
+	// progress records and the completion record.
+	q.OpenBatch(batchID)
+
+	accepted, materialized := q.EnqueueBacklog(batchID, candidates, priority)
+
+	result.Planned = accepted
+	result.Enqueued = materialized
+	result.Deferred = accepted - materialized
+	result.Skipped += len(candidates) - accepted // duplicates inside the plan
+
+	s.app.logger.Log(logging.Record{
+		Level:     logging.LevelInfo,
+		Subsystem: "testqueue",
+		Event:     "bulk_test_start",
+		Message: fmt.Sprintf("bulk test %s: %d planned (%d queued, %d deferred admission), scope=%s origin=%s",
+			batchID, result.Planned, result.Enqueued, result.Deferred, filter.Scope, filter.Origin),
+		BatchID: batchID,
+		Fields: map[string]any{
+			"batch_id":  batchID,
+			"scope":     filter.Scope,
+			"origin":    filter.Origin,
+			"planned":   result.Planned,
+			"enqueued":  result.Enqueued,
+			"deferred":  result.Deferred,
+			"skipped":   result.Skipped,
+			"automatic": automatic,
+		},
+	})
 
 	return result, nil
 }

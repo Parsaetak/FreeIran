@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""FreeIran icon generator (v0.9.1).
+"""FreeIran icon generator (v0.11.0).
 
-Renders the canonical FreeIran application icon — a brand-green
-lightning bolt on a dark rounded square — into every derivative the
-project needs:
+Renders the canonical FreeIran application icon — a white lightning
+bolt with a red edge accent on a black rounded square (the project's
+strict BLACK / WHITE / RED visual language; v0.11.0 replaces the old
+brand-green accent) — into every derivative the project needs:
 
     assets/freeiran-icon.svg            canonical vector source
     assets/freeiran-icon.ico            Windows executable/window icon
@@ -26,12 +27,14 @@ ROOT = Path(__file__).resolve().parent.parent
 ASSETS = ROOT / "assets"
 APPICON = ROOT / "internal" / "appicon"
 
-# Brand palette (mirrors frontend/src/styles/index.css tokens).
-BG = (11, 14, 19, 255)           # --bg
-BG_EDGE = (16, 20, 27, 255)      # --surface
-BORDER = (61, 220, 132, 110)     # --accent-border
-GREEN = (61, 220, 132, 255)      # --accent
-GREEN_HI = (126, 238, 180, 255)  # --accent-text
+# Brand palette (v0.11.0 BLACK / WHITE / RED visual language).
+# Mirrors frontend/src/styles/index.css tokens: the near-black
+# background surfaces, the white primary ink and the single red accent.
+BG = (10, 10, 12, 255)           # --bg (near-black)
+BG_EDGE = (18, 18, 21, 255)      # --surface (dark charcoal)
+BORDER = (224, 32, 48, 255)      # --accent (solid red ring)
+WHITE = (245, 245, 245, 255)     # --text (primary white bolt)
+RED = (224, 32, 48, 255)         # --accent (red lower facet)
 
 # Lightning bolt geometry from the in-app brand mark (24x24 space).
 BOLT = [
@@ -76,11 +79,12 @@ def render(size: int) -> Image.Image:
         fill=BG_EDGE,
     )
 
-    draw.polygon(scale(BOLT, ss), fill=GREEN)
+    draw.polygon(scale(BOLT, ss), fill=WHITE)
 
-    # Highlight on the upper facet of the bolt for a little depth.
-    hi = [(13.0, 1.6), (19.4, 10.0), (12.3, 10.0)]
-    draw.polygon(scale(hi, ss), fill=GREEN_HI)
+    # Red accent on the lower facet for depth within the strict
+    # black/white/red palette.
+    lo = [(9.6, 22.4), (19.4, 10.0), (12.3, 10.0)]
+    draw.polygon(scale(lo, ss), fill=RED)
 
     return img.resize((size, size), Image.LANCZOS)
 
@@ -89,19 +93,18 @@ def svg_source() -> str:
     """Canonical SVG (256 viewBox) with the same geometry."""
     k = 256 / 24.0
     pts = " ".join(f"{x * k:.2f},{y * k:.2f}" for x, y in BOLT)
+
+    # Red lower facet (same 24x24 geometry as the raster renderer).
+    lo = [(9.6, 22.4), (19.4, 10.0), (12.3, 10.0)]
+    lo_pts = " ".join(f"{x * k:.2f},{y * k:.2f}" for x, y in lo)
     return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
   <!-- FreeIran application icon (canonical asset).
        Geometry mirrors the in-app brand mark (frontend/src/components/Icons.tsx).
        Regenerate derivatives with: python3 scripts/genicon.py -->
-  <defs>
-    <linearGradient id="bolt" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#7eeeb4"/>
-      <stop offset="1" stop-color="#3ddc84"/>
-    </linearGradient>
-  </defs>
-  <rect x="4" y="4" width="248" height="248" rx="56" fill="#0b0e13"/>
-  <rect x="16" y="16" width="224" height="224" rx="48" fill="#10141b" stroke="#3ddc84" stroke-opacity="0.43" stroke-width="5"/>
-  <polygon points="{pts}" fill="url(#bolt)"/>
+  <rect x="4" y="4" width="248" height="248" rx="56" fill="#0a0a0c"/>
+  <rect x="16" y="16" width="224" height="224" rx="48" fill="#121215" stroke="#e02030" stroke-width="5"/>
+  <polygon points="{pts}" fill="#f5f5f5"/>
+  <polygon points="{lo_pts}" fill="#e02030"/>
 </svg>
 """
 

@@ -82,6 +82,13 @@ type Settings struct {
 	// LogMaxBackups bounds the kept rotated log files (0 = default 4).
 	LogMaxBackups int `json:"log_max_backups,omitempty"`
 
+	// LogRetentionDays bounds how many DAYS rotated log files are kept
+	// before an age-based retention sweep prunes them (0 = default 7).
+	// v0.11.0 Advanced Logging: the logger already implemented age
+	// sweeps — this exposes the existing knob to the user without a
+	// restart (applied live through SetMaxAgeDays on save).
+	LogRetentionDays int `json:"log_retention_days,omitempty"`
+
 	// ReducedMotion asks the UI to minimize animation (accessibility).
 	ReducedMotion bool `json:"reduced_motion"`
 
@@ -229,6 +236,13 @@ func (a *App) applySettings(settings Settings) {
 
 	if settings.LogMaxBytesMB > 0 && a.logger != nil {
 		a.logger.SetLimits(int64(settings.LogMaxBytesMB)<<20, settings.LogMaxBackups)
+	}
+
+	// v0.11.0 Advanced Logging: age-based retention applies live from
+	// the existing logger primitive (SetMaxAgeDays). A positive value
+	// overrides the logger default; 0 keeps the default (7 days).
+	if settings.LogRetentionDays > 0 && a.logger != nil {
+		a.logger.SetMaxAgeDays(settings.LogRetentionDays)
 	}
 
 	// v0.9.8.1: apply the user's provider configuration (validated;
@@ -389,6 +403,11 @@ func validateSettings(settings Settings) error {
 
 	if settings.LogMaxBackups < 0 || settings.LogMaxBackups > 64 {
 		return fmt.Errorf("app: log backup count out of range")
+	}
+
+	// v0.11.0 Advanced Logging: retention window (days), 0 = default.
+	if settings.LogRetentionDays < 0 || settings.LogRetentionDays > 365 {
+		return fmt.Errorf("app: log retention out of range (0-365 days)")
 	}
 
 	// Local inbound port preferences — 0 = automatic,

@@ -67,9 +67,14 @@ export function Enqueue(fingerprint, protocol, backends, priority, sourceID) {
 }
 
 /**
- * EnqueueByFilter scans the store and enqueues every matching
- * configuration. Bounded, streaming, and safe for tens of thousands
- * of records (the queue's duplicate suppression collapses repeats).
+ * EnqueueByFilter scans the store and admits every matching
+ * configuration into the ONE test queue through bounded batch
+ * admission (v0.11.0): the queue materializes a small first batch and
+ * defers the rest, admitting further batches only when capacity
+ * permits and memory pressure allows. A 20,000-config store no longer
+ * implies 20,000 materialized tasks or an unbounded core-process
+ * burst — the queue, the core-probe ceiling and the memory controller
+ * stay in charge the whole time.
  * @param {$models.TestFilter} filter
  * @returns {$CancellablePromise<$models.TestBatchResult>}
  */

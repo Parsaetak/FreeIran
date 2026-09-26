@@ -411,6 +411,21 @@ func (s *DataService) ListConfigsFiltered(filter ConfigFilter, offset, limit int
 
 	query := strings.ToLower(filter.Query)
 
+	// v0.11.0 group-filter performance fix: the previous path called
+	// groupMatches PER RECORD, which re-locked the collections state
+	// and linearly scanned group membership for every stored record
+	// (20k records × a 1k-member group = 20M comparisons plus 20k
+	// lock acquisitions). The group filter is now compiled ONCE per
+	// call: the relevant membership (favorites or one user group) is
+	// snapshotted into a set under a single lock, then membership
+	// checks during the store scan are O(1) map lookups. Built-in
+	// evidence groups stay pure record-field predicates. Semantics
+	// are unchanged: same matches, same order, same trust rules.
+	groupMemberSet, err := s.compileGroupMemberSet(filter.Group)
+	if err != nil {
+		return nil, err
+	}
+
 	matches := make([]config.Config, 0, 256)
 
 	if err := s.app.store.Iterate(ctx, func(key string, value []byte) error {
@@ -423,7 +438,7 @@ func (s *DataService) ListConfigsFiltered(filter ConfigFilter, offset, limit int
 			return nil // skip undecodable record; never crash the UI
 		}
 
-		if !s.filterMatches(filter, cfg, query) {
+		if !s.filterMatchesWithGroup(filter, cfg, query, groupMemberSet) {
 			return nil
 		}
 
@@ -466,6 +481,14 @@ func (s *DataService) ListConfigsFiltered(filter ConfigFilter, offset, limit int
 // the v0.9.10 Group filter can consult the app's collections without
 // globals or duplicated pipelines).
 func (s *DataService) filterMatches(filter ConfigFilter, cfg config.Config, query string) bool {
+	return s.filterMatchesWithGroup(filter, cfg, query, nil)
+}
+
+// filterMatchesWithGroup is filterMatches with a precompiled group
+// membership set (v0.11.0). When memberSet is non-nil it answers
+// user-group/favorites membership in O(1); when nil the per-record
+// groupMatches path is used (single-record callers only).
+func (s *DataService) filterMatchesWithGroup(filter ConfigFilter, cfg config.Config, query string, memberSet map[string]bool) bool {
 	if filter.Protocol != "" && string(cfg.Type) != filter.Protocol {
 		return false
 	}
@@ -493,7 +516,7 @@ func (s *DataService) filterMatches(filter ConfigFilter, cfg config.Config, quer
 		return false
 	}
 
-	if filter.Group != "" && !s.groupMatches(filter.Group, cfg) {
+	if filter.Group != "" && !s.groupMatchesCompiled(filter.Group, cfg, memberSet) {
 		return false
 	}
 
@@ -506,6 +529,45 @@ func (s *DataService) filterMatches(filter ConfigFilter, cfg config.Config, quer
 	return true
 }
 
+// compileGroupMemberSet snapshots the membership relevant to a group
+// filter into a set ONCE per listing call (v0.11.0 performance fix —
+// the previous path re-locked and re-scanned collections per record).
+// Built-in evidence groups need no set (they are record-field
+// predicates): they return nil, which is a valid "no set" result, not
+// an error.
+func (s *DataService) compileGroupMemberSet(group string) (map[string]bool, error) {
+	switch group {
+	case "", "all", "working", "untested", "fast", "recently_tested":
+		return nil, nil
+	}
+
+	s.app.loadCollections()
+
+	s.app.collections.mu.Lock()
+	defer s.app.collections.mu.Unlock()
+
+	if group == "favorites" {
+		return s.app.collections.favoriteSetLocked(), nil
+	}
+
+	if strings.HasPrefix(group, userGroupIDPrefix) {
+		for _, grp := range s.app.collections.groups {
+			if grp.ID != group {
+				continue
+			}
+
+			set := make(map[string]bool, len(grp.ConfigIDs))
+			for _, id := range grp.ConfigIDs {
+				set[id] = true
+			}
+
+			return set, nil
+		}
+	}
+
+	return nil, nil // unknown group id: matches nothing, same as before
+}
+
 // groupMatches evaluates the v0.9.10 Group filter for one record
 // against the built-in evidence groups (computed from the record's
 // own measured fields — never stored labels) and the user's group
@@ -513,6 +575,13 @@ func (s *DataService) filterMatches(filter ConfigFilter, cfg config.Config, quer
 // Favorites and groups never bypass testing or trust: they only
 // narrow which records the filter returns.
 func (s *DataService) groupMatches(group string, cfg config.Config) bool {
+	return s.groupMatchesCompiled(group, cfg, nil)
+}
+
+// groupMatchesCompiled is groupMatches with an optional precompiled
+// membership set (v0.11.0): a non-nil set answers favorites/user-group
+// membership with one O(1) lookup instead of a locked linear scan.
+func (s *DataService) groupMatchesCompiled(group string, cfg config.Config, memberSet map[string]bool) bool {
 	now := time.Now().UnixMilli()
 
 	switch group {
@@ -520,6 +589,10 @@ func (s *DataService) groupMatches(group string, cfg config.Config) bool {
 		return true
 
 	case "favorites":
+		if memberSet != nil {
+			return memberSet[cfg.ID]
+		}
+
 		s.app.loadCollections()
 
 		s.app.collections.mu.Lock()
@@ -550,6 +623,10 @@ func (s *DataService) groupMatches(group string, cfg config.Config) bool {
 
 	// User group id: membership by stable config ID.
 	if strings.HasPrefix(group, userGroupIDPrefix) {
+		if memberSet != nil {
+			return memberSet[cfg.ID]
+		}
+
 		s.app.loadCollections()
 
 		s.app.collections.mu.Lock()

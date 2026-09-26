@@ -12,6 +12,27 @@
 | go-winres | latest | regenerating the Windows resource (`cmd/freeiran/*.syso`) from `build/winres.json` |
 | govulncheck | **v1.8.0** (pinned) | security scanning |
 
+Regenerating the application icon (BLACK / WHITE / RED, v0.11.0):
+
+```bash
+python3 scripts/genicon.py   # renders the canonical geometry into
+                             # assets/freeiran-icon.svg (canonical),
+                             # assets/freeiran-icon.ico (installer +
+                             # Windows window icon),
+                             # assets/freeiran-icon.png (docs/release),
+                             # internal/appicon/freeiran-icon.png
+                             # (embedded Linux window icon)
+go-winres make --in build/winres.json --out cmd/freeiran/rsrc
+rm cmd/freeiran/rsrc_windows_386.syso   # only the amd64 resource is built
+```
+
+The chain is one-way: the SVG is the canonical asset, the raster
+derivatives and the committed `.syso` are generated artifacts and must
+be regenerated together. `build/winres.json` references the PNG, the
+Inno Setup installer (scripts/freeiran.iss) references the ICO, and
+cmd/freeiran/main.go uses the embedded appicon PNG — no other icon
+system exists and none may be created in parallel.
+
 Regenerating the Windows executable resource (icon + PE version
 metadata + DPI manifest) after a version bump:
 

@@ -16,7 +16,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { ConfigsPage } from "./Configs";
 
 const serviceMocks = vi.hoisted(() => ({
@@ -129,6 +129,15 @@ const storesPromise = vi.hoisted(async () => {
     createUserGroup: () => Promise<void>;
     deleteUserGroup: () => Promise<void>;
     addToGroup: () => Promise<void>;
+    addManyToGroup: (
+      groupID: string,
+      ids: string[],
+    ) => Promise<{ added: number; failed: number; firstError: string | null }>;
+    removeManyFromGroup: (
+      groupID: string,
+      ids: string[],
+    ) => Promise<{ removed: number; failed: number; firstError: string | null }>;
+    renameUserGroup: () => Promise<void>;
   }>(() => ({
     builtinGroups: [],
     userGroups: [{ id: "g1", name: "Work", count: 1 }],
@@ -138,6 +147,13 @@ const storesPromise = vi.hoisted(async () => {
     createUserGroup: async () => undefined,
     deleteUserGroup: async () => undefined,
     addToGroup: async () => undefined,
+    addManyToGroup: async (_groupID, ids) => ({ added: ids.length, failed: 0, firstError: null }),
+    removeManyFromGroup: async (_groupID, ids) => ({
+      removed: ids.length,
+      failed: 0,
+      firstError: null,
+    }),
+    renameUserGroup: async () => undefined,
   }));
 
   const useConnectionStore = create<{
@@ -271,32 +287,33 @@ afterEach(() => {
   cleanup();
 });
 
-describe("Configs compact row (v0.9.13)", () => {
-  it("renders the two-line hierarchy without technical columns", async () => {
+describe("Configs dense table row (v0.11.0)", () => {
+  it("renders the dense single-line table with the sticky column header", async () => {
     await renderPage();
 
-    // Primary line + secondary line content is present.
+    // Column header row labels the dense table (wide viewport).
+    expect(screen.getByText("Transport")).toBeTruthy();
+    expect(screen.getByText("Latency")).toBeTruthy();
+    expect(screen.getByText("Test status")).toBeTruthy();
+    expect(screen.getByText("Source")).toBeTruthy();
+
+    // Core node-table columns: name, endpoint, transport, measured
+    // ping, truthful test status and source are all on the row.
     expect(screen.getByText("Berlin edge")).toBeTruthy();
     expect(screen.getByText((_, el) => el?.textContent === "berlin.example.com:443")).toBeTruthy();
+    expect(screen.getByText("ws/tls")).toBeTruthy(); // transport/security column
     expect(screen.getByText("42 ms")).toBeTruthy(); // measured ping
-    expect(screen.getByText("working")).toBeTruthy(); // health state
+    expect(screen.getByText("Passed")).toBeTruthy(); // terminal status from evidence
+    expect(screen.getByText("seed-source")).toBeTruthy(); // source column
 
-    // The scan surface no longer carries transport/security/source/
-    // URL-test/backend details.
-    expect(screen.queryByText("ws")).toBeNull();
-    expect(screen.queryByText("tls")).toBeNull();
-    expect(screen.queryByText("seed-source")).toBeNull();
+    // URL-test/backend internals stay OFF the row (detail panel only).
     expect(screen.queryByText("xray")).toBeNull();
-    expect(screen.queryByText("not run")).toBeNull();
 
-    // No column-header row.
-    expect(screen.queryByText("Transport")).toBeNull();
-    expect(screen.queryByText("Endpoint")).toBeNull();
-    expect(screen.queryByText("Health")).toBeNull();
-
-    // The row carries the v3 compact class and the ⋮ trigger.
+    // The row carries the v3 base class, the v0.11.0 table class and
+    // the ⋮ trigger.
     const row = screen.getByText("Berlin edge").closest(".config-row-v3");
     expect(row).toBeTruthy();
+    expect(row?.className).toContain("config-row-table");
     expect(screen.getByRole("button", { name: "More actions for Berlin edge" })).toBeTruthy();
   });
 
@@ -337,6 +354,8 @@ describe("Configs detail panel (v0.9.13)", () => {
       expect(screen.getByRole("complementary", { name: "Configuration details" })).toBeTruthy();
     });
 
+    const panel = screen.getByRole("complementary", { name: "Configuration details" });
+
     // Grouped sections render in order.
     expect(screen.getByText("Overview")).toBeTruthy();
     expect(screen.getByText("Endpoint")).toBeTruthy();
@@ -344,11 +363,12 @@ describe("Configs detail panel (v0.9.13)", () => {
     expect(screen.getByText("Health")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Source" })).toBeTruthy();
 
-    // Technical facts that left the row live here (test backend AND
-    // compatible cores both report xray).
-    expect(screen.getByText("ws")).toBeTruthy();
-    expect(screen.getByText("tls")).toBeTruthy();
-    expect(screen.getByText("seed-source")).toBeTruthy();
+    // Technical facts that left the wide ROW live here (the source
+    // column also carries the source name, so match within the
+    // panel; test backend AND compatible cores both report xray).
+    expect(within(panel).getByText("ws")).toBeTruthy();
+    expect(within(panel).getByText("tls")).toBeTruthy();
+    expect(within(panel).getByText("seed-source")).toBeTruthy();
     expect(screen.getAllByText("xray").length).toBeGreaterThanOrEqual(2);
     expect(serviceMocks.ConfigDetails).toHaveBeenCalledWith("cfg-1");
   });
@@ -444,5 +464,84 @@ describe("Configs row action menu (v0.9.13)", () => {
 
     // Never the credential-bearing URL.
     expect(writeText.mock.calls[0][0]).not.toContain("vless://");
+  });
+});
+
+describe("Group actions: honest result handling (v0.11.0)", () => {
+  it("never reports success when every group addition failed", async () => {
+    const { useCollectionsStore } = await storesPromise;
+    const { toast } = await import("../state/toastStore");
+    const toastMock = vi.mocked(toast);
+
+    // The backend refuses BOTH additions.
+    useCollectionsStore.setState({
+      addManyToGroup: async (_groupID, ids) => ({
+        added: 0,
+        failed: ids.length,
+        firstError: "backend refused the addition",
+      }),
+    });
+
+    await renderPage([config(), config({ id: "cfg-2", name: "Osaka edge" })]);
+
+    // Select both rows through the row action menu (the real model).
+    for (const name of ["Berlin edge", "Osaka edge"]) {
+      fireEvent.click(screen.getByRole("button", { name: `More actions for ${name}` }));
+
+      await waitFor(() => {
+        expect(screen.getByRole("menu", { name: "Configuration actions" })).toBeTruthy();
+      });
+
+      fireEvent.click(screen.getByRole("menuitem", { name: /Select for bulk testing/ }));
+    }
+
+    // Choose the group in the add-selected select.
+    const select = screen.getByRole("combobox", { name: "Add selected to group" });
+    fireEvent.change(select, { target: { value: "g1" } });
+
+    await waitFor(() => {
+      const kinds = toastMock.mock.calls.map((call) => call[0]);
+      expect(kinds).toContain("error");
+    });
+
+    const kinds = toastMock.mock.calls.map((call) => call[0]);
+    expect(kinds).not.toContain("success");
+  });
+
+  it("reports a partial failure as a diagnostic, not a success", async () => {
+    const { useCollectionsStore } = await storesPromise;
+    const { toast } = await import("../state/toastStore");
+    const toastMock = vi.mocked(toast);
+
+    useCollectionsStore.setState({
+      addManyToGroup: async (_groupID, ids) => ({
+        added: 1,
+        failed: ids.length - 1,
+        firstError: "one config vanished mid-add",
+      }),
+    });
+
+    await renderPage([config(), config({ id: "cfg-2", name: "Osaka edge" })]);
+
+    for (const name of ["Berlin edge", "Osaka edge"]) {
+      fireEvent.click(screen.getByRole("button", { name: `More actions for ${name}` }));
+
+      await waitFor(() => {
+        expect(screen.getByRole("menu", { name: "Configuration actions" })).toBeTruthy();
+      });
+
+      fireEvent.click(screen.getByRole("menuitem", { name: /Select for bulk testing/ }));
+    }
+
+    const select = screen.getByRole("combobox", { name: "Add selected to group" });
+    fireEvent.change(select, { target: { value: "g1" } });
+
+    await waitFor(() => {
+      const kinds = toastMock.mock.calls.map((call) => call[0]);
+      expect(kinds).toContain("warn");
+    });
+
+    const kinds = toastMock.mock.calls.map((call) => call[0]);
+    expect(kinds).not.toContain("success");
   });
 });

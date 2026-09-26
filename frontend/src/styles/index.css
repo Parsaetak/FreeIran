@@ -1816,6 +1816,147 @@ button {
   padding: 5px 12px;
 }
 
+
+/*
+ * v0.11.0 DENSE TABLE — professional node-manager surface (wide
+ * viewports). A sticky sortable header labels the columns; the row is
+ * ONE line at 36px: favorite | protocol | name | endpoint |
+ * transport | ping | status | source | actions. The trust model is
+ * unchanged: the status column renders measured evidence only.
+ */
+.config-table-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: grid;
+  grid-template-columns:
+    30px    /* favorite */
+    64px    /* protocol */
+    minmax(120px, 1.4fr) /* name */
+    minmax(150px, 1.6fr) /* endpoint */
+    86px    /* transport */
+    72px    /* ping */
+    92px    /* status */
+    minmax(70px, 0.7fr) /* source */
+    auto;   /* actions */
+  column-gap: 10px;
+  align-items: center;
+  padding: 0 12px;
+  height: 30px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint, #888);
+  background: var(--surface-2, rgba(127, 127, 127, 0.06));
+  border-bottom: 1px solid var(--border-subtle, rgba(127, 127, 127, 0.18));
+}
+
+.config-table-header .th {
+  text-align: left;
+  padding: 0;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.config-table-header .th.sortable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.config-table-header .th.sortable:hover {
+  color: var(--text, #eee);
+}
+
+.config-table-header .th-fav,
+.config-table-header .th-actions {
+  text-align: center;
+}
+
+.config-row-table {
+  grid-template-columns:
+    30px    /* favorite */
+    64px    /* protocol */
+    minmax(120px, 1.4fr) /* name */
+    minmax(150px, 1.6fr) /* endpoint */
+    86px    /* transport */
+    72px    /* ping */
+    92px    /* status */
+    minmax(70px, 0.7fr) /* source */
+    auto;   /* actions */
+  column-gap: 10px;
+  padding: 0 12px;
+}
+
+.config-row-table > * {
+  min-width: 0;
+}
+
+.config-row-table .cell-name {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.config-row-table .cell-endpoint,
+.config-row-table .cell-transport {
+  font-family: var(--mono, monospace);
+  font-size: 11.5px;
+  color: var(--text-subtle, #aab);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.config-row-table .cell-ping {
+  display: flex;
+  align-items: center;
+}
+
+.config-row-table .cell-source {
+  font-size: 11px;
+  color: var(--text-faint, #888);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Full testing lifecycle chips (v0.11.0 §Testing lifecycle). */
+.cell-status {
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.cell-status.status-idle {
+  color: var(--text-faint, #888);
+}
+
+.cell-status.status-passed {
+  color: var(--success, #3ddc84);
+}
+
+.cell-status.status-failed {
+  color: var(--danger, #e02030);
+}
+
+.cell-status.status-timed-out {
+  color: var(--warning, #e0a020);
+}
+
+.cell-status.status-cancelled {
+  color: var(--text-faint, #888);
+  text-decoration: line-through;
+}
+
+/* Toast severity "warn" used by honest partial-failure results. */
 .config-row-v3 > * {
   min-width: 0;
 }
@@ -2850,6 +2991,10 @@ button {
 }
 
 .toast.info {
+  border-color: var(--info-border);
+}
+
+.toast.warn {
   border-color: var(--info-border);
 }
 

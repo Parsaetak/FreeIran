@@ -249,6 +249,9 @@ func (t *ModeTester) runTunnelFacets(
 		BinaryPath:      t.Registry.BinaryPath(backend.Name()),
 		StartupTimeout:  core.DefaultStartupTimeout,
 		DisableGenCache: true,
+		// v0.11.0: mode-based testing is also a routine probe launch —
+		// lifecycle-tagged so the Normal profile stays compact.
+		Purpose: core.PurposeProbe,
 	}
 
 	spawnStart := time.Now()

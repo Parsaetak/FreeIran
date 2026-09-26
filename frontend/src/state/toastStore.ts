@@ -7,7 +7,7 @@ import { create } from "zustand";
  * messages are safe, readable one-liners.
  */
 
-export type ToastKind = "success" | "error" | "info";
+export type ToastKind = "success" | "error" | "info" | "warn";
 
 export interface Toast {
   id: number;

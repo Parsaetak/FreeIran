@@ -352,15 +352,25 @@ never inside the repository).
 
 ```text
 entry shape:  {seq, ts(RFC3339 UTC), level, subsystem, event,
-               message, operation?, error_kind?}
-file format:  JSON lines (machine-readable)
+               message, operation?, error_kind?, lifecycle?,
+               correlation ids (batch_id/test_id/config_id/core/pid)...}
+file format:  JSON lines (machine-readable — preserved; fields are
+              optimized first, the format is not replaced for
+              aesthetics)
 rotation:     size-based (default 5 MiB), 4 numbered backups,
               sequential-rename shift, startup recovery of an
               interrupted rotation
+retention:    age-based sweep (default 7 days), runtime-adjustable
+              through Settings → Advanced Logging
+              (log_retention_days, 1-365)
 redaction:    applied to EVERY entry before storage/broadcast —
               UUIDs, protocol URLs (vless/vmess/trojan/ss/...),
               password/token/key parameters and caller-registered
               secret values are replaced with [REDACTED]
+profiles:     Normal / Detailed / Debug — ONE admission policy owned
+              by the logger (v0.9.8.4), applied live (no restart)
+aggregation:  v0.11.0 bulk-log aggregation (below) summarizes
+              repetitive bulk activity instead of streaming it
 consumers:    engine packages log through a process-wide no-op-safe
               global (logging.E/W/Err/D); the desktop app installs
               the real logger at boot and closes it last
@@ -370,14 +380,75 @@ UI surface:   DiagnosticsService + LogService bindings expose an
               the whole file
 ```
 
+**Logging profiles (v0.11.0 model, Settings → Advanced Logging):**
+
+| Profile | What it records | What it suppresses |
+|---------|-----------------|--------------------|
+| Normal  | What happened, is the app healthy, what failed: connections, verification outcomes, failures, recovery, memory transitions, bulk-test summaries | Routine repeated operational internals — per-config probe launches, per-task lifecycle chatter |
+| Detailed | Everything Normal keeps PLUS lifecycle-tagged detail: per-launch core start/ready/exit with correlation ids, queue and recovery diagnostics, timings | Nothing the policy defines as lifecycle; still bounded |
+| Debug | Full diagnostic verbosity with structured identifiers | Nothing — but redaction, rotation, retention and dedupe still apply |
+
+**Bulk-log aggregation (v0.11.0):** a bulk test no longer emits one
+info line per spawned probe. A successful PROBE core launch records
+`core_ready` as a lifecycle-tier record (Detailed/Debug retain every
+one with full structured evidence: core, pid, listener, duration);
+the Normal profile instead receives the bounded aggregate stream:
+
+- `bulk_test_start` — one record when a batch is planned (scope,
+  origin user/automatic, planned / queued / deferred counts);
+- `bulk_test_progress` — throttled (at most one per 10 s window)
+  counters while the batch runs;
+- `bulk_test_complete` — exactly one completion record with the
+  honest totals (passed / failed / timed out / cancelled / dropped).
+
+Failures (`core_error`, `persist_result_failed`, ...) remain
+individually diagnosable in every profile. Message text no longer
+duplicates the values the structured fields already carry (dedupe
+audit): a machine reader takes the fields, a human reads the
+message.
+
 Logged lifecycle events include `application_start`, `application_ready`,
 `store_open`, `store_error`, `migration_start/success/error`,
 `source_refresh_start/success/error`, `core_discovered`, `core_start`,
 `core_ready`, `core_exit`, `core_error`, `connection_start/success/failure`,
-`disconnect_start/success`, `shutdown_start`, `shutdown_complete` and
-`settings_updated`. Protocol-core stdout/stderr is captured through the
-existing redacting `LogBuffer` (engine/core/logs.go) and never appended
-raw.
+`disconnect_start/success`, `shutdown_start`, `shutdown_complete`,
+`settings_updated` and the bulk-test aggregates `bulk_test_start`,
+`bulk_test_progress`, `bulk_test_complete`. Protocol-core stdout/stderr is
+captured through the existing redacting `LogBuffer` (engine/core/logs.go)
+and never appended raw.
+
+### Test scheduling model (v0.11.0)
+
+ONE test queue (`engine/testqueue`) owns execution, admission and the
+aggregation above. There is no second scheduler: the v0.11.0
+**deferred-admission backlog** lives inside the queue itself.
+
+```text
+bulk plan (e.g. 20,000 untested)
+  → candidates collected by one streaming store scan
+  → queue materializes a SMALL bounded batch (default 200)
+  → workers execute; outcomes persist
+  → next batch admitted ONLY while capacity permits
+    (pending+inflight below the admission floor, default 1000)
+  → memory pressure high/critical: admission HELD, queue drains
+  → recovery: admission resumes automatically
+```
+
+- **Automatic versus explicit testing.** `TestFilter.Origin`
+  distinguishes a background/automatic plan (conservative: total
+  default 500, lower priority +200) from an explicit user action
+  (total default 10,000, priority +400). "Test selected" always
+  enqueues exactly the user's selection — never a reinterpreted
+  sweep. Every origin respects queue capacity, worker limits, the
+  memory gate, the active-core ceiling (2, hard max 4) and
+  cancellation.
+- **Acceptance condition:** 20,000 stored configurations never imply
+  20,000 materialized tasks and never imply an unbounded number of
+  core processes. The pending bound is `max(admission floor,
+  MaxQueueSize)`; the process bound is the core-probe pool.
+- **Cancellation** drops the backlog with the live tasks and reports
+  the never-materialized candidates honestly in the completion
+  event (`dropped`).
 
 ## 10. Error model
 

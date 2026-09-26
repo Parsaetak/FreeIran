@@ -727,7 +727,30 @@ goroutine leaks across cycles.
   Personal / Travel / anything) stored by stable IDs in one versioned
   sidecar (no duplicated configuration storage), and organize-by
   (source / protocol / status) with live counts — all through the ONE
-  existing server-side filter pipeline.
+  existing server-side filter pipeline. v0.11.0: groups are
+  first-class (create / inline rename / delete — deletion never
+  touches configurations), group actions report honestly (a partial
+  failure is never a success toast), and membership removal acts on
+  the active group scope. Group filtering snapshots membership once
+  per listing and answers it in O(1) per record.
+- **Dense configuration table** (v0.11.0): a professional single-line
+  node table with a sticky sortable header (favorite / protocol /
+  name / endpoint / transport / latency / test status / source) and
+  the full testing lifecycle on every row (Idle → Queued → Preparing
+  → Testing → Measuring → Passed / Failed / Timed out / Cancelled) —
+  evidence only, virtualization retained, narrow viewports keep the
+  two-line card layout.
+- **Bounded test admission** (v0.11.0): bulk testing materializes a
+  small bounded batch and admits more only as the queue drains;
+  memory pressure at high/critical holds admission while the queue
+  recovers; automatic (background) testing is conservative by
+  default while explicit user actions keep full bounded scope. A
+  20,000-config store never implies 20,000 queued tasks.
+- **Advanced Logging** (v0.11.0): Normal / Detailed / Debug profiles
+  (live-applied), size rotation + kept-backup count + age retention,
+  redaction on every entry, structured JSONL, and bulk-test
+  aggregation (start / throttled progress / completion) so repetitive
+  bulk activity no longer floods the Normal log.
 - **Favorites / saved routes**: star any configuration; favorites
   never bypass testing, verification or the route-trust policy.
 

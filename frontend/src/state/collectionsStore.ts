@@ -46,8 +46,28 @@ interface CollectionsState {
   deleteUserGroup: (groupID: string) => Promise<void>;
   /** Add a configuration to a user group. */
   addToGroup: (groupID: string, configID: string) => Promise<void>;
+  /**
+   * v0.11.0: add MANY configurations to a user group with honest
+   * per-item outcomes — the caller receives how many succeeded and
+   * the first backend error, so a partial failure can never be
+   * reported as a full success.
+   */
+  addManyToGroup: (
+    groupID: string,
+    configIDs: string[],
+  ) => Promise<{ added: number; failed: number; firstError: string | null }>;
   /** Remove a configuration from a user group. */
   removeFromGroup: (groupID: string, configID: string) => Promise<void>;
+  /** Rename a user group (v0.11.0: the group rail renames inline). */
+  renameUserGroup: (groupID: string, name: string) => Promise<void>;
+  /**
+   * v0.11.0: remove MANY configurations from a user group with the
+   * same honest per-item accounting as addManyToGroup.
+   */
+  removeManyFromGroup: (
+    groupID: string,
+    configIDs: string[],
+  ) => Promise<{ removed: number; failed: number; firstError: string | null }>;
   /** Local optimistic helpers used by list rows. */
   isFavorite: (configID: string) => boolean;
 }
@@ -120,9 +140,64 @@ export const useCollectionsStore = create<CollectionsState>((set, get) => ({
     await get().load();
   },
 
+  addManyToGroup: async (groupID, configIDs) => {
+    let added = 0;
+    let failed = 0;
+    let firstError: string | null = null;
+
+    for (const id of configIDs) {
+      try {
+        await call(() => collectionService.AddToUserGroup(groupID, id));
+        added++;
+      } catch (error) {
+        failed++;
+
+        if (firstError === null) {
+          firstError = describeError(error);
+        }
+      }
+    }
+
+    if (added > 0) {
+      await get().load();
+    }
+
+    return { added, failed, firstError };
+  },
+
   removeFromGroup: async (groupID, configID) => {
     await call(() => collectionService.RemoveFromUserGroup(groupID, configID));
     await get().load();
+  },
+
+  renameUserGroup: async (groupID, name) => {
+    await call(() => collectionService.RenameUserGroup(groupID, name));
+    await get().load();
+  },
+
+  removeManyFromGroup: async (groupID, configIDs) => {
+    let removed = 0;
+    let failed = 0;
+    let firstError: string | null = null;
+
+    for (const id of configIDs) {
+      try {
+        await call(() => collectionService.RemoveFromUserGroup(groupID, id));
+        removed++;
+      } catch (error) {
+        failed++;
+
+        if (firstError === null) {
+          firstError = describeError(error);
+        }
+      }
+    }
+
+    if (removed > 0) {
+      await get().load();
+    }
+
+    return { removed, failed, firstError };
   },
 
   isFavorite: (configID) => get().favorites.includes(configID),

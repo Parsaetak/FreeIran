@@ -409,3 +409,31 @@ weakened, re-scoped or made conditional on the Windows job; the
 allowlist remains empty-by-design with the same three justified
 bounded skips (tests, the contract fake-core builder, the validated
 cmd.exe PATH resolver).
+
+## v0.11.0 — runtime pass security invariants (unchanged guarantees)
+
+The v0.11.0 runtime work (bounded test admission, bulk-log
+aggregation, group root-fixes, dense Configs table, icon) does not
+weaken any security property:
+
+- **Redaction is untouched.** The aggregation changes WHERE lifecycle
+  records are admitted (profile policy), not WHAT is redacted: every
+  entry still passes the same redactor before storage or broadcast,
+  in every profile including Debug. The new bulk-test records carry
+  fingerprints (public hex ids), counts and durations only — no
+  credential material, no endpoint secrets beyond what the
+  credential-free config views already expose.
+- **No scanner was touched.** Gitleaks, govulncheck (pinned), go vet
+  (both targets), the comment-aware pattern scans and the
+  dangerous-child-process allowlist audit run exactly as before.
+- **Groups still never bypass trust.** Favorites and user groups
+  remain UI affordances over the same store records: connecting
+  through a group member uses the identical verified state machine,
+  and the group-filter fast path (a snapshotted membership set)
+  answers membership only — it adds no data path around testing or
+  route trust.
+- **Admission bounds are safety features.** The deferred-admission
+  backlog reduces peak resource use (fewer simultaneous probe
+  processes, bounded pending tasks, held admission under pressure);
+  it introduces no new privilege, no new process surface and no
+  unbounded growth.

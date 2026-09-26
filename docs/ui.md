@@ -241,6 +241,7 @@ fallback to the discovery flow, and the one-poll-per-mount rule. The
 Network page suite (v0.9.8.5) pins the identity card's no-auto-run
 contract, the staged ladder rendering and the DNS evidence rows.
 
+
 ## Design system: WHITE / BLACK / RED (v0.10.1)
 
 The visual identity is a three-part system, defined once in the
@@ -300,3 +301,62 @@ A truth note under the section bounds the claim: ECH support is
 schema-level evidence (config check + core startup), not proof of
 live ECH negotiation. No "secure", "censorship-resistant" or
 "unblockable" language appears anywhere in the ECH UI.
+
+## v0.11.0 — dense configuration table, first-class groups, honest group actions
+
+**Dense configuration table (wide viewports).** The primary browsing
+surface is a professional single-line node table (36 px rows) with a
+sticky, sortable column header — the familiar configuration-manager
+interaction model, on FreeIran's own architecture and trust model:
+
+```text
+★ | Protocol | Name / Endpoint | Transport | Latency | Test status | Source | ⋮
+```
+
+- **Columns** show identity and measured evidence only: favorite,
+  protocol, name, `address:port`, transport/security (`ws/tls`),
+  measured latency, test status, source. Deep technical data
+  (URL-test internals, test backend, timestamps, credential
+  presence) stays in the detail panel.
+- **Sorting** rides the ONE server-side filter pipeline: a header
+  click applies `sort_by` (protocol, endpoint, latency, tested_at,
+  source); clicking the active column clears it. No client-side
+  re-sorting of a bounded window.
+- **Virtualization is retained** on every path; narrow viewports
+  keep the v0.9.13 two-line card row (88 px).
+- **Testing lifecycle** renders the REAL states on every row —
+  Idle → Queued → Preparing → Testing → Measuring → Passed / Failed
+  / Timed out / Cancelled — the live ones from the queue's complete
+  live-state projection, the terminal ones from persisted measured
+  evidence. Nothing is ever called "verified" or "connected" because
+  a process launched.
+
+**First-class group navigation.** The group rail carries the built-in
+evidence groups (All / Favorites / Working / Untested / Fast /
+Recently tested) with LIVE counts from the store, plus user groups
+with member counts. A selected group visibly becomes the active
+browsing scope (active chip + server-side group filter). User groups
+support create, inline RENAME, and DELETE — deleting a group never
+touches configurations (they live in the store; the group only
+references stable config IDs). While a user group is the active
+scope, the toolbar offers "Remove from <group> (n)" for the selected
+rows and the row menu offers membership removal — acting on the
+ACTIVE group only, never a guess.
+
+**Honest group actions (the v0.9.10 defect, root-fixed).** The
+previous "Add selected to group" control swallowed per-item errors
+(`.catch(() => undefined)`) and always reported success. The result
+is now truthful: all succeeded → success; partial failure → a
+diagnostic with the count AND the preserved backend error; all
+failed → an error. A group-action failure can no longer produce a
+success toast (regression-tested). Membership changes reconcile the
+list, selection, group counts, active filter and detail panel
+immediately through the one server-side filter — no full page
+reload.
+
+**Scope-aware bulk testing.** The testing bar states its scope with
+live counts (Test selected (n), Test untested (n)) and the overflow
+menu carries Retry failed / Retry timed out / Retest working. Every
+bulk action is an explicit user origin; "Test selected" can never
+silently become "test all 20,000" (see docs/architecture.md, Test
+scheduling model).
