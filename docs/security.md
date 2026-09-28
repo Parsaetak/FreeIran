@@ -70,6 +70,27 @@ deliberate toolchain upgrade to go1.26.8.
 `fetch-depth: 0`) on every push, PR and weekly schedule. Findings fail
 the job.
 
+v0.11.3 adds the repository-level `.gitleaks.toml` (auto-detected by
+the action's gitleaks run). It EXTENDS the default rule set
+(`useDefault = true` — generic-api-key and every other default rule
+stay active, no path is excluded) and carries exactly ONE exception,
+scoped to a single HISTORICAL commit:
+
+- **Commit `dd62f17c22f73940e5fadfed1db187630ef9dd73`** (v0.10.2)
+  introduced two synthetic WireGuard test-key literals in test
+  fixtures (`engine/core/singbox/singbox_test.go` line 489 and
+  `engine/app/importservice_test.go` line 105 as of that commit).
+  The keys are non-functional examples paired with RFC 5737
+  documentation addresses — never runtime credentials. The current
+  source contains no committed literal (both files derive keys at
+  runtime via `deterministicTestKey` / `deterministicKey`), but the
+  full-history scan would flag the historical commit forever. The
+  allowlist names that commit and nothing else: future real secrets
+  in ANY file — including those two test files — are still detected.
+  Reproduced locally with gitleaks 8.28: baseline exit 2 with exactly
+  the two CI findings; with the config, exit 0 with all 112 commits
+  scanned.
+
 ## Static analysis
 
 1. `go vet` on the pure-Go packages (native Linux scope).
@@ -380,13 +401,19 @@ not even once — and makes the checksum MANDATORY:
   verification, inverted route tracking, DHCP-not-restore DNS,
   unbounded extraction) was deleted. TUN reports
   experimental/unavailable on every platform and is NOT a kill
-  switch.
+  switch. (v0.11.3 UPDATE: TUN returned WITHOUT any of those
+  patterns — the managed sing-box core is the dataplane, no shell
+  network configuration, no downloaded binaries; see docs/tun.md and
+  the v0.11.3 addendum below.)
 - **Allowlist-based child-process audit** (security.yml): product Go
   code must not invoke PowerShell, cmd, curl, wget, netsh, route,
   Start-Process, Invoke-WebRequest, Expand-Archive or similar
   download/exec tools. Every exception is explicit and justified
-  inline (currently exactly one: the validated cmd.exe PATH RESOLVER
-  in system/resolve_windows.go, which never executes anything).
+  inline (currently exactly TWO: the validated cmd.exe PATH RESOLVER
+  in `system/resolve_windows.go`, which never executes anything, and
+  — since v0.11.3 — the reviewed "Open shell here" feature in
+  `system/open_shell.go`; both contracts are documented in the
+  v0.11.3 addendum below).
   The scan's push trigger was also repaired — `branches: ain]`
   never matched a real branch, so pushes to main were never scanned.
 - **Release signing state:** Authenticode signing is ACTIVE only when
@@ -475,3 +502,71 @@ The v0.11.2 additions do not reduce any v0.11.0 security invariant:
   adapter is intentionally out of scope. `engine/app/core_integration_test.go`
   now asserts Mihomo is NOT advertised as a runnable protocol-core
   backend, so the capability surface stays honest.
+
+---
+
+## v0.11.3 addendum — two narrow exceptions, zero scan reduction
+
+The v0.11.3 Security workflow repairs add exactly two exceptions. Neither
+weakens, disables or narrows any pattern set, and neither uses
+`continue-on-error`, `|| true` or a blanket path exclusion.
+
+### 1. Gitleaks historical synthetic-test-key commit (secret scanning)
+
+- Finding: `generic-api-key` at `engine/core/singbox/singbox_test.go:489`
+  and `engine/app/importservice_test.go:105`, historical commit
+  `dd62f17c22f73940e5fadfed1db187630ef9dd73` (v0.10.2).
+- Nature: synthetic WireGuard fixture keys paired with RFC 5737
+  documentation addresses; the current source generates keys at runtime
+  and holds no committed literal. The Security job scans full history,
+  so the historical finding cannot be removed by editing current files.
+- Repair: `.gitleaks.toml` at the repository root extends the DEFAULT
+  rule set (`useDefault = true`) and allowlists ONLY that commit hash
+  (`[allowlist] commits = [...]`). No path allowlist, no test-file
+  exclusion, no rule removal: any future secret-looking literal in any
+  file — including those two test files — still fails the job.
+- Verification: reproduced locally with gitleaks 8.28 (`gitleaks git
+  --exit-code=2`): baseline exit 2 with exactly the two CI findings;
+  with the repository config, exit 0 with all 112 commits scanned.
+
+### 2. `system/open_shell.go` dangerous child-process exception (static analysis)
+
+- Finding: the "Dangerous child-process surface (allowlist)" step
+  flags `system/open_shell.go` because the reviewed "Open shell here"
+  feature launches `powershell(.exe)` / `pwsh` / `cmd.exe`.
+- Why it is legitimate (the reviewed contract, enforced by the file's
+  structure and by `system/process_windows_test.go`):
+  - ONLY PowerShell/CMD are reachable: `ShellType` is a closed enum
+    (`ShellPowerShell`, `ShellCMD`); any other value returns
+    `ErrUnsupportedShell` — no silent fallback.
+  - No arbitrary executable path is accepted: the binary resolves
+    through `exec.LookPath` and well-known System32 locations, never
+    from a caller-supplied string.
+  - No caller command string is passed: `exec.Command(exe)` with ZERO
+    arguments.
+  - The directory is supplied as the child's WORKING DIRECTORY
+    (`cmd.Dir`), never via `cd path &&` concatenation — spaces,
+    Unicode and UNC paths are handled by the OS launch path without
+    shell interpolation. The feature is "Open PowerShell/CMD here",
+    NOT "Run command here".
+- Repair: an exact `case "$file" in ./system/open_shell.go)` skip in
+  security.yml with the justification inline next to it. The
+  `system/resolve_windows.go` exception is unchanged, the pattern set
+  is byte-identical, every other product file (engine/, system/,
+  internal/, cmd/, non-test) is still scanned fail-closed, and an
+  unscannable file still exits 2.
+- Change-control: removing or widening either exception requires
+  changing the implementation first — the workflow comment and this
+  document are the review contract.
+
+### TUN and the child-process scanner
+
+The v0.11.3 TUN implementation introduces NO new child-process
+surface: no `netsh`, no `route add/delete`, no PowerShell network
+configuration, no curl/wget/PowerShell downloads. The dataplane is the
+managed sing-box core launched through the existing supervisor
+(`system.Start`, job objects) — the same launch path the connection
+engine already uses and which the scanner already covers (its
+arguments are `run -c <config file>`, never a shell). The Wintun
+dependency ships embedded in the digest-verified sing-box binary, so
+no downloader exists at all (docs/tun.md).

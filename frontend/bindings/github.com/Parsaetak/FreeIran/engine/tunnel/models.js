@@ -192,6 +192,16 @@ export class State {
              */
             this["details"] = undefined;
         }
+        if (/** @type {any} */(false)) {
+            /**
+             * TUN carries the live TUN snapshot while the TUN mode is in
+             * use (or the last TUN outcome). Nil for system-proxy/direct
+             * states.
+             * @member
+             * @type {TUNSnapshot | undefined}
+             */
+            this["tun"] = undefined;
+        }
 
         Object.assign(this, $$source);
     }
@@ -203,9 +213,13 @@ export class State {
      */
     static createFrom($$source = {}) {
         const $$createField4_0 = $$createType1;
+        const $$createField4_2 = $$createType2;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("bypass_list" in $$parsedSource) {
             $$parsedSource["bypass_list"] = $$createField4_0($$parsedSource["bypass_list"]);
+        }
+        if ("tun" in $$parsedSource) {
+            $$parsedSource["tun"] = $$createField4_2($$parsedSource["tun"]);
         }
         return new State(/** @type {Partial<State>} */($$parsedSource));
     }
@@ -322,6 +336,152 @@ export class SystemProxySnapshot {
     }
 }
 
+/**
+ * TUNSnapshot is a redacted view of the TUN state. v0.11.3 extends
+ * the v0.9.8.5 model with the fields the UI needs to tell the truth:
+ * which core runs the dataplane, the lifecycle status, what was
+ * observed, and the deployment design.
+ */
+export class TUNSnapshot {
+    /**
+     * Creates a new TUNSnapshot instance.
+     * @param {Partial<TUNSnapshot>} [$$source = {}] - The source object to create the TUNSnapshot.
+     */
+    constructor($$source = {}) {
+        if (!("available" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["available"] = false;
+        }
+        if (!("installed" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["installed"] = false;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["interface_name"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["ipv4_address"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["ipv6_address"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string[] | undefined}
+             */
+            this["dns_servers"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string[] | undefined}
+             */
+            this["routes"] = undefined;
+        }
+        if (!("requires_elevation" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["requires_elevation"] = false;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * Backend names the TUN dataplane ("sing-box native TUN
+             * (Wintun)").
+             * @member
+             * @type {string | undefined}
+             */
+            this["backend"] = undefined;
+        }
+        if (!("active" in $$source)) {
+            /**
+             * Active reports an OBSERVED, VERIFIED session (interface +
+             * tunneled request), never merely a started process.
+             * @member
+             * @type {boolean}
+             */
+            this["active"] = false;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * Status is the lifecycle state surfaced to the UI:
+             * off | starting | active | stopping | failed.
+             * @member
+             * @type {string | undefined}
+             */
+            this["status"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * Core is the sing-box version running the dataplane.
+             * @member
+             * @type {string | undefined}
+             */
+            this["core"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * Configuration is the redacted display form of the
+             * configuration routed through the TUN.
+             * @member
+             * @type {string | undefined}
+             */
+            this["configuration"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * Details carries the last failure (status=failed) or the
+             * stale-state note.
+             * @member
+             * @type {string | undefined}
+             */
+            this["details"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new TUNSnapshot instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {TUNSnapshot}
+     */
+    static createFrom($$source = {}) {
+        const $$createField6_0 = $$createType3;
+        const $$createField6_1 = $$createType3;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("dns_servers" in $$parsedSource) {
+            $$parsedSource["dns_servers"] = $$createField6_0($$parsedSource["dns_servers"]);
+        }
+        if ("routes" in $$parsedSource) {
+            $$parsedSource["routes"] = $$createField6_1($$parsedSource["routes"]);
+        }
+        return new TUNSnapshot(/** @type {Partial<TUNSnapshot>} */($$parsedSource));
+    }
+}
+
 // Private type creation functions
 const $$createType0 = SystemProxySnapshot.createFrom;
 const $$createType1 = $Create.Array($Create.Any);
+const $$createType2 = TUNSnapshot.createFrom;
+const $$createType3 = $Create.Array($Create.Any);

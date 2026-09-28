@@ -303,3 +303,16 @@ log; Psiphon: copy-not-move user-binary path with content-addressed
 managed storage, byte-equivalent verification, smoke launch of the
 MANAGED COPY). The v0.11.0 provider tests pass against the v0.11.2
 tree without modification.
+
+---
+
+## v0.11.3 addendum — TUN uses the same managed-core surface
+
+The TUN dataplane reuses the provider/core architecture rather than
+adding a parallel one: `TunnelService` resolves the managed sing-box
+core through a `TUNCoreResolver` implemented over the EXISTING
+coremgr manifest (digest-verified install, states installed/ready/
+update-available) and installs through the existing pipeline when
+missing. Core provider adapters, Mihomo's integration state and the
+honest capability surface are unchanged — TUN adds a consumer of the
+managed-core surface, not a second manager (docs/tun.md).

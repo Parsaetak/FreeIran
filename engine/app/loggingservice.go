@@ -92,6 +92,16 @@ type Settings struct {
 	// ReducedMotion asks the UI to minimize animation (accessibility).
 	ReducedMotion bool `json:"reduced_motion"`
 
+	// TrayEnabled controls the native system tray (v0.11.3). Pointer
+	// semantics: nil (the default, and the shape of every
+	// pre-0.11.3 settings file) means ENABLED — the tray is part of
+	// the default desktop experience and an absent key must never
+	// silently remove it. false: the tray is destroyed (or never
+	// created) and closing the main window behaves as a normal
+	// application close. The value persists through the ONE settings
+	// path (settings.json) — no second store.
+	TrayEnabled *bool `json:"tray_enabled,omitempty"`
+
 	// --- local inbound port preferences ------------------------------
 	//
 	// The Settings UI exposed these controls since v0.9.8.3, but the
@@ -221,6 +231,12 @@ func (a *App) currentSettings() Settings {
 	return a.settings
 }
 
+// TrayEnabledOrDefault resolves the effective tray setting: nil (a
+// pre-0.11.3 settings file or fresh install) means ENABLED.
+func (s Settings) TrayEnabledOrDefault() bool {
+	return s.TrayEnabled == nil || *s.TrayEnabled
+}
+
 // applySettings routes engine-affecting preferences into the running
 // subsystems. Callers persist before (or after) calling.
 func (a *App) applySettings(settings Settings) {
@@ -289,6 +305,35 @@ func (a *App) applySettings(settings Settings) {
 			"developer settings active (queue workers %d, net timeout %ds, force Go fallback %v)",
 			settings.DevQueueWorkers, settings.DevNetTimeoutSeconds, settings.DevForceGoFallback)
 	}
+
+	// v0.11.3: notify the composition root (the native tray reacts to
+	// tray_enabled). The callback is post-registered by cmd/freeiran
+	// and must be fast and non-blocking; it never runs engine work.
+	// During boot (app.New → applySettings) no listener is registered
+	// yet — the composition root reads the current setting directly
+	// when it builds the initial tray.
+	a.settingsListenerMu.Lock()
+	listener := a.settingsListener
+	a.settingsListenerMu.Unlock()
+
+	if listener != nil {
+		listener(settings)
+	}
+}
+
+// SetSettingsListener registers the composition-root callback invoked
+// after every applied settings mutation. Registration happens BEFORE
+// Start() (like the other listeners); the current setting is read
+// directly when the initial tray is built, so no synthetic initial
+// dispatch is needed.
+func (a *App) SetSettingsListener(fn func(Settings)) {
+	if fn == nil {
+		return
+	}
+
+	a.settingsListenerMu.Lock()
+	a.settingsListener = fn
+	a.settingsListenerMu.Unlock()
 }
 
 // effectiveQueueConcurrency resolves the boosters adaptive proposal

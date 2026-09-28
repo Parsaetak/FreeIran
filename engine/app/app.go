@@ -267,6 +267,14 @@ type App struct {
 	queueStateListener func(testqueue.LiveStateView)
 	queueWatchCancel   func()
 
+	// settingsListener is the v0.11.3 composition-root callback for
+	// settings changes (the native tray reacts to tray_enabled).
+	// applySettings invokes it after every applied mutation; the
+	// callback must be fast and non-blocking (it posts to the UI
+	// thread, it never runs engine work).
+	settingsListenerMu sync.Mutex
+	settingsListener   func(Settings)
+
 	ingesting atomic.Bool
 	started   atomic.Bool
 
@@ -509,6 +517,15 @@ func New(opts Options) (*App, error) {
 	// when the platform refuses the restore.
 	tunnel.SetRecoveryMarkerPath(filepath.Join(layout.Runtime, "system-proxy.json"))
 
+	// v0.11.3: TUN crash recovery uses the same durable-marker
+	// pattern. The session marker records the FreeIran-owned adapter
+	// identity; a marker found here proves the last session died
+	// without a clean Disable. The stale state is REPORTED (adapter
+	// presence inspected by recorded name/address only — unrelated
+	// network state is never touched); the remaining cleanup happens
+	// through the next elevated TUN enable/disable cycle.
+	tunnel.SetTUNSessionMarkerPath(filepath.Join(layout.Runtime, "tun-session.json"))
+
 	if recovered, recoverErr := tunnel.RecoverStaleProxy(); recovered {
 		if recoverErr == nil {
 			logger.Warn("tunnel", "proxy_recovered",
@@ -518,6 +535,14 @@ func New(opts Options) (*App, error) {
 				"could not restore the system-proxy state after an unclean shutdown: %v",
 				recoverErr)
 		}
+	}
+
+	// v0.11.3: report (never silently act on) stale TUN state left
+	// by an unclean shutdown — see SetTUNSessionMarkerPath above.
+	if stale := tunnel.CheckStaleTUNSession(); stale.Found {
+		logger.Warn("tunnel", "tun_stale_session",
+			"stale TUN session detected (interface %s, pid %d): %s",
+			stale.InterfaceName, stale.PID, stale.Detail)
 	}
 
 	st, err := store.Open(store.Options{

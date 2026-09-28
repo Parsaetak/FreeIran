@@ -3,83 +3,73 @@ package tunnel
 import (
 	"context"
 	"errors"
-	"fmt"
 )
 
-// tun_unavailable.go implements the v0.9.8.6 TUN policy: TUN mode is
-// NOT production-ready and is deliberately NOT exposed as normal
-// functionality. The previous Wintun backend was removed because its
-// implementation could not be made trustworthy within the v0.9.8.6
-// reliability/security bar:
+// tun_unavailable.go implements the honest capability-limited TUN
+// backend used when the real dataplane cannot run:
 //
-//   - route bookkeeping was inverted (failures were recorded instead
-//     of successes), so Disable could not reliably remove the routes
-//     Enable had actually created;
-//   - DNS "restoration" replaced the adapter's configuration with
-//     DHCP instead of restoring the exact prior state — not
-//     transactional, not reversible;
-//   - Wintun acquisition used raw curl/PowerShell downloads with NO
-//     authoritative SHA-256/signature verification — a remote
-//     executable installed without integrity evidence;
-//   - archive extraction ran through Expand-Archive with no size,
-//     count or traversal bounds;
-//   - interface/IP/DNS values were hardcoded instead of modelled
-//     state;
-//   - configuration mutated the system through netsh/route shell
-//     calls instead of a controlled networking API;
-//   - and fundamentally: TUN mode is NOT a kill switch. Process
-//     supervision (job objects) keeps the core process from
-//     outliving FreeIran; it does NOT filter packets. A crashed or
-//     blocked route leaves the TUN adapter and its routes in place
-//     until something cleans them up.
+//   - no TUNCoreResolver is wired (the application layer was not
+//     given the managed-core access it needs), or
+//   - the platform has no TUN implementation yet (v0.11.3 ships
+//     Windows; see tun_other.go).
 //
-// Re-enabling TUN requires the full design to exist first: a
-// transactional Enable (capture state → create → configure → mutate
-// routes/DNS → verify → commit, with verified rollback of ONLY the
-// successfully applied changes), authoritative Wintun acquisition
-// (pinned digest, bounded extraction), a real route/DNS state model
-// and honest documentation of its failure semantics. Until then this
-// backend reports TUN as unavailable everywhere — visibly, honestly,
-// and without faking support.
+// The v0.9.8.5 backend it replaces was removed because its
+// implementation could not be made trustworthy: raw curl/PowerShell
+// Wintun acquisition with no digest, netsh/route shell mutations,
+// inverted route bookkeeping, non-transactional DNS "restore",
+// unbounded extraction. NONE of those patterns returned — v0.11.3
+// implements TUN through the managed sing-box core (tun.go), and
+// this backend remains only as the honest refusal for hosts that
+// cannot serve it.
 
-// ErrTunExperimental is the explicit, user-visible status of TUN mode
-// in this release: unfinished, disabled, not a kill switch.
-var ErrTunExperimental = errors.New(
-	"tunnel: TUN mode is experimental and disabled in this release " +
-		"(unverified Wintun acquisition and non-transactional route/DNS " +
-		"mutation made it unsafe; it is not a kill switch)")
-
-// unavailableTUNBackend reports TUN as unavailable on every platform.
+// unavailableTUNBackend reports TUN as unavailable with the exact
+// reason, never with fake support.
 type unavailableTUNBackend struct{}
 
-// Available reports false: TUN is not exposed in this release.
+// Available reports false: this host cannot serve TUN sessions.
 func (unavailableTUNBackend) Available() bool { return false }
 
-// Install refuses: the Wintun acquisition path no longer exists (it
-// downloaded an executable without authoritative integrity evidence).
+// Install refuses: there is no dependency to install without the
+// managed-core wiring (the Wintun dependency travels INSIDE the
+// verified sing-box binary — see tun.go).
 func (unavailableTUNBackend) Install(ctx context.Context) error {
-	return fmt.Errorf("%w; Wintun installation is disabled until it can "+
-		"be acquired with a pinned, verified digest", ErrTunExperimental)
+	return ErrTunUnavailable
 }
 
-// Enable refuses: Enable was not transactional (route tracking,
-// DNS restore and rollback were all broken).
-func (unavailableTUNBackend) Enable(ctx context.Context, host string, port int) error {
-	return ErrTunExperimental
+// Enable refuses before touching anything: no platform/dataplane is
+// available on this host.
+func (unavailableTUNBackend) Enable(ctx context.Context, opts TUNEnableOptions) error {
+	return ErrTunUnavailable
 }
 
 // Disable is a no-op: nothing can be enabled, so nothing needs
 // tearing down.
 func (unavailableTUNBackend) Disable(ctx context.Context) error { return nil }
 
-// Snapshot reports the honest state: not available, not installed.
+// Snapshot reports the honest state: not available, not installed,
+// elevation required (TUN is an elevated feature wherever it exists).
 func (unavailableTUNBackend) Snapshot() TUNSnapshot {
 	return TUNSnapshot{
 		Available:         false,
 		Installed:         false,
 		RequiresElevation: true,
+		Backend:           tunBackendName,
+		Status:            tunStatusOff,
+		Details:           ErrTunUnavailable.Error(),
 	}
 }
 
-// newTUNBackend returns the unavailable backend on every platform.
-func newTUNBackend() TUNBackend { return unavailableTUNBackend{} }
+// newTUNBackend returns the platform TUN backend. With a wired
+// TUNCoreResolver the real sing-box dataplane backend is used
+// (Windows); without one the honest unavailable backend is returned.
+func newTUNBackend(resolver TUNCoreResolver) TUNBackend {
+	if resolver != nil {
+		return newSingboxTUNBackend(resolver)
+	}
+
+	return unavailableTUNBackend{}
+}
+
+// errTunNotWired is retained as a sentinel for callers probing WHY
+// TUN is unavailable in tests.
+var errTunNotWired = errors.New("tunnel: TUN core resolver is not wired")

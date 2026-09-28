@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -256,13 +257,24 @@ func main() {
 	// from the platform's tray surface so FreeIran behaves like a
 	// normal Windows desktop client.
 	//
-	// Behavior:
+	// v0.11.3: the tray is governed by the PERSISTENT
+	// `tray_enabled` setting (Settings struct, default true via
+	// nil-pointer semantics). The trayManager below owns the
+	// lifecycle:
+	//
+	//   - tray_enabled = true  → the native tray is created,
+	//     close-to-tray is active and the tray menu carries a
+	//     "System Tray" checkbox that reflects the REAL setting.
+	//   - tray_enabled = false → the tray is destroyed (no dead
+	//     icon), close-to-tray is OFF (closing the window is a
+	//     normal application close) and the main window's close
+	//     path runs the standard quit lifecycle. The setting stays
+	//     recoverable from Settings (or the tray checkbox while
+	//     the tray exists).
+	//
+	// Behavior when enabled (unchanged from v0.11.2):
 	//
 	//   - close main window → hide to tray (does not quit).
-	//     Closing a window normally would call Quit on the Wails
-	//     app; we intercept WindowClosing and Hide instead, so the
-	//     connection/provider/core cleanup is deferred until the
-	//     user picks Quit from the tray.
 	//   - tray Show → restore the main window.
 	//   - tray navigation actions (Configurations / Network /
 	//     Diagnostics / Settings) → restore the window AND emit a
@@ -270,67 +282,50 @@ func main() {
 	//     duplicate application windows are ever opened.
 	//   - tray Quit → run the existing OnShutdown hook
 	//     (applicationInstance.Shutdown), then wailsApp.Quit.
-	//     Existing connection/provider/core cleanup runs through
-	//     the SAME lifecycle path as a normal close.
-	tray := wailsApp.SystemTray.New()
-	tray.SetIcon(appicon.PNG)
-
-	trayMenu := wailsApp.Menu.New()
-	trayMenu.Add("Show").OnClick(func(*application.Context) {
-		mainWindow.Show()
-		mainWindow.Focus()
-	})
-	trayMenu.Add("Hide").OnClick(func(*application.Context) {
-		mainWindow.Hide()
-	})
-	trayMenu.AddSeparator()
-	trayMenu.Add("Configurations").OnClick(func(*application.Context) {
-		mainWindow.Show()
-		mainWindow.Focus()
-		wailsApp.Event.Emit("freeiran:navigate", map[string]string{"page": "configs"})
-	})
-	trayMenu.Add("Network").OnClick(func(*application.Context) {
-		mainWindow.Show()
-		mainWindow.Focus()
-		wailsApp.Event.Emit("freeiran:navigate", map[string]string{"page": "network"})
-	})
-	trayMenu.Add("Diagnostics").OnClick(func(*application.Context) {
-		mainWindow.Show()
-		mainWindow.Focus()
-		wailsApp.Event.Emit("freeiran:navigate", map[string]string{"page": "diagnostics"})
-	})
-	trayMenu.Add("Settings").OnClick(func(*application.Context) {
-		mainWindow.Show()
-		mainWindow.Focus()
-		wailsApp.Event.Emit("freeiran:navigate", map[string]string{"page": "settings"})
-	})
-	trayMenu.AddSeparator()
-	trayMenu.Add("Quit").OnClick(func(*application.Context) {
-		// Run the SAME graceful shutdown the OnShutdown hook runs
-		// on a process-level close — no orphan providers/cores.
-		applicationInstance.Shutdown()
-		wailsApp.Quit()
+	//   - Disconnect when connected → stops the active tunnel.
+	trayManager := newTrayManager(trayManagerOptions{
+		app:                 wailsApp,
+		applicationInstance: applicationInstance,
+		mainWindow:          mainWindow,
+		settingsService:     app.NewSettingsService(applicationInstance),
 	})
 
-	tray.SetMenu(trayMenu)
+	// React to settings mutations (Settings UI + tray checkbox —
+	// both write through the ONE settings path). The reconcile
+	// creates/destroys the tray to match the persisted setting.
+	applicationInstance.SetSettingsListener(func(s app.Settings) {
+		trayManager.Reconcile(s.TrayEnabledOrDefault())
+	})
 
-	// close-to-tray: intercept the user's window-close and hide
-	// instead. The hook fires before the OS closes the window; we
-	// cancel the close and Hide so the process keeps running. Quit
-	// is only reached through the tray menu.
-	//
-	// Implemented through Wails v3 events so the tray + window
-	// share one common visibility authority (the platform's taskbar
-	// state, not a parallel React boolean).
+	// Initial creation follows the persisted setting. Pre-Run tray
+	// creation is safe (Wails defers platform construction to
+	// Run); no dead icon, no goroutine surprises.
+	trayManager.Reconcile(trayManager.opts.settingsService.Get().TrayEnabledOrDefault())
+
+	// close-to-tray (v0.11.2 behavior, now SETTING-AWARE): with
+	// tray_enabled the window close is intercepted and hidden to
+	// tray; with the tray disabled, closing the window is a NORMAL
+	// application close — the process must not stay resident only
+	// because an old tray existed. The current setting is read per
+	// close (cheap mutex read; always authoritative).
 	mainWindow.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
-		mainWindow.Hide()
-		e.Cancel()
+		if trayManager.opts.settingsService.Get().TrayEnabledOrDefault() {
+			mainWindow.Hide()
+			e.Cancel()
+		}
+		// else: fall through — the OS closes the window and the
+		// Wails app quits through the default path (OnShutdown
+		// runs, tray already absent).
 	})
 
 	// Graceful shutdown: the OnShutdown hook runs before process
-	// exit and must not lose data. App.Shutdown flushes and closes
-	// the store and (last of all) the runtime log.
+	// exit and must not lose data. Order per docs (§ shutdown):
+	// engine stops (connection → TUN → providers → cores) inside
+	// applicationInstance.Shutdown, the tray is destroyed BEFORE
+	// that so no menu handler can fire into a tearing-down
+	// engine, and the runtime log is flushed last by Shutdown.
 	wailsApp.OnShutdown(func() {
+		trayManager.Destroy()
 		applicationInstance.Shutdown()
 	})
 
@@ -342,6 +337,155 @@ func main() {
 
 		log.Fatalf("run failed: %v", err)
 	}
+}
+
+// trayMenuEntry pairs a label with its click handler for the tray
+// menu builder.
+type trayMenuEntry struct {
+	label   string
+	handler func(*application.Context)
+}
+
+// trayManagerOptions carries the wired dependencies of the tray
+// manager (v0.11.3): the Wails app, the engine instance, the main
+// window and the ONE settings service.
+type trayManagerOptions struct {
+	app                 *application.App
+	applicationInstance *app.App
+	mainWindow          *application.WebviewWindow
+	settingsService     *app.SettingsService
+}
+
+// trayManager owns the native tray lifecycle under tray_enabled.
+// All fields are guarded by mu; Wails menu item state is read/written
+// on the reconcile path only.
+type trayManager struct {
+	mu           sync.Mutex
+	opts         trayManagerOptions
+	tray         *application.SystemTray
+	trayMenu     *application.Menu
+	trayCheckbox *application.MenuItem
+}
+
+func newTrayManager(opts trayManagerOptions) *trayManager {
+	return &trayManager{opts: opts}
+}
+
+// Reconcile makes the tray match the requested state. Safe from any
+// goroutine: platform work is posted to the UI thread via
+// application.InvokeAsync (a no-op queue before Run, main-thread
+// dispatch after).
+func (t *trayManager) Reconcile(enabled bool) {
+	application.InvokeAsync(func() {
+		t.mu.Lock()
+		defer t.mu.Unlock()
+
+		if enabled && t.tray == nil {
+			t.buildLocked()
+		} else if !enabled && t.tray != nil {
+			t.destroyLocked()
+		}
+	})
+}
+
+// Destroy tears the tray down (shutdown path). Idempotent.
+func (t *trayManager) Destroy() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.tray != nil {
+		t.destroyLocked()
+	}
+}
+
+// buildLocked constructs the tray + menu. Callers hold t.mu and run
+// on the UI thread (InvokeAsync / pre-Run composition).
+func (t *trayManager) buildLocked() {
+	tray := t.opts.app.SystemTray.New()
+	tray.SetIcon(appicon.PNG)
+
+	trayMenu := t.opts.app.Menu.New()
+	trayMenu.Add("Show").OnClick(func(*application.Context) {
+		t.opts.mainWindow.Show()
+		t.opts.mainWindow.Focus()
+	})
+	trayMenu.Add("Hide").OnClick(func(*application.Context) {
+		t.opts.mainWindow.Hide()
+	})
+	trayMenu.AddSeparator()
+	trayMenu.Add("Configurations").OnClick(func(*application.Context) {
+		t.opts.mainWindow.Show()
+		t.opts.mainWindow.Focus()
+		t.opts.app.Event.Emit("freeiran:navigate", map[string]string{"page": "configs"})
+	})
+	trayMenu.Add("Network").OnClick(func(*application.Context) {
+		t.opts.mainWindow.Show()
+		t.opts.mainWindow.Focus()
+		t.opts.app.Event.Emit("freeiran:navigate", map[string]string{"page": "network"})
+	})
+	trayMenu.Add("Diagnostics").OnClick(func(*application.Context) {
+		t.opts.mainWindow.Show()
+		t.opts.mainWindow.Focus()
+		t.opts.app.Event.Emit("freeiran:navigate", map[string]string{"page": "diagnostics"})
+	})
+	trayMenu.Add("Settings").OnClick(func(*application.Context) {
+		t.opts.mainWindow.Show()
+		t.opts.mainWindow.Focus()
+		t.opts.app.Event.Emit("freeiran:navigate", map[string]string{"page": "settings"})
+	})
+	trayMenu.AddSeparator()
+
+	// Disconnect when connected: stops the active core session and
+	// any active tunnel through the SAME services the UI buttons
+	// use (no parallel control path).
+	trayMenu.Add("Disconnect when connected").OnClick(func(*application.Context) {
+		_ = app.NewTunnelService(t.opts.applicationInstance).Disable()
+		_ = app.NewConnectionService(t.opts.applicationInstance).Disconnect()
+	})
+	trayMenu.AddSeparator()
+
+	// v0.11.3: the "System Tray" checkbox reflects the REAL
+	// persisted setting. Wails toggles the checkbox state itself on
+	// click; the handler persists the new value through the ONE
+	// settings path and the settings listener reconciles the tray.
+	checkbox := trayMenu.AddCheckbox("System Tray", t.opts.settingsService.Get().TrayEnabledOrDefault())
+	checkbox.OnClick(func(*application.Context) {
+		next := checkbox.Checked()
+
+		settings := t.opts.settingsService.Get()
+		settings.TrayEnabled = &next
+
+		if _, err := t.opts.settingsService.Save(settings); err != nil {
+			slog.Error("tray setting persist failed", "error", err)
+		}
+		// The SetSettingsListener reconcile performs any
+		// creation/destruction; no direct action here.
+	})
+
+	trayMenu.AddSeparator()
+	trayMenu.Add("Quit").OnClick(func(*application.Context) {
+		// Run the SAME graceful shutdown the OnShutdown hook runs
+		// on a process-level close — no orphan providers/cores.
+		t.opts.applicationInstance.Shutdown()
+		t.opts.app.Quit()
+	})
+
+	tray.SetMenu(trayMenu)
+
+	t.tray = tray
+	t.trayMenu = trayMenu
+	t.trayCheckbox = checkbox
+}
+
+// destroyLocked removes the tray icon and invalidates the menu
+// references (use-after-destroy is impossible: every handler only
+// touches t.opts fields, and the references are cleared here). The
+// persisted setting survives — Reconcile(true) rebuilds the tray.
+func (t *trayManager) destroyLocked() {
+	t.tray.Destroy()
+	t.tray = nil
+	t.trayMenu = nil
+	t.trayCheckbox = nil
 }
 
 // versionedAssetCache wraps the bundled asset server with the cache

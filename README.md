@@ -9,15 +9,72 @@ configurations.
 **Project:** FreeIran — A SHEYTAN Digital System
 **Architect:** Parsa Tak / SHEYTAN
 **Repository:** https://github.com/Parsaetak/FreeIran
-**Current version:** 0.11.2 (see `VERSION`)
+**Current version:** 0.11.3 (see `VERSION`)
 **Status:** production architecture — multi-core protocol runtime with
 managed installation, multi-level node discovery, Ping/URL test modes
 with measured ranking, verified-connection engine with racing,
-environment intelligence, system proxy mode (WinINet), unified adaptive
+environment intelligence, system proxy mode (WinINet), functional
+Windows TUN mode through the managed sing-box core's native TUN
+dataplane (v0.11.3 — see "What's new in v0.11.3" and docs/tun.md),
+unified adaptive
 memory control and kernel-level process supervision, evidence-based
 failure classification with transport-agile route selection, and
-schema-verified ECH support through sing-box. TUN mode is EXPERIMENTAL
-and disabled in this release (see "TUN mode" below).
+schema-verified ECH support through sing-box.
+
+---
+
+## What's new in v0.11.3
+
+- **Functional Windows TUN (the headline).** TUN is no longer the
+  v0.9.8.6 honest refusal. The managed, digest-verified sing-box core
+  IS the TUN dataplane: a native sing-box tun inbound (Wintun-backed)
+  runs the user's active/selected configuration system-wide. The
+  activation is transactional and OBSERVED — elevation check, verified
+  managed core, sing-box compatibility validation, collision-free TUN
+  addressing derived from the live interface table, loop prevention
+  through sing-box's `auto_detect_interface`, DNS hijack (plain DNS is
+  answered by sing-box's resolver over the proxy; system adapter DNS is
+  never mutated), then the TUN interface is observed AND a real
+  no-explicit-proxy Internet request is verified before FreeIran
+  reports Active. Disable is transactional too: the dataplane stops,
+  the interface disappearance is verified, and residuals are surfaced
+  instead of silently claimed clean. Crash recovery follows the
+  system-proxy pattern: a durable session marker plus a boot-time stale
+  report that only ever inspects FreeIran's own recorded adapter. No
+  netsh, no route shell commands, no PowerShell/curl downloads — the
+  Wintun dependency ships embedded inside the verified sing-box binary
+  (official wintun.dll via the official Go bindings), so no second
+  downloader exists. Full design: docs/tun.md.
+- **Security workflow repairs (both push failures).** (1) Secret
+  scanning: the two historical generic-api-key findings (commit
+  dd62f17c) are synthetic WireGuard test fixtures; a narrow,
+  commit-scoped allowlist in the new `.gitleaks.toml` handles exactly
+  that historical commit while every default rule and every current
+  file stays fully scanned. (2) Static analysis: the reviewed
+  "Open shell here" feature (`system/open_shell.go`) is added as an
+  exact, justified allowlist entry with the security contract inline;
+  the dangerous-pattern set is unchanged and remains fail-closed for
+  every other file (docs/security.md documents both exceptions).
+- **System Tray ON/OFF as a persistent setting.** `tray_enabled`
+  (default ON) persists through the existing Settings store. The tray
+  menu gains a real "System Tray" checkbox reflecting the setting;
+  turning it off destroys the tray (no dead icon), makes window close
+  a normal application close, and the setting stays recoverable from
+  Settings. Shutdown destroys the tray before engine teardown.
+- **Everything from v0.11.2 is preserved**: Mihomo managed-core
+  integration, Configurations All scope, internal tabs,
+  duplicate-tab prevention, honest tunnel diagnostics, safe
+  OpenShellAtDirectory, native tray (now switchable), dense configs
+  table, bounded test admission, adaptive memory pressure, compact
+  Normal logging.
+
+> **Runtime verification status (honest):** the generated TUN document
+> passes `sing-box check` against the pinned v1.14.1 binary, the full
+> Go test suite (Linux) and the Windows/amd64 build pass, and the
+> frontend typecheck/build/tests pass. The end-to-end Windows TUN
+> runtime (adapter creation on real Wintun, tunneled request) is NOT
+> VERIFIED — it requires an elevated Windows host and is documented as
+> such in docs/tun.md and the ROADMAP.
 
 ---
 
@@ -74,7 +131,8 @@ matrix itself) runs in GitHub Actions CI when this tree is pushed.
   contract test.
 - **Android strategy documented (plan only).** docs/android.md is the
   implementation-ready architecture note; no Android product exists
-  and TUN stays experimental/disabled.
+  and the Android TUN backend remains a plan (the Windows sing-box TUN
+  dataplane shipped in v0.11.3 is desktop-only).
 
 ## What's new in v0.10.5
 
@@ -1118,6 +1176,9 @@ does.
   experimental/unavailable on every surface, and TUN is NOT a kill
   switch — process supervision does not filter packets. A
   transactional implementation is required before it can return.
+  (v0.11.3 UPDATE: TUN returned exactly this way — through the
+  managed sing-box dataplane with observed, transactional
+  activation. See "What's new in v0.11.3" and docs/tun.md.)
 
 ### Executable trust and bounded archives
 
@@ -1227,7 +1288,7 @@ upstream release pages, or testing configurations.
                            │
               Tunnel (engine/tunnel)
               System Proxy (WinINet) — production
-              TUN — experimental, DISABLED (v0.9.8.6)
+              TUN — sing-box native dataplane (v0.11.3, Windows)
 ```
 
 - **Go** is the primary orchestration/system language: lifecycle,
@@ -1327,7 +1388,7 @@ FreeIran/
 │   ├── store/             Chunked persistence: WAL, memtables, compaction
 │   ├── tester/            Probe interface + TCP / core probes + [v0.9.8.1] latency semantics
 │   ├── testqueue/         [v0.6] Bounded-worker test queue (priority, retry, cancel)
-│   └── tunnel/            [v0.6] System Proxy (WinINet); TUN disabled (v0.9.8.6)
+│   └── tunnel/            [v0.6] System Proxy (WinINet); TUN via sing-box dataplane (v0.11.3)
 ├── frontend/              TypeScript UI (Vite + React + zustand)
 ├── native/                C++ acceleration layer (C ABI, no deps)
 ├── system/                System engine: paths, processes, network, platform

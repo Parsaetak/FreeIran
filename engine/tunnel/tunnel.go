@@ -67,10 +67,11 @@ const (
 	// routing.
 	ModeSystemProxy Mode = "system_proxy"
 
-	// ModeTUN: DISABLED (v0.9.8.6). TUN remains in the mode enum so
-	// the UI can report it as unavailable/experimental, but Enable
-	// always returns ErrTunExperimental until a safe, transactional
-	// implementation exists. See tun_unavailable.go.
+	// ModeTUN: REAL Windows tunnel mode (v0.11.3) backed by the
+	// managed sing-box core's native TUN inbound (Wintun). The
+	// activation path is transactional and observed — see
+	// tun.go. TUN is NOT a kill switch and must never be
+	// described as one: routing is not packet filtering.
 	ModeTUN Mode = "tun"
 )
 
@@ -86,6 +87,11 @@ type State struct {
 	RequiresElevation bool      `json:"requires_elevation,omitempty"`
 	StartedAt         time.Time `json:"started_at,omitempty"`
 	Details           string    `json:"details,omitempty"`
+
+	// TUN carries the live TUN snapshot while the TUN mode is in
+	// use (or the last TUN outcome). Nil for system-proxy/direct
+	// states.
+	TUN *TUNSnapshot `json:"tun,omitempty"`
 }
 
 // Controller owns the active tunnel mode. It is safe for concurrent
@@ -178,32 +184,36 @@ type SystemProxySnapshot struct {
 // re-applies exactly the state Disable just applied).
 var ErrOwnershipResidual = errors.New("tunnel: system-proxy ownership marker residue remains")
 
-// TUNBackend is the platform interface for TUN operations. The only
-// implementation in this release is unavailableTUNBackend (see
-// tun_unavailable.go): TUN is experimental and disabled until a
-// transactional design exists.
+// TUNBackend is the platform interface for TUN operations. The
+// v0.11.3 implementation is the sing-box dataplane backend
+// (tun.go); platforms without support report honestly through the
+// unavailable backend (tun_unavailable.go).
 type TUNBackend interface {
-	// Available reports whether the TUN driver (Wintun.dll) is
-	// installed and usable.
+	// Available reports whether TUN can be served on this platform
+	// (Windows + managed sing-box core resolvable).
 	Available() bool
 
-	// Install installs the Wintun driver if missing. Returns nil if
-	// already installed. Requires elevation on Windows.
+	// Install ensures the TUN dependency set exists (the managed,
+	// digest-verified sing-box core — the Wintun driver ships
+	// embedded in its official binary).
 	Install(ctx context.Context) error
 
-	// Enable creates the TUN interface, configures routes + DNS, and
-	// starts forwarding packets to the local SOCKS endpoint. Requires
-	// elevation on Windows.
-	Enable(ctx context.Context, host string, port int) error
+	// Enable runs the transactional TUN activation. It returns
+	// only after the TUN interface was OBSERVED and a real
+	// tunneled request VERIFIED — never merely after process start.
+	Enable(ctx context.Context, opts TUNEnableOptions) error
 
-	// Disable tears down the TUN interface and restores routing.
+	// Disable tears the TUN session down transactionally.
 	Disable(ctx context.Context) error
 
 	// Snapshot returns the current TUN state.
 	Snapshot() TUNSnapshot
 }
 
-// TUNSnapshot is a redacted view of the TUN state.
+// TUNSnapshot is a redacted view of the TUN state. v0.11.3 extends
+// the v0.9.8.5 model with the fields the UI needs to tell the truth:
+// which core runs the dataplane, the lifecycle status, what was
+// observed, and the deployment design.
 type TUNSnapshot struct {
 	Available         bool     `json:"available"`
 	Installed         bool     `json:"installed"`
@@ -213,6 +223,29 @@ type TUNSnapshot struct {
 	DNSServers        []string `json:"dns_servers,omitempty"`
 	Routes            []string `json:"routes,omitempty"`
 	RequiresElevation bool     `json:"requires_elevation"`
+
+	// Backend names the TUN dataplane ("sing-box native TUN
+	// (Wintun)").
+	Backend string `json:"backend,omitempty"`
+
+	// Active reports an OBSERVED, VERIFIED session (interface +
+	// tunneled request), never merely a started process.
+	Active bool `json:"active"`
+
+	// Status is the lifecycle state surfaced to the UI:
+	// off | starting | active | stopping | failed.
+	Status string `json:"status,omitempty"`
+
+	// Core is the sing-box version running the dataplane.
+	Core string `json:"core,omitempty"`
+
+	// Configuration is the redacted display form of the
+	// configuration routed through the TUN.
+	Configuration string `json:"configuration,omitempty"`
+
+	// Details carries the last failure (status=failed) or the
+	// stale-state note.
+	Details string `json:"details,omitempty"`
 }
 
 // ErrUnsupportedPlatform is returned when a mode is not supported on
@@ -228,6 +261,17 @@ var ErrNotEnabled = errors.New("tunnel: not enabled")
 // ErrRequiresElevation is returned when TUN Enable is called without
 // administrator privileges.
 var ErrRequiresElevation = errors.New("tunnel: TUN mode requires administrator privileges")
+
+// ErrTunUnavailable is returned when TUN cannot run at all: the
+// platform is unsupported or the managed sing-box core (the TUN
+// dataplane) is not wired/installed. It replaces the v0.9.8.6
+// ErrTunExperimental refusal — v0.11.3 ships a real implementation,
+// so the only remaining refusals are honest capability limits.
+var ErrTunUnavailable = errors.New("tunnel: TUN requires the managed sing-box core and is Windows-only in this release")
+
+// ErrNoTUNConfiguration is returned when TUN is enabled without an
+// active or selected configuration to route through it.
+var ErrNoTUNConfiguration = errors.New("tunnel: TUN requires an active or selected configuration")
 
 // --- platform-neutral snapshot algebra (v0.10.2) ---
 //
@@ -416,11 +460,34 @@ func systemProxyActivated(observed SystemProxySnapshot, host string, port int) b
 }
 
 // New constructs a Controller with the platform-default backends.
-// On Windows, systemProxy wraps WinINet and tun wraps Wintun; on
-// other platforms both are no-op stubs that return
-// ErrUnsupportedPlatform.
+// On Windows, systemProxy wraps WinINet and tun wraps the sing-box
+// TUN dataplane; on other platforms both are no-op stubs that return
+// ErrUnsupportedPlatform. Without a wired TUNCoreResolver the TUN
+// backend reports honestly unavailable — the application layer wires
+// the managed-core resolver through NewWithTUNCore.
 func New() *Controller {
 	return NewWithProxyBackend(newSystemProxyBackend())
+}
+
+// NewWithTUNCore constructs a Controller with an injected
+// system-proxy backend AND the managed sing-box TUN core resolver.
+// This is the production wiring (engine/app).
+func NewWithTUNCore(sp SystemProxyBackend, tunCore TUNCoreResolver) *Controller {
+	return &Controller{
+		systemProxy: sp,
+		tun:         newTUNBackend(tunCore),
+		state: State{
+			Mode: ModeDirect,
+		},
+	}
+}
+
+// NewDefaultWithTUNCore constructs a Controller with the platform
+// default system-proxy backend and the managed sing-box TUN core
+// resolver — the production wiring without repeating the platform
+// backend choice.
+func NewDefaultWithTUNCore(tunCore TUNCoreResolver) *Controller {
+	return NewWithTUNCore(newSystemProxyBackend(), tunCore)
 }
 
 // CaptureSystemProxySnapshot reads the ACTUAL platform proxy state
@@ -445,13 +512,13 @@ func RestoreSystemProxySnapshot(s SystemProxySnapshot) error {
 
 // NewWithProxyBackend constructs a Controller with an injected
 // system-proxy backend. The tun backend stays the platform default
-// (TUN is disabled everywhere in this release). The injection point
+// (unavailable without a wired core resolver). The injection point
 // exists for the recovery contract tests, which must prove the
 // marker lifecycle without depending on WinINet.
 func NewWithProxyBackend(sp SystemProxyBackend) *Controller {
 	return &Controller{
 		systemProxy: sp,
-		tun:         newTUNBackend(),
+		tun:         newTUNBackend(nil),
 		state: State{
 			Mode: ModeDirect,
 		},
@@ -551,15 +618,67 @@ func (c *Controller) Enable(ctx context.Context, mode Mode, host string, port in
 		return nil
 
 	case ModeTUN:
-		// v0.9.8.6: TUN is experimental and disabled everywhere (see
-		// tun_unavailable.go). Fail with the explicit, user-visible
-		// status BEFORE touching any platform backend — never fake
-		// support, never half-configure the system.
-		return fmt.Errorf("tunnel: enable tun: %w", ErrTunExperimental)
+		if opts.TUN == nil {
+			// Legacy call shape without TUN options: the honest
+			// answer is the capability error, not a fabricated
+			// activation.
+			return fmt.Errorf("tunnel: enable tun: %w (use EnableTUN with an active or selected configuration)", ErrTunUnavailable)
+		}
+
+		return c.enableTUNLocked(ctx, *opts.TUN)
 
 	default:
 		return fmt.Errorf("tunnel: unknown mode %q", mode)
 	}
+}
+
+// EnableTUN activates TUN mode: the managed sing-box core runs the
+// selected configuration through its native TUN inbound. The call
+// returns only after the TUN interface was observed and a real
+// tunneled Internet request verified; anything less is an error and
+// a full rollback.
+func (c *Controller) EnableTUN(ctx context.Context, opts TUNEnableOptions) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.enabled {
+		return ErrAlreadyEnabled
+	}
+
+	return c.enableTUNLocked(ctx, opts)
+}
+
+// enableTUNLocked implements the TUN activation. Callers hold c.mu.
+func (c *Controller) enableTUNLocked(ctx context.Context, opts TUNEnableOptions) error {
+	if opts.Config.Type == "" {
+		return fmt.Errorf("tunnel: enable tun: %w", ErrNoTUNConfiguration)
+	}
+
+	if err := c.tun.Enable(ctx, opts); err != nil {
+		// Keep the failure visible in the state the UI reads.
+		snap := c.tun.Snapshot()
+		c.state = State{
+			Mode:              ModeDirect,
+			Details:           "TUN enable failed: " + err.Error(),
+			RequiresElevation: snap.RequiresElevation,
+			TUN:               &snap,
+		}
+
+		return err
+	}
+
+	snap := c.tun.Snapshot()
+	c.state = State{
+		Mode:              ModeTUN,
+		Active:            true,
+		Backend:           snap.Backend,
+		RequiresElevation: snap.RequiresElevation,
+		StartedAt:         time.Now().UTC(),
+		TUN:               &snap,
+	}
+	c.enabled = true
+
+	return nil
 }
 
 // rollbackEnable unwinds a failed system-proxy activation: the
@@ -619,6 +738,9 @@ func (c *Controller) Disable(ctx context.Context) error {
 		}
 	case ModeTUN:
 		if err := c.tun.Disable(ctx); err != nil {
+			snap := c.tun.Snapshot()
+			c.state.TUN = &snap
+
 			return fmt.Errorf("tunnel: disable tun: %w", err)
 		}
 	}
@@ -642,6 +764,7 @@ func (c *Controller) State() State {
 	case ModeTUN:
 		t := c.tun.Snapshot()
 		snap.RequiresElevation = t.RequiresElevation
+		snap.TUN = &t
 	}
 	return snap
 }
@@ -662,4 +785,9 @@ type Options struct {
 	// v0.10.4 test-fixture regression; see
 	// TestWinINetBypassGrammar).
 	Bypass []string
+
+	// TUN carries the TUN activation parameters for ModeTUN calls
+	// (nil for system-proxy calls). EnableTUN is the preferred
+	// entrypoint; this field keeps the generic Enable usable.
+	TUN *TUNEnableOptions
 }

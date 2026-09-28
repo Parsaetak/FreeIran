@@ -1,0 +1,54 @@
+# FreeIran Gitleaks configuration (v0.11.3).
+#
+# The Security workflow (`.github/workflows/security.yml`, job
+# "Secret scanning") runs gitleaks-action@v3, which scans the FULL
+# git history (`git log -p -U0 --full-history --all`). This file is
+# the repository-level configuration gitleaks auto-detects for that
+# scan.
+#
+# Design rules (see docs/security.md "Secret scanning"):
+#
+#   1. `useDefault = true` keeps the ENTIRE default rule set active,
+#      including generic-api-key. Nothing is weakened: a real secret
+#      committed today still fails the job.
+#   2. There is NO path allowlist. Test files are scanned like every
+#      other file, so a future secret-looking literal committed to
+#      any `_test.go` file is still detected.
+#   3. The ONLY exception below is bounded to a single HISTORICAL
+#      commit hash. It exists because that commit (v0.10.2) contains
+#      two synthetic WireGuard test-key literals in test fixtures
+#      (`engine/core/singbox/singbox_test.go` line 489 and
+#      `engine/app/importservice_test.go` line 105 as of that
+#      commit). The keys are well-known non-functional examples
+#      paired with RFC 5737 documentation addresses (192.0.2.0/24)
+#      — they never were runtime credentials, and the current source
+#      no longer contains any committed literal (both files now
+#      derive keys at runtime via deterministicTestKey /
+#      deterministicKey). Because the Security job scans full
+#      history, editing the current files alone cannot remove the
+#      historical finding; this commit-scoped allowlist is the
+#      narrowest correct repair.
+#
+# Changing or removing this exception requires changing the scan
+# posture first (docs/security.md documents the contract).
+
+title = "FreeIran gitleaks configuration"
+
+[extend]
+# Keep every default rule (generic-api-key included) exactly as
+# published. This configuration only ADDS the bounded historical
+# exception below; it removes nothing.
+useDefault = true
+
+[allowlist]
+  description = """\
+Historical synthetic test-key commit (v0.10.2, dd62f17c). The flagged \
+literals are non-functional WireGuard fixture keys paired with RFC 5737 \
+documentation addresses; the current source generates keys at runtime \
+and contains no committed secret-looking literal. Scoped to this one \
+historical commit ONLY — no path or rule is excluded, so every current \
+and future commit remains fully scanned by the default rule set.\
+"""
+  commits = [
+    "dd62f17c22f73940e5fadfed1db187630ef9dd73",
+  ]

@@ -36,18 +36,22 @@ export function EnableSystemProxy(host, port, asHTTP, bypass) {
 }
 
 /**
- * EnableTUN reports the v0.9.8.6 TUN status: experimental and
- * disabled. The method is kept on the service surface so older
- * frontends receive the explicit, user-visible error instead of a
- * missing-method failure — the controller refuses TUN on every
- * platform (tunnel.ErrTunExperimental; see engine/tunnel/
- * tun_unavailable.go for why the Wintun backend was removed).
- * @param {string} host
- * @param {number} port
+ * EnableTUN activates TUN mode for the given stored configuration
+ * (v0.11.3). The flow is the documented one:
+ *
+ *      active/selected configuration → sing-box compatibility check
+ *      → managed sing-box core verified → elevation checked
+ *      → TUN document generated → sing-box started through the
+ *      existing supervisor → TUN interface OBSERVED → real tunneled
+ *      request VERIFIED → TUN Active published.
+ *
+ * If the configuration cannot run through sing-box the call fails
+ * with the compatibility error — compatibility is never faked.
+ * @param {string} configID
  * @returns {$CancellablePromise<void>}
  */
-export function EnableTUN(host, port) {
-    return $Call.ByID(3422265061, host, port);
+export function EnableTUN(configID) {
+    return $Call.ByID(3422265061, configID);
 }
 
 /**

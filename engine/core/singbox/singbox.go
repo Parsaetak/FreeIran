@@ -415,6 +415,29 @@ type sbRule struct {
 	Outbound    string `json:"outbound"`
 }
 
+// buildProxyTargets renders the proxy surface for cfg: the proxy
+// outbound plus the direct/block plumbing outbounds — or, for
+// WireGuard, the v1.11+ ENDPOINT form with plumbing only. Shared by
+// the plain mixed-inbound document and the v0.11.3 TUN document so
+// both always emit the same verified shapes.
+func buildProxyTargets(cfg config.Config, security config.Security) ([]sbOutbound, []sbEndpoint, error) {
+	outbounds := []sbOutbound{
+		{Type: "direct", Tag: "direct"},
+		{Type: "block", Tag: "block"},
+	}
+
+	if cfg.Type == config.TypeWireGuard {
+		return outbounds, []sbEndpoint{*buildSBWireGuardEndpoint(cfg)}, nil
+	}
+
+	built, err := buildSBOutbound(cfg, security)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return append([]sbOutbound{*built}, outbounds...), nil, nil
+}
+
 // BuildSingBoxDocument renders the sing-box runtime configuration
 // with a mixed (SOCKS+HTTP) local inbound, the proxy outbound from
 // the normalized configuration and a direct route for private
@@ -440,16 +463,9 @@ func BuildSingBoxDocument(cfg config.Config, opts core.RuntimeOptions) ([]byte, 
 			"local port must be allocated before generation")
 	}
 
-	var proxyOutbound *sbOutbound
-
-	if cfg.Type != config.TypeWireGuard {
-		// WireGuard rides the endpoint form and has no outbound.
-		built, err := buildSBOutbound(cfg, security)
-		if err != nil {
-			return nil, "", err
-		}
-
-		proxyOutbound = built
+	outbounds, endpoints, err := buildProxyTargets(cfg, security)
+	if err != nil {
+		return nil, "", err
 	}
 
 	doc := sbDocument{
@@ -462,25 +478,14 @@ func BuildSingBoxDocument(cfg config.Config, opts core.RuntimeOptions) ([]byte, 
 				ListenPort: port,
 			},
 		},
-		Outbounds: []sbOutbound{
-			{Type: "direct", Tag: "direct"},
-			{Type: "block", Tag: "block"},
-		},
+		Outbounds: outbounds,
+		Endpoints: endpoints,
 		Route: &sbRoute{
 			Rules: []sbRule{
 				{IPIsPrivate: true, Outbound: "direct"},
 			},
 			Final: "proxy",
 		},
-	}
-
-	if cfg.Type == config.TypeWireGuard {
-		// WireGuard rides the v1.11+ ENDPOINT form: the proxy target is
-		// an endpoint, and the outbounds are only the plumbing. The
-		// route's final "proxy" tag addresses the endpoint directly.
-		doc.Endpoints = []sbEndpoint{*buildSBWireGuardEndpoint(cfg)}
-	} else {
-		doc.Outbounds = append([]sbOutbound{*proxyOutbound}, doc.Outbounds...)
 	}
 
 	data, err := json.MarshalIndent(doc, "", "  ")

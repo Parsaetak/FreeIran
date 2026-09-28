@@ -86,6 +86,7 @@ function sameSettings(a: Settings, b: Settings): boolean {
     a.local_socks_port === b.local_socks_port &&
     a.local_http_port === b.local_http_port &&
     a.reduced_motion === b.reduced_motion &&
+    a.tray_enabled === b.tray_enabled &&
     a.allow_untrusted_public_routes === b.allow_untrusted_public_routes &&
     a.dev_verbose_diagnostics === b.dev_verbose_diagnostics &&
     a.dev_queue_workers === b.dev_queue_workers &&
@@ -623,6 +624,13 @@ export function SettingsPage() {
             update({ reduced_motion: next });
             setMotionOverride(next);
           }}
+        />
+        <ToggleRow
+          id="system-tray"
+          label="System tray"
+          hint="Show the native system tray icon (with quick navigation and close-to-tray). Turn it off to remove the tray icon entirely: closing the main window then behaves as a normal application close. The choice persists and can be re-enabled here at any time."
+          checked={draft.tray_enabled ?? true}
+          onChange={(next) => update({ tray_enabled: next })}
         />
       </SettingsSection>
 

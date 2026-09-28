@@ -66,6 +66,16 @@ NOT VERIFIED in v0.11.2:
   adapter is out of scope; the integration test now asserts Mihomo
   is NOT advertised as a runnable backend until that adapter ships).
 
+NOT VERIFIED in v0.11.3 (additionally):
+
+- The end-to-end Windows TUN runtime: real Wintun adapter creation by
+  the managed sing-box core on a physical Windows host, the observed
+  tunneled request, and disable/rollback on that host. Everything
+  short of that IS verified: the generated TUN document passes
+  `sing-box check` on the pinned v1.14.1 binary, the full Go test
+  suite passes, the windows/amd64 build passes and the frontend
+  battery passes. docs/tun.md records the evidence scope.
+
 ### v0.11.0 release status (historical)
 
 v0.11.0 is a CI-architecture + transport-resilience-foundation
@@ -224,7 +234,7 @@ truthful state reporting.
 - [x] Tor lifecycle (resolve → verified download → extraction → validation → smoke test → activation → bootstrap → verify) with resumable staging (v0.9.15)
 - [x] Honest Psiphon provider states (managed unavailable is reported as unavailable; user-binary path is first-class)
 - [ ] Performance budget enforcement on every hot path (startup, import, refresh, single/batch test, Quick Connect, core start, connect, disconnect, recovery) — measured baselines exist, continuous enforcement is not wired
-- [ ] TUN mode where GENUINELY supported (transactional implementation with verified rollback; today TUN remains honestly experimental/unavailable — see engine/tunnel/tun_unavailable.go for the defect list that blocked it)
+- [x] TUN mode where GENUINELY supported (v0.11.3: Windows via the managed sing-box core's native TUN inbound — transactional, observed activation, verified tunneled request, loop prevention via auto_detect_interface, DNS hijack with no adapter-DNS mutation, transactional disable + stale-state recovery; docs/tun.md. Windows runtime execution on a physical host remains the open verification item — honestly NOT VERIFIED there)
 
 ## P2 — Advanced routing/privacy
 

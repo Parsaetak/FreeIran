@@ -20,7 +20,7 @@ Go application orchestration (engine/app)
         ├── engine/core          protocol-core execution boundary
         ├── engine/coremgr       [v0.6] managed core install/update/rollback
         ├── engine/testqueue     [v0.6] bounded-worker test queue
-        ├── engine/tunnel        [v0.6] system proxy (WinINet); TUN disabled (v0.9.8.6, experimental)
+        ├── engine/tunnel        [v0.6] system proxy (WinINet); TUN via sing-box dataplane (v0.11.3)
         ├── engine/provider      [v0.9.8.1] Tor/Psiphon/core provider lifecycle
         ├── engine/scheduler     interval scheduling
         ├── engine/native        optional C++ acceleration bridge
@@ -550,30 +550,31 @@ refresh.
 
 ### TUN mode (`engine/tunnel`)
 
-A real Windows TUN interface backed by **Wintun** (the official
-maintained driver from wintun.net).
+**v0.11.3 — CURRENT DESIGN:** TUN is a real Windows tunnel mode backed
+by the managed sing-box core's native TUN inbound (Wintun). The
+activation is transactional and observed (elevation → verified core →
+sing-box-compatible configuration → collision-free addressing from the
+live interface table → launch through the existing supervisor →
+interface observed → real tunneled request verified → Active), routing
+is sing-box's `auto_route` + `strict_route` + `auto_detect_interface`
+(loop prevention), DNS is hijacked into sing-box's resolver (DoH over
+the proxy; system adapter DNS is never mutated) and disable/recovery
+are transactional with honest residual reporting. The Wintun
+dependency ships embedded in the digest-verified sing-box binary — no
+downloads, no netsh, no route shell commands. Full design + evidence
+scope: **docs/tun.md**.
 
-**Install pipeline:**
-1. Download `wintun-0.14.1.zip` from `wintun.net/builds/`
-2. Extract `wintun/bin/<arch>/wintun.dll` to
-   `<AppData>/FreeIran/cores/wintun/wintun.dll`
-3. LoadLibrary + resolve `WintunCreateAdapter`, `WintunCloseAdapter`
+**Historical (v0.6, SUPERSEDED — the netsh/route shell design was
+removed in v0.9.8.6 for cause):**
 
-**Enable pipeline:**
-1. `WintunCreateAdapter("FreeIran", "FreeIran")`
-2. `netsh interface ipv4 set address name=Freeiran static
-   10.211.211.1 255.255.255.0`
-3. `route add 0.0.0.0/1 10.211.211.1` + `route add 128.0.0.0/1
-   10.211.211.1`
-4. `netsh interface ipv4 set dnsservers name=Freeiran static
-   1.1.1.1 primary`
-
-**Disable pipeline:**
-1. `route delete 0.0.0.0/1` + `route delete 128.0.0.0/1`
-2. `WintunCloseAdapter(handle)`
-3. `netsh interface ipv4 set dnsservers name=Freeiran source dhcp`
-
-All operations require elevation.
+> A real Windows TUN interface backed by Wintun with a shell-command
+> configure pipeline (`netsh interface ipv4 set address`,
+> `route add 0.0.0.0/1`, `netsh interface ipv4 set dnsservers`) and a
+> route-delete disable path. All operations required elevation. The
+> implementation was non-transactional (inverted route bookkeeping,
+> DHCP-not-restore DNS, unverified Wintun acquisition) and was removed
+> rather than fixed; v0.11.3 replaced it with the sing-box dataplane
+> above, which needs none of those shell surfaces.
 
 ### Windows process launch (`system/process_windows.go`)
 
@@ -1056,3 +1057,38 @@ tests, never a re-enable of the old code.
   existing `applicationInstance.Shutdown()` lifecycle (no orphan
   processes). Navigation actions emit `freeiran:navigate` so the
   React shell syncs the active page (no duplicate windows).
+
+---
+
+## v0.11.3 addendum — TUN dataplane, tray setting, security scan repairs
+
+**TUN (engine/tunnel + engine/core/singbox):** the sing-box TUN
+dataplane architecture documented in the tunnel section above and in
+docs/tun.md. New components: `engine/core/singbox/tun.go`
+(TUNSettings + BuildTUNDocument + StartTUN — the tun inbound + mixed
+readiness inbound + current-format DNS module + loop-free route
+model), `engine/tunnel/tun.go` (the transactional singboxTUNBackend:
+elevation, managed-core resolution via the TUNCoreResolver seam,
+collision-free addressing, observed activation, verified tunneled
+request, session marker + stale-state recovery), and the platform
+elevation checks (`tun_windows.go` / `tun_other.go`). The controller
+surface grew `Controller.EnableTUN` and the tunnel `State` carries the
+live `TUNSnapshot`. No new process supervisor, no new queue, no new
+downloader: everything rides the existing core launch, coremgr and
+settings paths.
+
+**Tray ON/OFF (cmd/freeiran + engine/app):** the persistent
+`tray_enabled` setting (pointer-optional; nil = enabled for
+pre-0.11.3 files) is persisted through the ONE settings store. The
+composition root's trayManager reconciles the native Wails tray to
+the setting (create/destroy on the UI thread via InvokeAsync), the
+tray menu carries a real checkbox reflecting the persisted value, the
+close-to-tray hook becomes setting-aware (disabled tray ⇒ normal
+window close ⇒ default quit path) and shutdown destroys the tray
+before engine teardown. `App.SetSettingsListener` (invoked from the
+existing `applySettings` path) is the only new notification surface.
+
+**Security scan repairs:** `.gitleaks.toml` (single commit-scoped
+historical allowlist, default rules fully active) and the exact
+`system/open_shell.go` allowlist case with its justification inline —
+both documented in docs/security.md (v0.11.3 addendum).

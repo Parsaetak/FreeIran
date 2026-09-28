@@ -115,11 +115,12 @@ discipline from security.yml applies to any future helper binaries.
 
 ## What must NOT happen (non-negotiables, carried from the desktop)
 
-- The desktop TUN experiment stays EXPERIMENTAL/DISABLED
-  (`engine/tunnel/tun_unavailable.go` documents the rollback/recovery
-  defects that blocked it). An Android TUN must be a NEW
-  transactional implementation that passes real rollback/recovery
-  tests on real devices — never a re-enable of the old code.
+- The Android TUN remains a PLAN (no Android product exists). The
+  v0.11.3 desktop sing-box TUN dataplane is the architectural
+  reference for a transactional, observed implementation (see
+  docs/tun.md), but an Android TUN is a NEW implementation with its
+  own rollback/recovery proof on real devices — never a re-enable of
+  the old shell-based code.
 - No stealth techniques whose correctness cannot be verified (no
   forged packets, no active-probe deception).
 - No claim of Android support in any document or UI until the

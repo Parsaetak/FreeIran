@@ -110,7 +110,7 @@ usability is never blocked.
 | Surface | Role |
 |---------|------|
 | **Quick Connect** | simple · fast · minimal. One tap to the fastest measured connection. |
-| **Connection** | advanced · diagnostic · controllable. Manual selection, attempt history, recovery details, system-proxy integration (TUN is experimental and disabled — v0.9.8.6), core inventory. |
+| **Connection** | advanced · diagnostic · controllable. Manual selection, attempt history, recovery details, system-proxy and TUN integration (v0.11.3: TUN runs the active configuration through the managed sing-box dataplane — Direct / System Proxy / TUN with observed status, interface, IPv4/IPv6, DNS, core and configuration surfaced while active), core inventory. |
 | **Dashboard** | overview. Summarized connection state, onboarding, metrics. Its connect action stays functional and shares the visual language. |
 
 ## Quick Connect provider modes (v0.9.8.1)
@@ -404,3 +404,26 @@ scheduling model).
   `letter-spacing` so latency / duration / port / counts / memory
   / queue / timings read compactly at 100/125/150/175% DPI
   scaling. No layout redesign of unrelated pages.
+
+---
+
+## v0.11.3 addendum — TUN controls + tray setting
+
+**Connection page (TunnelModeCard):** the mode card now offers
+Direct / System Proxy / TUN. The TUN button is enabled when a
+configuration is connected (the dataplane routes that configuration)
+and calls `TunnelService.EnableTUN(configID)`; the backend performs
+the full transactional activation and the UI re-reads the
+authoritative state afterwards. While a TUN session exists the card
+renders the live snapshot: backend label, lifecycle status
+(off/starting/active/stopping/failed), interface name, IPv4/IPv6,
+DNS design, route design, sing-box core version, redacted
+configuration and — on failure — the real error text. TUN is never
+labelled a kill switch.
+
+**Settings page:** a new "System tray" toggle (Appearance section)
+persists `tray_enabled` through the standard Settings save path. It
+defaults to ON; turning it off removes the tray icon entirely and
+makes the main window's close behave as a normal application close.
+The tray menu's own "System Tray" checkbox and this toggle are two
+views of the same persisted setting.

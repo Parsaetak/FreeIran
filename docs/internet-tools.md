@@ -241,3 +241,15 @@ return so the tool itself can produce the precise failure classes
 above instead of a generic "unsupported". The v0.11.0 contract that
 "process exists / SOCKS endpoint exists / UI says Connected" never
 implies tunnel success is preserved.
+
+---
+
+## v0.11.3 addendum — tunnel diagnostics for the TUN mode
+
+The Internet-Tools tunnel diagnostics keep their trust policy (never
+infer tunnel success from process existence, endpoint existence or UI
+state). The v0.11.3 TUN mode is compatible by construction: its
+snapshot reports OBSERVED state only (interface by address, verified
+tunneled request), and the tools' live-tunnel view continues to
+classify per routing class — TUN adds a routing class, not a new
+trust shortcut.

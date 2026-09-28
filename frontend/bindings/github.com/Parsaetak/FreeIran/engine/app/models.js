@@ -2950,6 +2950,21 @@ export class Settings {
         }
         if (/** @type {any} */(false)) {
             /**
+             * TrayEnabled controls the native system tray (v0.11.3). Pointer
+             * semantics: nil (the default, and the shape of every
+             * pre-0.11.3 settings file) means ENABLED — the tray is part of
+             * the default desktop experience and an absent key must never
+             * silently remove it. false: the tray is destroyed (or never
+             * created) and closing the main window behaves as a normal
+             * application close. The value persists through the ONE settings
+             * path (settings.json) — no second store.
+             * @member
+             * @type {boolean | undefined}
+             */
+            this["tray_enabled"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
              * LocalSocksPort is the user-selected local SOCKS inbound port
              * (0 = automatic ephemeral allocation; otherwise 1024-65535).
              * @member

@@ -10,7 +10,9 @@ import (
 
 	"github.com/Parsaetak/FreeIran/engine/config"
 	"github.com/Parsaetak/FreeIran/engine/core"
+	"github.com/Parsaetak/FreeIran/engine/core/singbox"
 	"github.com/Parsaetak/FreeIran/engine/coremgr"
+	firerrors "github.com/Parsaetak/FreeIran/engine/errors"
 	"github.com/Parsaetak/FreeIran/engine/source"
 	"github.com/Parsaetak/FreeIran/engine/tester"
 	"github.com/Parsaetak/FreeIran/engine/testqueue"
@@ -924,14 +926,34 @@ func NewTunnelService(a *App) *TunnelService {
 // ensureController returns the app's tunnel controller. initMu
 // serializes the lazy init so concurrent UI calls don't create
 // duplicate controllers.
+//
+// v0.11.3: the controller is wired with the managed sing-box TUN
+// core resolver (tunCoreSource), which turns TUN from the honest
+// refusal into a real, observed dataplane — same core manager, same
+// verified install pipeline the Cores page uses.
 func (s *TunnelService) ensureController() *tunnel.Controller {
 	s.app.initMu.Lock()
 	defer s.app.initMu.Unlock()
 
 	if s.app.tunnelCtrl == nil {
-		s.app.tunnelCtrl = tunnel.New()
+		if resolver := s.tunCoreResolver(); resolver != nil {
+			s.app.tunnelCtrl = tunnel.NewDefaultWithTUNCore(resolver)
+		} else {
+			s.app.tunnelCtrl = tunnel.New()
+		}
 	}
 	return s.app.tunnelCtrl
+}
+
+// tunCoreResolver builds the managed-core resolver when the app has
+// a core manager (production); nil keeps the honest unavailable TUN
+// backend (tests, headless smoke).
+func (s *TunnelService) tunCoreResolver() tunnel.TUNCoreResolver {
+	if s.app.coreMgr == nil {
+		return nil
+	}
+
+	return &tunCoreSource{app: s.app}
 }
 
 // State returns the current tunnel state.
@@ -956,14 +978,55 @@ func (s *TunnelService) EnableSystemProxy(host string, port int, asHTTP bool, by
 	})
 }
 
-// EnableTUN reports the v0.9.8.6 TUN status: experimental and
-// disabled. The method is kept on the service surface so older
-// frontends receive the explicit, user-visible error instead of a
-// missing-method failure — the controller refuses TUN on every
-// platform (tunnel.ErrTunExperimental; see engine/tunnel/
-// tun_unavailable.go for why the Wintun backend was removed).
-func (s *TunnelService) EnableTUN(host string, port int) error {
-	return s.ensureController().Enable(s.app.ctx, tunnel.ModeTUN, host, port, tunnel.Options{})
+// EnableTUN activates TUN mode for the given stored configuration
+// (v0.11.3). The flow is the documented one:
+//
+//	active/selected configuration → sing-box compatibility check
+//	→ managed sing-box core verified → elevation checked
+//	→ TUN document generated → sing-box started through the
+//	existing supervisor → TUN interface OBSERVED → real tunneled
+//	request VERIFIED → TUN Active published.
+//
+// If the configuration cannot run through sing-box the call fails
+// with the compatibility error — compatibility is never faked.
+func (s *TunnelService) EnableTUN(configID string) error {
+	cfg, err := s.loadTUNConfig(configID)
+	if err != nil {
+		return err
+	}
+
+	// Compatibility system (existing): the sing-box backend validates
+	// the configuration against its verified capability set before
+	// anything is launched.
+	backend := singbox.New()
+	if err := backend.Validate(s.app.ctx, *cfg); err != nil {
+		return fmt.Errorf("tunnel: enable tun: configuration is not sing-box compatible: %w", err)
+	}
+
+	return s.ensureController().EnableTUN(s.app.ctx, tunnel.TUNEnableOptions{
+		Config: *cfg,
+	})
+}
+
+// loadTUNConfig loads a stored configuration for a TUN activation
+// (the same store path the connection engine uses).
+func (s *TunnelService) loadTUNConfig(configID string) (*config.Config, error) {
+	value, err := s.app.store.Get(configID)
+	if err != nil {
+		return nil, firerrors.Wrap(err, firerrors.KindInvalidInput,
+			Subsystem, "tunnel", "load configuration %s", configID)
+	}
+
+	cfg := &config.Config{}
+
+	if err := json.Unmarshal(value, cfg); err != nil {
+		return nil, firerrors.Wrap(err, firerrors.KindCorruptData,
+			Subsystem, "tunnel", "decode configuration %s", configID)
+	}
+
+	cfg.ID = configID
+
+	return cfg, nil
 }
 
 // Disable deactivates the active tunnel mode and restores previous settings.

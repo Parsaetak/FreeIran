@@ -152,17 +152,16 @@ jobs:
       # fixture builder) must not invoke privileged system shells or
       # download/exec tools. The v0.9.8.5 TUN backend used raw
       # curl/PowerShell/netsh/route — that surface was REMOVED with it
-      # (engine/tunnel/tun_unavailable.go). Every future exception
-      # must be added to the allowlist BELOW with a justification;
-      # the scan is never weakened to make CI green.
+      # (the v0.11.3 TUN backend runs the managed sing-box core with a
+      # native tun inbound and never shells out — see engine/tunnel/
+      # tun_singbox.go). Every future exception must be added to the
+      # allowlist BELOW with a justification; the scan is never
+      # weakened to make CI green.
       - name: Dangerous child-process surface (allowlist)
         run: |
-          # The allowlist is EMPTY by design (v0.9.8.6): after the TUN
-          # backend removal the product command surface contains no
-          # justified exceptions. When a future, reviewed exception is
-          # genuinely required, express it as an explicit `case` below
-          # with the justification inline — never by weakening the
-          # pattern set.
+          # When a future, reviewed exception is genuinely required,
+          # express it as an explicit `case` below with the
+          # justification inline — never by weakening the pattern set.
           #
           # Current intentional skips (documented, bounded):
           #   - *_test.go            — tests may assert on error text
@@ -180,6 +179,35 @@ jobs:
           #                            tests never depend on PATH/CWD.
           #                            Removal of this entry requires
           #                            removing the resolver first.
+          #   - system/open_shell.go   — JUSTIFIED EXCEPTION (v0.11.3):
+          #                            the reviewed "Open shell here"
+          #                            feature. ONLY PowerShell/CMD are
+          #                            reachable (ShellType is a closed
+          #                            enum: ShellPowerShell/ShellCMD;
+          #                            any other value returns
+          #                            ErrUnsupportedShell); the
+          #                            executable is resolved through
+          #                            the OS lookup path (exec.LookPath
+          #                            + well-known System32
+          #                            locations), never accepted from
+          #                            the caller; NO caller-supplied
+          #                            command string or argument is
+          #                            passed (exec.Command(exe) — zero
+          #                            arguments); the directory is
+          #                            supplied as the child's WORKING
+          #                            DIRECTORY (cmd.Dir / os.Dir
+          #                            semantics — never a "cd path &&"
+          #                            concatenation, so spaces,
+          #                            Unicode and UNC paths are handled
+          #                            by the OS launch path without
+          #                            shell interpolation). The feature
+          #                            can only START an interactive
+          #                            enumerated shell at a directory —
+          #                            it cannot execute an arbitrary
+          #                            command. Changing or removing
+          #                            this exception requires changing
+          #                            the implementation first (see
+          #                            docs/security.md).
 
           PATTERNS='powershell|pwsh|invoke-webrequest|iwr |start-process|expand-archive|netsh|route add|route delete|bitsadmin|certutil|mshta|curl |wget |cmd /c|cmd\.exe'
 
@@ -197,6 +225,7 @@ jobs:
             # core through the go toolchain — justified, test-only.
             case "$file" in engine/core/contract/*) continue;; esac
             case "$file" in ./system/resolve_windows.go) continue;; esac
+            case "$file" in ./system/open_shell.go) continue;; esac
             files+=("$file")
           done < <(find ./engine ./system ./internal ./cmd -name '*.go' -type f)
 

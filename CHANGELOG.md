@@ -3,6 +3,88 @@
 Release history for FreeIran. The newest release is documented in the
 [README](README.md); everything older lives here, newest first.
 
+## v0.11.3 — functional Windows TUN (sing-box dataplane), tray ON/OFF setting, Security workflow repairs
+
+v0.11.3 is a capability + repair release. Evidence scope (honest): the
+full Linux Go test suite (engine/... + system/ + internal/...), the
+windows/amd64 cross-build (`CGO_ENABLED=0 go build ./cmd/freeiran`),
+`go vet` (both targets), the frontend typecheck + 159 vitest cases +
+production build + canonical embed regen, a local gitleaks 8.28
+reproduction of the exact CI findings (baseline exit 2 → config exit
+0, all 112 commits scanned), and `sing-box check` against the pinned
+v1.14.1 binary for the generated TUN document (shadowsocks outbound
+and WireGuard endpoint forms). The end-to-end Windows TUN runtime on a
+physical host is NOT VERIFIED and is documented as such (docs/tun.md,
+ROADMAP).
+
+### TUN — functional Windows mode (headline)
+
+- The managed sing-box core IS the TUN dataplane: a native sing-box
+  tun inbound (Wintun-backed) runs the active/selected configuration
+  system-wide. The v0.9.8.6 honest refusal (`ErrTunExperimental`) is
+  replaced by a real implementation; the v0.9.8.5 patterns (netsh,
+  route add/delete, PowerShell/curl acquisition) did NOT return.
+- New: `engine/core/singbox/tun.go` — `TUNSettings`, `BuildTUNDocument`
+  (tun inbound + mixed readiness inbound + current-format DNS module +
+  `auto_route`/`strict_route`/`auto_detect_interface` +
+  `hijack-dns`/`sniff` actions) and `StartTUN` through the shared
+  `core.Launch` supervisor.
+- New: `engine/tunnel/tun.go` — the transactional
+  `singboxTUNBackend`: elevation check (x/sys TokenElevation; no UAC
+  prompts), managed-core resolution via the new `TUNCoreResolver`
+  seam (implemented over the coremgr manifest — no second manager),
+  collision-free TUN addressing derived from the live interface
+  table, observed interface activation, verified no-proxy tunneled
+  Internet request, durable session marker, transactional disable
+  with residual reporting, boot-time stale-session recovery that only
+  ever inspects FreeIran's own recorded adapter.
+- Controller/service surface: `Controller.EnableTUN`,
+  `TunnelService.EnableTUN(configID)` (sing-box compatibility is
+  validated through the existing backend capability system before
+  anything launches), `State.TUN` carries the live snapshot, and the
+  Connection page renders Direct / System Proxy / TUN with observed
+  state (interface, IPv4/IPv6, DNS, routes, core, configuration).
+- Wintun integrity: the official sing-box Windows build embeds the
+  official wintun.dll (golang.zx2c4.com/wintun); no product download,
+  no PATH trust, no wintun.sys distribution, no invented digests.
+- Focused tests: backend selection, controller transaction behavior,
+  TUN document structure (including the route-loop prevention
+  invariant `auto_detect_interface=true`), version guard, address
+  selection, marker lifecycle.
+
+### Security workflow repairs (both failures)
+
+- Gitleaks: `.gitleaks.toml` added — extends the DEFAULT rule set and
+  allowlists exactly the historical commit `dd62f17c` whose two
+  generic-api-key findings are synthetic WireGuard fixtures; no path
+  allowlist, no test-file exclusion (docs/security.md v0.11.3
+  addendum).
+- Static analysis: `system/open_shell.go` added as the second exact
+  allowlist case (after `system/resolve_windows.go`) with the full
+  justification inline; the pattern set is byte-identical and remains
+  fail-closed for every other file.
+- govulncheck untouched (pinned v1.8.0, both targets).
+
+### Tray ON/OFF
+
+- Persistent `tray_enabled` setting (pointer-optional; nil = enabled,
+  so pre-0.11.3 settings files keep the tray) through the existing
+  Settings store — no second store. The tray menu gains a real
+  "System Tray" checkbox reflecting the persisted value; Settings UI
+  gains the matching toggle. Disabling destroys the tray (no dead
+  icon) and makes window close a normal application close; re-enable
+  from Settings. Shutdown destroys the tray before engine teardown;
+  close-to-tray is now setting-aware.
+
+### Version surfaces
+
+- VERSION, internal/version/version.go, frontend/package.json,
+  frontend/package-lock.json (both entries), build/winres.json (all
+  five literals) and the README current-version line synchronized to
+  0.11.3. `cmd/freeiran/frontend/dist` regenerated through the
+  canonical `npm run build:embed` path (13-file canonical inventory
+  verified).
+
 ## v0.11.2 — Mihomo managed core, internal config tabs, native Windows tray, honest tunnel diagnostics
 
 v0.11.2 is a feature + repair release. Every change is scoped to what

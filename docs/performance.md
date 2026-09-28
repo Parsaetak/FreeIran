@@ -547,3 +547,17 @@ The v0.11.2 additions preserve every v0.11.0 performance invariant:
   so the GUI loop never blocks.
 - **Diagnostics spacing** is a CSS-only change (`tabular-nums` +
   `letter-spacing`); no layout reflow, no DOM structure change.
+
+---
+
+## v0.11.3 addendum — TUN performance posture
+
+The TUN mode adds no resident background work while OFF: the dataplane
+exists only during an active TUN session (one sing-box process owned
+by the existing supervisor). While ACTIVE, per-packet forwarding is
+the sing-box dataplane's job (kernel Wintun adapter + sing-box
+stack), not Go code in FreeIran; FreeIran's own cost is the readiness
+probe and snapshot reads. The bounded-admission, memory-backpressure
+and adaptive-worker architecture from v0.11.0 is untouched — the TUN
+session is one managed process, not a new load class
+(docs/tun.md).

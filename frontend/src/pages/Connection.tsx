@@ -56,7 +56,7 @@ function ConnectionFailure({ message }: { message: string }) {
     next = "The server refused the connection or is unreachable. Run a Network check to confirm your Internet access.";
   } else if (haystack.includes("tun")) {
     next =
-      "TUN mode is experimental and disabled in this release. Use the system proxy mode instead.";
+      "TUN could not be activated. Check that FreeIran runs elevated (administrator), the managed sing-box core is installed (Cores page) and the configuration is sing-box compatible.";
   } else if (haystack.includes("port")) {
     next = "The local proxy port may be in use by another application. Disconnect other VPN tools and retry.";
   }
@@ -299,7 +299,11 @@ export function ConnectionPage() {
 
       <ConfigPicker disabled={uiState === "connecting" || connected || busy} />
 
-      <TunnelModeCard connected={connected} endpoint={snapshot?.endpoint ?? ""} />
+      <TunnelModeCard
+        connected={connected}
+        endpoint={snapshot?.endpoint ?? ""}
+        configID={snapshot?.config_id ?? ""}
+      />
 
       <CoresCard backends={backends} scanning={scanning} onRescan={() => void rescan()} />
 
@@ -343,8 +347,12 @@ export function ConnectionPage() {
  * (system proxy / TUN). The actions reach the backend through the
  * v0.8 TunnelService bindings — the wiring gap v0.7 shipped with
  * (service existed, was never registered) is closed.
- * Modes require a live session: the tunnel routes system traffic
- * through the connected core's local inbound. */
+ * Modes require a live session: the system proxy routes system
+ * traffic through the connected core's local inbound, while TUN
+ * (v0.11.3) runs the SAME configuration through the managed sing-box
+ * core's native TUN inbound (Windows, elevation required — honest
+ * about both). TUN is NOT a kill switch: routing is not packet
+ * filtering. */
 interface OwnershipStatusView {
   present: boolean;
   phase?: string;
@@ -360,9 +368,37 @@ interface OwnershipStatusView {
   };
 }
 
-function TunnelModeCard({ connected, endpoint }: { connected: boolean; endpoint: string }) {
+/** TUNSnapshotView mirrors the generated tunnel TUNSnapshot class
+ * (structural subset used for rendering). */
+interface TUNSnapshotView {
+  available?: boolean;
+  installed?: boolean;
+  interface_name?: string;
+  ipv4_address?: string;
+  ipv6_address?: string;
+  dns_servers?: string[];
+  routes?: string[];
+  requires_elevation?: boolean;
+  backend?: string;
+  active?: boolean;
+  status?: string;
+  core?: string;
+  configuration?: string;
+  details?: string;
+}
+
+function TunnelModeCard({
+  connected,
+  endpoint,
+  configID,
+}: {
+  connected: boolean;
+  endpoint: string;
+  configID: string;
+}) {
   const [mode, setMode] = useState<"off" | "system_proxy" | "tun" | "">("");
   const [busy, setBusy] = useState(false);
+  const [tun, setTun] = useState<TUNSnapshotView | null>(null);
 
   const [host, port] = useMemo(() => {
     const idx = endpoint.lastIndexOf(":");
@@ -399,12 +435,15 @@ function TunnelModeCard({ connected, endpoint }: { connected: boolean; endpoint:
     void call(() => tunnelService.State())
       .then((state) => {
         if (cancelled) return;
-        const value = String(state ?? "off");
+        // The generated State class carries the mode + the live TUN
+        // snapshot (v0.11.3).
+        const value = String(state?.mode ?? "off");
         if (value === "system_proxy" || value === "tun" || value === "off") {
           setMode(value);
         } else {
           setMode("");
         }
+        setTun((state?.tun as TUNSnapshotView | undefined) ?? null);
       })
       .catch(() => {
         if (!cancelled) setMode("off");
@@ -415,7 +454,7 @@ function TunnelModeCard({ connected, endpoint }: { connected: boolean; endpoint:
     };
   }, []);
 
-  const apply = async (action: "proxy" | "off") => {
+  const apply = async (action: "proxy" | "tun" | "off") => {
     setBusy(true);
 
     try {
@@ -424,6 +463,13 @@ function TunnelModeCard({ connected, endpoint }: { connected: boolean; endpoint:
         // side treats an empty list as "no bypass entries").
         await call(() => tunnelService.EnableSystemProxy(host, port, false, []));
         setMode("system_proxy");
+      } else if (action === "tun") {
+        // v0.11.3: the backend runs the full transactional TUN
+        // activation (elevation → verified core → observed interface
+        // → verified tunneled request). It resolves slowly and fails
+        // honestly — never a fake Active.
+        await call(() => tunnelService.EnableTUN(configID));
+        setMode("tun");
       } else {
         await call(() => tunnelService.Disable());
         setMode("off");
@@ -432,6 +478,17 @@ function TunnelModeCard({ connected, endpoint }: { connected: boolean; endpoint:
       toast("error", "Tunnel mode change failed", describeError(error, "unknown error"));
     } finally {
       setBusy(false);
+      // Re-fetch the authoritative state (mode + TUN snapshot).
+      void call(() => tunnelService.State())
+        .then((state) => {
+          const value = String(state?.mode ?? "off");
+          if (value === "system_proxy" || value === "tun" || value === "off") {
+            setMode(value);
+          }
+          setTun((state?.tun as TUNSnapshotView | undefined) ?? null);
+        })
+        .catch(() => {
+          /* the next mount re-fetches */ });
     }
   };
 
@@ -450,10 +507,47 @@ function TunnelModeCard({ connected, endpoint }: { connected: boolean; endpoint:
           : "Connect first: the system proxy needs a live local inbound."}
       </p>
       <p className="card-subtitle">
-        TUN mode is experimental and disabled in this release. It is not a kill
-        switch: process supervision does not filter packets. A transactional
-        implementation is required before it can be enabled.
+        TUN routes ALL system traffic through the same configuration using the
+        managed sing-box core's native TUN adapter (Windows, Wintun). It needs
+        an elevated FreeIran and is not a kill switch: routing is not packet
+        filtering.
       </p>
+
+      {tun && tun.status && tun.status !== "off" && (
+        <div className="card-subtitle tun-panel" role="status">
+          <p className="mono-cell" style={{ margin: "0 0 4px 0" }}>
+            {tun.backend ?? "sing-box native TUN (Wintun)"} — status: {tun.status}
+            {tun.requires_elevation ? " (elevation required)" : ""}
+          </p>
+          {tun.active && (
+            <p className="mono-cell" style={{ margin: "0 0 4px 0" }}>
+              interface {tun.interface_name ?? "?"} · IPv4 {tun.ipv4_address ?? "?"}
+              {tun.ipv6_address ? ` · IPv6 ${tun.ipv6_address}` : ""}
+            </p>
+          )}
+          {tun.active && tun.dns_servers && tun.dns_servers.length > 0 && (
+            <p className="mono-cell" style={{ margin: "0 0 4px 0" }}>
+              DNS: {tun.dns_servers.join(" | ")}
+            </p>
+          )}
+          {tun.active && tun.routes && tun.routes.length > 0 && (
+            <p className="mono-cell" style={{ margin: "0 0 4px 0" }}>
+              routes: {tun.routes.join(" | ")}
+            </p>
+          )}
+          {tun.active && tun.core && (
+            <p className="mono-cell" style={{ margin: "0 0 4px 0" }}>
+              core: sing-box {tun.core}
+              {tun.configuration ? ` · config: ${tun.configuration}` : ""}
+            </p>
+          )}
+          {tun.status === "failed" && tun.details && (
+            <p className="mono-cell" style={{ margin: 0 }}>
+              failure: {tun.details}
+            </p>
+          )}
+        </div>
+      )}
 
       {ownership?.present && (
         <p className="card-subtitle ownership-line" role="status">
@@ -477,10 +571,15 @@ function TunnelModeCard({ connected, endpoint }: { connected: boolean; endpoint:
         <button
           type="button"
           className="btn sm"
-          disabled
-          title="TUN mode is experimental and disabled in this release (not a kill switch)"
+          disabled={!connected || busy || !configID}
+          title={
+            connected && configID
+              ? "Runs the same configuration through the sing-box TUN dataplane (requires elevation on Windows)"
+              : "Connect first: TUN needs an active configuration"
+          }
+          onClick={() => void apply("tun")}
         >
-          Enable TUN (experimental — off)
+          {mode === "tun" && tun?.active ? "TUN active" : "Enable TUN"}
         </button>
         <button
           type="button"
