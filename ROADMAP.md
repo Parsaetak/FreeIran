@@ -12,13 +12,61 @@ The application should feel like a mature desktop connectivity client rather tha
 
 ---
 
-# Roadmap ladder (v0.11.0)
+# Roadmap ladder (v0.11.2)
 
 The roadmap is a four-phase ladder. Each phase must be TRUE before the
 next one starts; the acceptance standard is the user-visible pipeline
 below, not internal test counts.
 
-### v0.11.0 current-release status (factual)
+### v0.11.2 current-release status (factual)
+
+v0.11.2 is a feature + repair release scoped to Mihomo integration,
+Configurations UX, native Windows tray, honest tunnel diagnostics,
+safe "Open shell here", and Diagnostics spacing. The v0.11.0
+resilience foundation (nine-class failure taxonomy, bounded freshness
+tuple, transport agility, two-layer Windows CI proof) remains intact
+— no security/trust/queue reduction. See CHANGELOG.md for the
+authoritative change list and verification evidence.
+
+P0 additions (this release):
+
+- Mihomo as a coremgr-managed core (download/health/UI; the
+  connection-engine adapter is intentionally out of scope per "No
+  large unrelated refactor").
+- Configurations `All` first-class scope + internal configuration
+  tabs keyed by stable configuration ID (open / focus / close /
+  close others / close all / return to All). Existing dense table,
+  virtualization, sorting/filtering, group-action honesty all
+  preserved.
+- Honest tunnel diagnostics: Direct path → "No tunnel selected";
+  Tunnel path + no active tunnel → "Tunnel unavailable: no active
+  tunnel"; Tunnel path + active but no endpoint → "Tunnel
+  unavailable: no local endpoint"; Tunnel path + SOCKS5 failure →
+  precise failure with the underlying error. No silent fallback
+  to Direct.
+- Native Windows taskbar + Wails v3 SystemTray: Show / Hide /
+  Configurations / Network / Diagnostics / Settings / Quit. Close
+  hides to tray; tray Quit runs the existing shutdown lifecycle
+  (no orphan processes).
+
+P1 additions:
+
+- Safe PowerShell/CMD "Open here" — `system.OpenShellAtDirectory`
+  (NOT a generic command executor; shell binary resolved through OS
+  lookup, directory set as cwd, no caller-supplied arguments).
+- Diagnostics numerical spacing (tabular-nums + tighter
+  letter-spacing) for readability at 100/125/150/175% DPI.
+
+NOT VERIFIED in v0.11.2:
+
+- Windows-native runtime (Linux build environment lacks
+  gtk4/webkitgtk-6.0 dev packages; windows/amd64 binary is
+  cross-built only).
+- Mihomo as a runnable protocol-core backend (the connection-engine
+  adapter is out of scope; the integration test now asserts Mihomo
+  is NOT advertised as a runnable backend until that adapter ships).
+
+### v0.11.0 release status (historical)
 
 v0.11.0 is a CI-architecture + transport-resilience-foundation
 release. The Windows CI bottleneck (the full Go matrix re-executed on

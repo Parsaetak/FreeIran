@@ -105,6 +105,22 @@ export function App() {
     void useStartFlowStore.getState().refresh();
     void useStartFlowStore.getState().refreshEnvironment();
 
+    // v0.11.2: tray navigation. The Windows tray menu emits
+    // `freeiran:navigate` with { page: "configs" | "network" |
+    // "diagnostics" | "settings" } when the user picks a navigation
+    // action. The main window has already been Shown + Focused on
+    // the Go side; here we just sync the active page so the user
+    // lands on the right surface.
+    const disposeNavigate = Events.On(
+      "freeiran:navigate",
+      (event: { data: { page: Page } }) => {
+        const target = event?.data?.page;
+        if (target) {
+          setPage(target);
+        }
+      },
+    );
+
     // Startup lifecycle: the first mounted frame reports ui_ready to
     // the backend. One-shot; failures are irrelevant.
     try {
@@ -117,6 +133,7 @@ export function App() {
       disposeAppState();
       disposeConnection();
       disposeStartFlow();
+      if (typeof disposeNavigate === "function") disposeNavigate();
     };
   }, []);
 

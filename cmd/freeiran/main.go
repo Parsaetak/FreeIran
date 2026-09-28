@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v3/pkg/events"
 
 	"github.com/Parsaetak/FreeIran/engine/app"
 	"github.com/Parsaetak/FreeIran/engine/connection"
@@ -239,7 +240,7 @@ func main() {
 	// comes from the linked resource (cmd/freeiran/*.syso, built
 	// from assets/freeiran-icon.ico), so no runtime bytes are
 	// needed there.
-	wailsApp.Window.NewWithOptions(application.WebviewWindowOptions{
+	mainWindow := wailsApp.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:     "FreeIran",
 		Width:     1280,
 		Height:    800,
@@ -248,6 +249,82 @@ func main() {
 		Linux: application.LinuxWindow{
 			Icon: appicon.PNG,
 		},
+	})
+
+	// v0.11.2: native system tray. Built on Wails v3's SystemTray
+	// (NOT a React fake): the icon, menu and toggle behavior come
+	// from the platform's tray surface so FreeIran behaves like a
+	// normal Windows desktop client.
+	//
+	// Behavior:
+	//
+	//   - close main window → hide to tray (does not quit).
+	//     Closing a window normally would call Quit on the Wails
+	//     app; we intercept WindowClosing and Hide instead, so the
+	//     connection/provider/core cleanup is deferred until the
+	//     user picks Quit from the tray.
+	//   - tray Show → restore the main window.
+	//   - tray navigation actions (Configurations / Network /
+	//     Diagnostics / Settings) → restore the window AND emit a
+	//     freeiran:navigate event the React shell listens for. No
+	//     duplicate application windows are ever opened.
+	//   - tray Quit → run the existing OnShutdown hook
+	//     (applicationInstance.Shutdown), then wailsApp.Quit.
+	//     Existing connection/provider/core cleanup runs through
+	//     the SAME lifecycle path as a normal close.
+	tray := wailsApp.SystemTray.New()
+	tray.SetIcon(appicon.PNG)
+
+	trayMenu := wailsApp.Menu.New()
+	trayMenu.Add("Show").OnClick(func(*application.Context) {
+		mainWindow.Show()
+		mainWindow.Focus()
+	})
+	trayMenu.Add("Hide").OnClick(func(*application.Context) {
+		mainWindow.Hide()
+	})
+	trayMenu.AddSeparator()
+	trayMenu.Add("Configurations").OnClick(func(*application.Context) {
+		mainWindow.Show()
+		mainWindow.Focus()
+		wailsApp.Event.Emit("freeiran:navigate", map[string]string{"page": "configs"})
+	})
+	trayMenu.Add("Network").OnClick(func(*application.Context) {
+		mainWindow.Show()
+		mainWindow.Focus()
+		wailsApp.Event.Emit("freeiran:navigate", map[string]string{"page": "network"})
+	})
+	trayMenu.Add("Diagnostics").OnClick(func(*application.Context) {
+		mainWindow.Show()
+		mainWindow.Focus()
+		wailsApp.Event.Emit("freeiran:navigate", map[string]string{"page": "diagnostics"})
+	})
+	trayMenu.Add("Settings").OnClick(func(*application.Context) {
+		mainWindow.Show()
+		mainWindow.Focus()
+		wailsApp.Event.Emit("freeiran:navigate", map[string]string{"page": "settings"})
+	})
+	trayMenu.AddSeparator()
+	trayMenu.Add("Quit").OnClick(func(*application.Context) {
+		// Run the SAME graceful shutdown the OnShutdown hook runs
+		// on a process-level close — no orphan providers/cores.
+		applicationInstance.Shutdown()
+		wailsApp.Quit()
+	})
+
+	tray.SetMenu(trayMenu)
+
+	// close-to-tray: intercept the user's window-close and hide
+	// instead. The hook fires before the OS closes the window; we
+	// cancel the close and Hide so the process keeps running. Quit
+	// is only reached through the tray menu.
+	//
+	// Implemented through Wails v3 events so the tray + window
+	// share one common visibility authority (the platform's taskbar
+	// state, not a parallel React boolean).
+	mainWindow.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
+		mainWindow.Hide()
+		e.Cancel()
 	})
 
 	// Graceful shutdown: the OnShutdown hook runs before process

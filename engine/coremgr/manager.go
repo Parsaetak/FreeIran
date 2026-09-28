@@ -59,10 +59,17 @@ const (
 
 	// CoreSingBox is the sing-box backend (native JSON dialect).
 	CoreSingBox CoreName = "sing-box"
+
+	// CoreMihomo is the Mihomo (Clash.Meta) backend — the actively
+	// maintained successor of Clash.Meta, published by MetaCubeX.
+	// FreeIran integrates it through the SAME managed-core pipeline as
+	// Xray/V2Ray/sing-box: no separate downloader, no separate process
+	// supervisor, no separate registry (v0.11.2).
+	CoreMihomo CoreName = "mihomo"
 )
 
 // AllCores enumerates every backend the manager can install.
-var AllCores = []CoreName{CoreXray, CoreV2Ray, CoreSingBox}
+var AllCores = []CoreName{CoreXray, CoreV2Ray, CoreSingBox, CoreMihomo}
 
 // InstallState is the persisted lifecycle state of one managed core.
 type InstallState string

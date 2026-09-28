@@ -277,3 +277,29 @@ path-traversal and absolute-path rejection, symlink/hardlink
 rejection and fail-closed handling of malformed archives. The
 mandatory published-checksum gate is unchanged — it was already
 correct for providers.
+
+---
+
+## v0.11.2 addendum — Mihomo as a managed core
+
+Mihomo (the MetaCubeX Clash.Meta successor) is now a first-class
+managed core through `engine/coremgr`. It rides the EXACT same pipeline
+as Xray/V2Ray/sing-box (download → verify → unpack → validate →
+smoke → atomic activate → version probe → manifest → health), with
+one extension: `internal/safearchive` now also handles single-file
+`.gz` (the Mihomo Linux release shape — a gzipped executable, not a
+`.tar.gz`). The connection-engine adapter (Clash-YAML config builder +
+selection + Register call) is intentionally out of scope per "No
+large unrelated refactor"; Mihomo is coremgr-managed only.
+`engine/app/core_integration_test.go` now asserts Mihomo is
+discoverable on disk AND not advertised as a runnable backend until
+that adapter ships.
+
+Tor and Psiphon providers are unchanged from v0.11.0 — the baseline
+already implemented the spec's required real lifecycle (Tor: official
+dist.torproject.org + archive.torproject.org split, sha256sums-signed
+-build.txt verification, real bootstrap readiness from Tor's notice
+log; Psiphon: copy-not-move user-binary path with content-addressed
+managed storage, byte-equivalent verification, smoke launch of the
+MANAGED COPY). The v0.11.0 provider tests pass against the v0.11.2
+tree without modification.

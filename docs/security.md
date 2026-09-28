@@ -437,3 +437,41 @@ weaken any security property:
   processes, bounded pending tasks, held admission under pressure);
   it introduces no new privilege, no new process surface and no
   unbounded growth.
+
+---
+
+## v0.11.2 addendum — no security reduction
+
+The v0.11.2 additions do not reduce any v0.11.0 security invariant:
+
+- **Mihomo integration** rides the EXACT same managed-core pipeline
+  as Xray/V2Ray/sing-box (download → verify → unpack → validate →
+  smoke → atomic activate → version probe → manifest → health).
+  Checksum verification, staging/atomic activation, safe archive
+  extraction bounds and the rollback/retained-previous-binary
+  guarantee are unchanged. The single-file `.gz` extension to
+  `internal/safearchive` inherits the same `MaxFileBytes` /
+  `MaxTotalBytes` bounds as the tar path.
+- **Native tray** uses Wails v3's `SystemTray` (the platform's tray
+  surface, not a React fake). The tray icon comes from the existing
+  embedded app icon (BLACK/WHITE/RED family; no green derivatives).
+  Tray Quit runs the SAME `applicationInstance.Shutdown()` hook as
+  a process-level close, so connection/provider/core cleanup is
+  unchanged. No new privilege, no new IPC surface, no new process
+  authority.
+- **Safe "Open shell here"** is explicitly NOT a generic command
+  executor. The shell binary is resolved through OS lookup; the
+  directory is set through `cmd.Dir` (no shell-string
+  interpolation); no caller-supplied arguments are accepted; only
+  PowerShell and CMD are allowed (`ErrUnsupportedShell` for
+  anything else). Spaces / Unicode / UNC paths are handled by the
+  OS shell-launch path directly.
+- **Tunnel diagnostics** routing fix is a CORRECTNESS fix — the
+  tool now reports precise failure classes instead of a generic
+  "no active tunnel". The trust policy (no inferring tunnel
+  success from process existence / SOCKS endpoint existence / UI
+  state) is preserved and now actually enforced per routing class.
+- **Mihomo** is coremgr-managed only; the connection-engine
+  adapter is intentionally out of scope. `engine/app/core_integration_test.go`
+  now asserts Mihomo is NOT advertised as a runnable protocol-core
+  backend, so the capability surface stays honest.

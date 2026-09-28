@@ -28,6 +28,10 @@ var coreLicenses = map[coremgr.CoreName]struct{ License, Notice string }{
 		License: "GPL-3.0 (sing-box)",
 		Notice:  "sing-box is developed by SagerNet and contributors; distributed unmodified as an independent process.",
 	},
+	coremgr.CoreMihomo: {
+		License: "GPL-3.0 (Mihomo)",
+		Notice:  "Mihomo is developed by MetaCubeX and contributors as the actively maintained successor of Clash.Meta; distributed unmodified as an independent process.",
+	},
 }
 
 // CoreProviderAdapter binds one managed core to the Provider

@@ -520,3 +520,30 @@ bounded admission, the drain-and-admit loop, the pressure gate,
 duplicate suppression across the backlog, honest cancellation
 accounting, the exactly-one completion event and the bounded progress
 emission.
+
+---
+
+## v0.11.2 addendum — no performance regression
+
+The v0.11.2 additions preserve every v0.11.0 performance invariant:
+
+- **Mihomo integration** rides the EXACT same managed-core pipeline
+  as Xray/V2Ray/sing-box. No new queue, no new worker pool, no new
+  process supervisor. The single-file `.gz` extension to
+  `internal/safearchive` streams through `io.CopyN` with the same
+  `MaxFileBytes` / `MaxTotalBytes` runtime bounds as the tar path.
+- **Internal config tabs** (frontend/src/pages/Configs.tsx) are
+  keyed by stable configuration ID and stored in a single ordered
+  `useState<ConfigDetail[]>`. The detail panel is rendered only
+  for the active tab; non-active tabs are not measured or probed.
+  The wide table remains the single source of truth for the
+  rendering pipeline; the tabs rail is a lightweight UI layer
+  above it. No additional polling, no additional backend round
+  trips beyond the existing `ConfigDetails(id)` call.
+- **Native tray** is Wails v3's `SystemTray`; no per-frame work,
+  no polling. The `WindowClosing` Hide is an O(1) platform call.
+- **Safe "Open shell here"** is a one-shot `exec.Command` launch
+  with no waiting; the launch helper is released asynchronously
+  so the GUI loop never blocks.
+- **Diagnostics spacing** is a CSS-only change (`tabular-nums` +
+  `letter-spacing`); no layout reflow, no DOM structure change.

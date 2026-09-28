@@ -706,30 +706,87 @@ func parseExitIP(body []byte) string {
 // runTunnelDiagnostics reports the caller-supplied LIVE tunnel truth
 // (never fabricated) and, when a tunnel is active, verifies the local
 // endpoint accepts a SOCKS5 CONNECT round trip.
+//
+// v0.11.2 routing semantics:
+//
+//   - Direct path selected (req.Path == PathDirect): the user did not
+//     select a tunnel. Return "No tunnel selected" — never the legacy
+//     "no active tunnel" that read as a tunnel failure. The Transport
+//     field is cleared so the UI cannot mistake this for a successful
+//     socks5 probe.
+//   - Tunnel path selected (req.Path == PathTunneled) but the caller
+//     could not supply an active TunnelSnapshot: return "Tunnel
+//     unavailable" with the precise reason — never silently fall back
+//     to a Direct probe. The Dial guard in Run() already intercepts
+//     this case for tools that need a DialContext; tunnel_diagnostics
+//     re-checks the snapshot so it cannot be confused by a stale
+//     caller-supplied snapshot whose Active flag is false.
+//   - Tunnel path selected, snapshot Active, but no local endpoint:
+//     return "Tunnel unavailable: active tunnel reports no local
+//     endpoint". This is a precise failure class, not a generic
+//     failure.
+//   - Tunnel path selected, snapshot Active, endpoint present: run a
+//     real SOCKS5 CONNECT through the endpoint. The measured latency
+//     is the authoritative round trip; the result is OK only when the
+//     CONNECT succeeds.
+//
+// The result.Path field mirrors req.Path: when the user selected
+// Direct, the result says Direct; when the user selected Tunneled,
+// the result says Tunneled even when the tunnel is unavailable (the
+// failure reason distinguishes them). The Transport field is set to
+// "socks5" only when a real SOCKS5 CONNECT was attempted.
 func (r *ToolRunner) runTunnelDiagnostics(req ToolRequest, result *ToolResult) {
-	result.Transport = "socks5"
-
 	snap := req.Tunnel
 	if snap == nil {
 		snap = &TunnelSnapshot{}
 	}
 
-	result.Target = snap.Endpoint
 	result.Measurement.Tunnel = snap
+
+	// Direct path: the user did not ask for a tunnel probe. Report
+	// that honestly without inventing a tunnel failure.
+	if req.Path != PathTunneled {
+		result.Transport = ""
+		result.Status = ToolStatusFailed
+		result.Error = "No tunnel selected (Direct path). Switch the route to Tunnel and run again."
+		result.Details = map[string]string{
+			"route":     "direct",
+			"hint":      "Use a tunnel-path tool to verify the active tunnel",
+			"user_path": string(req.Path),
+		}
+		return
+	}
+
+	// Tunnel path: tunnel availability is now meaningful. Transport is
+	// socks5 because that is the protocol a successful run will use; if
+	// the run cannot reach the SOCKS5 layer, Transport stays empty.
+	result.Transport = "socks5"
 
 	if !snap.Active {
 		result.Status = ToolStatusFailed
-		result.Error = "no active tunnel"
-
+		result.Error = "Tunnel unavailable: no active tunnel"
+		result.Details = map[string]string{
+			"route":  "tunneled",
+			"reason": "no active tunnel",
+			"hint":   "Start a provider or connect a configuration, then re-run",
+			"active": boolLabel(false),
+		}
 		return
 	}
 
 	if snap.Endpoint == "" {
 		result.Status = ToolStatusFailed
-		result.Error = "active tunnel reports no local endpoint"
-
+		result.Error = "Tunnel unavailable: active tunnel reports no local endpoint"
+		result.Details = map[string]string{
+			"route":    "tunneled",
+			"reason":   "endpoint empty",
+			"provider": snap.Provider,
+			"active":   boolLabel(true),
+		}
 		return
 	}
+
+	result.Target = snap.Endpoint
 
 	// Real measurement against the live local endpoint.
 	dialer := socks5.Dialer{ProxyAddr: snap.Endpoint, Timeout: 8 * time.Second}
@@ -741,8 +798,14 @@ func (r *ToolRunner) runTunnelDiagnostics(req ToolRequest, result *ToolResult) {
 
 	if err != nil {
 		result.Status = ToolStatusFailed
-		result.Error = "local endpoint failed SOCKS5 CONNECT: " + err.Error()
-
+		result.Error = "Tunnel unavailable: local endpoint failed SOCKS5 CONNECT: " + err.Error()
+		result.Details = map[string]string{
+			"route":    "tunneled",
+			"reason":   "socks5 connect failed",
+			"provider": snap.Provider,
+			"endpoint": snap.Endpoint,
+			"active":   boolLabel(true),
+		}
 		return
 	}
 
@@ -754,6 +817,7 @@ func (r *ToolRunner) runTunnelDiagnostics(req ToolRequest, result *ToolResult) {
 	result.Measurement.SubMS = elapsed.Milliseconds() <= 0
 
 	result.Details = map[string]string{
+		"route":    "tunneled",
 		"provider": snap.Provider,
 		"endpoint": snap.Endpoint,
 		"health":   boolLabel(snap.Healthy),

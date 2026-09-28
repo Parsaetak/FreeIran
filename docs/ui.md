@@ -360,3 +360,47 @@ menu carries Retry failed / Retry timed out / Retest working. Every
 bulk action is an explicit user origin; "Test selected" can never
 silently become "test all 20,000" (see docs/architecture.md, Test
 scheduling model).
+
+---
+
+## v0.11.2 addendum — internal configuration tabs + native tray
+
+**Configurations** (frontend/src/pages/Configs.tsx):
+
+- `All` is now a first-class scope. The default `groupFilter` value
+  is `"all"` so the All chip is active on first load; clicking All
+  is a no-op (the user cannot end up in a "no group selected"
+  limbo); other chips toggle the active scope back to `"all"` when
+  de-selected.
+- New internal configuration tabs rail above the detail panel:
+  opening config A then B produces `All | A | B`; opening A again
+  FOCUSES A instead of creating a duplicate. Tabs are keyed by the
+  stable configuration ID, never by row index. The rail supports:
+  open, activate/focus, close, close others, close all, return to
+  All. Closing the last open tab hides the rail and returns focus
+  to the wide table.
+- The existing dense table, virtualization, sorting/filtering,
+  Favorites/Working/Untested/Fast/Recently tested/user groups,
+  bulk testing and v0.11.0 group-action honesty are preserved.
+
+**Native Windows tray** (cmd/freeiran/main.go):
+
+- Wails v3 `SystemTray` carries: Show / Hide / Configurations /
+  Network / Diagnostics / Settings / Quit. Navigation actions
+  restore the main window AND emit `freeiran:navigate` with
+  `{page}` so the React shell syncs the active page (no duplicate
+  application windows are ever opened).
+- Close main window → hide to tray (does not quit). Tray Quit runs
+  the existing `applicationInstance.Shutdown()` hook so
+  connection/provider/core cleanup uses the SAME lifecycle path as
+  a normal close (no orphan processes).
+- The BLACK/WHITE/RED icon family and generated Windows resources
+  are preserved. No green icon derivatives are reintroduced.
+
+**Diagnostics numerical spacing** (frontend/src/styles/index.css):
+
+- `.stat-value` / `.stat-value.sm` / `.stat-label` now use
+  `font-variant-numeric: tabular-nums` and a slight negative
+  `letter-spacing` so latency / duration / port / counts / memory
+  / queue / timings read compactly at 100/125/150/175% DPI
+  scaling. No layout redesign of unrelated pages.

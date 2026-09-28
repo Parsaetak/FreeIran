@@ -221,7 +221,11 @@ export function ConfigsPage() {
   const loadCollections = useCollectionsStore((state) => state.load);
   const toggleFavorite = useCollectionsStore((state) => state.toggleFavorite);
 
-  const [groupFilter, setGroupFilter] = useState<string>("");
+  // v0.11.2: `All` is a first-class scope. The default value is the
+  // stable id "all" so the All chip renders active on first load and
+  // the backend's groupMatches returns true for "all" + "" — both
+  // spellings are equivalent at the data layer.
+  const [groupFilter, setGroupFilter] = useState<string>("all");
   const [organizeBy, setOrganizeBy] = useState<"" | "source" | "protocol" | "status">("");
   const [newGroupOpen, setNewGroupOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
@@ -239,7 +243,22 @@ export function ConfigsPage() {
   }, [loadCollections]);
 
   const [protocol, setProtocol] = useState("");
-  const [detail, setDetail] = useState<ConfigDetail | null>(null);
+  // v0.11.2: Internal configuration tabs. Opening config A then B
+  // produces the rail `All | A | B`; opening A again FOCUSES A instead
+  // of creating a duplicate. Tabs are keyed by the stable configuration
+  // ID, never by row index, so reorder/sort/filter cannot misroute a
+  // tab to the wrong config. The `All` tab is implicit (it is the
+  // wide table itself); closing every open tab returns the focus to
+  // the wide table — equivalent to the `All` scope.
+  const [openTabs, setOpenTabs] = useState<ConfigDetail[]>([]);
+  const [activeTabId, setActiveTabId] = useState<string | null>(null);
+
+  // `detail` is the active tab's detail (or null when the wide table
+  // is focused). Kept as a derived value so the existing DetailPanel
+  // and refresh logic stay unchanged.
+  const detail = activeTabId
+    ? openTabs.find((tab) => tab.id === activeTabId) ?? null
+    : null;
   // v0.9.15: per-config live test state comes from the ONE shared
   // projection of the test queue (testProgress) — rows, detail panel
   // and Connection all read the same store; no page-private truth.
@@ -406,8 +425,12 @@ export function ConfigsPage() {
 
   // Server-side filtered view: any status filter, group or sort
   // activates it (v0.9.10: the group filter rides the SAME pipeline).
+  // v0.11.2: the "all" scope is equivalent to no group filter — it
+  // matches every record on the server side (groupMatchesCompiled
+  // returns true for both "" and "all"), so we skip the filtered
+  // round trip when the user explicitly picked All + no other filter.
   const loadFiltered = useCallback(async (limit: number) => {
-    if (statusFilter === "" && sortBy === "" && groupFilter === "") {
+    if (statusFilter === "" && sortBy === "" && (groupFilter === "" || groupFilter === "all")) {
       setFiltered(null);
 
       return;
@@ -541,7 +564,13 @@ export function ConfigsPage() {
         const fresh = await call(() => connectionService.ConfigDetails(fingerprint));
 
         if (!stale && fresh) {
-          setDetail((prev) => (prev && prev.id === fingerprint ? (fresh as ConfigDetail) : prev));
+          // v0.11.2: refresh the open TAB whose stable id matches the
+          // fingerprint, not a single detail slot. Tabs not matching
+          // are left untouched; the active tab is the one whose detail
+          // is mutated in place.
+          setOpenTabs((tabs) =>
+            tabs.map((tab) => (tab.id === fingerprint ? (fresh as ConfigDetail) : tab)),
+          );
         }
       } catch {
         /* the config may have been removed while its test ran */
@@ -709,21 +738,84 @@ export function ConfigsPage() {
 
   // Details view: credential material is redacted server-side; this
   // surface only receives presence flags.
+  //
+  // v0.11.2: opening a config that is ALREADY open FOCUSES that tab
+  // instead of creating a duplicate. The tabs are keyed by stable
+  // configuration ID; opening A then B then A leaves the rail as
+  // `All | A | B` with A focused. The detail data is refreshed
+  // in-place (so the focus also serves as a refresh action).
   const showDetails = async (config: Config) => {
     const id = String(config["id"]);
 
-    if (detail?.id === id) {
-      setDetail(null);
+    // If the tab is already open, focus + refresh it (no duplicate).
+    const existing = openTabs.find((tab) => tab.id === id);
+    if (existing) {
+      setActiveTabId(id);
+
+      try {
+        const fresh = await call(() => connectionService.ConfigDetails(id));
+        if (fresh) {
+          setOpenTabs((tabs) => tabs.map((tab) => (tab.id === id ? (fresh as ConfigDetail) : tab)));
+        }
+      } catch (error) {
+        toast("error", "Details unavailable", describeError(error));
+      }
 
       return;
     }
 
     try {
       const result = await call(() => connectionService.ConfigDetails(id));
-      setDetail(result ?? null);
+      const next = result as ConfigDetail | null;
+      if (!next) {
+        return;
+      }
+
+      setOpenTabs((tabs) => [...tabs, next]);
+      setActiveTabId(id);
     } catch (error) {
       toast("error", "Details unavailable", describeError(error));
     }
+  };
+
+  // closeConfigTab removes one tab from the rail. If the closed tab
+  // was focused, focus moves to the previous tab (or back to the
+  // wide `All` view when no tabs remain).
+  const closeConfigTab = (id: string) => {
+    setOpenTabs((tabs) => {
+      const idx = tabs.findIndex((tab) => tab.id === id);
+      if (idx === -1) {
+        return tabs;
+      }
+
+      const next = tabs.filter((tab) => tab.id !== id);
+
+      if (activeTabId === id) {
+        // Move focus to the previous tab, or back to All when none.
+        const prev = next[idx - 1] ?? next[0] ?? null;
+        setActiveTabId(prev?.id ?? null);
+      }
+
+      return next;
+    });
+  };
+
+  // closeOtherTabs keeps only the focused tab. Useful when the user
+  // has accumulated many open configs and wants to clear the rail.
+  const closeOtherTabs = () => {
+    if (!activeTabId) {
+      return;
+    }
+
+    setOpenTabs((tabs) => tabs.filter((tab) => tab.id === activeTabId));
+  };
+
+  // closeAllTabs returns the focus to the wide `All` view and clears
+  // every open config tab. Stable IDs are preserved (the configs
+  // themselves are untouched; only the open-tab rail is reset).
+  const closeAllTabs = () => {
+    setOpenTabs([]);
+    setActiveTabId(null);
   };
 
   // v0.9.13: connect straight from a row/menu — the SAME connection
@@ -766,7 +858,7 @@ export function ConfigsPage() {
     const name = String(config["name"] || "configuration");
     const tested = Number(config["tested_at"] ?? 0) > 0;
     const live = testStates[id] !== undefined;
-    const reorderable = statusFilter === "" && sortBy === "" && !searchQuery && organizeBy === "" && groupFilter === "";
+    const reorderable = statusFilter === "" && sortBy === "" && !searchQuery && organizeBy === "" && (groupFilter === "" || groupFilter === "all");
     const visibleIndex = visibleItems.findIndex((item) => String(item["id"]) === id);
 
     const items: MenuItem[] = [
@@ -948,19 +1040,34 @@ export function ConfigsPage() {
        * measured evidence — never invented.
        */}
       <div className="toolbar config-groups" role="group" aria-label="Configuration groups">
-        {builtinGroups.map((group) => (
-          <button
-            key={group.id}
-            type="button"
-            className={`group-chip ${groupFilter === group.id ? "active" : ""}`}
-            aria-pressed={groupFilter === group.id}
-            title={BUILTIN_GROUP_HINTS[group.id] ?? undefined}
-            onClick={() => setGroupFilter(groupFilter === group.id ? "" : group.id)}
-          >
-            {BUILTIN_GROUP_LABELS[group.id] ?? group.id}
-            <span className="group-count">{group.count}</span>
-          </button>
-        ))}
+        {builtinGroups.map((group) => {
+          // v0.11.2: `All` is the first-class scope. It is rendered
+          // ACTIVE whenever the effective filter is "all" OR the
+          // empty-string fallback (both spellings mean "every config
+          // at the data layer"); clicking All when it is already
+          // active is a no-op so the user cannot accidentally end up
+          // in a "no group selected" limbo — All is the safe default.
+          const isAll = group.id === "all";
+          const allActive = groupFilter === "all" || groupFilter === "";
+          const active = isAll ? allActive : groupFilter === group.id;
+          const onClick = isAll
+            ? () => setGroupFilter("all")
+            : () => setGroupFilter(groupFilter === group.id ? "all" : group.id);
+
+          return (
+            <button
+              key={group.id}
+              type="button"
+              className={`group-chip ${active ? "active" : ""}`}
+              aria-pressed={active}
+              title={BUILTIN_GROUP_HINTS[group.id] ?? undefined}
+              onClick={onClick}
+            >
+              {BUILTIN_GROUP_LABELS[group.id] ?? group.id}
+              <span className="group-count">{group.count}</span>
+            </button>
+          );
+        })}
 
         {userGroups.length > 0 && <span className="toolbar-divider" aria-hidden />}
 
@@ -1730,7 +1837,80 @@ export function ConfigsPage() {
           </div>
         </div>
 
-        {detail && <DetailPanel detail={detail} row={visibleItems.find((item) => String(item["id"]) === detail.id) ?? null} onClose={() => setDetail(null)} />}
+        {/* v0.11.2: Internal configuration tabs rail. Rendered ABOVE
+//          the detail panel so the user sees `All | A | B` while the
+//          active tab's detail fills the panel below. The `All` tab
+//          is implicit — closing the last open tab returns focus to
+//          the wide table (no `All` chip is rendered, only per-config
+//          tabs). Tab bar is hidden when no tabs are open. */}
+        {openTabs.length > 0 && (
+          <div className="config-tabs-rail" role="tablist" aria-label="Open configurations">
+            <button
+              type="button"
+              className={`config-tab config-tab-all ${activeTabId === null ? "active" : ""}`}
+              role="tab"
+              aria-selected={activeTabId === null}
+              onClick={() => setActiveTabId(null)}
+              title="Return to the wide configuration table"
+            >
+              All
+            </button>
+            {openTabs.map((tab) => (
+              <div
+                key={tab.id}
+                className={`config-tab ${activeTabId === tab.id ? "active" : ""}`}
+                role="tab"
+                aria-selected={activeTabId === tab.id}
+              >
+                <button
+                  type="button"
+                  className="config-tab-label"
+                  onClick={() => setActiveTabId(tab.id)}
+                  title={tab.name || `${tab.address}:${tab.port}`}
+                >
+                  {tab.name || `${tab.address}:${tab.port}`}
+                </button>
+                <button
+                  type="button"
+                  className="config-tab-close"
+                  aria-label={`Close ${tab.name || tab.id}`}
+                  title="Close this tab"
+                  onClick={() => closeConfigTab(tab.id)}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+            <div className="config-tab-actions">
+              {openTabs.length > 1 && (
+                <button
+                  type="button"
+                  className="config-tab-action"
+                  onClick={closeOtherTabs}
+                  title="Keep only the focused tab open"
+                >
+                  Close others
+                </button>
+              )}
+              <button
+                type="button"
+                className="config-tab-action"
+                onClick={closeAllTabs}
+                title="Close every open configuration tab and return to All"
+              >
+                Close all
+              </button>
+            </div>
+          </div>
+        )}
+
+        {detail && (
+          <DetailPanel
+            detail={detail}
+            row={visibleItems.find((item) => String(item["id"]) === detail.id) ?? null}
+            onClose={() => closeConfigTab(detail.id)}
+          />
+        )}
 
         {/* v0.10.2: personal configuration import flow. onSaved
             triggers the existing refresh so the new rows appear

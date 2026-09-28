@@ -210,3 +210,34 @@ surfaces have their own deterministic matrices: `dnsdiag_test.go`
 UDP/TCP sockets), `identity_test.go` (12 tests with local fake
 identity endpoints and a relaying SOCKS proxy) and `stages_test.go`
 (5 ladder tests).
+
+---
+
+## v0.11.2 addendum — honest tunnel diagnostics routing
+
+`engine/netcheck/tools_path.go` `runTunnelDiagnostics` now reports
+the routing context precisely:
+
+- **Direct path selected** → `result.Error = "No tunnel selected
+  (Direct path). Switch the route to Tunnel and run again."`. The
+  `Transport` field is cleared so the UI cannot mistake this for a
+  successful socks5 probe. `result.Path == "direct"`.
+- **Tunnel path selected, no active tunnel** → `result.Error =
+  "Tunnel unavailable: no active tunnel"`. `result.Path ==
+  "tunneled"` (the failure does not silently downgrade the path).
+- **Tunnel path selected, snapshot Active, endpoint empty** →
+  `result.Error = "Tunnel unavailable: active tunnel reports no
+  local endpoint"`.
+- **Tunnel path selected, SOCKS5 CONNECT failure** → `result.Error
+  = "Tunnel unavailable: local endpoint failed SOCKS5 CONNECT:
+  <underlying error>"` with the precise underlying error.
+- **Active tunnel + endpoint, CONNECT succeeds** → `result.Status
+  == "ok"`, `result.Measurement.Measured == true`, real measured
+  latency.
+
+The Run() guard in `engine/netcheck/tools.go` carves out
+`ToolTunnelDiagnostics` from the generic "no active tunnel" early-
+return so the tool itself can produce the precise failure classes
+above instead of a generic "unsupported". The v0.11.0 contract that
+"process exists / SOCKS endpoint exists / UI says Connected" never
+implies tunnel success is preserved.

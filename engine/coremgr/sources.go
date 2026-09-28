@@ -46,6 +46,24 @@ package coremgr
 //	  check:  sing-box check -c <file>
 //	  run:    sing-box run -c <file>
 //	  probe:  sing-box version
+//
+//	MetaCubeX Mihomo (Clash.Meta successor):
+//	  repo:   MetaCubeX/mihomo
+//	  asset:  mihomo-windows-amd64-v1.x.x.zip (amd64, haswell+v3 microarch)
+//	          mihomo-windows-amd64-go1.x.x-v1.x.x.zip (go-built variant)
+//	          mihomo-linux-amd64-v1.x.x.gz
+//	          mihomo-darwin-arm64-v1.x.x.zip (Apple Silicon)
+//	          mihomo-darwin-amd64-v1.x.x.zip (Intel)
+//	  check:  mihomo run -t -f <file>     (Mihomo accepts Clash YAML)
+//	  run:    mihomo -f <file>             (also: mihomo -d <dir> -f <file>)
+//	  probe:  mihomo -v
+//
+// Asset selection note: Mihomo publishes several Windows amd64 variants.
+// The basic amd64 build is preferred for the broadest CPU compatibility;
+// the v3 (Haswell+) variant is consulted only when the base build is
+// unavailable for the resolved release. The manager never invents a URL:
+// it iterates real asset names returned by the GitHub Releases API and
+// matches them against AssetPatterns in order.
 func DefaultSources() map[CoreName]Source {
 	return map[CoreName]Source{
 		CoreXray: {
@@ -87,6 +105,32 @@ func DefaultSources() map[CoreName]Source {
 			ConfigCheckArgs:  []string{"check", "-c"},
 			RunArgs:          []string{"run", "-c"},
 			MinVersion:       "1.10.0",
+		},
+		CoreMihomo: {
+			Name:        CoreMihomo,
+			DisplayName: "Mihomo (Clash.Meta)",
+			Repo:        "MetaCubeX/mihomo",
+			ReleaseAPI:  "https://api.github.com/repos/MetaCubeX/mihomo/releases",
+			ReleasePage: "https://github.com/MetaCubeX/mihomo/releases",
+			// MetaCubeX uses a "geodata-tagged" naming scheme. The base
+			// arch tag (e.g. mihomo-windows-amd64-*.zip) is preferred
+			// over the v3/Haswell variant for compatibility.
+			AssetPatterns: []string{
+				"windows-amd64.zip", "windows-amd64-v3.zip",
+				"linux-amd64.gz", "linux-amd64-v3.gz",
+				"darwin-amd64.zip", "darwin-arm64.zip",
+			},
+			// mihomo -v prints the version banner.
+			VersionProbeArgs: []string{"-v"},
+			// mihomo run -t -f <file> validates a Clash YAML config
+			// without starting listeners (the closest analogue to
+			// xray/sing-box "test").
+			ConfigCheckArgs: []string{"run", "-t", "-f"},
+			// mihomo -f <file> runs the runtime (-d selects the
+			// geodata directory; the connection engine sets that when
+			// it constructs the per-connection run config).
+			RunArgs:    []string{"-f"},
+			MinVersion: "1.18.0",
 		},
 	}
 }

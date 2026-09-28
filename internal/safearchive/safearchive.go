@@ -34,9 +34,16 @@
 // containment decision is made with an OS-aware filepath.Rel check
 // (case-insensitive on Windows) after the lexical gate.
 //
-// Supported formats: .zip, .tar, .tar.gz/.tgz, with content sniffing
-// (PK / gzip magic) for misnamed staged files — mirroring the
-// historical engine/coremgr behaviour.
+// Supported formats: .zip, .tar, .tar.gz/.tgz, .gz (single-file gzip of
+// one executable, as published by MetaCubeX Mihomo for Linux), with
+// content sniffing (PK / gzip magic) for misnamed staged files — mirroring
+// the historical engine/coremgr behaviour.
+//
+// A .gz whose decompressed stream is NOT a valid tar archive is treated
+// as a single-file gzip: the staged output file takes the archive's base
+// name with the .gz suffix stripped (e.g. "mihomo-linux-amd64-v1.18.x.gz"
+// → "mihomo-linux-amd64-v1.18.x"). Callers that look up the executable
+// by walking the unpacked directory pick it up by file mode + name.
 package safearchive
 
 import (
@@ -108,6 +115,11 @@ func Unpack(archivePath, dst string, limits Limits) error {
 		return unpackZip(archivePath, dst, limits)
 	case strings.HasSuffix(name, ".tar.gz") || strings.HasSuffix(name, ".tgz"):
 		return unpackTarGz(archivePath, dst, limits)
+	case strings.HasSuffix(name, ".gz"):
+		// A bare .gz might still be a tar.gz that was renamed. Try
+		// tar.gz first; if the gzip stream does not carry a valid tar
+		// header, fall back to single-file gunzip.
+		return unpackGzMaybeSingleFile(archivePath, dst, limits)
 	case strings.HasSuffix(name, ".tar"):
 		return unpackTar(archivePath, dst, limits)
 	default:
@@ -122,7 +134,7 @@ func Unpack(archivePath, dst string, limits Limits) error {
 		case bytes.Equal(magic, []byte("PK")):
 			return unpackZip(archivePath, dst, limits)
 		case bytes.Equal(magic, []byte{0x1f, 0x8b}):
-			return unpackTarGz(archivePath, dst, limits)
+			return unpackGzMaybeSingleFile(archivePath, dst, limits)
 		default:
 			return fmt.Errorf("safearchive: unknown archive format: %s", name)
 		}
@@ -261,6 +273,167 @@ func unpackTarGz(archivePath, dst string, limits Limits) error {
 	return unpackTarReader(tar.NewReader(gz), dst, limits)
 }
 
+// unpackGzMaybeSingleFile handles a .gz whose payload is either a tar.gz
+// stream (delegated to unpackTarReader) or a single-file gzip of one
+// executable (the Mihomo Linux release shape). It peeks at the gzip
+// stream's first tar header: if a valid tar header is present, the tar
+// path is used; otherwise the decompressed bytes are written to a single
+// output file named after the archive (with the .gz suffix stripped).
+//
+// The single-file path enforces MaxFileBytes / MaxTotalBytes through
+// writeBounded so a hostile single-file gzip cannot exhaust disk.
+func unpackGzMaybeSingleFile(archivePath, dst string, limits Limits) error {
+	f, err := os.Open(archivePath)
+	if err != nil {
+		return fmt.Errorf("safearchive: open archive: %w", err)
+	}
+	defer f.Close()
+
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return fmt.Errorf("safearchive: gzip header: %w", err)
+	}
+	defer gz.Close()
+
+	// Peek the first tar header without consuming the stream past it.
+	// tar.NewReader(gz).Next() reads exactly the 512-byte tar header
+	// from the gzip stream; if it returns io.EOF or a non-tar parse
+	// error, the stream is a single-file gzip.
+	tr := tar.NewReader(gz)
+	peekedHeader, peekErr := tr.Next()
+
+	switch peekErr {
+	case nil:
+		// Tar stream — hand off to the tar walker. The reader has
+		// already consumed one header, so process that entry first.
+		return unpackTarReaderFromPeekedHeader(tr, peekedHeader, dst, limits)
+
+	case io.EOF:
+		// Empty gzip — fail closed rather than producing an empty
+		// staged directory.
+		return fmt.Errorf("safearchive: gzip stream carried no payload")
+
+	default:
+		// Not a tar stream — single-file gzip path.
+		return unpackSingleGz(archivePath, dst, limits)
+	}
+}
+
+// unpackTarReaderFromPeekedHeader continues an unpackTarReader walk when
+// the first tar header has already been read by the caller (so the
+// caller can decide tar vs single-gzip). It applies the same limits and
+// sanitizer as unpackTarReader.
+func unpackTarReaderFromPeekedHeader(tr *tar.Reader, first *tar.Header, dst string, limits Limits) error {
+	var (
+		total   int64
+		entries int
+	)
+
+	// Process the first header inline.
+	if err := processTarHeader(first, dst, limits, tr, &total, &entries); err != nil {
+		return err
+	}
+
+	// Continue the remaining entries through unpackTarReader's loop.
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("safearchive: tar stream: %w", err)
+		}
+		if err := processTarHeader(hdr, dst, limits, tr, &total, &entries); err != nil {
+			return err
+		}
+	}
+}
+
+// unpackSingleGz writes a single gzipped file to dst. The output file is
+// named after the archive's base name with the .gz suffix stripped.
+// Caller-side walk-by-name still finds it because the base name keeps
+// the platform tag (e.g. mihomo-linux-amd64-v1.18.x).
+func unpackSingleGz(archivePath, dst string, limits Limits) error {
+	// Re-open: the gzip reader is positioned past the first 512 bytes
+	// of the tar-peek attempt above and cannot be rewound cheaply. Open
+	// the file fresh.
+	f, err := os.Open(archivePath)
+	if err != nil {
+		return fmt.Errorf("safearchive: reopen single-gzip: %w", err)
+	}
+	defer f.Close()
+
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return fmt.Errorf("safearchive: single-gzip header: %w", err)
+	}
+	defer gz.Close()
+
+	if err := os.MkdirAll(dst, 0o700); err != nil {
+		return err
+	}
+
+	base := filepath.Base(archivePath)
+	name := strings.TrimSuffix(base, ".gz")
+	if name == base {
+		// No .gz suffix to strip (sniffed via magic bytes). Synthesize
+		// a name from the archive's basename so the staged file is
+		// still discoverable.
+		name = base + ".out"
+	}
+
+	target := filepath.Join(dst, name)
+
+	// Single-file path: the gzip stream has no declared size, so the
+	// declared-budget pre-check in writeBounded cannot apply. We still
+	// enforce MaxFileBytes / MaxTotalBytes at runtime by capping the
+	// copy and rejecting the file when the cap is reached.
+	//
+	// Cap is the smaller of MaxFileBytes and (MaxTotalBytes - already
+	// consumed); we add 1 byte of slack to detect overrun precisely.
+	cap := int64(1) << 40 // effectively unlimited by default
+	if limits.MaxFileBytes > 0 && limits.MaxFileBytes < cap {
+		cap = limits.MaxFileBytes
+	}
+	if limits.MaxTotalBytes > 0 {
+		// total is local-only; no entries have been written through the
+		// tar path (this branch is the single-file fallback), so the
+		// full MaxTotalBytes is available.
+		if limits.MaxTotalBytes < cap {
+			cap = limits.MaxTotalBytes
+		}
+	}
+
+	out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return fmt.Errorf("safearchive: create %q: %w", target, err)
+	}
+
+	written, copyErr := io.CopyN(out, gz, cap+1)
+	closeErr := out.Close()
+
+	if copyErr == nil {
+		// We wrote cap+1 bytes without EOF: the gzip stream exceeded the
+		// per-file/total budget.
+		return fmt.Errorf("%w: single-gzip %q exceeds %d byte budget (wrote %d)",
+			ErrLimit, name, cap, written)
+	}
+	if copyErr != io.EOF {
+		return fmt.Errorf("safearchive: stream %q: %w", name, copyErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("safearchive: close %q: %w", target, closeErr)
+	}
+
+	// Executable archives ship a +x bit inside the gzip payload (there
+	// is no tar mode to copy from), so mark the staged file executable
+	// to mirror the tar handling: the caller (coremgr) probes -version
+	// immediately after unpack.
+	_ = os.Chmod(target, 0o755)
+
+	return nil
+}
+
 func unpackTar(archivePath, dst string, limits Limits) error {
 	f, err := os.Open(archivePath)
 	if err != nil {
@@ -287,64 +460,77 @@ func unpackTarReader(tr *tar.Reader, dst string, limits Limits) error {
 			return fmt.Errorf("safearchive: tar stream: %w", err)
 		}
 
-		entries++
-
-		if limits.MaxFiles > 0 && entries > limits.MaxFiles {
-			return fmt.Errorf("%w: tar carries more than %d entries", ErrLimit, limits.MaxFiles)
-		}
-
-		switch hdr.Typeflag {
-		case tar.TypeDir:
-			target, err := safeJoin(dst, hdr.Name, true)
-			if err != nil {
-				return err
-			}
-
-			if err := os.MkdirAll(target, 0o700); err != nil {
-				return err
-			}
-
-		case tar.TypeReg:
-			// Symlinks, hardlinks, devices, fifos and any other special
-			// entry fail CLOSED (rejected below): a remotely acquired
-			// executable archive never needs them, and following
-			// attacker-controlled link targets is unacceptable.
-			target, err := safeJoin(dst, hdr.Name, false)
-			if err != nil {
-				return err
-			}
-
-			if limits.MaxFileBytes > 0 && hdr.Size > limits.MaxFileBytes {
-				return fmt.Errorf("%w: tar entry %q declares %d bytes (max %d)",
-					ErrLimit, hdr.Name, hdr.Size, limits.MaxFileBytes)
-			}
-
-			if limits.MaxTotalBytes > 0 && total+hdr.Size > limits.MaxTotalBytes {
-				return fmt.Errorf("%w: tar total would exceed %d bytes at entry %q",
-					ErrLimit, limits.MaxTotalBytes, hdr.Name)
-			}
-
-			if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
-				return err
-			}
-
-			if err := writeBounded(target, tr, hdr.Size, limits, &total, hdr.Name); err != nil {
-				return err
-			}
-
-			if hdr.Mode&0o111 != 0 {
-				_ = os.Chmod(target, 0o755)
-			}
-
-		case tar.TypeSymlink, tar.TypeLink, tar.TypeChar, tar.TypeBlock, tar.TypeFifo:
-			return fmt.Errorf("%w: tar entry %q has unsupported/hostile type %q (rejected)",
-				ErrLimit, hdr.Name, string(rune(hdr.Typeflag)))
-
-		default:
-			return fmt.Errorf("%w: tar entry %q has unknown type flag %d (rejected)",
-				ErrLimit, hdr.Name, hdr.Typeflag)
+		if err := processTarHeader(hdr, dst, limits, tr, &total, &entries); err != nil {
+			return err
 		}
 	}
+}
+
+// processTarHeader applies the bounds, sanitizer and type policy to one
+// tar header. It mutates total/entries and reads exactly hdr.Size bytes
+// (or, for the single-gzip path, until EOF) from r. r is the live
+// reader positioned at the entry's payload (the tar.Reader itself for
+// the tar path, or a gzip.Reader for the single-file path).
+func processTarHeader(hdr *tar.Header, dst string, limits Limits, r io.Reader, total *int64, entries *int) error {
+	*entries++
+
+	if limits.MaxFiles > 0 && *entries > limits.MaxFiles {
+		return fmt.Errorf("%w: tar carries more than %d entries", ErrLimit, limits.MaxFiles)
+	}
+
+	switch hdr.Typeflag {
+	case tar.TypeDir:
+		target, err := safeJoin(dst, hdr.Name, true)
+		if err != nil {
+			return err
+		}
+
+		if err := os.MkdirAll(target, 0o700); err != nil {
+			return err
+		}
+
+	case tar.TypeReg:
+		// Symlinks, hardlinks, devices, fifos and any other special
+		// entry fail CLOSED (rejected below): a remotely acquired
+		// executable archive never needs them, and following
+		// attacker-controlled link targets is unacceptable.
+		target, err := safeJoin(dst, hdr.Name, false)
+		if err != nil {
+			return err
+		}
+
+		if limits.MaxFileBytes > 0 && hdr.Size > limits.MaxFileBytes {
+			return fmt.Errorf("%w: tar entry %q declares %d bytes (max %d)",
+				ErrLimit, hdr.Name, hdr.Size, limits.MaxFileBytes)
+		}
+
+		if limits.MaxTotalBytes > 0 && *total+hdr.Size > limits.MaxTotalBytes {
+			return fmt.Errorf("%w: tar total would exceed %d bytes at entry %q",
+				ErrLimit, limits.MaxTotalBytes, hdr.Name)
+		}
+
+		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+			return err
+		}
+
+		if err := writeBounded(target, r, hdr.Size, limits, total, hdr.Name); err != nil {
+			return err
+		}
+
+		if hdr.Mode&0o111 != 0 {
+			_ = os.Chmod(target, 0o755)
+		}
+
+	case tar.TypeSymlink, tar.TypeLink, tar.TypeChar, tar.TypeBlock, tar.TypeFifo:
+		return fmt.Errorf("%w: tar entry %q has unsupported/hostile type %q (rejected)",
+			ErrLimit, hdr.Name, string(rune(hdr.Typeflag)))
+
+	default:
+		return fmt.Errorf("%w: tar entry %q has unknown type flag %d (rejected)",
+			ErrLimit, hdr.Name, hdr.Typeflag)
+	}
+
+	return nil
 }
 
 // ---- shared helpers -----------------------------------------------------

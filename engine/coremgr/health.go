@@ -402,6 +402,17 @@ func minimalConfig(name CoreName) ([]byte, error) {
     {"type": "block", "tag": "block"}
   ]
 }`), nil
+	case CoreMihomo:
+		// Clash YAML dialect. Mihomo's `run -t -f` parses the config
+		// and reports parse errors without binding listeners.
+		return []byte(`mixed-port: 1080
+mode: direct
+log-level: warning
+proxies: []
+proxy-groups: []
+rules:
+  - MATCH,DIRECT
+`), nil
 	default:
 		return nil, fmt.Errorf("unknown core: %s", name)
 	}
@@ -431,6 +442,21 @@ func smokeRunConfig(name CoreName, port int) ([]byte, error) {
     {"type": "direct", "tag": "direct"}
   ]
 }`, port)), nil
+	case CoreMihomo:
+		// Mihomo smoke run: mixed-port accepts SOCKS5 + HTTP CONNECT.
+		// mode: direct bypasses any proxy-chain; listeners bind
+		// localhost only so the smoke probe can connect from the
+		// same machine.
+		return []byte(fmt.Sprintf(`mixed-port: %d
+mode: direct
+log-level: warning
+allow-lan: false
+bind-address: 127.0.0.1
+proxies: []
+proxy-groups: []
+rules:
+  - MATCH,DIRECT
+`, port)), nil
 	default:
 		return nil, fmt.Errorf("unknown core: %s", name)
 	}

@@ -250,6 +250,32 @@ func (s *StorageService) OpenWorkspace() error {
 	return system.OpenDirectory(s.app.layout.Root)
 }
 
+// OpenShellAtWorkspace opens the chosen shell (PowerShell or CMD) at
+// the workspace root directory. v0.11.2: this is the safe "Open shell
+// here" entry point — the shell binary is resolved through the OS
+// search path (never from a user-supplied executable), the workspace
+// directory is set as the shell's cwd through cmd.Dir (no shell-string
+// interpolation), and no shell arguments are accepted. See
+// system.OpenShellAtDirectory for the full security contract.
+//
+// shellType must be one of "powershell" or "cmd"; any other value
+// returns a structured error rather than silently defaulting.
+func (s *StorageService) OpenShellAtWorkspace(shellType string) error {
+	s.app.logger.Info("app", "shell_opened",
+		"user opened a shell at the workspace root: %s", shellType)
+
+	return system.OpenShellAtDirectory(s.app.layout.Root, system.ShellType(shellType))
+}
+
+// OpenShellAtDataDir opens the chosen shell at the data directory.
+// Same security contract as OpenShellAtWorkspace.
+func (s *StorageService) OpenShellAtDataDir(shellType string) error {
+	s.app.logger.Info("app", "shell_opened",
+		"user opened a shell at the data directory: %s", shellType)
+
+	return system.OpenShellAtDirectory(s.app.layout.Data, system.ShellType(shellType))
+}
+
 // dirSizeBounded sums file sizes under path, examining at most
 // maxEntries entries so a huge tree cannot stall the caller.
 func dirSizeBounded(path string, maxEntries int) int64 {

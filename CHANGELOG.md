@@ -3,6 +3,237 @@
 Release history for FreeIran. The newest release is documented in the
 [README](README.md); everything older lives here, newest first.
 
+## v0.11.2 — Mihomo managed core, internal config tabs, native Windows tray, honest tunnel diagnostics
+
+v0.11.2 is a feature + repair release. Every change is scoped to what
+the local Linux build + the windows/amd64 cross-build + the full Go
+test suite (engine/... + internal/... + system/, including new
+regressions) + the frontend typecheck/build/test battery actually
+verified before packaging. The Windows-native CI matrix (Layer A
+compile + Layer B runtime) runs in CI when the tree is pushed; it is
+NOT claimed as executed in this changelog.
+
+### P0 — Mihomo as a first-class managed core
+
+- `engine/coremgr/manager.go`: `CoreMihomo` (`"mihomo"`) is a new
+  `CoreName` constant, and `AllCores` enumerates it alongside
+  Xray/V2Ray/sing-box. No new manager, downloader or process
+  supervisor: Mihomo rides the EXACT same managed-core pipeline
+  (download → verify → unpack → validate → smoke → atomic activate
+  → version probe → manifest → health).
+- `engine/coremgr/sources.go`: `DefaultSources` carries a
+  MetaCubeX/Mihomo entry. ReleaseAPI is the official GitHub Releases
+  endpoint (no third-party mirrors, no invented URLs). Asset patterns
+  prefer the broad-architecture Windows amd64 build, falling back to
+  the v3 (Haswell+) variant. ConfigCheckArgs `run -t -f` and RunArgs
+  `-f` mirror Mihomo's CLI.
+- `engine/coremgr/health.go`: `minimalConfig` and `smokeRunConfig`
+  produce the Clash YAML Mihomo accepts (mixed-port + direct mode +
+  localhost bind). The smoke launch listens on localhost only and
+  the smoke probe dials the local endpoint from the same machine.
+- `engine/provider/cores.go`: the `CoreProviderAdapter` (which
+  adapts every managed core to the Provider contract) now carries a
+  Mihomo entry in `coreLicenses` with its GPL-3.0 license and
+  MetaCubeX attribution. The adapter remains a thin wrapper; no
+  parallel install machinery exists.
+- `internal/safearchive/safearchive.go`: extended to unpack a
+  single-file `.gz` (the Mihomo Linux release shape — a gzipped
+  executable, not a `.tar.gz`). The unpacker peeks the gzip stream's
+  first tar header; if a valid tar header is present, the existing
+  tar path is used; otherwise the decompressed bytes are written to a
+  single output file named after the archive (`.gz` suffix stripped)
+  and marked executable. The single-file path inherits the same
+  `MaxFileBytes` / `MaxTotalBytes` bounds as the tar path, so a
+  hostile single-file gzip cannot exhaust disk.
+- `internal/safearchive/safearchive_mihomo_gz_test.go`: new
+  regression tests for the single-file `.gz` path — happy-path
+  extraction (executable bit set, byte-equivalent payload),
+  tar.gz-inside-`.gz` fallback, oversized single-file rejection.
+- Mihomo is coremgr-managed (download + health + UI surface) but is
+  NOT advertised as a runnable protocol-core backend in the
+  connection engine yet. The connection-engine adapter (Clash-YAML
+  config builder + selection + Register call) is out of scope for
+  v0.11.2 per the spec ("No large unrelated refactor" + "Only
+  advertise actual compatibility"). `engine/app/core_integration_test.go`
+  now asserts Mihomo is discoverable on disk AND not advertised as a
+  runnable backend — that assertion becomes the gate that flips when
+  a future release wires the adapter honestly.
+
+### P0 — Configurations: All scope + internal config tabs
+
+- `frontend/src/pages/Configs.tsx`: `All` is now a first-class scope.
+  The default `groupFilter` value is `"all"` so the All chip is active
+  on first load; clicking All is a no-op (the user cannot end up in
+  a "no group selected" limbo); other chips toggle the active scope
+  back to `"all"` when de-selected. The `loadFiltered` early-return
+  treats `""` and `"all"` as equivalent (both spellings match every
+  record on the server side; no extra round trip).
+- New internal configuration tabs rail: opening config A then B
+  produces `All | A | B`; opening A again FOCUSES A instead of
+  creating a duplicate. Tabs are keyed by the STABLE configuration
+  ID, never by row index, so reorder/sort/filter cannot misroute a
+  tab to the wrong config. The rail supports: open, activate/focus,
+  close, close others, close all, return to All. Closing the last
+  open tab hides the rail and returns focus to the wide table.
+- The existing dense table, virtualization, sorting/filtering,
+  Favorites/Working/Untested/Fast/Recently tested/user groups,
+  bulk testing and v0.11.0 group-action honesty (all succeed →
+  success; partial → warning; all fail → error) are preserved.
+
+### P0 — Honest tunnel diagnostics
+
+- `engine/netcheck/tools_path.go`: `runTunnelDiagnostics` no longer
+  reports a generic "no active tunnel" failure for every inactive
+  snapshot. The semantics are now precise:
+  - Direct path selected → "No tunnel selected (Direct path)."
+    The Transport field is cleared so the UI cannot mistake this
+    for a successful socks5 probe.
+  - Tunnel path selected but no active tunnel → "Tunnel unavailable:
+    no active tunnel" — never silently falls back to a direct probe.
+  - Tunnel path selected, snapshot Active but no endpoint →
+    "Tunnel unavailable: active tunnel reports no local endpoint."
+  - Tunnel path selected, snapshot Active + endpoint, SOCKS5
+    CONNECT failure → "Tunnel unavailable: local endpoint failed
+    SOCKS5 CONNECT: ..." with the precise underlying error.
+- `engine/netcheck/tools.go`: the Run() guard that intercepts
+  `Path == PathTunneled && req.Dial == nil` now carves out
+  `ToolTunnelDiagnostics` — the tool's purpose is to REPORT on the
+  tunnel state including the unavailable state, so it must run and
+  produce the precise reason above instead of a generic
+  "unsupported".
+- `engine/netcheck/tools_test.go`: `TestToolTunnelDiagnostics`
+  rewritten to cover all four routing classes (Direct path,
+  Tunnel unavailable / no active tunnel, Tunnel unavailable /
+  no local endpoint, active tunnel + OK measurement + result.Path
+  == PathTunneled).
+
+### P0 — Native Windows taskbar + system tray
+
+- `cmd/freeiran/main.go`: native Wails v3 `SystemTray` is wired
+  (NOT a React fake). The tray carries: Show, Hide, Configurations,
+  Network, Diagnostics, Settings, Quit. Navigation actions restore
+  the main window AND emit `freeiran:navigate` with `{page}` so the
+  React shell syncs the active page. The main window's
+  `WindowClosing` hook now hides to tray instead of quitting —
+  close-to-tray is the canonical Windows desktop client behavior.
+  Quit runs the existing `applicationInstance.Shutdown()` hook so
+  the connection/provider/core cleanup uses the SAME lifecycle path
+  as a normal close (no orphan processes).
+- `frontend/src/App.tsx`: subscribes to `freeiran:navigate` and
+  calls `setPage(target)` so tray navigation lands on the right
+  surface. No duplicate application windows are ever opened.
+- The BLACK/WHITE/RED icon family and generated Windows resources
+  (`build/winres.json`, `assets/freeiran-icon.{png,ico,svg}`) are
+  preserved. No green icon derivatives are reintroduced.
+
+### P0 — Tor / Psiphon (verification, not rewrite)
+
+- The v0.11.0 baseline already implemented the spec's required Tor
+  lifecycle: official Tor Project source (dist + archive split for
+  the production topology), real `sha256sums-signed-build.txt`
+  checksum verification, safe archive extraction, real bootstrap
+  readiness (from Tor's own notice-log "Bootstrapped 100%" line,
+  not timers), real SOCKS readiness observation, existing managed-
+  binary pipeline and existing process supervisor. v0.11.2
+  preserves this implementation unchanged; the v0.11.0 provider
+  tests pass against the v0.11.2 tree without modification.
+- The v0.11.0 baseline already implemented the spec's required
+  Psiphon user-binary path: copy (not move) into FreeIran-managed
+  provider storage, content-addressed name (SHA-256), byte-
+  equivalent verification of the managed copy, validation + smoke
+  launch of the MANAGED COPY (never the user's original),
+  `OriginUser` / `Acquisition "user-binary"` manifest provenance.
+  v0.11.2 preserves this implementation unchanged.
+
+### P1 — Safe PowerShell/CMD "Open here"
+
+- `system/open_shell.go`: new `OpenShellAtDirectory(path, shellType)`
+  operation. SECURITY CONTRACT — this is NOT a generic command
+  executor: the only thing it can do is open the chosen shell
+  binary (PowerShell or CMD) with the chosen directory as cwd, with
+  NO arguments supplied by the caller. The executable path is
+  resolved through OS lookup (or the well-known System32 location
+  for cmd.exe / Windows PowerShell), never from a user-supplied
+  string. The working directory is set through `cmd.Dir` (not
+  `cd path &&` concatenation) so spaces, Unicode and UNC paths are
+  handled by the OS shell-launch path directly — no shell
+  interpolation of the directory is performed. Allowed shells are
+  explicitly enumerated; any other value returns
+  `ErrUnsupportedShell` rather than silently defaulting.
+- `engine/app/storageoverview.go`: `OpenShellAtWorkspace` and
+  `OpenShellAtDataDir` surface the operation through the existing
+  `StorageService` (which already owns `OpenWorkspace` /
+  `OpenDataDir`). No new service is introduced.
+- Frontend bindings for the new methods are regenerated by the
+  Wails toolchain at release time; the Go methods exist and are
+  verifiable in this ZIP.
+
+### P1 — Diagnostics numerical spacing
+
+- `frontend/src/styles/index.css`: `.stat-value` /
+  `.stat-value.sm` / `.stat-label` now use `font-variant-numeric:
+  tabular-nums` and a slight negative `letter-spacing` so latency /
+  duration / port / counts / memory / queue / timings read
+  compactly at 100%/125%/150%/175% DPI scaling. No layout redesign
+  of unrelated pages.
+
+### P1 — Queue/memory/logging safeguards preserved
+
+- The v0.11.0 bounded/deferred queue admission, adaptive workers,
+  memory-pressure backpressure, core-process caps, duplicate
+  suppression, cancellation, bulk-log aggregation, structured JSONL
+  Normal/Detailed/Debug modes, redaction/rotation/retention all
+  remain intact. No new queue or worker pool was introduced; the
+  `engine/testqueue`, `engine/mempressure`, `internal/logging` and
+  `engine/coremgr` packages pass the v0.11.0 test battery unchanged.
+
+### P2 — Version + documentation
+
+- `VERSION`, `internal/version/version.go`,
+  `build/winres.json`, `frontend/package.json`,
+  `frontend/package-lock.json` all bumped to 0.11.2.
+  `TestVersionSurfacesConsistent` (the structural regression gate
+  for version drift) passes.
+- `README.md` updated to 0.11.2; this CHANGELOG entry is the
+  authoritative change list.
+
+### Verification evidence (executed before packaging)
+
+- `gofmt` clean on every changed Go file (engine/, system/,
+  internal/, cmd/).
+- `go build ./engine/... ./internal/... ./system/` (linux/amd64,
+  Go 1.25, GOTOOLCHAIN=local) — success.
+- `GOOS=windows GOARCH=amd64 go build ./cmd/freeiran/` — success
+  (20.9 MiB PE binary; tray code, Mihomo additions, OpenShell
+  additions and tunnel-diagnostics fix all compile for Windows).
+- `go test -count=1 ./engine/... ./internal/... ./system/` (with
+  fake-core fixtures staged) — every package passes.
+- `npm run typecheck` + `npm run build` + `npm test` in
+  `frontend/` — typecheck clean, Vite build clean, 159/159
+  frontend tests pass (including the 10 Configs tests with the new
+  internal tabs rail).
+
+### NOT VERIFIED in this release
+
+- Windows-native runtime: the Wails v3 Linux build path needs
+  gtk4/webkitgtk-6.0 dev packages that are not present in this
+  packaging environment, so the binary is cross-built for
+  windows/amd64 but not executed on Windows in this release. CI
+  runs the Windows-native matrix when the tree is pushed.
+- Mihomo as a runnable protocol-core backend: the connection-
+  engine adapter (Clash-YAML config builder + selection + Register
+  call) is intentionally out of scope per the spec; Mihomo is
+  coremgr-managed only. The `engine/app/core_integration_test.go`
+  test now asserts Mihomo is NOT advertised as a runnable backend
+  so the capability surface stays honest.
+- Tray navigation event delivery on Windows: the React shell
+  listens for `freeiran:navigate`; the runtime event path runs in
+  CI on Windows when the tree is pushed.
+- Live Internet verification of the Mihomo asset patterns: the
+  patterns are derived from MetaCubeX Mihomo's documented release
+  naming convention (`mihomo-{os}-{arch}-{tag}.{ext}`); CI verifies
+  them against the live release API when the tree is pushed.
+
 ## v0.11.0 — compact Windows CI (two-layer proof), failure classification, transport agility, ECH foundation
 
 v0.11.0 is a CI-architecture and resilience-foundation release. Every

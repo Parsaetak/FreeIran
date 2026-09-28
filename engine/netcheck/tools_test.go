@@ -667,19 +667,62 @@ func TestToolTunnelDiagnostics(t *testing.T) {
 
 	runner := NewToolRunner()
 
-	// Inactive tunnel: honest failure.
-	result := runner.Run(context.Background(), ToolRequest{
+	// v0.11.2: Direct path selected — the user did not pick a tunnel.
+	// The result must say "No tunnel selected", NOT a generic "no
+	// active tunnel" failure that the old code returned for every
+	// inactive snapshot.
+	directResult := runner.Run(context.Background(), ToolRequest{
 		Tool:   ToolTunnelDiagnostics,
+		Path:   PathDirect,
 		Tunnel: &TunnelSnapshot{Active: false},
 	})
 
-	if result.Status != ToolStatusFailed {
-		t.Fatalf("inactive tunnel status = %q, want failed", result.Status)
+	if directResult.Status != ToolStatusFailed {
+		t.Fatalf("direct path status = %q, want failed", directResult.Status)
 	}
 
-	// Active tunnel with a real local endpoint: real measurement.
-	result = runner.Run(context.Background(), ToolRequest{
+	if !strings.Contains(directResult.Error, "No tunnel selected") {
+		t.Fatalf("direct path error = %q, want \"No tunnel selected\"", directResult.Error)
+	}
+
+	// v0.11.2: Tunnel path selected but the snapshot reports inactive
+	// — return "Tunnel unavailable: no active tunnel", never silently
+	// fall back to a direct probe.
+	inactiveResult := runner.Run(context.Background(), ToolRequest{
+		Tool:   ToolTunnelDiagnostics,
+		Path:   PathTunneled,
+		Tunnel: &TunnelSnapshot{Active: false},
+	})
+
+	if inactiveResult.Status != ToolStatusFailed {
+		t.Fatalf("tunnel-path inactive status = %q, want failed", inactiveResult.Status)
+	}
+
+	if !strings.Contains(inactiveResult.Error, "Tunnel unavailable") {
+		t.Fatalf("tunnel-path inactive error = %q, want \"Tunnel unavailable\"", inactiveResult.Error)
+	}
+
+	// v0.11.2: Tunnel path selected, snapshot active, but the endpoint
+	// is empty — precise failure class.
+	emptyEndpoint := runner.Run(context.Background(), ToolRequest{
+		Tool:   ToolTunnelDiagnostics,
+		Path:   PathTunneled,
+		Tunnel: &TunnelSnapshot{Active: true, Provider: "tor", Endpoint: ""},
+	})
+
+	if emptyEndpoint.Status != ToolStatusFailed {
+		t.Fatalf("empty-endpoint status = %q, want failed", emptyEndpoint.Status)
+	}
+
+	if !strings.Contains(emptyEndpoint.Error, "no local endpoint") {
+		t.Fatalf("empty-endpoint error = %q, want \"no local endpoint\"", emptyEndpoint.Error)
+	}
+
+	// Active tunnel with a real local endpoint on the Tunnel path:
+	// real measurement.
+	result := runner.Run(context.Background(), ToolRequest{
 		Tool: ToolTunnelDiagnostics,
+		Path: PathTunneled,
 		Tunnel: &TunnelSnapshot{
 			Active:   true,
 			Provider: "tor",
@@ -698,6 +741,10 @@ func TestToolTunnelDiagnostics(t *testing.T) {
 
 	if result.Measurement.Tunnel == nil || result.Measurement.Tunnel.Provider != "tor" {
 		t.Fatalf("tunnel snapshot missing: %+v", result.Measurement.Tunnel)
+	}
+
+	if result.Path != PathTunneled {
+		t.Errorf("active tunnel result.Path = %q, want %q", result.Path, PathTunneled)
 	}
 }
 

@@ -1001,3 +1001,58 @@ distribution, verification and permission requirements). The desktop
 TUN experiment remains EXPERIMENTAL/DISABLED — an Android TUN must be
 a new transactional implementation that passes real rollback/recovery
 tests, never a re-enable of the old code.
+
+---
+
+## v0.11.2 addendum — managed-core + safe-shell architecture
+
+**Managed core expansion** (engine/coremgr):
+
+- `CoreMihomo` is a new `CoreName`. `AllCores` enumerates it
+  alongside Xray/V2Ray/sing-box. `DefaultSources` carries a
+  MetaCubeX/Mihomo entry using the official GitHub Releases API
+  (no third-party mirrors). `minimalConfig` and `smokeRunConfig`
+  produce the Clash YAML Mihomo accepts.
+- `internal/safearchive` extends to single-file `.gz` (Mihomo Linux
+  release shape — a gzipped executable, not a `.tar.gz`). The
+  unpacker peeks the gzip stream's first tar header; if a valid
+  tar header is present, the existing tar path is used; otherwise
+  the decompressed bytes are written to a single output file named
+  after the archive (`.gz` suffix stripped) and marked executable.
+  The single-file path inherits the same `MaxFileBytes` /
+  `MaxTotalBytes` bounds as the tar path, so a hostile single-file
+  gzip cannot exhaust disk.
+- The connection-engine adapter (Clash-YAML config builder +
+  Register call in engine/app/{app,v6_services}.go) is
+  intentionally out of scope per "No large unrelated refactor".
+  Mihomo is coremgr-managed (download/health/UI) but is NOT
+  advertised as a runnable protocol-core backend yet — see
+  `engine/app/core_integration_test.go` which asserts both
+  discoverability on disk AND non-advertisement in the registry.
+
+**Safe "Open shell here"** (system/open_shell.go):
+
+- New `OpenShellAtDirectory(path, shellType)` operation. SECURITY
+  CONTRACT: this is NOT a generic command executor. The only thing
+  it can do is open the chosen shell binary (PowerShell or CMD)
+  with the chosen directory as cwd, with NO arguments supplied by
+  the caller. The executable path is resolved through OS lookup
+  (or the well-known System32 location for cmd.exe / Windows
+  PowerShell), never from a user-supplied string. The working
+  directory is set through `cmd.Dir` (not `cd path &&`
+  concatenation) so spaces, Unicode and UNC paths are handled by
+  the OS shell-launch path directly. Allowed shells are
+  explicitly enumerated; any other value returns
+  `ErrUnsupportedShell` rather than silently defaulting.
+- Surfaced through `StorageService.OpenShellAtWorkspace` and
+  `OpenShellAtDataDir` (existing service that already owns
+  `OpenWorkspace` / `OpenDataDir`). No new service is introduced.
+
+**Native Windows tray** (cmd/freeiran/main.go):
+
+- Wails v3 `SystemTray` with Show/Hide/Configurations/Network/
+  Diagnostics/Settings/Quit. The main window's `WindowClosing`
+  hook hides to tray instead of quitting. Tray Quit runs the
+  existing `applicationInstance.Shutdown()` lifecycle (no orphan
+  processes). Navigation actions emit `freeiran:navigate` so the
+  React shell syncs the active page (no duplicate windows).

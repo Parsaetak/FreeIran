@@ -325,9 +325,16 @@ func (r *ToolRunner) Run(ctx context.Context, req ToolRequest) ToolResult {
 		Provider:  req.Provider,
 	}
 
-	if req.Path == PathTunneled && req.Dial == nil {
+	if req.Path == PathTunneled && req.Dial == nil && req.Tool != ToolTunnelDiagnostics {
 		// A tunneled run without a live dial is honestly reported,
 		// never silently downgraded to a direct probe.
+		//
+		// v0.11.2 carve-out: ToolTunnelDiagnostics is exempt because
+		// the tool's purpose is to REPORT on the tunnel state —
+		// including the unavailable state. Letting the tool itself
+		// run lets it produce the precise "Tunnel unavailable" reason
+		// (no active tunnel / no local endpoint / SOCKS5 connect
+		// failed) instead of a generic "unsupported".
 		result.Status = ToolStatusUnsupported
 		result.Error = "no active tunnel"
 		finishTool(&result, started)
