@@ -12,11 +12,79 @@ The application should feel like a mature desktop connectivity client rather tha
 
 ---
 
-# Roadmap ladder (v0.11.4)
+# Roadmap ladder (v0.11.5)
 
 The roadmap is a four-phase ladder. Each phase must be TRUE before the
 next one starts; the acceptance standard is the user-visible pipeline
 below, not internal test counts.
+
+### v0.11.5 current-release status (factual)
+
+v0.11.5 is a focused repair release scoped to: the Windows desktop
+GUI startup defect (root-caused, fixed), the real Windows GUI launch
+proof (new, wired into CI and release), the metadata-free runtime log
+schema (ts/commit/toolchain metadata removed with UI + binding +
+test surfaces), and honest documentation of all three. No feature was
+added and no v0.11.3/v0.11.4 architecture (TUN dataplane, tray
+lifecycle, core manager, store, settings) was replaced. See
+CHANGELOG.md for the authoritative change list and evidence.
+
+Completed in v0.11.5 (with evidence class stated):
+
+- GUI startup root cause VERIFIED at source level against the pinned
+  wails v3.0.0-beta.19 module bytes: the pre-Run tray reconcile
+  panicked the process inside Wails' `dispatchOnMainThread` (nil
+  platform app) before `Run()`, matching the captured
+  v0.11.4-ci logs exactly; the fix runs the main-window show + initial
+  tray reconcile from `ApplicationStarted`.
+- GUI launch proof IMPLEMENTED (TestWindowsGUILaunchProof, native
+  user32 observation, isolated FREEIRAN_HOME, bounded timeout, exact-
+  PID termination, rich failure diagnostics) and wired into the CI
+  Windows job, the release pipeline and the install rehearsal; the
+  test COMPILES for windows/amd64 (vet) and EXECUTES on the CI runner
+  with the next push.
+- Runtime-log metadata removal VERIFIED by unit + integration
+  regressions on Linux: no `ts` key in any marshalled entry (raw-line
+  assertion), no `commit` field and no `go1.` token in
+  application_start, exact compact message, exact `v0.11.5` display
+  form, compact rotation notes, seq ordering preserved, redaction/
+  concurrency/subscription suites green.
+- Bindings regenerated with the pinned wails3 CLI (twice,
+  byte-identical), closing PRE-EXISTING v0.11.4 drift
+  (OpenShellAtDataDir, CoreMihomo, TUNSnapshot) and the removed Entry
+  timestamp; contract tests green (77 ByID calls / 20 files).
+- Full local Linux Go suite (engine/system/internal) green;
+  windows/amd64 vet of the complete tree green (Layer-A local
+  equivalent); windows/amd64 desktop build with release stamps green;
+  PE subsystem of the built binary verified = WINDOWS_GUI via
+  debug/pe; frontend typecheck + 157 unit tests + production
+  build:embed green.
+- sing-box drift check performed against official upstream data
+  (releases/latest currently resolves to v1.14.2, stable): the pin
+  REMAINS 1.14.1 for this focused repair — verified evidence is
+  anchored to 1.14.1 and the upgrade is recorded as a deliberate
+  verified follow-up; core-manager/CI/tests/docs stay consistent.
+
+NOT VERIFIED in v0.11.5:
+
+- The GUI launch proof's LIVE verdict on a real Windows desktop
+  session: the test executes in the CI Windows job and the release
+  workflow (not in this authoring environment, which has no Windows
+  runtime and no GTK for a host build). Compile-level evidence for
+  the windows/amd64 test surface exists locally; the runtime verdict
+  arrives with the next push.
+- The end-to-end Windows TUN runtime on a physical elevated Windows
+  host — carried forward unchanged from v0.11.4/v0.11.3 (see
+  docs/tun.md for the evidence ladder).
+- The post-v0.11.5 remote CI/Security verdicts: no push, PR or
+  Actions re-run was performed from this repair (release rules); the
+  next maintainer push produces that evidence.
+
+NOT VERIFIED carried forward from earlier releases:
+
+- Mihomo as a runnable protocol-core backend (the connection-engine
+  adapter is out of scope; the integration test asserts Mihomo is
+  NOT advertised as a runnable backend until that adapter ships).
 
 ### v0.11.4 current-release status (factual)
 

@@ -433,3 +433,29 @@ defaults to ON; turning it off removes the tray icon entirely and
 makes the main window's close behave as a normal application close.
 The tray menu's own "System Tray" checkbox and this toggle are two
 views of the same persisted setting.
+
+## v0.11.5 addendum — timestamp-free log rows, seq copy prefix, compact version
+
+**Diagnostics log rows (LogEntry):** the runtime-log `Entry` schema no
+longer carries a wall-clock timestamp (`ts` removed end to end — Go
+schema, generated bindings, UI). The log row renders level,
+subsystem, event, message and the correlation suffixes — the leading
+`log-time` cell is gone (and its CSS rule with it). The "copy
+diagnostics" text prefixes each line with the per-session `#seq`
+instead of a timestamp: `#seq` is the actual ordering mechanism, and
+inventing a synthetic time from it is explicitly avoided. Live tail,
+level/subsystem/event filters, errors-only shortcut and Related-events
+behavior are unchanged.
+
+**Dashboard recent-events strip:** the event-age decoration
+("3m ago") is removed with the timestamp it was computed from; rows
+show status dot, message/event and subsystem/event only. The Dashboard
+header's "App started …" line is untouched — it reads the engine's
+`started_at` field, which is real uptime evidence, not a log-entry
+timestamp.
+
+**Version display:** the status bar and every user-facing version
+surface render the compact form `v0.11.5` exactly — no commit, no Go
+toolchain tuple. Developer build provenance (commit, Go version)
+remains available on the Developer Info panel in Settings, which is
+its designated surface.

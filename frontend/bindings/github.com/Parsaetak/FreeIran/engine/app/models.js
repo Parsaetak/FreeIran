@@ -2959,7 +2959,7 @@ export class Settings {
              * application close. The value persists through the ONE settings
              * path (settings.json) — no second store.
              * @member
-             * @type {boolean | undefined}
+             * @type {boolean | null | undefined}
              */
             this["tray_enabled"] = undefined;
         }

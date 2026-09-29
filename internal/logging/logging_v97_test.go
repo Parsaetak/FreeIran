@@ -442,7 +442,16 @@ func TestEntryShapeStillJSONL(t *testing.T) {
 		}
 	}
 
-	for _, required := range []string{"seq", "ts", "level", "subsystem", "event"} {
+	// v0.11.5: the runtime-log schema carries no wall-clock timestamp —
+	// `ts` is BANNED from every record, and seq remains the ordering
+	// mechanism.
+	for _, banned := range []string{"session_id", "event_id", "ts"} {
+		if _, ok := entry[banned]; ok {
+			t.Fatalf("ordinary record carries %q on disk", banned)
+		}
+	}
+
+	for _, required := range []string{"seq", "level", "subsystem", "event"} {
 		if _, ok := entry[required]; !ok {
 			t.Fatalf("compact record missing %q", required)
 		}

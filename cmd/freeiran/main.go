@@ -9,7 +9,9 @@
 // Runtime logging: a persistent structured log
 // (<AppData>/FreeIran/logs/freeiran.log) is opened before anything
 // else so boot failures are captured; it is closed last after every
-// subsystem has flushed.
+// subsystem has flushed. v0.11.5: Wails-internal warnings/errors are
+// bridged into the same log (wailslog.go) and the user-facing version
+// surfaces are metadata-free (internal/version).
 package main
 
 import (
@@ -21,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -33,7 +36,6 @@ import (
 	"github.com/Parsaetak/FreeIran/internal/appicon"
 	"github.com/Parsaetak/FreeIran/internal/logging"
 	"github.com/Parsaetak/FreeIran/internal/statepub"
-	"github.com/Parsaetak/FreeIran/internal/version"
 	"github.com/Parsaetak/FreeIran/system"
 )
 
@@ -53,7 +55,11 @@ func main() {
 		os.Exit(smokeTest())
 	}
 
-	slog.Info("FreeIran starting", "version", version.String())
+	// v0.11.5: the redundant stderr startup announcement is gone —
+	// engine/app.New owns the ONE authoritative application_start
+	// record (compact, user-facing version only). A GUI-subsystem
+	// binary has no console, so a stderr line was never visible to
+	// the user; it merely duplicated the runtime log.
 
 	// v0.9.2 workspace model: one root (the executable's directory,
 	// override FREEIRAN_HOME) holds config, data, cache, logs, cores
@@ -105,6 +111,20 @@ func main() {
 	wailsApp := application.New(application.Options{
 		Name:        "FreeIran",
 		Description: "Free, open-source VPN configuration manager",
+		// v0.11.5: Wails-internal failures (WebView2 runtime
+		// probing, environment/controller creation, navigation)
+		// previously went to Wails' own logger — io.Discard in
+		// non-debug builds — or to stderr, which a windowsgui
+		// binary has no consumer for. They now land in the
+		// FreeIran runtime log (subsystem "wails", warnings and
+		// errors only). The Warn floor is deliberate: Wails'
+		// dev-mode startup records ("Build Info" / "Platform
+		// Info") are info/debug and would carry Go-toolchain
+		// and vcs-revision metadata — which the runtime log
+		// must never reintroduce (v0.11.5 log contract).
+		Logger:       newWailsLogHandler(logger),
+		LogLevel:     slog.LevelWarn,
+		ErrorHandler: newWailsErrorHandler(logger),
 		Services: []application.Service{
 			application.NewService(app.NewAppService(applicationInstance)),
 			application.NewService(app.NewSourceService(applicationInstance)),
@@ -234,24 +254,6 @@ func main() {
 		})
 	defer cancelUIReady()
 
-	// WindowCentered is the default start position; no override needed.
-	//
-	// Icon (v0.9.1): Linux gets the embedded PNG as the GTK window
-	// icon. On Windows the titlebar/taskbar/executable identity
-	// comes from the linked resource (cmd/freeiran/*.syso, built
-	// from assets/freeiran-icon.ico), so no runtime bytes are
-	// needed there.
-	mainWindow := wailsApp.Window.NewWithOptions(application.WebviewWindowOptions{
-		Title:     "FreeIran",
-		Width:     1280,
-		Height:    800,
-		MinWidth:  960,
-		MinHeight: 600,
-		Linux: application.LinuxWindow{
-			Icon: appicon.PNG,
-		},
-	})
-
 	// v0.11.2: native system tray. Built on Wails v3's SystemTray
 	// (NOT a React fake): the icon, menu and toggle behavior come
 	// from the platform's tray surface so FreeIran behaves like a
@@ -259,8 +261,7 @@ func main() {
 	//
 	// v0.11.3: the tray is governed by the PERSISTENT
 	// `tray_enabled` setting (Settings struct, default true via
-	// nil-pointer semantics). The trayManager below owns the
-	// lifecycle:
+	// nil-pointer semantics). The trayManager owns the lifecycle:
 	//
 	//   - tray_enabled = true  → the native tray is created,
 	//     close-to-tray is active and the tray menu carries a
@@ -283,40 +284,128 @@ func main() {
 	//   - tray Quit → run the existing OnShutdown hook
 	//     (applicationInstance.Shutdown), then wailsApp.Quit.
 	//   - Disconnect when connected → stops the active tunnel.
-	trayManager := newTrayManager(trayManagerOptions{
-		app:                 wailsApp,
-		applicationInstance: applicationInstance,
-		mainWindow:          mainWindow,
-		settingsService:     app.NewSettingsService(applicationInstance),
-	})
+	//
+	// v0.11.5: the manager is constructed when the main window is
+	// (inside ApplicationStarted — see below) and published through
+	// the holder so the settings listener and the shutdown hook can
+	// reach it. A nil holder means the startup show never ran; both
+	// consumers are nil-safe.
+	var trayHolder atomic.Pointer[trayManager]
+
+	settingsService := app.NewSettingsService(applicationInstance)
 
 	// React to settings mutations (Settings UI + tray checkbox —
 	// both write through the ONE settings path). The reconcile
 	// creates/destroys the tray to match the persisted setting.
+	// (No synthetic initial dispatch exists: the initial reconcile
+	// is owned by the ApplicationStarted handler below.)
 	applicationInstance.SetSettingsListener(func(s app.Settings) {
-		trayManager.Reconcile(s.TrayEnabledOrDefault())
-	})
-
-	// Initial creation follows the persisted setting. Pre-Run tray
-	// creation is safe (Wails defers platform construction to
-	// Run); no dead icon, no goroutine surprises.
-	trayManager.Reconcile(trayManager.opts.settingsService.Get().TrayEnabledOrDefault())
-
-	// close-to-tray (v0.11.2 behavior, now SETTING-AWARE): with
-	// tray_enabled the window close is intercepted and hidden to
-	// tray; with the tray disabled, closing the window is a NORMAL
-	// application close — the process must not stay resident only
-	// because an old tray existed. The current setting is read per
-	// close (cheap mutex read; always authoritative).
-	mainWindow.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
-		if trayManager.opts.settingsService.Get().TrayEnabledOrDefault() {
-			mainWindow.Hide()
-			e.Cancel()
+		if tm := trayHolder.Load(); tm != nil {
+			tm.Reconcile(s.TrayEnabledOrDefault())
 		}
-		// else: fall through — the OS closes the window and the
-		// Wails app quits through the default path (OnShutdown
-		// runs, tray already absent).
 	})
+
+	// v0.11.5 — THE GUI LAUNCH FIX (root-caused against the pinned
+	// wails v3.0.0-beta.19 source; see docs/architecture.md §2):
+	//
+	// 1. The v0.11.2–v0.11.4 code called trayManager.Reconcile
+	//    BEFORE Run(). Reconcile dispatches through
+	//    application.InvokeAsync → App.dispatchOnMainThread, whose
+	//    first statement dereferences the platform app (a.impl)
+	//    WITHOUT a nil check — and a.impl does not exist until
+	//    Run() assigns it. The call therefore panicked on the main
+	//    goroutine BEFORE Run(), AFTER the engine had already
+	//    logged application_start…application_ready: process dead,
+	//    no window, no console trace, CI blind (the headless smoke
+	//    exits before this path and the PE test reads only the
+	//    subsystem field).
+	//
+	// 2. In beta.19 a window created BEFORE Run() is built with
+	//    style WS_OVERLAPPEDWINDOW, which does NOT include
+	//    WS_VISIBLE, and its only automatic show path is the
+	//    WebView2 navigation-completed callback; a Show() issued
+	//    before Run() is a no-op (the platform app does not exist
+	//    yet). Visibility therefore depended entirely on WebView2
+	//    succeeding.
+	//
+	// The fix builds the ONE main window FROM the ApplicationStarted
+	// event — the exact pattern wails' own updater host uses
+	// (NewWithOptions runs the window construction synchronously
+	// once the app is running, and its HWND is created on the main
+	// thread) — then shows it immediately: create → show → hook →
+	// tray, all deterministic, no pre-Run dispatch, no Show()
+	// fallback path, no second window, no sleeps. The window is
+	// visible even if WebView2 subsequently fails (an empty shell
+	// beats an invisible process, and the failure itself is
+	// captured by the wails log bridge above). The engine-side
+	// state publishers are already wired, so no transition is lost
+	// by the window starting a few ticks after Run.
+	cancelStartupShow := wailsApp.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
+		if logger != nil {
+			logger.Info("app", "window_create",
+				"creating main window (ApplicationStarted)")
+		}
+
+		// WindowCentered is the default start position; no
+		// override needed.
+		//
+		// Icon (v0.9.1): Linux gets the embedded PNG as the GTK
+		// window icon. On Windows the titlebar/taskbar/
+		// executable identity comes from the linked resource
+		// (cmd/freeiran/*.syso, built from
+		// assets/freeiran-icon.ico), so no runtime bytes are
+		// needed there.
+		mainWindow := wailsApp.Window.NewWithOptions(application.WebviewWindowOptions{
+			Title:     "FreeIran",
+			Width:     1280,
+			Height:    800,
+			MinWidth:  960,
+			MinHeight: 600,
+			Linux: application.LinuxWindow{
+				Icon: appicon.PNG,
+			},
+		})
+
+		mainWindow.Show()
+
+		if logger != nil {
+			logger.Info("app", "window_show",
+				"main window shown (ApplicationStarted)")
+		}
+
+		// close-to-tray (v0.11.2 behavior, now SETTING-AWARE):
+		// with tray_enabled the window close is intercepted and
+		// hidden to tray; with the tray disabled, closing the
+		// window is a NORMAL application close — the process
+		// must not stay resident only because an old tray
+		// existed. The current setting is read per close (cheap
+		// mutex read; always authoritative).
+		mainWindow.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
+			if settingsService.Get().TrayEnabledOrDefault() {
+				mainWindow.Hide()
+				e.Cancel()
+			}
+			// else: fall through — the OS closes the window
+			// and the Wails app quits through the default
+			// path (OnShutdown runs, tray already absent).
+		})
+
+		tm := newTrayManager(trayManagerOptions{
+			app:                 wailsApp,
+			applicationInstance: applicationInstance,
+			mainWindow:          mainWindow,
+			settingsService:     settingsService,
+		})
+
+		trayHolder.Store(tm)
+
+		// Initial creation follows the persisted setting — the
+		// SAME reconcile the settings listener uses at runtime,
+		// now safely post-Run (never pre-Run). Tray semantics
+		// are unchanged from v0.11.3.
+		tm.Reconcile(settingsService.Get().TrayEnabledOrDefault())
+	})
+	defer cancelStartupShow()
 
 	// Graceful shutdown: the OnShutdown hook runs before process
 	// exit and must not lose data. Order per docs (§ shutdown):
@@ -325,7 +414,10 @@ func main() {
 	// that so no menu handler can fire into a tearing-down
 	// engine, and the runtime log is flushed last by Shutdown.
 	wailsApp.OnShutdown(func() {
-		trayManager.Destroy()
+		if tm := trayHolder.Load(); tm != nil {
+			tm.Destroy()
+		}
+
 		applicationInstance.Shutdown()
 	})
 

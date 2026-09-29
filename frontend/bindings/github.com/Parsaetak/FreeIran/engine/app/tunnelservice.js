@@ -38,13 +38,13 @@ export function EnableSystemProxy(host, port, asHTTP, bypass) {
 /**
  * EnableTUN activates TUN mode for the given stored configuration
  * (v0.11.3). The flow is the documented one:
- *
- *      active/selected configuration → sing-box compatibility check
- *      → managed sing-box core verified → elevation checked
- *      → TUN document generated → sing-box started through the
- *      existing supervisor → TUN interface OBSERVED → real tunneled
- *      request VERIFIED → TUN Active published.
- *
+ * 
+ * 	active/selected configuration → sing-box compatibility check
+ * 	→ managed sing-box core verified → elevation checked
+ * 	→ TUN document generated → sing-box started through the
+ * 	existing supervisor → TUN interface OBSERVED → real tunneled
+ * 	request VERIFIED → TUN Active published.
+ * 
  * If the configuration cannot run through sing-box the call fails
  * with the compatibility error — compatibility is never faked.
  * @param {string} configID

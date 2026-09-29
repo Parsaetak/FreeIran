@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   formatBytes,
-  formatClock,
   formatDuration,
   formatLatency,
   formatNumber,
@@ -90,19 +89,6 @@ describe("latencyClass", () => {
     expect(latencyClass(undefined)).toBe("none");
     expect(latencyClass(0)).toBe("none");
     expect(latencyClass(-5)).toBe("none");
-  });
-});
-
-describe("formatClock", () => {
-  it("renders local wall-clock time from RFC3339", () => {
-    const ts = new Date(2025, 0, 15, 9, 5, 3).getTime();
-
-    expect(formatClock(new Date(ts).toISOString())).toBe("09:05:03");
-  });
-
-  it("passes through unparsable input", () => {
-    expect(formatClock("not-a-time")).toBe("not-a-time");
-    expect(formatClock("")).toBe("");
   });
 });
 

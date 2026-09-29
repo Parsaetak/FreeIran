@@ -3,6 +3,152 @@
 Release history for FreeIran. The newest release is documented in the
 [README](README.md); everything older lives here, newest first.
 
+## v0.11.5 — Windows GUI launch fix, real GUI launch proof, metadata-free runtime log
+
+v0.11.5 is a focused repair release. Evidence scope (honest, at the
+level actually executed for this release): the full local Linux `go
+test` suite for `engine/...` + `system/...` + `internal/...`;
+windows/amd64 `go vet` of the complete tree (which compiles every
+windows-tagged test file, the local equivalent of CI's Layer A) and
+the windows/amd64 `-trimpath -ldflags "-H=windowsgui"` desktop build
+with the release version stamps; the PE-subsystem check of the built
+binary (subsystem 2, WINDOWS_GUI) via debug/pe; frontend typecheck,
+all unit tests and the production `build:embed`; and binding
+regeneration with the pinned wails3 v3.0.0-beta.19 CLI, run twice with
+byte-identical output and passing the binding contract tests (77 ByID
+calls across 20 files). Remote Actions were NOT re-run (no push, no
+PR, no release — per the release rules); the GUI launch proof and the
+headless smoke execute in CI, not in the authoring environment.
+
+### The Windows GUI startup defect — root-caused and fixed
+
+- **User evidence.** A downloaded v0.11.4-ci Windows binary wrote
+  application_start, store_open, manager_init and application_ready —
+  and never showed a window. Two captured log blocks carry different
+  session_ids and reset seq counters: two real launches, both dying at
+  the same invisible point.
+- **Root cause (verified against the pinned wails v3.0.0-beta.19
+  source, module-cache bytes, not assumptions).** `cmd/freeiran`
+  performed the initial tray reconcile BEFORE `wailsApp.Run()`.
+  `trayManager.Reconcile` dispatches via `application.InvokeAsync` →
+  `App.dispatchOnMainThread`, whose FIRST statement calls
+  `a.impl.isOnMainThread()`. `a.impl` (the platform app) is assigned
+  only inside `Run()` (application.go:659) and `dispatchOnMainThread`
+  has no nil guard, so the call panicked on the main goroutine before
+  Run ever started — after every engine log line the user quoted, and
+  without any visible trace (windowsgui binaries have no console; the
+  panic also predates any runtime-log record).
+- **Contributing visibility fragility (also fixed).** In beta.19 a
+  pre-Run window is built with `WS_OVERLAPPEDWINDOW` (no `WS_VISIBLE`)
+  and becomes visible only when the WebView2 navigation-completed
+  callback calls `Show()`; a `Show()` issued before `Run()` is a no-op
+  (`globalApplication.impl == nil`). If WebView2 initialization
+  failed, `setupChromium` returned early, `Embed` never ran and the
+  window stayed invisible while the process lived. Missing WebView2 on
+  user machines was NOT observed and is not claimed; the fix makes the
+  window visible regardless and captures WebView2 failures into the
+  runtime log (below).
+- **The fix.** The ONE main window is created and shown from the
+  `ApplicationStarted` event — where the platform app and message
+  loop exist — followed by the close-hook and the initial tray
+  reconcile: the deterministic create → show → hook → tray sequence
+  Wails' own updater host uses (NewWithOptions constructs the window
+  synchronously once running; the HWND is built on the main thread).
+  Exactly one main window; tray ON/OFF semantics, close-to-tray, tray
+  Show/Focus restore and shutdown ordering (tray destroyed before
+  engine teardown) are byte-for-byte the v0.11.3 architecture. No
+  sleeps, no second UI runtime, no headless downgrade, no Wails
+  replacement.
+
+### The real Windows GUI launch proof (P0-B)
+
+- New windows-only `TestWindowsGUILaunchProof`
+  (cmd/freeiran/gui_launch_windows_test.go), reusing the existing
+  `FREEIRAN_GUI_EXE` mechanism — no parallel test architecture. It
+  launches the ACTUAL built FreeIran.exe (never `--smoke-test`) in an
+  isolated `FREEIRAN_HOME` temp workspace, polls natively (user32
+  EnumWindows + IsWindowVisible + GetWindowThreadProcessId +
+  GetWindowTextW) for a VISIBLE top-level window owned by the launched
+  PID within a bounded 45s window, and distinguishes "process alive"
+  from "GUI visible": a child that exits early fails with its captured
+  output plus the isolated runtime-log tail; a child that stays alive
+  windowless fails with its full PID-owned window inventory (visible
+  and hidden).
+- Termination is by exact PID (`taskkill /T /F`) on every path — no
+  image-name matching — so a fresh-workspace default `tray_enabled`
+  can never strand the instance in the tray; the host's real settings
+  are untouched. No `continue-on-error` anywhere; the existing
+  PE-subsystem test is preserved unchanged.
+- Wired into BOTH workflows: the CI Windows job and the release
+  pipeline run the proof against the built executable after the PE
+  check, and the release install rehearsal now runs it against the
+  INSTALLED executable (the rehearsal's `--smoke-test` launch never
+  touched the webview).
+
+### Runtime log: metadata-free schema (P0-C)
+
+- `Entry` no longer carries `Time`/`json:"ts"` — the field is removed
+  from the schema, both population sites (emit, log_rotated note) and
+  the generated bindings. `seq` remains the ordering/paging mechanism;
+  `duration_ms`/`status` and all measured fields survive; unrelated
+  timestamps (diagnostic reports, recovery markers, store metadata)
+  are untouched.
+- `application_start` is compact: message "FreeIran v0.11.5 starting",
+  the `commit` field removed, no Go-runtime token. The redundant
+  stderr startup announcement in the entrypoint is gone (app.New owns
+  the ONE authoritative start record).
+- `version.String()` now renders exactly `v0.11.5` (the compact
+  user-facing form); every user surface (status bar, diagnostic
+  report, copied diagnostics — now prefixed with the per-session seq
+  instead of a timestamp) renders through it. Developer-only
+  provenance (commit, Go version) intentionally remains on the
+  Developer Info diagnostics surface, never in the runtime log.
+- Regressions: marshalled runtime entries must contain no `ts` key
+  (asserted against raw JSON lines); application_start must contain no
+  `commit` key and no `go1.` token with the exact compact message;
+  version display must equal `v0.11.5`; rotation notes follow the
+  compact schema; redaction, rotation, concurrency, subscription and
+  incremental-filter tests all preserved and green.
+- The generated bindings were REGENERATED with the official pinned
+  wails3 CLI (never hand-edited). The run also surfaced and closed
+  PRE-EXISTING drift: v0.11.4 Go surface changes (OpenShellAtDataDir/
+  OpenShellAtWorkspace methods, CoreMihomo enum, TUNSnapshot export)
+  had never been regenerated into the committed bindings.
+
+### Wails diagnostics bridge
+
+- Wails-internal warnings and errors (WebView2 probing, environment/
+  controller creation, navigation) now land in the FreeIran runtime
+  log (subsystem `wails`) through an slog bridge plus the
+  application ErrorHandler. The bridge admits Warn-and-above only:
+  Wails' dev-mode "Build Info"/"Platform Info" startup records carry
+  Go-toolchain and vcs-revision metadata and must never re-enter the
+  runtime log the same release removed it from.
+
+### Version + documentation surfaces
+
+- VERSION, internal/version, frontend/package.json,
+  frontend/package-lock.json and build/winres.json all move to
+  0.11.5; README, ROADMAP, docs/architecture.md, docs/ui.md,
+  docs/ci.md, docs/development.md updated with the evidence-honest
+  descriptions above. docs/security.md and docs/tun.md are untouched
+  by this release (no security-surface or TUN-evidence wording
+  changed).
+- sing-box version drift check performed against official upstream
+  release data: the official `releases/latest` target currently
+  resolves to **v1.14.2** (a stable, not a prerelease). The intended
+  pin REMAINS 1.14.1 for this focused repair release — the TUN
+  document and real-binary smoke evidence are verified against the
+  1.14.1 binaries, and swapping the dataplane pin without a
+  physical-host re-verification cycle is not a repair-release change;
+  core-manager, CI, tests and docs stay consistent at 1.14.1 (no
+  unverified checksum was fabricated and no half-upgraded state
+  created). The 1.14.2 upgrade is recorded as a deliberate, verified
+  follow-up. The Windows TUN physical runtime remains NOT VERIFIED
+  (unchanged, requires an elevated Windows host).
+
+---
+
 ## v0.11.4 — security repair, Windows CI hardening, TUN correctness hardening, documentation alignment
 
 v0.11.4 is a repair + hardening release: no new features, one

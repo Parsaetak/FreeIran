@@ -23,14 +23,6 @@ export class Entry {
              */
             this["seq"] = 0;
         }
-        if (!("ts" in $$source)) {
-            /**
-             * RFC3339, UTC
-             * @member
-             * @type {string}
-             */
-            this["ts"] = "";
-        }
         if (!("level" in $$source)) {
             /**
              * @member
@@ -177,10 +169,10 @@ export class Entry {
      * @returns {Entry}
      */
     static createFrom($$source = {}) {
-        const $$createField19_0 = $$createType0;
+        const $$createField18_0 = $$createType0;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("fields" in $$parsedSource) {
-            $$parsedSource["fields"] = $$createField19_0($$parsedSource["fields"]);
+            $$parsedSource["fields"] = $$createField18_0($$parsedSource["fields"]);
         }
         return new Entry(/** @type {Partial<Entry>} */($$parsedSource));
     }

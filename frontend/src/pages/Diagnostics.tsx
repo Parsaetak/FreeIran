@@ -11,7 +11,6 @@ import { describeError, toast } from "../state/toastStore";
 import { levelAtLeast } from "../utilities/logFilter";
 import {
   formatBytes,
-  formatClock,
   formatNumber,
   formatPercent,
 } from "../utilities/format";
@@ -475,7 +474,6 @@ const LogRow = memo(function LogRow({
       onClick={() => onShowRelated?.(entry)}
       style={onShowRelated ? { cursor: correlated ? "pointer" : undefined } : undefined}
     >
-      <span className="log-time">{formatClock(entry.ts)}</span>
       <span className={`log-level ${entry.level || "info"}`}>{entry.level || "info"}</span>
       <span className="log-subsystem">{entry.subsystem}</span>
       <span className="log-event">{entry.event}</span>
@@ -501,7 +499,10 @@ export function entriesToText(entries: LogEntry[]): string {
         .filter(Boolean)
         .join(" ");
 
-      return `${entry.ts} ${entry.level.toUpperCase().padEnd(5)} ${entry.subsystem} ${entry.event}: ${entry.message}${suffix ? ` (${suffix})` : ""}`;
+      // v0.11.5: runtime entries carry no wall-clock timestamp — the
+      // copied text is prefixed with the per-session seq instead, the
+      // actual ordering mechanism.
+      return `#${entry.seq} ${entry.level.toUpperCase().padEnd(5)} ${entry.subsystem} ${entry.event}: ${entry.message}${suffix ? ` (${suffix})` : ""}`;
     })
     .join("\n");
 }

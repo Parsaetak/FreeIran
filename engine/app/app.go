@@ -449,6 +449,12 @@ func New(opts Options) (*App, error) {
 	// launch. Workspace/base-path initialization is represented as
 	// structured fields on this record — never as a second start
 	// message.
+	//
+	// v0.11.5: the record is COMPACT — the message renders the
+	// user-facing version ("FreeIran v0.11.5 starting") and the
+	// commit / Go-runtime metadata field is gone. Build provenance
+	// lives on the developer diagnostics surface only; the runtime
+	// log never carries it.
 	logger.Log(logging.Record{
 		Level:      logging.LevelInfo,
 		Subsystem:  "app",
@@ -458,7 +464,6 @@ func New(opts Options) (*App, error) {
 		DurationMS: time.Since(bootStart).Milliseconds(),
 		Fields: map[string]any{
 			"version":             version.Version,
-			"commit":              version.Commit,
 			"base_dir":            opts.BaseDir,
 			"defaulted_workspace": defaultedWorkspace,
 			"session_id":          logger.SessionID(),

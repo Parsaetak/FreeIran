@@ -536,7 +536,9 @@ function ActivityFeed() {
               {entry.subsystem} · {entry.event}
             </div>
           </span>
-          <span className="latency none hide-md">{formatEventAge(entry.ts)}</span>
+          {/* v0.11.5: runtime entries carry no wall-clock timestamp — the
+              seq-based key is the ordering identity and no synthetic age
+              decoration is invented from it. */}
         </div>
       ))}
     </div>
@@ -548,15 +550,6 @@ function dotForLevel(level: string): string {
   if (level === "warn") return "busy";
 
   return "ok";
-}
-
-/** Short age label computed from an RFC3339 timestamp. */
-function formatEventAge(ts: string): string {
-  const time = Date.parse(ts);
-
-  if (Number.isNaN(time)) return "";
-
-  return relativeTime(time);
 }
 
 /**

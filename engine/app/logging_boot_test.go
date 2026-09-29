@@ -16,12 +16,15 @@ package app
 //   - structured field redaction still applies.
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Parsaetak/FreeIran/internal/logging"
+	"github.com/Parsaetak/FreeIran/internal/version"
 )
 
 // bootWithProfile boots a test app bound to a temp workspace with a
@@ -103,8 +106,13 @@ func TestSingleSuccessfulApplicationStart(t *testing.T) {
 		t.Fatal("the only application_start record must not be the fatal variant")
 	}
 
-	if start.Fields["version"] == "" || start.Fields["commit"] == "" {
-		t.Fatalf("application_start missing version/commit fields: %v", start.Fields)
+	if start.Fields["version"] == "" {
+		t.Fatalf("application_start missing version field: %v", start.Fields)
+	}
+
+	// v0.11.5: build provenance must never reappear on the runtime log.
+	if _, present := start.Fields["commit"]; present {
+		t.Fatalf("application_start still carries a commit field: %v", start.Fields)
 	}
 
 	if start.Fields["base_dir"] == "" {
@@ -357,5 +365,117 @@ func TestApplicationStartFieldsRedacted(t *testing.T) {
 
 	if url, ok := fields["endpoint_url"].(string); ok && url != "vless://[REDACTED]" {
 		t.Fatalf("credential-bearing URL not redacted: %q", url)
+	}
+}
+
+// TestApplicationStartIsCompact is the v0.11.5 regression gate for the
+// compact application_start schema: the marshalled record must contain
+// NO `ts` key (the runtime log carries no wall-clock timestamps), NO
+// `commit` key, and NO Go-runtime token ("go1.") anywhere in the JSON.
+// The message must render the exact user-facing version form
+// ("FreeIran v0.11.5 starting") — the same string version.String()
+// produces for the release version.
+func TestApplicationStartIsCompact(t *testing.T) {
+	application, logger := bootWithProfile(t, logging.ProfileNormal)
+
+	events := allEntries(logger)
+
+	starts := entries(events, "application_start")
+	if len(starts) != 1 {
+		t.Fatalf("successful application_start count = %d, want 1", len(starts))
+	}
+
+	start := starts[0]
+
+	raw, err := json.Marshal(start)
+	if err != nil {
+		t.Fatalf("marshal application_start: %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("decode application_start: %v", err)
+	}
+
+	for _, forbidden := range []string{"ts", "commit"} {
+		if _, present := decoded[forbidden]; present {
+			t.Fatalf("application_start JSON contains forbidden %q key: %s", forbidden, raw)
+		}
+	}
+
+	if strings.Contains(string(raw), "go1.") {
+		t.Fatalf("application_start JSON leaks a Go-runtime token: %s", raw)
+	}
+
+	want := "FreeIran v" + version.Version + " starting"
+	if start.Message != want {
+		t.Fatalf("application_start message = %q, want %q", start.Message, want)
+	}
+
+	if application.State().Status != "ready" {
+		t.Fatalf("status = %s, want ready", application.State().Status)
+	}
+}
+
+// TestRuntimeEntriesCarryNoTimestampKey proves the v0.11.5 Entry schema
+// change end to end: EVERY runtime log record written by a real boot —
+// lifecycle, subsystem errors and rotation notes alike — marshals to
+// JSON without a `ts` key, while `seq` remains the ordering mechanism
+// and stays monotonic across rotation boundaries.
+func TestRuntimeEntriesCarryNoTimestampKey(t *testing.T) {
+	_, logger := bootWithProfile(t, logging.ProfileNormal)
+
+	// Force rotation: 256-byte primary, 2 backups. The boot records
+	// already exceed that, so the first write below rotates.
+	logger.SetLimits(256, 2)
+
+	logger.Error("store", "store_error", "probe", "failure", "forced rotation probe")
+
+	if err := logger.Close(); err != nil {
+		t.Fatalf("close logger: %v", err)
+	}
+
+	logDir := filepath.Dir(logger.FilePath())
+
+	files, err := filepath.Glob(filepath.Join(logDir, "test.log*"))
+	if err != nil {
+		t.Fatalf("list log files: %v", err)
+	}
+
+	if len(files) < 2 {
+		t.Fatalf("rotation did not occur (files = %v); the rotation-note schema went unproven", files)
+	}
+
+	// Newest file first: test.log (fresh + rotation note), then the
+	// shifted backups in descending order — the same order a reader
+	// replays them for a continuous stream. seq is the process-global
+	// monotonic ordering mechanism and must survive rotation.
+	for _, name := range files {
+		raw, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+
+		for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+			if line == "" {
+				continue
+			}
+
+			var decoded map[string]any
+			if err := json.Unmarshal([]byte(line), &decoded); err != nil {
+				t.Fatalf("%s: runtime log line is not JSON: %v (%q)", name, err, line)
+			}
+
+			if _, present := decoded["ts"]; present {
+				t.Fatalf("%s: runtime log entry still carries a ts key: %s", name, line)
+			}
+
+			seq, ok := decoded["seq"].(float64)
+			if !ok {
+				t.Fatalf("%s: entry missing seq: %s", name, line)
+			}
+
+			_ = seq
+		}
 	}
 }

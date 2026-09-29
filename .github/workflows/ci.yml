@@ -575,6 +575,27 @@ jobs:
           go test -count=1 -run TestWindowsGUISubsystem ./cmd/freeiran
           if ($LASTEXITCODE -ne 0) { throw "PE subsystem check failed: console-subsystem binary detected" }
 
+      # v0.11.5 — the REAL GUI launch proof: launches the built
+      # FreeIran.exe WITHOUT --smoke-test in an isolated FREEIRAN_HOME
+      # workspace and fails unless a VISIBLE top-level window owned by
+      # the launched process exists (native user32 observation:
+      # EnumWindows + IsWindowVisible + GetWindowThreadProcessId). The
+      # v0.11.4 "boots fine, no window" defect passed this job because
+      # the PE test reads only the header and the runtime smoke exits
+      # before the webview is constructed — this step closes exactly
+      # that evidence gap. The isolated instance is terminated by exact
+      # PID (tree force-kill) so the default tray setting can never
+      # strand it in the tray. No continue-on-error.
+      - name: GUI launch proof (visible window, real executable)
+        shell: pwsh
+        env:
+          CGO_ENABLED: "0"
+          FREEIRAN_GUI_EXE: ${{ github.workspace }}\FreeIran-windows-amd64.exe
+        run: |
+          go test -count=1 -run TestWindowsGUILaunchProof -v ./cmd/freeiran
+          if ($LASTEXITCODE -ne 0) { throw "GUI launch proof failed: no visible FreeIran window from the built executable" }
+          Write-Host "GUI launch proof passed: a visible top-level FreeIran window was observed"
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v7
         with:

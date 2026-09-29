@@ -62,6 +62,30 @@ record, and verified in the background. The UI observes
 `loading → ready → degraded` transitions through the `freeiran:state`
 event.
 
+**Desktop window lifecycle (v0.11.5 repair, evidence-documented):**
+the ONE webview window is created and shown FROM the
+`ApplicationStarted` event — the deterministic create → show →
+close-hook → tray sequence, the same pattern Wails' own updater host
+uses (`NewWithOptions` constructs the window synchronously once the
+app is running; the HWND itself is built on the main thread). The
+v0.11.4-and-earlier pattern — an initial tray reconcile dispatched
+pre-Run through `application.InvokeAsync` — panicked the process
+inside Wails' `dispatchOnMainThread` (it dereferences the
+platform-app handle, which is nil until `Run()`), so the desktop
+binary died after the engine logs and before any window existed. The
+same pinned wails beta.19 source shows a pre-Run window is built
+without `WS_VISIBLE` and that a pre-Run `Show()` is a no-op, so
+pre-Run window visibility additionally depended on WebView2
+navigation completing; creating + showing post-Run makes visibility
+independent of the WebView2 outcome (an empty shell window beats an
+invisible process, and WebView2 failures are captured by the wails
+log bridge). Wails-internal warnings/errors are bridged into the
+runtime log (subsystem `wails`, Warn floor — which also keeps Wails'
+own toolchain/vcs startup records out of the log). Tray semantics are
+byte-for-byte v0.11.3: the initial reconcile runs inside the same
+handler (never pre-Run), settings mutations reconcile through the ONE
+settings path, and shutdown destroys the tray before engine teardown.
+
 **UI synchronization model:** both UI event streams are published
 from the authoritative transition paths — never from ticker loops.
 Every meaningful mutation (boot-phase advance, degraded/healthy
@@ -351,9 +375,16 @@ platform application-data directory (`<BaseDir>/logs/freeiran.log`,
 never inside the repository).
 
 ```text
-entry shape:  {seq, ts(RFC3339 UTC), level, subsystem, event,
-               message, operation?, error_kind?, lifecycle?,
+entry shape:  {seq, level, subsystem, event, message,
+               operation?, error_kind?, lifecycle?,
                correlation ids (batch_id/test_id/config_id/core/pid)...}
+              (v0.11.5: NO per-entry wall-clock timestamp — `ts` was
+              removed from the schema and every consumer; `seq` is the
+              ordering/paging mechanism, `session_id` separates
+              launches, `duration_ms`/`status` carry measured timing
+              where it exists. Git-commit and Go-toolchain metadata are
+              likewise banned from every runtime-log path; build
+              provenance lives on the developer diagnostics surface.)
 file format:  JSON lines (machine-readable — preserved; fields are
               optimized first, the format is not replaced for
               aesthetics)

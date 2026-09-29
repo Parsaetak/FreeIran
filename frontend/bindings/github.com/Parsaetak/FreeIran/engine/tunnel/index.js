@@ -6,5 +6,6 @@ export {
     Mode,
     OwnershipStatus,
     State,
-    SystemProxySnapshot
+    SystemProxySnapshot,
+    TUNSnapshot
 } from "./models.js";

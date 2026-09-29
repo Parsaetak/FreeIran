@@ -9,7 +9,7 @@ configurations.
 **Project:** FreeIran — A SHEYTAN Digital System
 **Architect:** Parsa Tak / SHEYTAN
 **Repository:** https://github.com/Parsaetak/FreeIran
-**Current version:** 0.11.4 (see `VERSION`)
+**Current version:** 0.11.5 (see `VERSION`)
 **Status:** production architecture — multi-core protocol runtime with
 managed installation, multi-level node discovery, Ping/URL test modes
 with measured ranking, verified-connection engine with racing,
@@ -20,6 +20,77 @@ dataplane (v0.11.3, correctness-hardened in v0.11.4 — see
 memory control and kernel-level process supervision, evidence-based
 failure classification with transport-agile route selection, and
 schema-verified ECH support through sing-box.
+
+---
+
+## What's new in v0.11.5
+
+v0.11.5 is a focused repair release — no new features, no architecture
+replaced:
+
+- **Windows GUI startup fix (the headline, root-caused).** The
+  v0.11.4-ci desktop binary booted the engine cleanly
+  (application_start → store_open → manager_init → application_ready)
+  but no window ever became visible. Root cause, verified against the
+  pinned wails v3.0.0-beta.19 source: the pre-Run initial tray
+  reconcile dispatched through `application.InvokeAsync`, whose
+  first step dereferences Wails' platform-app handle — which does not
+  exist until `Run()` — and the resulting panic killed the process on
+  the main goroutine AFTER the engine logs were written and BEFORE the
+  window was ever created (a windowsgui binary has no console, so the
+  crash left no visible trace). Additionally, a beta.19 pre-Run window
+  is constructed without `WS_VISIBLE`, a `Show()` issued before
+  `Run()` is a no-op, and window visibility otherwise depended on
+  WebView2 navigation completing. v0.11.5 creates and shows the ONE
+  main window from the `ApplicationStarted` event — the platform app
+  and message loop exist there, the deterministic create → show →
+  hook → tray sequence makes visibility independent of the WebView2
+  outcome, and all v0.11.3 tray semantics are unchanged. No second
+  window, no sleep delays, no headless downgrade.
+- **Real Windows GUI launch proof.** A new windows-only test
+  (`TestWindowsGUILaunchProof`) launches the ACTUAL built
+  FreeIran.exe — not `--smoke-test` — in an isolated `FREEIRAN_HOME`
+  workspace and FAILS unless a visible top-level window owned by the
+  launched process is observed natively (user32 EnumWindows +
+  IsWindowVisible + GetWindowThreadProcessId) within a bounded
+  timeout. It distinguishes "process alive" from "GUI visible",
+  dumps the child's window inventory, output capture and isolated
+  runtime log on failure, and always terminates the instance by exact
+  PID (tree force-kill) so the tray setting can never strand it. It
+  runs in the Windows CI job and the release workflow after the real
+  desktop executable is built, and the release install rehearsal now
+  runs it against the INSTALLED executable too. The existing
+  PE-subsystem and headless smoke checks are preserved unchanged.
+- **Runtime log is metadata-free.** The persistent JSON log no longer
+  carries per-entry wall-clock timestamps (`ts` removed from the
+  Entry schema and every UI/copy surface), no git commit field, and
+  no Go-toolchain metadata anywhere; `seq` remains the ordering and
+  paging mechanism and `duration_ms`/`status` remain the measured
+  evidence. `application_start` is compact ("FreeIran v0.11.5
+  starting"); the user-facing version renders exactly `v0.11.5` (no
+  commit, no `go1.x` tuple) on the status bar, in diagnostic reports
+  and in copied diagnostics text (which now carries the per-session
+  seq prefix instead). Developer-only build provenance (commit, Go
+  version) stays on the dedicated Developer Info surface. Wails'
+  internal warnings and errors are now bridged into the runtime log
+  (subsystem `wails`) so WebView2 failures leave evidence — with a
+  deliberate Warn floor so Wails' own toolchain/vcs startup records
+  can never reintroduce that metadata.
+- **sing-box 1.14.1 re-checked.** The official current stable pin is
+  re-verified against upstream release data; 1.14.1 remains the
+  intended stable pin (no prerelease jump, no unverified checksums).
+
+> **Runtime verification status (honest):** the v0.11.5 repair is
+> verified locally by the full Linux Go test suite (engine/system/
+> internal), windows/amd64 vet+build of the complete tree (including
+> all windows-tagged test files), the PE-subsystem check of the built
+> binary, frontend typecheck + unit tests + production build, and
+> twice-byte-identical binding regeneration passing the binding
+> contract tests. The GUI launch proof itself EXECUTES on the CI
+> Windows runner and release workflow — a live Windows desktop run of
+> this repository is not available to the authoring environment. The
+> Windows TUN physical runtime remains NOT VERIFIED (unchanged; see
+> docs/tun.md).
 
 ---
 

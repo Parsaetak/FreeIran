@@ -14,7 +14,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 )
 
 // openTestLogger opens a logger with tight rotation limits.
@@ -39,6 +38,28 @@ func openTestLogger(t *testing.T, dir string, maxBytes int64) *Logger {
 
 // readLines decodes every JSON line of a log file.
 func readLines(t *testing.T, path string) []Entry {
+	raws := readRawLines(t, path)
+
+	var entries []Entry
+
+	for _, raw := range raws {
+		var entry Entry
+
+		if err := json.Unmarshal(raw, &entry); err != nil {
+			t.Fatalf("decode %s: %v", path, err)
+		}
+
+		entries = append(entries, entry)
+	}
+
+	return entries
+}
+
+// readRawLines returns every non-empty line of a log file WITHOUT
+// decoding — the v0.11.5 schema regressions assert against the raw
+// marshalled JSON so a reintroduced key fails loudly even though Go
+// decoding would silently drop unknown keys.
+func readRawLines(t *testing.T, path string) [][]byte {
 	t.Helper()
 
 	file, err := os.Open(path)
@@ -52,7 +73,7 @@ func readLines(t *testing.T, path string) []Entry {
 
 	defer file.Close()
 
-	var entries []Entry
+	var lines [][]byte
 
 	scanner := bufio.NewScanner(file)
 
@@ -63,20 +84,14 @@ func readLines(t *testing.T, path string) []Entry {
 			continue
 		}
 
-		var entry Entry
-
-		if err := json.Unmarshal(line, &entry); err != nil {
-			t.Fatalf("decode %s: %v", path, err)
-		}
-
-		entries = append(entries, entry)
+		lines = append(lines, append([]byte(nil), line...))
 	}
 
 	if err := scanner.Err(); err != nil {
 		t.Fatal(err)
 	}
 
-	return entries
+	return lines
 }
 
 // TestLogFileCreatedAndStructured verifies the file exists, every
@@ -107,8 +122,18 @@ func TestLogFileCreatedAndStructured(t *testing.T) {
 		t.Fatalf("entry = %+v", first)
 	}
 
-	if _, err := time.Parse(time.RFC3339Nano, first.Time); err != nil {
-		t.Fatalf("timestamp not RFC3339: %v", err)
+	// v0.11.5: entries carry NO wall-clock timestamp. The `ts` key is
+	// gone from the marshalled JSON schema; seq is the ordering
+	// mechanism. Asserted against the RAW line so a reintroduced key
+	// fails even though Go decoding would silently drop unknown keys.
+	rawLines := readRawLines(t, filepath.Join(dir, "freeiran.log"))
+
+	if len(rawLines) != len(entries) {
+		t.Fatalf("raw line count = %d, want %d", len(rawLines), len(entries))
+	}
+
+	if strings.Contains(string(rawLines[0]), "\"ts\"") {
+		t.Fatalf("runtime log entry still marshals a ts key: %s", rawLines[0])
 	}
 
 	if first.Seq == 0 {

@@ -82,18 +82,6 @@ export function latencyClass(
 }
 
 /** Local wall-clock time (HH:MM:SS) for RFC3339 log timestamps. */
-export function formatClock(ts: string): string {
-  if (!ts) return "";
-
-  const date = new Date(ts);
-
-  if (Number.isNaN(date.getTime())) return ts;
-
-  const pad = (n: number) => String(n).padStart(2, "0");
-
-  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
-}
-
 /** Human uptime for running sessions (e.g. "2m 07s", "3h 12m", "2d 4h"). */
 export function formatUptime(ms: number): string {
   if (!Number.isFinite(ms) || ms <= 0) return "0s";

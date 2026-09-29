@@ -31,10 +31,11 @@ export const Mode = {
     ModeSystemProxy: "system_proxy",
 
     /**
-     * ModeTUN: DISABLED (v0.9.8.6). TUN remains in the mode enum so
-     * the UI can report it as unavailable/experimental, but Enable
-     * always returns ErrTunExperimental until a safe, transactional
-     * implementation exists. See tun_unavailable.go.
+     * ModeTUN: REAL Windows tunnel mode (v0.11.3) backed by the
+     * managed sing-box core's native TUN inbound (Wintun). The
+     * activation path is transactional and observed — see
+     * tun.go. TUN is NOT a kill switch and must never be
+     * described as one: routing is not packet filtering.
      */
     ModeTUN: "tun",
 };
@@ -198,7 +199,7 @@ export class State {
              * use (or the last TUN outcome). Nil for system-proxy/direct
              * states.
              * @member
-             * @type {TUNSnapshot | undefined}
+             * @type {TUNSnapshot | null | undefined}
              */
             this["tun"] = undefined;
         }
@@ -213,13 +214,13 @@ export class State {
      */
     static createFrom($$source = {}) {
         const $$createField4_0 = $$createType1;
-        const $$createField4_2 = $$createType2;
+        const $$createField10_0 = $$createType3;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("bypass_list" in $$parsedSource) {
             $$parsedSource["bypass_list"] = $$createField4_0($$parsedSource["bypass_list"]);
         }
         if ("tun" in $$parsedSource) {
-            $$parsedSource["tun"] = $$createField4_2($$parsedSource["tun"]);
+            $$parsedSource["tun"] = $$createField10_0($$parsedSource["tun"]);
         }
         return new State(/** @type {Partial<State>} */($$parsedSource));
     }
@@ -467,14 +468,14 @@ export class TUNSnapshot {
      * @returns {TUNSnapshot}
      */
     static createFrom($$source = {}) {
-        const $$createField6_0 = $$createType3;
-        const $$createField6_1 = $$createType3;
+        const $$createField5_0 = $$createType1;
+        const $$createField6_0 = $$createType1;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("dns_servers" in $$parsedSource) {
-            $$parsedSource["dns_servers"] = $$createField6_0($$parsedSource["dns_servers"]);
+            $$parsedSource["dns_servers"] = $$createField5_0($$parsedSource["dns_servers"]);
         }
         if ("routes" in $$parsedSource) {
-            $$parsedSource["routes"] = $$createField6_1($$parsedSource["routes"]);
+            $$parsedSource["routes"] = $$createField6_0($$parsedSource["routes"]);
         }
         return new TUNSnapshot(/** @type {Partial<TUNSnapshot>} */($$parsedSource));
     }
@@ -484,4 +485,4 @@ export class TUNSnapshot {
 const $$createType0 = SystemProxySnapshot.createFrom;
 const $$createType1 = $Create.Array($Create.Any);
 const $$createType2 = TUNSnapshot.createFrom;
-const $$createType3 = $Create.Array($Create.Any);
+const $$createType3 = $Create.Nullable($$createType2);

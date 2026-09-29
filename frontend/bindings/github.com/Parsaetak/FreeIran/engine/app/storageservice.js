@@ -71,6 +71,34 @@ export function OpenDataDir() {
 }
 
 /**
+ * OpenShellAtDataDir opens the chosen shell at the data directory.
+ * Same security contract as OpenShellAtWorkspace.
+ * @param {string} shellType
+ * @returns {$CancellablePromise<void>}
+ */
+export function OpenShellAtDataDir(shellType) {
+    return $Call.ByID(1056447088, shellType);
+}
+
+/**
+ * OpenShellAtWorkspace opens the chosen shell (PowerShell or CMD) at
+ * the workspace root directory. v0.11.2: this is the safe "Open shell
+ * here" entry point — the shell binary is resolved through the OS
+ * search path (never from a user-supplied executable), the workspace
+ * directory is set as the shell's cwd through cmd.Dir (no shell-string
+ * interpolation), and no shell arguments are accepted. See
+ * system.OpenShellAtDirectory for the full security contract.
+ * 
+ * shellType must be one of "powershell" or "cmd"; any other value
+ * returns a structured error rather than silently defaulting.
+ * @param {string} shellType
+ * @returns {$CancellablePromise<void>}
+ */
+export function OpenShellAtWorkspace(shellType) {
+    return $Call.ByID(1158980946, shellType);
+}
+
+/**
  * OpenWorkspace opens the workspace root in the platform file manager.
  * @returns {$CancellablePromise<void>}
  */

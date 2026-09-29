@@ -108,6 +108,15 @@ CGO_ENABLED=0 go build -o wails3 github.com/wailsapp/wails/v3/cmd/wails3
 ./wails3 generate bindings -clean -d frontend/bindings ./cmd/freeiran
 ```
 
+v0.11.5 host-note: on a Linux host WITHOUT the gtk4/webkitgtk-6.0
+development packages, the generator must be invoked with a Windows
+build context (`CGO_ENABLED=0 GOOS=windows GOARCH=amd64 wails3
+generate bindings ...`) — the target package's Linux build needs GTK,
+the windows build does not, and the generated bindings are
+platform-independent. Verify the run actually regenerated (the
+generator warns and produces NOTHING when package analysis fails)
+and confirm the twice-run byte-identical contract.
+
 Reproducibility contract (v0.9.8.7): running the generation TWICE must
 produce byte-identical output. Hand-maintained binding patches are
 forbidden — the v0.9.8.7 regeneration removed the last hand-written

@@ -283,6 +283,27 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "PE subsystem check failed: console-subsystem binary detected" }
           Write-Host "PE subsystem verified: WINDOWS_GUI (no console on startup)"
 
+      # v0.11.5 - the REAL GUI launch proof: launches the built
+      # FreeIran.exe WITHOUT --smoke-test, in an isolated FREEIRAN_HOME
+      # workspace, and fails unless a VISIBLE top-level window owned by
+      # the launched process exists (user32 EnumWindows /
+      # IsWindowVisible / GetWindowThreadProcessId). This is the check
+      # the v0.11.4 GUI-not-opening defect sailed past: the PE test
+      # above reads only the header, and the runtime smoke exits before
+      # the webview exists. The test terminates the isolated instance by
+      # exact PID (tree force-kill), so the default tray setting can
+      # never strand it. No continue-on-error: a red release is better
+      # than an invisible one.
+      - name: GUI launch proof (visible window, real executable)
+        shell: pwsh
+        env:
+          CGO_ENABLED: "0"
+          FREEIRAN_GUI_EXE: ${{ github.workspace }}\FreeIran-windows-amd64.exe
+        run: |
+          go test -count=1 -run TestWindowsGUILaunchProof -v ./cmd/freeiran
+          if ($LASTEXITCODE -ne 0) { throw "GUI launch proof failed: no visible FreeIran window from the built executable" }
+          Write-Host "GUI launch proof passed: a visible top-level FreeIran window was observed"
+
       # v0.9.8.6: sign FreeIran.exe BEFORE the installer and the ZIP
       # embed it, so every shipped artifact contains the signed image.
       # The step runs only when the signing secrets are configured.
@@ -358,6 +379,18 @@ jobs:
             if ($app.ExitCode -ne 0) { throw "installed executable smoke test failed with exit code $($app.ExitCode)" }
           }
           Write-Host "Installed executable smoke test passed (exit 0)"
+
+          # v0.11.5: the headless --smoke-test above never launches the
+          # webview, so it cannot prove the desktop GUI. The GUI launch
+          # proof (TestWindowsGUILaunchProof) runs against the INSTALLED
+          # executable: real desktop start, no --smoke-test, isolated
+          # FREEIRAN_HOME, bounded timeout, visible top-level window
+          # owned by the launched process or the step fails.
+          $env:FREEIRAN_GUI_EXE = $installedExe.FullName
+          go test -count=1 -run TestWindowsGUILaunchProof -v ./cmd/freeiran
+          if ($LASTEXITCODE -ne 0) { throw "installed executable GUI launch proof failed: no visible FreeIran window" }
+          Remove-Item Env:FREEIRAN_GUI_EXE
+          Write-Host "Installed executable GUI launch proof passed (visible window observed)"
 
           # Uninstall (silent).
           $unins = Get-ChildItem "$env:LOCALAPPDATA\Programs" -Recurse -Filter "unins*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1

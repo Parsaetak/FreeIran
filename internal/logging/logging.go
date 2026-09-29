@@ -5,9 +5,12 @@
 //
 // Design:
 //
-//   - Entries are JSON lines with timestamp, level, subsystem, event,
+//   - Entries are JSON lines with seq, level, subsystem, event,
 //     message and optional operation / error-category fields — every
-//     runtime log entry carries the full §17 shape.
+//     runtime log entry carries the full §17 shape. Entries carry NO
+//     wall-clock timestamp (v0.11.5): seq is the ordering and paging
+//     mechanism, session_id separates launches, and duration_ms /
+//     status carry the measured timing evidence where it exists.
 //   - v0.9.7 session identity and correlation: every launch gets a
 //     unique session_id; every entry carries a monotonic per-session
 //     sequence and a unique event_id; causal debugging uses the
@@ -168,7 +171,6 @@ func admitsPolicy(profile Profile, minLevel Level, level Level, lifecycle bool) 
 // identity and correlation fields).
 type Entry struct {
 	Seq       uint64 `json:"seq"`
-	Time      string `json:"ts"` // RFC3339, UTC
 	Level     Level  `json:"level"`
 	Subsystem string `json:"subsystem"`
 	Event     string `json:"event"`
@@ -370,6 +372,13 @@ func Open(opts Options) (*Logger, error) {
 // path is the primary log file path.
 func (l *Logger) path() string {
 	return filepath.Join(l.opts.Dir, l.opts.Name)
+}
+
+// FilePath returns the primary log file path. It backs the diagnostics
+// surfaces (and tests) that need the resolved location instead of
+// re-deriving the directory/name convention.
+func (l *Logger) FilePath() string {
+	return l.path()
 }
 
 // recoverRotation repairs the file set after a crash mid-rotation:
@@ -740,8 +749,6 @@ func (l *Logger) emit(entry Entry) {
 		entry.EventID = fmt.Sprintf("%s-%04x", l.session[:8], entry.Seq)
 	}
 
-	entry.Time = time.Now().UTC().Format(time.RFC3339Nano)
-
 	defer l.mu.Unlock()
 
 	// Level AND profile filters are re-checked under the lock so
@@ -803,7 +810,6 @@ func (l *Logger) writeRotationNote() {
 
 	note := Entry{
 		Seq:       l.seq.Add(1),
-		Time:      time.Now().UTC().Format(time.RFC3339Nano),
 		Level:     LevelInfo,
 		Subsystem: "logging",
 		Event:     "log_rotated",

@@ -46,6 +46,15 @@ export const CoreName = {
      * CoreSingBox is the sing-box backend (native JSON dialect).
      */
     CoreSingBox: "sing-box",
+
+    /**
+     * CoreMihomo is the Mihomo (Clash.Meta) backend — the actively
+     * maintained successor of Clash.Meta, published by MetaCubeX.
+     * FreeIran integrates it through the SAME managed-core pipeline as
+     * Xray/V2Ray/sing-box: no separate downloader, no separate process
+     * supervisor, no separate registry (v0.11.2).
+     */
+    CoreMihomo: "mihomo",
 };
 
 /**

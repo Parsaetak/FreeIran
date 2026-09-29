@@ -42,6 +42,13 @@ protocol-cores (ubuntu)         │
               ├─ Layer C: repeated WinINet/recovery battery (×5)
               ├─ runtime smoke + desktop build (ldflags version)
               ├─ executable + PE-subsystem verification
+              ├─ v0.11.5 GUI launch proof: launches the REAL built
+              │   FreeIran.exe (no --smoke-test) in an isolated
+              │   FREEIRAN_HOME and fails unless a VISIBLE top-level
+              │   window owned by the launched process is observed
+              │   natively (user32 EnumWindows + IsWindowVisible +
+              │   GetWindowThreadProcessId); bounded timeout, exact-PID
+              │   termination, window inventory + log tail on failure
               └─ artifact upload
 ```
 
@@ -216,7 +223,13 @@ silently downloading a newer toolchain mid-build.
 1. **verify** (ubuntu): `VERSION` and `frontend/package.json` must
    match the tag; Go tests, race tests and native C++ tests must pass.
 2. **build** (windows): frontend build + embed staging, versioned
-   desktop build, zip + SHA-256 checksum, size smoke test.
+   desktop build, zip + SHA-256 checksum, size smoke test. v0.11.5:
+   the pipeline also runs the GUI launch proof against the BUILT
+   executable and — inside the install rehearsal — against the
+   INSTALLED executable, so the shipped desktop binary is proven to
+   open a visible window on a real Windows session (the rehearsal's
+   `--smoke-test` launch only covers the headless engine path and
+   cannot prove the GUI).
 3. **publish** (ubuntu): attaches zip and checksum to a GitHub Release
    with generated notes; pre-release tags produce pre-releases.
 
