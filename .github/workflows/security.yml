@@ -154,7 +154,7 @@ jobs:
       # curl/PowerShell/netsh/route — that surface was REMOVED with it
       # (the v0.11.3 TUN backend runs the managed sing-box core with a
       # native tun inbound and never shells out — see engine/tunnel/
-      # tun_singbox.go). Every future exception must be added to the
+      # tun.go). Every future exception must be added to the
       # allowlist BELOW with a justification; the scan is never
       # weakened to make CI green.
       - name: Dangerous child-process surface (allowlist)

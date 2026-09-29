@@ -12,23 +12,92 @@ The application should feel like a mature desktop connectivity client rather tha
 
 ---
 
-# Roadmap ladder (v0.11.2)
+# Roadmap ladder (v0.11.4)
 
 The roadmap is a four-phase ladder. Each phase must be TRUE before the
 next one starts; the acceptance standard is the user-visible pipeline
 below, not internal test counts.
 
-### v0.11.2 current-release status (factual)
+### v0.11.4 current-release status (factual)
 
-v0.11.2 is a feature + repair release scoped to Mihomo integration,
+v0.11.4 is a repair + hardening release scoped to: the Gitleaks
+current-commit fixture fix (Security run `36459948025`'s secret-scan
+failure), the Windows CI failure diagnosis from live evidence (run
+`36459947866` — hosted-runner communication loss) with a bounded
+job timeout and ZERO coverage loss, three TUN correctness defects
+(fail-closed address selection, exact-adapter activation identity,
+native route-path observation), the sing-box 1.14.0 → 1.14.1
+alignment across CI/docs/evidence, tray persistence regression
+checks, and documentation truth repairs (scan semantics, Wintun
+packaging model, evidence ladder wording). No feature was added and
+no v0.11.3 architecture was replaced. See CHANGELOG.md for the
+authoritative change list and verification evidence.
+
+Completed in v0.11.4 (with evidence class stated):
+
+- Gitleaks fixture repair VERIFIED locally with the exact CI scanner
+  version (8.24.3): the v0.11.3 finding reproduced before, the
+  working tree + the v0.11.4 push-range scan clean after, future
+  secret-shaped literals still detected; a package-level regression
+  test now fails on any committed key-shaped literal in the singbox
+  test surface during ordinary `go test`.
+- TUN hardening VERIFIED at the Linux/unit + Windows-compile +
+  generated-config (real 1.14.1 binary) levels; the activation gate
+  now requires exact adapter identity + covering route ownership +
+  verified traffic + no upstream loop, all read-only and bounded.
+- Windows CI diagnosis VERIFIED from live run evidence (annotation
+  text, durations, step states); the hardening is a bounded
+  `timeout-minutes: 60` (a reduction from the 6h default) with the
+  A/B/C coverage architecture byte-identical.
+- sing-box 1.14.1 alignment VERIFIED against the official upstream
+  release (asset name, SHA-256 computed from the official download,
+  binary version probe) and exercised by the real-core TUN document
+  check + full smoke suite.
+
+NOT VERIFIED in v0.11.4:
+
+- The end-to-end Windows TUN runtime on a physical elevated Windows
+  host: real Wintun adapter creation by the managed sing-box core,
+  the observed route path, the tunneled request and disable/rollback
+  on that host. Everything short of that IS verified at its own
+  level (generated-config against the pinned v1.14.1 binary, the
+  full Go test suite, the windows/amd64 build). docs/tun.md records
+  the evidence ladder.
+- The post-v0.11.4 remote CI/Security verdicts: no push, PR or
+  Actions re-run was performed from this repair (release rules);
+  the next maintainer push produces that evidence.
+
+NOT VERIFIED carried forward from earlier releases:
+
+- Windows-native GUI runtime on physical hosts (Linux build
+  environment lacks gtk4/webkitgtk-6.0 dev packages; the
+  windows/amd64 binary is cross-built only).
+- Mihomo as a runnable protocol-core backend (the connection-engine
+  adapter is out of scope; the integration test asserts Mihomo is
+  NOT advertised as a runnable backend until that adapter ships).
+
+### v0.11.3 release status (historical)
+
+v0.11.3 shipped the functional Windows TUN dataplane (managed
+sing-box core with a native tun inbound), the persistent
+`tray_enabled` setting, and the Security workflow repairs (the
+historical Gitleaks commit exception + the `system/open_shell.go`
+allowlist case). Its evidence scope is recorded in CHANGELOG.md; its
+known defects (the committed TUN fixture literal, the TUN
+address-selection fallback, the weak activation identity, the CI
+sing-box pin drift) were repaired by v0.11.4.
+
+### v0.11.2 release status (historical)
+
+v0.11.2 was a feature + repair release scoped to Mihomo integration,
 Configurations UX, native Windows tray, honest tunnel diagnostics,
 safe "Open shell here", and Diagnostics spacing. The v0.11.0
 resilience foundation (nine-class failure taxonomy, bounded freshness
-tuple, transport agility, two-layer Windows CI proof) remains intact
+tuple, transport agility, two-layer Windows CI proof) remained intact
 — no security/trust/queue reduction. See CHANGELOG.md for the
 authoritative change list and verification evidence.
 
-P0 additions (this release):
+P0 additions of that release:
 
 - Mihomo as a coremgr-managed core (download/health/UI; the
   connection-engine adapter is intentionally out of scope per "No
@@ -49,32 +118,13 @@ P0 additions (this release):
   hides to tray; tray Quit runs the existing shutdown lifecycle
   (no orphan processes).
 
-P1 additions:
+P1 additions of that release:
 
 - Safe PowerShell/CMD "Open here" — `system.OpenShellAtDirectory`
   (NOT a generic command executor; shell binary resolved through OS
   lookup, directory set as cwd, no caller-supplied arguments).
 - Diagnostics numerical spacing (tabular-nums + tighter
   letter-spacing) for readability at 100/125/150/175% DPI.
-
-NOT VERIFIED in v0.11.2:
-
-- Windows-native runtime (Linux build environment lacks
-  gtk4/webkitgtk-6.0 dev packages; windows/amd64 binary is
-  cross-built only).
-- Mihomo as a runnable protocol-core backend (the connection-engine
-  adapter is out of scope; the integration test now asserts Mihomo
-  is NOT advertised as a runnable backend until that adapter ships).
-
-NOT VERIFIED in v0.11.3 (additionally):
-
-- The end-to-end Windows TUN runtime: real Wintun adapter creation by
-  the managed sing-box core on a physical Windows host, the observed
-  tunneled request, and disable/rollback on that host. Everything
-  short of that IS verified: the generated TUN document passes
-  `sing-box check` on the pinned v1.14.1 binary, the full Go test
-  suite passes, the windows/amd64 build passes and the frontend
-  battery passes. docs/tun.md records the evidence scope.
 
 ### v0.11.0 release status (historical)
 

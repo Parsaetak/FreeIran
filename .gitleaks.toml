@@ -1,10 +1,14 @@
-# FreeIran Gitleaks configuration (v0.11.3).
+# FreeIran Gitleaks configuration (v0.11.4).
 #
 # The Security workflow (`.github/workflows/security.yml`, job
-# "Secret scanning") runs gitleaks-action@v3, which scans the FULL
-# git history (`git log -p -U0 --full-history --all`). This file is
-# the repository-level configuration gitleaks auto-detects for that
-# scan.
+# "Secret scanning") runs gitleaks-action@v3 on a full-depth
+# checkout, and the ACTION scans EVENT-SPECIFICALLY: a push event
+# scans the commits NEW in that push, a pull_request event scans the
+# PR's commits, and repository-wide events scan the default branch.
+# A secret committed today still fails the job (v0.11.4 verified
+# locally with gitleaks 8.24.3: a scratch key-shaped literal in a
+# new commit is detected). This file is the repository-level
+# configuration gitleaks auto-detects for every such run.
 #
 # Design rules (see docs/security.md "Secret scanning"):
 #
@@ -22,12 +26,16 @@
 #      commit). The keys are well-known non-functional examples
 #      paired with RFC 5737 documentation addresses (192.0.2.0/24)
 #      — they never were runtime credentials, and the current source
-#      no longer contains any committed literal (both files now
-#      derive keys at runtime via deterministicTestKey /
-#      deterministicKey). Because the Security job scans full
-#      history, editing the current files alone cannot remove the
-#      historical finding; this commit-scoped allowlist is the
-#      narrowest correct repair.
+#      no longer contains any committed literal (all WireGuard test
+#      material is derived at runtime via deterministicKey /
+#      deterministicTestKey / deterministicTUNTestKey).
+#   4. v0.11.4 deliberately does NOT add the v0.11.3 commit
+#      (bf533da, which introduced — and v0.11.4 removed — the
+#      tun_test.go synthetic key fixture) to this allowlist: history
+#      is never rewritten, and a full-history AUDIT is expected to
+#      surface that superseded historical synthetic fixture exactly
+#      as it surfaces dd62f17c. New commits are what the push gate
+#      scans, and they are fully covered.
 #
 # Changing or removing this exception requires changing the scan
 # posture first (docs/security.md documents the contract).

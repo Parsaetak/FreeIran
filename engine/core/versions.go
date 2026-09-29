@@ -39,9 +39,12 @@ type PinnedCore struct {
 //   - Xray 26.3.27: V4-format config accepted plus REALITY and
 //     xtls-rprx-vision flow; plain QUIC/HTTP transports REMOVED in
 //     favour of XHTTP; `xray run -test -c`, `xray --version`.
-//   - sing-box 1.14.0: native config accepted for all supported
+//   - sing-box 1.14.1: native config accepted for all supported
 //     protocols incl. REALITY/vision; `sing-box check -c`,
-//     `sing-box version`, mixed inbound.
+//     `sing-box version`, mixed inbound. v0.11.4 re-verified the
+//     adapter against the official 1.14.1 release (full real-binary
+//     smoke suite + the complete TUN document check) and aligned the
+//     pin from 1.14.0.
 var PinnedCores = []PinnedCore{
 	{
 		Name:       "xray",
@@ -57,7 +60,7 @@ var PinnedCores = []PinnedCore{
 	},
 	{
 		Name:       "sing-box",
-		Version:    "1.14.0",
+		Version:    "1.14.1",
 		Source:     "https://github.com/SagerNet/sing-box",
 		MinVersion: "1.10.0",
 	},

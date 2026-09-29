@@ -54,7 +54,7 @@ never Go dependencies):
 |------|-----------------|--------|------------------------------|
 | Xray | **26.3.27** | github.com/XTLS/Xray-core | `8255dd939c34cf966cc91517b6324dd3c8d0bcf49ffac8beca049a38c46845ed` |
 | V2Ray (V2Fly) | **5.53.0** | github.com/v2fly/v2ray-core | `a7bc11ff3ee286bc15d8191440ebb10810ac801ced54bbd4ce79ce4d291f7f25` |
-| sing-box | **1.14.0** | github.com/SagerNet/sing-box | `57b3da14e264b6e05e8f46aee027c02d7dd7f1594d19aa39e2f4d2b9459bbd04` |
+| sing-box | **1.14.1** | github.com/SagerNet/sing-box | `9334a1c1fe97234911afaedd37226667ebdb3dab2abe383f2c4ae1387706dad9` |
 
 Core versions are pinned deliberately — never "latest". The pins in
 `engine/core/versions.go` record what the adapters were verified
@@ -254,7 +254,10 @@ A release never publishes when validation fails.
 - `govulncheck` (pinned v1.8.0) over the pure-Go packages on Linux, and
   over the desktop package with `GOOS=windows` (see docs/security.md
   for why the split is the correct analysis, not a workaround).
-- gitleaks secret scanning over full history.
+- gitleaks secret scanning (gitleaks-action@v3, event-scoped ranges:
+  push → the new commits, PR → the PR's commits; the checkout is
+  full-depth — see docs/security.md for the exact semantics and the
+  v0.11.4 fixture-repair record).
 - `go vet` on both package scopes plus a guard-rail scan for
   credential-looking literals and shell-injection patterns in non-test
   Go code. Every check is a real failure condition.

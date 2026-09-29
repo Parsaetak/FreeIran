@@ -1,13 +1,44 @@
 package singbox
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/Parsaetak/FreeIran/engine/config"
 	"github.com/Parsaetak/FreeIran/engine/core"
 )
+
+// deterministicTUNTestKey derives a syntactically valid 32-byte
+// base64 key from a seed byte — the SAME runtime-derivation pattern
+// the v0.10.3 repair established for WireGuard test material (see
+// deterministicKey in singbox_test.go, package singbox_test, and
+// deterministicTestKey in engine/app). v0.11.4: the v0.11.3 TUN
+// fixture committed two key-SHAPED literals here and Gitleaks
+// (generic-api-key) correctly flagged the PrivateKey as a
+// high-entropy secret-looking literal (Security run 36459948025).
+// All WireGuard test material in this package is now derived at
+// RUNTIME: deterministic (same bytes every run — the assertions
+// never depended on specific key values), syntactically valid
+// (32 bytes → 44-char padded base64), and never a real credential
+// — the seed bytes are an ascending integer ramp, not entropy from
+// any real key. This file is an INTERNAL test (package singbox), so
+// the singbox_test helper is not importable; the identical
+// mechanism is declared once here.
+func deterministicTUNTestKey(seed byte) string {
+	key := make([]byte, 32)
+
+	for i := range key {
+		key[i] = seed + byte(i)
+	}
+
+	return base64.StdEncoding.EncodeToString(key)
+}
 
 // tunDocForTest renders a TUN document for the standard shadowsocks
 // fixture (parsed into the loose test map shape).
@@ -183,13 +214,17 @@ func TestBuildTUNDocumentIPv4OnlyAndWireGuard(t *testing.T) {
 		t.Fatalf("address = %v, want the single IPv4 TUN address", addrs)
 	}
 
-	// WireGuard rides the endpoint form.
+	// WireGuard rides the endpoint form. The key material is
+	// DERIVED at runtime (deterministicTUNTestKey) — no committed
+	// secret-looking literal (the v0.11.4 Gitleaks repair; the
+	// assertion below never depended on specific key values, only
+	// on the endpoint SHAPE BuildTUNDocument emits for WireGuard).
 	wg := config.Config{
 		Type:       config.TypeWireGuard,
 		Address:    "192.0.2.1",
 		Port:       51820,
-		PrivateKey: "eCtXsJZ27+4PbhDkHnB923tkUn2Gj59wZw5wFA75MnU=",
-		PublicKey:  "Cr8hWlKvtDt7nrvf+f0brNQQzabAqrjfBvas9pmowjo=",
+		PrivateKey: deterministicTUNTestKey(0x21),
+		PublicKey:  deterministicTUNTestKey(0x42),
 	}
 
 	wgDoc := tunDocForTest(t, wg, TUNSettings{
@@ -228,5 +263,82 @@ func TestValidateTUNSettings(t *testing.T) {
 	noDNS.RemoteDNS = ""
 	if err := ValidateTUNSettings(noDNS); err == nil {
 		t.Fatal("empty remote DNS must be rejected")
+	}
+}
+
+// TestNoCommittedSecretShapedLiterals is the v0.11.4 Gitleaks
+// regression: the Security workflow's secret scan (Gitleaks
+// 8.24.3, generic-api-key) flagged the v0.11.3 fixture's committed
+// WireGuard PrivateKey literal (tun_test.go line 191, commit
+// bf533da). The repair derives all WireGuard test material at
+// runtime; this test pins that NO test source in this package ever
+// commits a key-shaped literal again — a 44-character padded
+// base64 string (32 bytes, the WireGuard key shape Gitleaks
+// recognizes) inside a Go string literal is the exact signature
+// that tripped the scanner, so any future regression fails HERE
+// (on every platform, in every ordinary `go test` run) instead of
+// only in the Security workflow.
+func TestNoCommittedSecretShapedLiterals(t *testing.T) {
+	// This test file's own directory (works from `go test` source
+	// trees; the module root is two levels up from the package).
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("cannot locate the test source directory")
+	}
+
+	dir := filepath.Dir(thisFile)
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read package dir: %v", err)
+	}
+
+	// 43 base64 characters followed by the mandatory '=' padding
+	// of a 32-byte WireGuard-style key.
+	keyShaped := regexp.MustCompile(`"[A-Za-z0-9+/]{43}="`)
+
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasSuffix(name, "_test.go") || entry.IsDir() {
+			continue
+		}
+
+		raw, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+
+		if loc := keyShaped.FindString(string(raw)); loc != "" {
+			t.Fatalf(
+				"%s commits a secret-shaped 32-byte base64 literal (%s…) — "+
+					"derive WireGuard test material at runtime "+
+					"(deterministicTUNTestKey) instead of storing key literals",
+				name, loc[:12])
+		}
+	}
+}
+
+// TestDeterministicTUNTestKeyShape pins the runtime-derivation
+// contract itself: deterministic (same seed → same key, every run),
+// syntactically valid WireGuard shape (32 bytes → 44-char padded
+// base64) and distinct seeds → distinct keys.
+func TestDeterministicTUNTestKeyShape(t *testing.T) {
+	a, b := deterministicTUNTestKey(0x21), deterministicTUNTestKey(0x42)
+
+	if a == "" || b == "" || a == b {
+		t.Fatalf("derived keys must be non-empty and distinct: %q vs %q", a, b)
+	}
+
+	if len(a) != 44 || !strings.HasSuffix(a, "=") {
+		t.Fatalf("derived key %q must be a 44-char padded base64 WireGuard shape", a)
+	}
+
+	if again := deterministicTUNTestKey(0x21); again != a {
+		t.Fatalf("derivation must be deterministic: %q vs %q", a, again)
+	}
+
+	raw, err := base64.StdEncoding.DecodeString(a)
+	if err != nil || len(raw) != 32 {
+		t.Fatalf("derived key must decode to 32 bytes: %v (len=%d)", err, len(raw))
 	}
 }

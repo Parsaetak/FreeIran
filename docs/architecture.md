@@ -550,18 +550,26 @@ refresh.
 
 ### TUN mode (`engine/tunnel`)
 
-**v0.11.3 — CURRENT DESIGN:** TUN is a real Windows tunnel mode backed
-by the managed sing-box core's native TUN inbound (Wintun). The
-activation is transactional and observed (elevation → verified core →
-sing-box-compatible configuration → collision-free addressing from the
-live interface table → launch through the existing supervisor →
-interface observed → real tunneled request verified → Active), routing
+**v0.11.3 — CURRENT DESIGN (v0.11.4-hardened):** TUN is a real Windows
+tunnel mode backed by the managed sing-box core's native TUN inbound
+(Wintun). The activation is transactional and observed (elevation →
+verified core → sing-box-compatible configuration → collision-free
+addressing from the live interface table, FAILING CLOSED when every
+IPv4 candidate collides → launch through the existing supervisor →
+readiness → EXACT session adapter observed (recorded name AND expected
+address on that same interface) → covering route ownership observed
+through the native Windows IP Helper forwarding table → real tunneled
+request verified → upstream route-loop check → Active), routing
 is sing-box's `auto_route` + `strict_route` + `auto_detect_interface`
-(loop prevention), DNS is hijacked into sing-box's resolver (DoH over
-the proxy; system adapter DNS is never mutated) and disable/recovery
+(loop prevention, now OBSERVED at activation through the TCP owner
+table), DNS is hijacked into sing-box's resolver (DoH over the proxy;
+system adapter DNS is never mutated) and disable/recovery
 are transactional with honest residual reporting. The Wintun
-dependency ships embedded in the digest-verified sing-box binary — no
-downloads, no netsh, no route shell commands. Full design + evidence
+dependency ships embedded in the digest-verified sing-box binary
+(verified against the actual 1.14.1 release binary — see docs/tun.md)
+— no downloads, no netsh, no route shell commands, no shell parsing
+anywhere (the v0.11.4 observation layer is lazy IP Helper syscalls,
+read-only and bounded). Full design + evidence
 scope: **docs/tun.md**.
 
 **Historical (v0.6, SUPERSEDED — the netsh/route shell design was
@@ -1075,7 +1083,13 @@ elevation checks (`tun_windows.go` / `tun_other.go`). The controller
 surface grew `Controller.EnableTUN` and the tunnel `State` carries the
 live `TUNSnapshot`. No new process supervisor, no new queue, no new
 downloader: everything rides the existing core launch, coremgr and
-settings paths.
+settings paths. **v0.11.4 hardening:** the activation gate gained the
+native observation layer (`engine/tunnel/tun_routes.go` +
+`tun_routes_windows.go` — read-only, bounded IP Helper syscalls for
+the forwarding table and the TCP owner table), fail-closed address
+selection and exact-adapter identity; the architecture is otherwise
+unchanged (still ONE supervisor, ONE core manager, ONE settings
+store, zero shell network configuration).
 
 **Tray ON/OFF (cmd/freeiran + engine/app):** the persistent
 `tray_enabled` setting (pointer-optional; nil = enabled for

@@ -244,12 +244,19 @@ func TestTUNCoreVersionGuard(t *testing.T) {
 	}
 }
 
-// TestPickTUNAddresses pins the route-context contract: an IPv4 TUN
-// address is ALWAYS chosen and both values parse as CIDR prefixes.
+// TestPickTUNAddresses pins the route-context contract on a host
+// whose live prefixes leave room: a collision-free IPv4 address is
+// chosen and parses as a CIDR prefix. (The fail-closed path — every
+// candidate colliding — is pinned by TestPickTUNAddressesFailClosed
+// in tun_hardening_test.go with an injected collision table.)
 func TestPickTUNAddresses(t *testing.T) {
-	v4, _ := pickTUNAddresses()
+	v4, _, err := pickTUNAddresses()
+	if err != nil {
+		t.Fatalf("pickTUNAddresses must succeed when a free candidate exists: %v", err)
+	}
+
 	if v4 == "" {
-		t.Fatal("pickTUNAddresses must always return an IPv4 candidate")
+		t.Fatal("pickTUNAddresses must return an IPv4 candidate on success")
 	}
 
 	if _, err := netip.ParsePrefix(v4); err != nil {

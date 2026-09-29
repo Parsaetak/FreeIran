@@ -169,12 +169,35 @@ func CheckStaleTUNSession() StaleTUNSession {
 		StartedAt:     marker.StartedAt,
 	}
 
-	if _, _, present := findTUNInterface(marker.InterfaceName, marker.IPv4Address); present {
+	// Only the RECORDED FreeIran-owned adapter name is ever inspected
+	// (unrelated adapters are never enumerated for action). v0.11.4
+	// refines the presence report: name presence decides whether a
+	// leftover adapter exists at all; the strict name+address match
+	// refines WHAT is reported about it.
+	if tunInterfaceNamed(marker.InterfaceName) {
 		session.InterfacePresent = true
-		session.Detail = "the recorded TUN adapter is still present; enable TUN once more and disable it (elevated) to finish the cleanup, or remove the adapter manually"
+
+		if _, exact := findTUNInterface(marker.InterfaceName, marker.IPv4Address); exact {
+			session.Detail = "the recorded TUN adapter is still present with its session address; enable TUN once more and disable it (elevated) to finish the cleanup, or remove the adapter manually"
+		} else {
+			session.Detail = "an adapter with the recorded FreeIran TUN name is still present (without the recorded session address); enable TUN once more and disable it (elevated) to finish the cleanup, or remove the adapter manually"
+		}
 	} else {
 		session.Detail = "the recorded TUN adapter is already gone; only the session marker was left behind"
 	}
+
+	logging.LogR(logging.Record{
+		Level:     logging.LevelWarn,
+		Subsystem: Subsystem,
+		Event:     "tun_stale_session",
+		Message:   "stale TUN session detected: " + session.Detail,
+		Status:    "recovery",
+		Fields: map[string]any{
+			"interface":         session.InterfaceName,
+			"interface_present": session.InterfacePresent,
+			"recorded_pid":      session.PID,
+		},
+	})
 
 	return session
 }
@@ -315,6 +338,14 @@ func (b *singboxTUNBackend) Enable(ctx context.Context, opts TUNEnableOptions) e
 
 	b.setStatus(tunStatusStarting, "")
 
+	logging.LogR(logging.Record{
+		Level:     logging.LevelInfo,
+		Subsystem: Subsystem,
+		Event:     "tun_starting",
+		Message:   "TUN activation starting: transactional enable (config → platform → elevation → core → session identity → launch → readiness → adapter → route → traffic)",
+		Status:    "starting",
+	})
+
 	// 1. Config sanity BEFORE anything else.
 	if opts.Config.Type == "" {
 		return b.failEnable(errors.New("tunnel: enable tun: no active or selected configuration"))
@@ -346,9 +377,14 @@ func (b *singboxTUNBackend) Enable(ctx context.Context, opts TUNEnableOptions) e
 	}
 
 	// 5. Route context from ACTUAL system state: collision-free TUN
-	// addresses and a free adapter name. Nothing about the user's
-	// machine is hardcoded.
-	v4, v6 := pickTUNAddresses()
+	// addresses and a free adapter name. v0.11.4: the address
+	// selection FAILS CLOSED when every IPv4 candidate collides —
+	// never the v0.11.3 silent fallback onto an overlapping range.
+	v4, v6, err := pickTUNAddresses()
+	if err != nil {
+		return b.failEnable(fmt.Errorf("tunnel: enable tun: %w", err))
+	}
+
 	name, err := pickTUNInterfaceName()
 	if err != nil {
 		return b.failEnable(fmt.Errorf("tunnel: enable tun: %w", err))
@@ -400,18 +436,12 @@ func (b *singboxTUNBackend) Enable(ctx context.Context, opts TUNEnableOptions) e
 		return b.rollbackEnable(sessCtx, fmt.Errorf("tunnel: enable tun: sing-box readiness: %w", err))
 	}
 
-	// 8. Observe the REAL TUN interface (by the configured address,
-	// then the exact adapter name). Process-start is not activation.
-	if _, _, err := waitForTUNInterface(sessCtx, name, v4, 20*time.Second); err != nil {
-		return b.rollbackEnable(sessCtx, fmt.Errorf(
-			"tunnel: enable tun: TUN interface %q was not observed (Wintun creation may have failed): %w", name, err))
-	}
-
-	// 9. Verify a REAL tunneled request: a plain HTTP request with NO
-	// explicit proxy must reach the Internet through the TUN route.
-	if err := probeTunneledInternet(sessCtx); err != nil {
-		return b.rollbackEnable(sessCtx, fmt.Errorf(
-			"tunnel: enable tun: tunneled Internet request failed (the route is up but traffic does not flow): %w", err))
+	// 8-9. The activation proof chain: EXACT session adapter →
+	// covering route ownership → real tunneled traffic → upstream
+	// pinning. v0.11.4 extracts the chain into verifyTUNActivation so
+	// every evidence failure mode is unit-testable on every platform.
+	if err := verifyTUNActivation(sessCtx, name, v4, instance.PID()); err != nil {
+		return b.rollbackEnable(sessCtx, err)
 	}
 
 	// 10. Commit: durable session marker FIRST, then state. A crash
@@ -445,6 +475,147 @@ func (b *singboxTUNBackend) Enable(ctx context.Context, opts TUNEnableOptions) e
 	return nil
 }
 
+// tunInterfaceWaitTimeout / tunInterfaceRemovalWaitTimeout bound the
+// activation/removal polls. Variables (not constants) so tests can
+// shorten them; production values are generous for slow machines.
+var (
+	tunInterfaceWaitTimeout        = 20 * time.Second
+	tunInterfaceRemovalWaitTimeout = 10 * time.Second
+)
+
+// verifyTUNActivation is the v0.11.4 activation proof chain. Each
+// step must hold before the next runs, and every failure returns a
+// precise error that rolls the session back:
+//
+//	(a) the EXACT session adapter (name AND expected address on the
+//	    same interface) is observed in the live interface table;
+//	(b) that adapter OWNS covering IPv4 route state (0.0.0.0/0 or the
+//	    0.0.0.0/1 + 128.0.0.0/1 pair) — read from the native OS
+//	    forwarding table, never from a process-start signal;
+//	(c) a real no-explicit-proxy HTTPS request SUCCEEDS through the
+//	    kernel route (the traffic proof);
+//	(d) after that traffic, the sing-box process owns NO TCP socket
+//	    sourced from the TUN address (the route-loop check); for
+//	    TCP-based outbounds the same snapshot yields the POSITIVE
+//	    pinned-to-physical evidence (documented honestly for
+//	    UDP-family outbounds, where the TCP owner table is silent).
+//
+// The seams (tunInterfaceSnapshots, collectForwardRoutes,
+// collectOwnerTCPSockets, tunProbeInternet) make the whole chain
+// deterministic under test; production Windows fills them with the
+// native IP Helper collectors.
+func verifyTUNActivation(ctx context.Context, name, v4CIDR string, corePID int) error {
+	// (a) Exact adapter identity.
+	snap, err := waitForTUNInterface(ctx, name, v4CIDR, tunInterfaceWaitTimeout)
+	if err != nil {
+		return fmt.Errorf(
+			"tunnel: enable tun: the exact TUN session adapter (name %q with address %s) was not observed (Wintun creation may have failed): %w",
+			name, v4CIDR, err)
+	}
+
+	logging.LogR(logging.Record{
+		Level:     logging.LevelInfo,
+		Subsystem: Subsystem,
+		Event:     "tun_interface_observed",
+		Message:   fmt.Sprintf("TUN session adapter observed: %s (index %d) with %s", name, snap.Index, v4CIDR),
+		Status:    "starting",
+		Fields: map[string]any{
+			"interface": name,
+			"ipv4":      v4CIDR,
+		},
+	})
+
+	// (b) Covering route ownership (native, read-only).
+	routes, err := collectForwardRoutes()
+	if err != nil {
+		return fmt.Errorf("tunnel: enable tun: route observation failed (activation refuses to proceed on unobserved routing state): %w", err)
+	}
+
+	verdict := tunRouteCoveringVerdict(routes, uint32(snap.Index))
+	if !verdict.Covered {
+		return fmt.Errorf("tunnel: enable tun: the TUN adapter does not own the covering IPv4 route state (%s); system traffic would not traverse the TUN", verdict.Detail)
+	}
+
+	logging.LogR(logging.Record{
+		Level:     logging.LevelInfo,
+		Subsystem: Subsystem,
+		Event:     "tun_route_observed",
+		Message:   "TUN route state observed: " + verdict.Detail,
+		Status:    "starting",
+		Fields: map[string]any{
+			"interface": name,
+			"covered":   true,
+		},
+	})
+
+	// (c) Real traffic through the route (no explicit proxy).
+	if err := tunProbeInternet(ctx); err != nil {
+		return fmt.Errorf("tunnel: enable tun: tunneled Internet request failed (the route is up but traffic does not flow): %w", err)
+	}
+
+	logging.LogR(logging.Record{
+		Level:     logging.LevelInfo,
+		Subsystem: Subsystem,
+		Event:     "tun_traffic_verified",
+		Message:   "tunneled Internet request verified through the TUN route (no explicit proxy)",
+		Status:    "starting",
+	})
+
+	// (d) Upstream pinning / route-loop check.
+	tunIP, err := ipv4OfCIDR(v4CIDR)
+	if err != nil {
+		return fmt.Errorf("tunnel: enable tun: session address %q is not a valid IPv4 CIDR: %w", v4CIDR, err)
+	}
+
+	sockets, err := collectOwnerTCPSockets()
+	if err != nil {
+		return fmt.Errorf("tunnel: enable tun: upstream socket observation failed (activation refuses to proceed on unobserved loop state): %w", err)
+	}
+
+	pinning := tunUpstreamPinningVerdict(sockets, uint32(corePID), tunIP)
+	if pinning.Loop {
+		return fmt.Errorf("tunnel: enable tun: upstream pinning check FAILED: %s (the route-loop prevention did not hold — the session is rolled back)", pinning.Detail)
+	}
+
+	logging.LogR(logging.Record{
+		Level:     logging.LevelInfo,
+		Subsystem: Subsystem,
+		Event:     "tun_upstream_observed",
+		Message:   "TUN upstream observation: " + pinning.Detail,
+		Status:    "starting",
+		Fields: map[string]any{
+			"loop":   pinning.Loop,
+			"pinned": pinning.Pinned,
+		},
+	})
+
+	return nil
+}
+
+// tunProbeInternet is the traffic-proof seam (production: the clean
+// no-explicit-proxy HTTPS probe below; tests: deterministic fakes).
+var tunProbeInternet = probeTunneledInternet
+
+// ipv4OfCIDR extracts the address bytes of an IPv4 CIDR string.
+func ipv4OfCIDR(cidr string) ([4]byte, error) {
+	addr := cidr
+	if i := strings.Index(addr, "/"); i >= 0 {
+		addr = addr[:i]
+	}
+
+	ip := net.ParseIP(addr)
+	if ip == nil {
+		return [4]byte{}, fmt.Errorf("%q is not an IP address", addr)
+	}
+
+	v4 := ip.To4()
+	if v4 == nil {
+		return [4]byte{}, fmt.Errorf("%q is not an IPv4 address", addr)
+	}
+
+	return [4]byte{v4[0], v4[1], v4[2], v4[3]}, nil
+}
+
 // failEnable records the failure honestly (status=failed, error kept
 // for the snapshot) and returns it. No partial state survives.
 func (b *singboxTUNBackend) failEnable(err error) error {
@@ -467,7 +638,6 @@ func (b *singboxTUNBackend) rollbackEnable(sessCtx context.Context, cause error)
 	b.mu.Lock()
 	instance := b.instance
 	name := b.settings.InterfaceName
-	v4 := b.settings.IPv4Address
 	b.mu.Unlock()
 
 	if instance != nil {
@@ -477,8 +647,17 @@ func (b *singboxTUNBackend) rollbackEnable(sessCtx context.Context, cause error)
 	}
 
 	if name != "" {
-		if _, _, present := waitForTUNInterfaceRemoved(sessCtx, name, v4, 10*time.Second); present {
+		if residual := waitForTUNInterfaceRemoved(sessCtx, name, tunInterfaceRemovalWaitTimeout); residual {
 			composed = fmt.Errorf("%w (RESIDUAL: the TUN adapter %q is still present after teardown — it will be reported as stale TUN state)", cause, name)
+
+			logging.LogR(logging.Record{
+				Level:     logging.LevelWarn,
+				Subsystem: Subsystem,
+				Event:     "tun_residual",
+				Message:   fmt.Sprintf("TUN rollback residual: adapter %q is still present after teardown", name),
+				Status:    "failed",
+				Fields:    map[string]any{"interface": name},
+			})
 		}
 	}
 
@@ -513,7 +692,6 @@ func (b *singboxTUNBackend) Disable(ctx context.Context) error {
 
 	instance := b.instance
 	name := b.settings.InterfaceName
-	v4 := b.settings.IPv4Address
 	b.mu.Unlock()
 
 	stopErr := instance.Close()
@@ -522,7 +700,18 @@ func (b *singboxTUNBackend) Disable(ctx context.Context) error {
 		b.sessionCancel()
 	}
 
-	_, _, residual := waitForTUNInterfaceRemoved(ctx, name, v4, 10*time.Second)
+	residual := waitForTUNInterfaceRemoved(ctx, name, tunInterfaceRemovalWaitTimeout)
+
+	if residual {
+		logging.LogR(logging.Record{
+			Level:     logging.LevelWarn,
+			Subsystem: Subsystem,
+			Event:     "tun_residual",
+			Message:   fmt.Sprintf("TUN disable residual: adapter %q is still present after the dataplane stopped", name),
+			Status:    "failed",
+			Fields:    map[string]any{"interface": name},
+		})
+	}
 
 	var composed error
 
@@ -562,7 +751,7 @@ func (b *singboxTUNBackend) Disable(ctx context.Context) error {
 	logging.LogR(logging.Record{
 		Level:     logging.LevelInfo,
 		Subsystem: Subsystem,
-		Event:     "tun_inactive",
+		Event:     "tun_stop",
 		Message:   fmt.Sprintf("TUN disabled: interface %s removed", name),
 		Status:    "off",
 	})
@@ -655,6 +844,55 @@ var (
 	}
 )
 
+// tunInterfaceSnapshot is one observed interface with its address
+// strings (CIDR or bare form). The normalized shape the identity
+// checks reason over — small, cheap to fake, and identical on every
+// platform.
+type tunInterfaceSnapshot struct {
+	Name  string
+	Index int
+	Addrs []string
+}
+
+// liveTUNInterfaceSnapshot observes the REAL interface table through
+// the Go net stack (net.Interfaces + Addrs — native Windows
+// GetAdaptersAddresses underneath; no shell, no netsh). It is the
+// production seam value; tests replace tunInterfaceSnapshots with
+// deterministic fakes to exercise collision and identity cases
+// without mutating the user's network.
+func liveTUNInterfaceSnapshot() ([]tunInterfaceSnapshot, error) {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]tunInterfaceSnapshot, 0, len(ifaces))
+
+	for _, ifc := range ifaces {
+		addrs, err := ifc.Addrs()
+		if err != nil {
+			continue // an interface whose addresses cannot be read is skipped, not fatal
+		}
+
+		snap := tunInterfaceSnapshot{Name: ifc.Name, Index: ifc.Index}
+
+		for _, addr := range addrs {
+			snap.Addrs = append(snap.Addrs, addr.String())
+		}
+
+		out = append(out, snap)
+	}
+
+	return out, nil
+}
+
+// tunInterfaceSnapshots is the interface-table observation seam.
+var tunInterfaceSnapshots = liveTUNInterfaceSnapshot
+
+// tunExistingLocalPrefixes is the live-prefix observation seam used
+// by pickTUNAddresses (tests inject deterministic collision tables).
+var tunExistingLocalPrefixes = existingLocalPrefixes
+
 // existingLocalPrefixes enumerates the prefixes of every live
 // interface address (the route context is built from real system
 // state).
@@ -694,9 +932,14 @@ func existingLocalPrefixes() []netip.Prefix {
 // pickTUNAddresses selects TUN interface addresses that do not
 // overlap the user's existing local networks. IPv6 is best-effort:
 // when every candidate collides (or none parses) the session runs
-// IPv4-only and says so.
-func pickTUNAddresses() (v4 string, v6 string) {
-	existing := existingLocalPrefixes()
+// IPv4-only and says so. IPv4 is NOT best-effort (v0.11.4): when
+// every IPv4 candidate collides with a live prefix the selection
+// FAILS CLOSED — knowingly deploying the TUN onto an overlapping
+// subnet is exactly the silent misroute the v0.11.3 fallback
+// allowed, and it is never acceptable. The caller surfaces the error
+// before any system mutation happens.
+func pickTUNAddresses() (v4 string, v6 string, err error) {
+	existing := tunExistingLocalPrefixes()
 
 	free := func(cidr string) bool {
 		p, err := netip.ParsePrefix(cidr)
@@ -722,10 +965,13 @@ func pickTUNAddresses() (v4 string, v6 string) {
 	}
 
 	if v4 == "" {
-		// Every candidate collides (pathological host). Use the
-		// documentation default rather than fail the enable; the /30
-		// is tiny and the overlap check already ran.
-		v4 = tunIPv4Candidates[0]
+		// No collision-free candidate: FAIL CLOSED. The enable is
+		// refused before the core is launched — never silently
+		// downgraded onto an overlapping range.
+		return "", "", fmt.Errorf(
+			"no collision-free IPv4 TUN address exists on this host (all %d candidates overlap a live interface prefix); "+
+				"enable refused to avoid routing onto an existing network",
+			len(tunIPv4Candidates))
 	}
 
 	for _, candidate := range tunIPv6Candidates {
@@ -736,22 +982,21 @@ func pickTUNAddresses() (v4 string, v6 string) {
 		}
 	}
 
-	return v4, v6
+	return v4, v6, nil
 }
 
 // pickTUNInterfaceName returns a free adapter name: FreeIranTUN, or
 // the first free numbered variant. Exact-name ambiguity with a stale
 // adapter is avoided by construction.
 func pickTUNInterfaceName() (string, error) {
-	names := map[string]bool{}
-
-	ifaces, err := net.Interfaces()
+	snapshots, err := tunInterfaceSnapshots()
 	if err != nil {
 		return "", fmt.Errorf("enumerate interfaces: %w", err)
 	}
 
-	for _, ifc := range ifaces {
-		names[ifc.Name] = true
+	names := make(map[string]bool, len(snapshots))
+	for _, snap := range snapshots {
+		names[snap.Name] = true
 	}
 
 	base := "FreeIranTUN"
@@ -769,61 +1014,86 @@ func pickTUNInterfaceName() (string, error) {
 	return "", errors.New("no free TUN adapter name (FreeIranTUN..FreeIranTUN8 all exist)")
 }
 
-// findTUNInterface observes the live interface table for the session
-// adapter: match by the configured TUN address first (unique per
-// session), then by the exact adapter name. Returns the interface and
-// the matching address when found.
-func findTUNInterface(name, v4CIDR string) (net.Interface, string, bool) {
+// findTUNInterface observes the live interface table for the EXACT
+// session adapter. v0.11.4 invariant (the v0.11.3 false-positive
+// repair): the observed interface must match the recorded FreeIran
+// adapter identity AND carry the session's expected address ON THAT
+// SAME INTERFACE. Neither
+//   - the expected address present on a DIFFERENT adapter, nor
+//   - an adapter with the right name but WITHOUT the expected
+//     address
+//
+// is accepted — both were accepted by the v0.11.3 address-first
+// scan. The activation gate identifies the exact session adapter.
+func findTUNInterface(name, v4CIDR string) (tunInterfaceSnapshot, bool) {
 	wantIP := v4CIDR
 	if i := strings.Index(wantIP, "/"); i >= 0 {
 		wantIP = wantIP[:i]
 	}
 
-	ifaces, err := net.Interfaces()
+	snapshots, err := tunInterfaceSnapshots()
 	if err != nil {
-		return net.Interface{}, "", false
+		return tunInterfaceSnapshot{}, false
 	}
 
-	for _, ifc := range ifaces {
-		addrs, err := ifc.Addrs()
-		if err != nil {
-			continue
+	for _, snap := range snapshots {
+		if snap.Name != name {
+			continue // exact adapter identity first
 		}
 
-		for _, addr := range addrs {
-			addrStr := addr.String()
-			ipPart := addrStr
+		for _, addr := range snap.Addrs {
+			ipPart := addr
 			if i := strings.Index(ipPart, "/"); i >= 0 {
 				ipPart = ipPart[:i]
 			}
 
 			if wantIP != "" && ipPart == wantIP {
-				return ifc, addrStr, true
+				return snap, true
 			}
 		}
 	}
 
-	for _, ifc := range ifaces {
-		if name != "" && ifc.Name == name {
-			return ifc, "", true
+	return tunInterfaceSnapshot{}, false
+}
+
+// tunInterfaceNamed reports whether ANY adapter carries the recorded
+// FreeIran-owned name. Used by teardown verification: the name is
+// collision-free by construction (pickTUNInterfaceName), so an
+// adapter with that name after the dataplane stopped is a residual —
+// whether or not the session address is still attached to it.
+func tunInterfaceNamed(name string) bool {
+	if name == "" {
+		return false
+	}
+
+	snapshots, err := tunInterfaceSnapshots()
+	if err != nil {
+		return false
+	}
+
+	for _, snap := range snapshots {
+		if snap.Name == name {
+			return true
 		}
 	}
 
-	return net.Interface{}, "", false
+	return false
 }
 
-// waitForTUNInterface polls the live interface table until the TUN
-// adapter appears (or the deadline passes).
-func waitForTUNInterface(ctx context.Context, name, v4CIDR string, timeout time.Duration) (net.Interface, string, error) {
+// waitForTUNInterface polls the live interface table until the EXACT
+// session adapter (name + expected address) appears, or the deadline
+// passes. The returned snapshot carries the adapter's interface
+// index for the route observation that follows.
+func waitForTUNInterface(ctx context.Context, name, v4CIDR string, timeout time.Duration) (tunInterfaceSnapshot, error) {
 	deadline := time.Now().Add(timeout)
 
 	for {
-		if ifc, addr, ok := findTUNInterface(name, v4CIDR); ok {
-			return ifc, addr, nil
+		if snap, ok := findTUNInterface(name, v4CIDR); ok {
+			return snap, nil
 		}
 
 		if time.Now().After(deadline) {
-			return net.Interface{}, "", errors.New("timeout waiting for the TUN interface")
+			return tunInterfaceSnapshot{}, errors.New("timeout waiting for the TUN interface")
 		}
 
 		sleep := time.NewTimer(250 * time.Millisecond)
@@ -832,25 +1102,25 @@ func waitForTUNInterface(ctx context.Context, name, v4CIDR string, timeout time.
 		case <-ctx.Done():
 			sleep.Stop()
 
-			return net.Interface{}, "", ctx.Err()
+			return tunInterfaceSnapshot{}, ctx.Err()
 		case <-sleep.C:
 		}
 	}
 }
 
-// waitForTUNInterfaceRemoved polls until the TUN adapter is GONE and
-// reports whether it was still present at the deadline.
-func waitForTUNInterfaceRemoved(ctx context.Context, name, v4CIDR string, timeout time.Duration) (net.Interface, string, bool) {
+// waitForTUNInterfaceRemoved polls until no adapter with the
+// FreeIran-owned NAME remains, and reports whether a residual adapter
+// was still present at the deadline.
+func waitForTUNInterfaceRemoved(ctx context.Context, name string, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 
 	for {
-		ifc, addr, ok := findTUNInterface(name, v4CIDR)
-		if !ok {
-			return net.Interface{}, "", false
+		if !tunInterfaceNamed(name) {
+			return false
 		}
 
 		if time.Now().After(deadline) {
-			return ifc, addr, true
+			return true
 		}
 
 		sleep := time.NewTimer(250 * time.Millisecond)
@@ -859,7 +1129,7 @@ func waitForTUNInterfaceRemoved(ctx context.Context, name, v4CIDR string, timeou
 		case <-ctx.Done():
 			sleep.Stop()
 
-			return ifc, addr, true
+			return true
 		case <-sleep.C:
 		}
 	}

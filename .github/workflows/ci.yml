@@ -288,11 +288,19 @@ jobs:
 
       - name: Install pinned sing-box
         run: |
+          # v0.11.4: 1.14.0 → 1.14.1 alignment (docs/ci.md, README,
+          # docs/tun.md). 1.14.1 is the version the v0.11.3 TUN
+          # document was verified against (runtime log evidence) and
+          # the intended current stable. The checksum was re-verified
+          # against the OFFICIAL release asset
+          # (https://github.com/SagerNet/sing-box/releases/download/
+          # v1.14.1/sing-box-1.14.1-linux-amd64.tar.gz — the binary
+          # reports "sing-box version 1.14.1").
           curl -sSL -o /tmp/singbox.tar.gz \
-            "https://github.com/SagerNet/sing-box/releases/download/v1.14.0/sing-box-1.14.0-linux-amd64.tar.gz"
-          echo "2375de6999f4f56ab46b4fc5ddf26a6aba1d3e61a0f4e7ddec2f4690457d5f63  /tmp/singbox.tar.gz" | sha256sum -c -
+            "https://github.com/SagerNet/sing-box/releases/download/v1.14.1/sing-box-1.14.1-linux-amd64.tar.gz"
+          echo "12cb2816b52febb356f6a885b740cc8758c3f30b8ae0ca8edba80f0d2d35343f  /tmp/singbox.tar.gz" | sha256sum -c -
           tar -xzf /tmp/singbox.tar.gz -C .cores
-          mv .cores/sing-box-1.14.0-linux-amd64/sing-box .cores/sing-box-bin
+          mv .cores/sing-box-1.14.1-linux-amd64/sing-box .cores/sing-box-bin
 
       - name: Verify core binaries report their versions
         run: |
@@ -319,6 +327,20 @@ jobs:
     name: Windows tests and desktop build
     runs-on: windows-latest
     needs: [go, frontend]
+    # v0.11.4 — bounded job budget (a REDUCTION from GitHub's 360-minute
+    # default, not an enlargement): run 36459947866 (v0.11.3) died with
+    # "The hosted runner lost communication with the server" after 47m
+    # while the identical v0.11.2 job (run 36418242337) completed the
+    # whole pipeline in 3m07s, and the step-8 package delta between the
+    # two releases is only the lightweight TUN config/state tests
+    # (sub-second runtime, no processes, no WinINet mutation). The
+    # diagnosis is a hosted-runner infrastructure failure whose
+    # reported duration includes GitHub's communication-loss grace
+    # window — no test-level failure was ever recorded (the step was
+    # still in_progress when the runner was killed). A 60-minute bound
+    # gives even a cold-cache run 10x the healthy budget while
+    # guaranteeing a bounded, VISIBLE failure instead of a hang.
+    timeout-minutes: 60
     env:
       GOTOOLCHAIN: local
     steps:

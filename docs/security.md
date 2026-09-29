@@ -66,15 +66,20 @@ deliberate toolchain upgrade to go1.26.8.
 
 ## Secret scanning
 
-`gitleaks/gitleaks-action@v3` scans the full history (checkout with
-`fetch-depth: 0`) on every push, PR and weekly schedule. Findings fail
-the job.
+`gitleaks/gitleaks-action@v3` runs on a full-depth checkout
+(`fetch-depth: 0`) and scans **event-specifically**: a push event
+scans the commits NEW in that push, a pull_request event scans the
+PR's commits, and repository-wide events scan the default branch.
+Findings fail the job. (The v0.11.3 wording claimed a full-history
+scan on every event; v0.11.4 corrects the description to the
+action's real semantics — the checkout is full-depth, the scan RANGE
+is event-scoped.)
 
-v0.11.3 adds the repository-level `.gitleaks.toml` (auto-detected by
-the action's gitleaks run). It EXTENDS the default rule set
-(`useDefault = true` — generic-api-key and every other default rule
-stay active, no path is excluded) and carries exactly ONE exception,
-scoped to a single HISTORICAL commit:
+The repository-level `.gitleaks.toml` (auto-detected by the action's
+gitleaks run) EXTENDS the default rule set (`useDefault = true` —
+generic-api-key and every other default rule stay active, no path is
+excluded) and carries exactly ONE exception, scoped to a single
+HISTORICAL commit:
 
 - **Commit `dd62f17c22f73940e5fadfed1db187630ef9dd73`** (v0.10.2)
   introduced two synthetic WireGuard test-key literals in test
@@ -82,14 +87,53 @@ scoped to a single HISTORICAL commit:
   `engine/app/importservice_test.go` line 105 as of that commit).
   The keys are non-functional examples paired with RFC 5737
   documentation addresses — never runtime credentials. The current
-  source contains no committed literal (both files derive keys at
-  runtime via `deterministicTestKey` / `deterministicKey`), but the
-  full-history scan would flag the historical commit forever. The
-  allowlist names that commit and nothing else: future real secrets
-  in ANY file — including those two test files — are still detected.
-  Reproduced locally with gitleaks 8.28: baseline exit 2 with exactly
-  the two CI findings; with the config, exit 0 with all 112 commits
-  scanned.
+  source contains no committed literal (all WireGuard test material
+  is derived at runtime via `deterministicKey` /
+  `deterministicTestKey` / `deterministicTUNTestKey`), but a
+  full-history pass would flag the historical commit forever. The
+  allowlist names that commit and nothing else.
+
+### The v0.11.4 current-fixture repair (and what it does NOT touch)
+
+Security run `36459948025` (v0.11.3) failed secret scanning with a
+single finding: `generic-api-key` on
+`engine/core/singbox/tun_test.go` line 191 — the v0.11.3 TUN fixture
+committed a WireGuard-shaped PrivateKey literal (plus a
+secret-shaped PublicKey literal beside it). Gitleaks was RIGHT to
+flag it: a high-entropy key-shaped literal in source is
+indistinguishable from a real credential to the scanner, whatever
+the author intended.
+
+The repair (v0.11.4) is a ROOT-CAUSE fixture fix, not a suppression:
+
+- both literals are removed; the WireGuard test material in
+  `tun_test.go` is derived at RUNTIME by `deterministicTUNTestKey`
+  (the same integer-ramp → 32-byte → 44-char padded base64 mechanism
+  the v0.10.3 repair established);
+- no allowlist entry was added for the file, the directory, the
+  rule, or the v0.11.3 commit; the default rule set and the single
+  historical exception above are unchanged;
+- `TestNoCommittedSecretShapedLiterals` now scans every
+  `engine/core/singbox/*_test.go` source for committed 44-char
+  base64 key-shaped literals, so the regression fails in EVERY
+  ordinary `go test` run, not only in the Security workflow.
+
+Verification performed locally with the exact CI version (gitleaks
+8.24.3):
+
+- the v0.11.3 finding reproduced exactly (generic-api-key,
+  tun_test.go:191, commit bf533da) before the change;
+- after the change the working tree scans clean and the push-range
+  scan of the v0.11.4 commit (`bf533da..HEAD`) exits 0 — deleted
+  lines in the fix commit are not findings;
+- a scratch key-shaped literal committed in a fresh scratch commit
+  is still DETECTED (future secrets continue to fail the gate);
+- a full-history audit with this configuration reports exactly one
+  remaining finding: the historical v0.11.3 commit bf533da itself
+  (the superseded synthetic fixture). History is never rewritten and
+  that commit is deliberately NOT allowlisted — the push gate scans
+  new commits, which are fully covered, and the historical synthetic
+  fixture is disclosed here rather than suppressed.
 
 ## Static analysis
 

@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -378,6 +380,97 @@ func TestValidateRejectsIncompleteQUICConfigs(t *testing.T) {
 
 	if err := backend.Validate(ctx, keylessWG); err == nil {
 		t.Fatal("WireGuard without a peer public key must be rejected")
+	}
+}
+
+// TestSingBoxTUNDocumentRealBinary (v0.11.4) validates the generated
+// TUN runtime document against the REAL pinned sing-box binary
+// (FREEIRAN_TEST_SINGBOX_BIN): the tun inbound (auto_route,
+// strict_route, interface_name), the current-format DNS module, the
+// v1.11+ rule-action route model and the shared outbound/endpoint
+// plumbing must all pass `sing-box check` together.
+//
+// EVIDENCE SCOPE (docs/tun.md): this is GENERATED-CONFIG
+// VERIFICATION for the pinned runtime — schema acceptance of the
+// complete TUN document. It is NOT a TUN runtime proof: no adapter
+// is created, no route is installed (that is the Windows-only
+// elevated evidence class, explicitly NOT exercised in CI).
+func TestSingBoxTUNDocumentRealBinary(t *testing.T) {
+	if testing.Short() {
+		t.Skip("short mode skips real-binary smoke tests")
+	}
+
+	bin := os.Getenv("FREEIRAN_TEST_SINGBOX_BIN")
+	if bin == "" {
+		t.Skip("FREEIRAN_TEST_SINGBOX_BIN not set (real-binary check)")
+	}
+
+	cases := []struct {
+		name string
+		cfg  config.Config
+		tun  singbox.TUNSettings
+	}{
+		{
+			// The v0.11.3 dataplane fixture: dual-stack shadowsocks
+			// session with strict_route.
+			name: "shadowsocks-dual-stack",
+			cfg:  shadowsocksConfig(),
+			tun: singbox.TUNSettings{
+				InterfaceName: "FreeIranTUN",
+				IPv4Address:   "172.19.0.1/30",
+				IPv6Address:   "fdfe:dcba:9876::1/126",
+				RemoteDNS:     "1.1.1.1",
+				StrictRoute:   true,
+			},
+		},
+		{
+			// IPv4-only session (the IPv6-collision fallback shape).
+			name: "shadowsocks-ipv4-only",
+			cfg:  shadowsocksConfig(),
+			tun: singbox.TUNSettings{
+				InterfaceName: "FreeIranTUN2",
+				IPv4Address:   "172.19.0.5/30",
+				RemoteDNS:     "1.1.1.1",
+				StrictRoute:   true,
+			},
+		},
+		{
+			// The WireGuard endpoint form riding the same document.
+			name: "wireguard-endpoint",
+			cfg:  wireGuardConfig(),
+			tun: singbox.TUNSettings{
+				InterfaceName: "FreeIranTUN3",
+				IPv4Address:   "172.19.0.9/30",
+				RemoteDNS:     "1.1.1.1",
+				StrictRoute:   true,
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			data, _, err := singbox.BuildTUNDocument(tc.cfg, core.RuntimeOptions{
+				LocalHost: "127.0.0.1",
+				LocalPort: 18931,
+			}, tc.tun)
+			if err != nil {
+				t.Fatalf("BuildTUNDocument: %v", err)
+			}
+
+			file := filepath.Join(t.TempDir(), "tun.json")
+			if err := os.WriteFile(file, data, 0o600); err != nil {
+				t.Fatalf("write document: %v", err)
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+
+			cmd := exec.CommandContext(ctx, bin, "check", "-c", file)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("sing-box check rejected the TUN document: %v\n%s", err, out)
+			}
+		})
 	}
 }
 

@@ -9,17 +9,71 @@ configurations.
 **Project:** FreeIran — A SHEYTAN Digital System
 **Architect:** Parsa Tak / SHEYTAN
 **Repository:** https://github.com/Parsaetak/FreeIran
-**Current version:** 0.11.3 (see `VERSION`)
+**Current version:** 0.11.4 (see `VERSION`)
 **Status:** production architecture — multi-core protocol runtime with
 managed installation, multi-level node discovery, Ping/URL test modes
 with measured ranking, verified-connection engine with racing,
 environment intelligence, system proxy mode (WinINet), functional
 Windows TUN mode through the managed sing-box core's native TUN
-dataplane (v0.11.3 — see "What's new in v0.11.3" and docs/tun.md),
-unified adaptive
+dataplane (v0.11.3, correctness-hardened in v0.11.4 — see
+"What's new in v0.11.4" and docs/tun.md), unified adaptive
 memory control and kernel-level process supervision, evidence-based
 failure classification with transport-agile route selection, and
 schema-verified ECH support through sing-box.
+
+---
+
+## What's new in v0.11.4
+
+v0.11.4 is a repair + hardening release — no new features, no
+architecture replaced:
+
+- **Security repair (the headline).** The v0.11.3 Security run's
+  secret-scan failure (a committed WireGuard-shaped test literal in
+  `engine/core/singbox/tun_test.go`) is fixed at the ROOT: the
+  fixture material is now derived deterministically at runtime — no
+  allowlist was added, no rule weakened, no path excluded, and a
+  package-level regression test now fails during ordinary `go test`
+  if any committed key-shaped literal ever returns to the singbox
+  test surface. docs/security.md describes the ACTUAL scan
+  semantics (event-specific ranges, not full-history on every
+  event).
+- **TUN correctness hardening.** Three defects closed in the v0.11.3
+  activation path: address selection now FAILS CLOSED when every
+  IPv4 candidate collides (no silent overlapping-range fallback);
+  activation identity now requires the EXACT session adapter (the
+  recorded name AND the expected address on that same interface —
+  same-address-on-wrong-adapter is rejected); and the "real traffic"
+  proof is strengthened with native, read-only route observation
+  (Windows IP Helper: the TUN must OWN the covering IPv4 routes) plus
+  an upstream route-loop check (no sing-box TCP socket may be
+  sourced from the TUN address). No netsh/route.exe/PowerShell
+  anywhere — the observation layer is lazy syscalls, bounded and
+  fail-closed.
+- **Windows CI hardening.** The v0.11.3 Windows job failed with a
+  hosted-runner communication loss (47m vs the identical v0.11.2
+  job's 3m07s); diagnosed from live run evidence, hardened with a
+  bounded `timeout-minutes: 60` and ZERO coverage loss (no
+  `continue-on-error`, no compile-only downgrade).
+- **sing-box 1.14.1 alignment.** The CI real-core job moves from
+  1.14.0 to 1.14.1 (the version the TUN document is verified
+  against), with the SHA-256 re-verified from the OFFICIAL upstream
+  release asset; a new real-binary test passes the complete TUN
+  document through `sing-box check` of the actual pinned binary.
+- **Tray regression checks + documentation truth repairs.** The
+  v0.11.3 tray ON/OFF architecture is unchanged and its persistence
+  contract is now pinned by focused tests; ROADMAP/README/docs
+  carry the corrected Wintun packaging model, the honest evidence
+  ladder and the corrected scan semantics.
+
+> **Runtime verification status (honest):** the generated TUN document
+> passes `sing-box check` against the pinned v1.14.1 binary, the full
+> Go test suite (Linux) and the Windows/amd64 build pass, and the
+> v0.11.4 hardening is unit-verified on Linux with deterministic
+> seams. The end-to-end Windows TUN runtime (adapter creation on real
+> Wintun, observed route path, tunneled request) is NOT VERIFIED — it
+> requires an elevated Windows host and is documented as such in
+> docs/tun.md and the ROADMAP.
 
 ---
 
@@ -43,8 +97,11 @@ schema-verified ECH support through sing-box.
   report that only ever inspects FreeIran's own recorded adapter. No
   netsh, no route shell commands, no PowerShell/curl downloads — the
   Wintun dependency ships embedded inside the verified sing-box binary
-  (official wintun.dll via the official Go bindings), so no second
-  downloader exists. Full design: docs/tun.md.
+  (the official wintun.dll, embedded via sing-tun's internal bindings
+  and loaded from memory — verified against the actual 1.14.1
+  release binary; see docs/tun.md), so no second downloader exists.
+  Full design: docs/tun.md. (v0.11.4 hardened the activation gate —
+  see "What's new in v0.11.4".)
 - **Security workflow repairs (both push failures).** (1) Secret
   scanning: the two historical generic-api-key findings (commit
   dd62f17c) are synthetic WireGuard test fixtures; a narrow,
@@ -55,6 +112,8 @@ schema-verified ECH support through sing-box.
   exact, justified allowlist entry with the security contract inline;
   the dangerous-pattern set is unchanged and remains fail-closed for
   every other file (docs/security.md documents both exceptions).
+  (v0.11.4 removed the NEW tun_test.go fixture literal that failed
+  the v0.11.3 Security run — see "What's new in v0.11.4".)
 - **System Tray ON/OFF as a persistent setting.** `tray_enabled`
   (default ON) persists through the existing Settings store. The tray
   menu gains a real "System Tray" checkbox reflecting the setting;

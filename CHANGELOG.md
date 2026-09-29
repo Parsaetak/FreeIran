@@ -3,6 +3,225 @@
 Release history for FreeIran. The newest release is documented in the
 [README](README.md); everything older lives here, newest first.
 
+## v0.11.4 — security repair, Windows CI hardening, TUN correctness hardening, documentation alignment
+
+v0.11.4 is a repair + hardening release: no new features, one
+security-fixture root-cause fix, three TUN correctness defects closed,
+the Windows CI failure diagnosed from live evidence, the sing-box
+version pins aligned, and every document that overclaimed corrected to
+its actual evidence level. Evidence scope (honest, at the level
+actually executed for this release): the full local Linux `go test`
+suite for `engine/...` + `system/...` + `internal/...`, `-race` runs
+for the affected tunnel/app/singbox packages, `go vet` (Linux +
+windows/amd64 targets), the windows/amd64 cross-build
+(`CGO_ENABLED=0 go build ./cmd/freeiran`), a local Gitleaks 8.24.3
+reproduction of the exact CI failure and of the repaired state
+(before/after), the real-core TUN document verification against the
+official sing-box 1.14.1 binary (`sing-box check`), and the upstream
+release verification for the new pin. Remote Actions were NOT re-run
+(no push, no PR, no release — per the release rules); the live
+v0.11.3 runs were inspected and their evidence is quoted below.
+
+### Security — the Gitleaks current-commit finding, fixed at the root
+
+- Security run `36459948025` (v0.11.3) failed Secret scanning with
+  exactly one finding: `generic-api-key` on
+  `engine/core/singbox/tun_test.go:191` (commit `bf533da`) — the
+  v0.11.3 TUN fixture committed a WireGuard-shaped PrivateKey literal
+  (with a secret-shaped PublicKey literal beside it). Reproduced
+  locally with the exact CI version (gitleaks 8.24.3) before any
+  change: same rule, file, line, commit.
+- Root-cause repair, NOT a suppression: both literals are removed and
+  the WireGuard test material in `tun_test.go` is derived at RUNTIME
+  (`deterministicTUNTestKey` — the same integer-ramp → 32-byte →
+  44-char padded-base64 mechanism the v0.10.3 repair established; the
+  internal-test package could not import the existing
+  singbox_test/app helpers, so the identical mechanism is declared
+  once locally). The assertions never depended on specific key
+  values, only on the endpoint/document SHAPE.
+- Nothing was weakened: no allowlist entry added for the file, the
+  directory, the rule, or the v0.11.3 commit; `useDefault = true` and
+  the single historical exception (`dd62f17c`, v0.10.2 synthetic
+  fixtures) are unchanged; no path-based exception introduced; no
+  current commit is allowlisted.
+- Verified locally (gitleaks 8.24.3): the v0.11.3 finding reproduced
+  exactly before the change; after the change the working tree scans
+  clean, the push-range scan of the v0.11.4 commit
+  (`bf533da..HEAD`) exits 0, and a scratch key-shaped literal in a
+  fresh scratch commit is STILL DETECTED — future secrets continue
+  to fail the gate.
+- New regression: `TestNoCommittedSecretShapedLiterals` scans every
+  `engine/core/singbox/*_test.go` source for committed 44-char
+  base64 key-shaped literals — the exact Gitleaks signature — so the
+  class fails in every ordinary `go test` run, on every platform, not
+  only in the Security workflow.
+- `docs/security.md` and `.gitleaks.toml` now describe the ACTUAL
+  scan semantics: gitleaks-action@v3 scans event-specifically (push →
+  the commits new in the push; PR → the PR's commits; the checkout is
+  full-depth). The previous "full history on every event" claim was
+  wrong and is corrected. A full-history AUDIT still surfaces the
+  superseded v0.11.3 fixture commit (history is never rewritten) —
+  disclosed in docs/security.md, deliberately NOT allowlisted.
+
+### Windows CI — diagnosed from live evidence, hardened without coverage loss
+
+- CI run `36459947866` (v0.11.3): the Windows job
+  (`109057267406`) **failed in 47m 0s** with the annotation "The
+  hosted runner lost communication with the server. Anything in your
+  workflow that terminates the runner process, starves it for
+  CPU/Memory, or blocks its network access can cause this error.",
+  killed mid-step ("Windows behavioral tests (platform-critical
+  packages)" still `in_progress`; every later step pending — the
+  repeated battery with `if: always()` never started, so the job was
+  terminated ABRUPTLY, not failed by a test).
+- Comparison evidence: the identical v0.11.2 Windows job
+  (run `36418242337`) completed the whole pipeline in **3m07s**
+  (success). The v0.11.3 code delta in the killed step's packages is
+  only the new TUN config/state tests — sub-second runtime, no child
+  processes, no WinINet mutation, no polling loops — which cannot
+  account for a ~44-minute stall; `go test -timeout=10m` would have
+  produced a visible panic + failure instead of an abrupt kill.
+- Diagnosis (stated at exactly this strength): a hosted-runner
+  infrastructure failure ("lost communication"), whose reported
+  duration includes GitHub's communication-loss grace window. No
+  test-level failure was ever recorded; a code-level root cause is
+  not supported by the evidence. NOT VERIFIED: whether a re-run
+  passes (no push/re-run was performed from this repair).
+- Hardening (coverage-preserving, no `continue-on-error`, no
+  compile-only downgrade, no coverage removal): the Windows job gains
+  an explicit `timeout-minutes: 60` — a REDUCTION from the 360-minute
+  default that bounds any future infra-level hang to a visible
+  failure while giving even a cold-cache run 10x the healthy 3m07s
+  budget. The A/B/C layer architecture (compile-all / behavioral /
+  repeated battery) is byte-identical.
+
+### TUN — three correctness defects closed (architecture unchanged)
+
+- **Fail-closed address selection**: `pickTUNAddresses` no longer
+  falls back to the first candidate when every IPv4 TUN candidate
+  collides with a live interface prefix — that silent fallback could
+  route an existing local network into the tunnel. The enable now
+  FAILS with an explicit error before the core is launched
+  (`TestPickTUNAddressesFailClosed`, with an injectable live-prefix
+  seam so collision cases are tested deterministically without
+  touching the user's network). IPv6 remains honestly best-effort
+  (IPv4-only sessions are safe and say so).
+- **Exact adapter identity**: `findTUNInterface` now requires the
+  recorded FreeIran adapter NAME and the session's expected ADDRESS
+  on that SAME interface. The v0.11.3 address-first scan accepted the
+  expected address on a DIFFERENT adapter (a false-positive
+  activation proof) and the right name without the address
+  (`TestFindTUNInterfaceExactIdentity` pins both rejections). The
+  teardown/residual path uses the FreeIran-owned NAME (collision-free
+  by construction) as its presence signal.
+- **Route-path observation (the strengthened "real traffic" proof)**:
+  before `Active` is published the activation gate now observes, read
+  only and bounded, through the native Windows IP Helper APIs
+  (lazy syscalls — no netsh/route.exe/PowerShell, ever): (1) the
+  exact session adapter exists with the expected address; (2) that
+  adapter OWNS the covering IPv4 route state (`GetIpForwardTable` —
+  0.0.0.0/0 or the 0.0.0.0/1 + 128.0.0.0/1 pair); (3) the clean
+  no-explicit-proxy request succeeds; (4) after that traffic, the
+  sing-box process owns NO TCP socket sourced from the TUN address
+  (`GetExtendedTcpTable` — the route-loop failure mode is a hard
+  failure), with positive physical-side pinning evidence for
+  TCP-based outbounds and an honest "not observable through the TCP
+  owner table" verdict for UDP-family outbounds. Observation errors
+  fail CLOSED.
+- The whole gate is extracted into `verifyTUNActivation` over
+  injectable seams: every evidence failure mode is unit-tested on
+  Linux (`TestVerifyTUNActivationEvidenceMatrix` — 8 scenarios).
+  Rollback/residual contracts are pinned
+  (`TestRollbackEnableClearsSessionState`,
+  `TestRollbackEnableSurfacesResidual`), and the stale-session report
+  now distinguishes adapter-with-address / name-without-address /
+  adapter-gone (`TestStaleTUNSessionDetailPrecision`).
+- New structured events (privacy-safe):
+  `tun_starting`, `tun_interface_observed`, `tun_route_observed`,
+  `tun_traffic_verified`, `tun_upstream_observed`, `tun_active`,
+  `tun_stop`, `tun_residual`, `tun_stale_session`.
+- Wintun documentation corrected against the ACTUAL official sing-box
+  1.14.1 windows-amd64 binary: the TUN inbound embeds wintun.dll via
+  sing-tun v0.9.3's internal bindings (`//go:embed`, loaded from
+  memory through the bundled memory-module loader); the previously
+  cited `golang.zx2c4.com/wintun` package serves the WireGuard
+  transport path (disk-loaded), not the TUN inbound. docs/tun.md now
+  carries the verified statement with the evidence trail.
+- The evidence ladder in docs/tun.md is restated at the exact level
+  proven: generated-config VERIFIED (real 1.14.1 binary), Linux/unit
+  VERIFIED, Windows compile VERIFIED, Windows CI behavioral EXECUTED
+  BY CI, and the physical elevated Windows TUN runtime **NOT
+  VERIFIED** — with no class worded as another.
+
+### sing-box version alignment (1.14.0 → 1.14.1)
+
+- Drift closed: v0.11.3 documentation/evidence referenced sing-box
+  1.14.1 while the CI real-core job still pinned 1.14.0. The upstream
+  v1.14.1 release was verified against the official source: the
+  release exists, the `sing-box-1.14.1-linux-amd64.tar.gz` asset
+  name is correct, the SHA-256 was computed from the OFFICIAL
+  downloaded asset (not copied from any prompt) and the extracted
+  binary reports "sing-box version 1.14.1".
+- The CI real-core job now installs 1.14.1 with the re-verified
+  checksum; `TestSingBoxTUNDocumentRealBinary` (new) passes the
+  complete TUN document through the real binary's `sing-box check`
+  (dual-stack + IPv4-only shadowsocks, WireGuard endpoint) —
+  configuration VERIFIED against the exact pinned runtime; the full
+  existing real-binary smoke suite passes against 1.14.1 as well.
+- coremgr needs no change (it tracks releases through the official
+  API with a 1.10.0 floor — no hard pin). Docs updated
+  (README, docs/ci.md, docs/tun.md).
+
+### Tray ON/OFF — regression-checked, unchanged
+
+- The v0.11.3 tray architecture (persistent `tray_enabled`, Settings
+  toggle, native checkbox, reconcile, close-to-tray, teardown) is
+  untouched. New focused persistence tests pin the contract the
+  desktop layer depends on: nil-pointer migration policy
+  (`TrayEnabledOrDefault`), true/false round-trips through the ONE
+  settings path (saved return value, settings.json content and the
+  reload path agree — no drift), and the omitted-key on-disk shape
+  for nil (`TestTrayEnabledOrDefaultResolution`,
+  `TestTrayEnabledPersistsTrueAndFalse`,
+  `TestTrayEnabledNilOmittedFromDisk`). The native tray lifecycle
+  itself remains the Windows CI surface's scope (no headless Wails
+  integration test was attempted — the architecture does not support
+  one).
+
+### Documentation truth repairs
+
+- ROADMAP's current-release heading moved forward to v0.11.4 (the
+  stale "Roadmap ladder (v0.11.2)" top-level state is gone); item
+  completion states were re-graded against actual evidence.
+- README: current version + sing-box references aligned (1.14.1 for
+  the TUN/real-core evidence; the historical 1.14.0 evidence lines
+  for older releases are preserved as history).
+- docs/security.md: the scan-semantics correction + the v0.11.4
+  fixture-repair record (above); the workflow's stale file reference
+  (`engine/tunnel/tun_singbox.go` → `tun.go`) fixed.
+- docs/ci.md: the Windows-job diagnosis + bounded timeout + the
+  sing-box 1.14.1 pin; docs/development.md and docs/architecture.md
+  checked and corrected where they carried v0.11.3-only statements.
+- Version surfaces synchronized: `VERSION`, `internal/version`,
+  `frontend/package.json` + lock, `build/winres.json`.
+
+### Verification scope (v0.11.4, explicit)
+
+- VERIFIED locally: full Linux Go suite (engine/system/internal);
+  `-race` on the affected packages; `go vet` (both targets);
+  windows/amd64 build; gofmt-clean changed files; Gitleaks 8.24.3
+  before/after (finding reproduced; tree + push-range clean; future
+  secret detected); the suspicious-pattern + dangerous child-process
+  scans (clean, no weakening); the real-core TUN document check +
+  full smoke against the official 1.14.1 binary; tray persistence
+  tests; version consistency across surfaces.
+- NOT EXECUTED (per the rules): push, PR, GitHub release, Actions
+  re-run — the v0.11.4 CI/Security verdicts belong to the maintainer's
+  push.
+- NOT VERIFIED: the physical elevated Windows TUN runtime (unchanged
+  honest scope); the Windows job's post-hardening green state (will
+  be evidenced by the next push).
+
 ## v0.11.3 — functional Windows TUN (sing-box dataplane), tray ON/OFF setting, Security workflow repairs
 
 v0.11.3 is a capability + repair release. Evidence scope (honest): the

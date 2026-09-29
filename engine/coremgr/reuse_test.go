@@ -590,6 +590,17 @@ func TestReleaseMetadataConcurrentRequestsDeduplicated(t *testing.T) {
 
 	t.Setenv("FAKECORE_VERSION", "v6.0.0")
 
+	// v0.11.4: widen the fake LIST endpoint's flight window so the six
+	// concurrent callers genuinely overlap the in-flight request. A
+	// localhost fake answers in microseconds; under a loaded runner
+	// (or the race detector) callers scheduled after the first flight
+	// completes are SEQUENTIAL episodes served by the conditional
+	// cache, and the strict hits==1 assertion degenerated into
+	// scheduler luck (observed locally: hits 2-3 of 6 under full-suite
+	// -race load). The delay tests what the test MEANS: concurrent
+	// duplicates share ONE request.
+	h.apiDelay = 150 * time.Millisecond
+
 	mgr := newTestManager(t, h, coreName)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)

@@ -25,7 +25,7 @@ go (ubuntu)                     native (ubuntu)      frontend (ubuntu)
 protocol-cores (ubuntu)         │
 ├─ install pinned v2ray 5.53.0  │  (SHA-256 verified, official sources)
 ├─ install pinned xray 26.3.27  │
-├─ install pinned sing-box 1.14 │
+├─ install pinned sing-box 1.14 │  (v1.14.1 since the v0.11.4 alignment)
 ├─ version-report checks        │
 ├─ v2ray adapter smoke (real)  │  ← v2ray test + run + listener + stop
 ├─ xray adapter smoke (real)   │  ← xray run -test + run + stop
@@ -60,16 +60,60 @@ combination.
 
 The pinned SHA-256 values are the hashes of the official release
 archives exactly as published (v2fly/v2ray-core v5.53.0,
-XTLS/Xray-core v26.3.27, SagerNet/sing-box v1.14.0, all linux-64
-assets). The v0.4.0 workflow pinned three INCORRECT checksums, which
-would have failed the `sha256sum -c` gate on every run; they were
-re-verified against the downloaded official assets and corrected in
-v0.4.1. When a core pin is upgraded, the new checksum MUST be taken
-from an actually downloaded archive (never transcribed from memory).
+XTLS/Xray-core v26.3.27, SagerNet/sing-box **v1.14.1** — the v0.11.4
+alignment; the checksum was computed from the actually downloaded
+official asset and the extracted binary reports "sing-box version
+1.14.1", all linux-64 assets). The v0.4.0 workflow pinned three
+INCORRECT checksums, which would have failed the `sha256sum -c` gate
+on every run; they were re-verified against the downloaded official
+assets and corrected in v0.4.1. When a core pin is upgraded, the new
+checksum MUST be taken from an actually downloaded archive (never
+transcribed from memory). v0.11.4 also adds the real-binary TUN
+document check to this job's sing-box smoke surface
+(`TestSingBoxTUNDocumentRealBinary`: the complete TUN document must
+pass `sing-box check` of the exact pinned binary — generated-config
+verification, NOT a TUN runtime proof).
 
 No public proxy server is ever contacted: the smoke tests exercise
 config acceptance and the local runtime lifecycle only, so CI
 correctness never depends on external infrastructure.
+
+### v0.11.4 — the Windows job diagnosis and the bounded budget
+
+The v0.11.3 Windows job (run `36459947866`, job `109057267406`)
+**failed in 47m 0s** with the runner annotation "The hosted runner lost
+communication with the server." — killed ABRUPTLY mid-step: step 8
+("Windows behavioral tests (platform-critical packages)") was still
+`in_progress` and every later step (including the `if: always()`
+repeated battery) stayed `pending`, which is the termination
+signature of a runner-level kill, not a test failure. No go-test
+panic, no failure output, no timeout dump was ever recorded.
+
+Comparison evidence: the byte-identical v0.11.2 Windows job (run
+`36418242337`) completed the entire pipeline in **3m07s**. The
+v0.11.3 code delta in the killed step's packages
+(`engine/tunnel`) is only the new TUN config/state tests — sub-second
+runtime, no child processes, no WinINet mutation, no polling loops —
+and `go test -timeout=10m` would have produced a visible panic and a
+completed failing step rather than an abrupt kill. The honest
+diagnosis is therefore a **hosted-runner infrastructure failure**
+("lost communication", a documented GitHub-hosted-runner failure
+mode), with the 47m figure inflated by the communication-loss grace
+window. A code-level root cause is not supported by the recorded
+evidence; stating one would be invention.
+
+The v0.11.4 hardening (coverage-preserving — no `continue-on-error`,
+no compile-only downgrade, no coverage removal, A/B/C layers
+byte-identical):
+
+- the Windows job gains an explicit `timeout-minutes: 60` — a
+  REDUCTION from GitHub's 360-minute default. Any future infra-level
+  hang becomes a bounded, VISIBLE failure after 60 minutes instead of
+  six hours, while a healthy run (~3m) — or even a cold-cache run
+  (10x the healthy budget) — completes well inside the bound.
+- NOT VERIFIED: the post-hardening green state of the Windows job —
+  no push/re-run was performed from the v0.11.4 repair; the next
+  maintainer push produces that evidence.
 
 ### v0.11.0 — the Windows two-layer proof (and why the full matrix was retired)
 

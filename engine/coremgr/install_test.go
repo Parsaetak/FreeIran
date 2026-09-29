@@ -54,6 +54,16 @@ type installHarness struct {
 	assetRanges    []string
 	apiIfNoneMatch []string
 
+	// apiDelay optionally widens the LIST endpoint's response time so
+	// concurrent-caller tests exercise a flight window wider than the
+	// scheduler's goroutine-launch jitter (a localhost fake answers in
+	// microseconds — without the delay, callers scheduled AFTER the
+	// first flight completes are sequential episodes, not concurrent
+	// duplicates, and the dedup assertion becomes scheduler luck).
+	// Set BEFORE any request-serving goroutine exists (written once,
+	// then read-only inside the handler).
+	apiDelay time.Duration
+
 	// failure injection
 	apiStatuses   []int // consumed before falling back to 200
 	assetFailures int   // hijack the first N asset requests mid-body
@@ -191,6 +201,10 @@ func newInstallHarness(t *testing.T, coreName, tag string) *installHarness {
 			w.WriteHeader(http.StatusNotFound)
 
 			return
+		}
+
+		if d := h.apiDelay; d > 0 {
+			time.Sleep(d)
 		}
 
 		h.mu.Lock()

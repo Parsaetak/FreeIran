@@ -419,7 +419,13 @@ renders the live snapshot: backend label, lifecycle status
 (off/starting/active/stopping/failed), interface name, IPv4/IPv6,
 DNS design, route design, sing-box core version, redacted
 configuration and — on failure — the real error text. TUN is never
-labelled a kill switch.
+labelled a kill switch. (v0.11.4: the backend's activation gate is
+harder — exact adapter identity, covering-route ownership and the
+upstream loop check must all hold before `active` is published, and
+failures surface the precise missing evidence — the card contract
+above is unchanged. The dataplane label remains "sing-box native TUN
+(Wintun)": TUN is sing-box-specific on Windows and the UI never
+implies "all cores".)
 
 **Settings page:** a new "System tray" toggle (Appearance section)
 persists `tray_enabled` through the standard Settings save path. It
