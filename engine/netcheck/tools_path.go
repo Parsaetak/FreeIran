@@ -20,11 +20,25 @@ import (
 // ---- traceroute ------------------------------------------------------
 
 // runTraceroute walks the path with ICMP echo probes of increasing
-// TTL. Raw ICMP sockets require elevated privileges on every
-// supported platform; without them the tool reports the honest
-// "unsupported" status instead of pretending. Hops are matched by
-// echo ID; the walk is bounded (max 20 hops, 2 probes per hop, 1s per
-// probe answer window).
+// TTL. Raw ICMP sockets require elevated privileges on Unix; on
+// Windows the native ICMP Helper API (iphlpapi IcmpSendEcho) provides
+// user-mode TTL walks without elevation — the platform walkers live
+// in traceroute_unix.go / traceroute_windows.go and the shared walk
+// loop is in walkTTLs. Without any working walker the tool reports
+// the honest "unsupported" status instead of pretending.
+//
+// v0.12.1 status semantics (§3/§10):
+//
+//   - privilege/capability missing
+//     → unsupported (never red "failed")
+//   - explicit destination-unreachable evidence from the path
+//     → unreachable
+//   - hops observed, then answers stopped
+//     → unreachable WITH the hop evidence kept (bounded)
+//   - complete route observed
+//     → ok
+//   - no hops and no verdict
+//     → failed (genuinely undiagnosed)
 func (r *ToolRunner) runTraceroute(ctx context.Context, req ToolRequest, result *ToolResult) {
 	result.Transport = "icmp"
 
@@ -63,157 +77,165 @@ func (r *ToolRunner) runTraceroute(ctx context.Context, req ToolRequest, result 
 		return
 	}
 
-	conn, err := net.ListenPacket("ip4:icmp", "0.0.0.0")
+	walker, err := newHopWalker(ctx)
 	if err != nil {
+		// No usable ICMP walker in this context (raw sockets refused
+		// on Unix, ICMP handle refused on Windows): an honest
+		// capability report — never a red "failed".
 		result.Status = ToolStatusUnsupported
-		result.Error = "raw ICMP sockets require administrator privileges; traceroute is unavailable in this context"
+		result.Error = "ICMP probing is unavailable in this context (privilege or policy); traceroute cannot run"
 
-		result.Details = map[string]string{"reason": "privilege"}
+		result.Details = map[string]string{"reason": "privilege", "detail": boundedString(err.Error(), 160)}
 
 		return
 	}
 
-	defer conn.Close()
-
-	if err := setICMPFilterAll(conn); err != nil {
-		// Best-effort: without the filter we simply see more noise,
-		// which the ID matching already discards.
-		_ = err
-	}
+	defer walker.Close()
 
 	echoID := uint16(time.Now().UnixNano() & 0xffff)
 
-	hops, done, reached, lastErr := walkTTLs(ctx, conn, ip, echoID)
+	hops, done, reached, lastErr := walkTTLs(ctx, walker, ip, echoID)
 
 	result.Measurement.Hops = hops
 	result.Measurement.HopCount = len(hops)
+
+	// Bounded route metadata (never fabricated): the resolved target
+	// and the probe count accompany every terminal classification.
+	baseDetails := map[string]string{
+		"target": ip.String(),
+		"probes": strconv.Itoa(done),
+	}
+
+	unreachableEvidence := lastErr != nil && strings.Contains(strings.ToLower(lastErr.Error()), "unreachable")
 
 	switch {
 	case ctx.Err() != nil && len(hops) == 0:
 		result.Status = ToolStatusCancelled
 		result.Error = ctx.Err().Error()
-	case lastErr != nil && len(hops) == 0 && !reached:
-		setStatusFromError(result, lastErr)
 	case reached:
 		result.Status = ToolStatusOK
-		result.Details = map[string]string{
-			"target":    ip.String(),
-			"completed": "yes",
-			"probes":    strconv.Itoa(done),
-		}
+		result.Details = baseDetails
+		result.Details["completed"] = "yes"
+	case unreachableEvidence:
+		// The path explicitly reported the destination unreachable
+		// (ICMP type 3 observed for our probe): a measured path
+		// verdict — the diagnostic worked.
+		result.Status = ToolStatusUnreachable
+		result.Error = "destination explicitly reported unreachable: " + lastErr.Error()
+		result.Details = baseDetails
+		result.Details["completed"] = "no"
+	case len(hops) > 0:
+		// Hop answers stopped before the target (filtered or the
+		// destination dropped off): keep the observed hops and report
+		// the path verdict honestly — unreachable, not "failed".
+		result.Status = ToolStatusUnreachable
+		result.Error = fmt.Sprintf("path stops after %d observed hop(s); the target never answered (filtered or unreachable)", len(hops))
+		result.Details = baseDetails
+		result.Details["completed"] = "no"
+	case lastErr != nil:
+		setStatusFromError(result, lastErr)
 	default:
-		// Hop answers stopped arriving (filtered ICMP) — report the
-		// partial path honestly.
+		// No hops, no explicit verdict: genuinely undiagnosed.
 		result.Status = ToolStatusFailed
-		result.Error = "path incomplete: ICMP answers stopped before the target (filtered or unreachable)"
-		result.Details = map[string]string{
-			"target":    ip.String(),
-			"completed": "no",
-			"probes":    strconv.Itoa(done),
-		}
+		result.Error = "no ICMP answer was observed and no verdict could be formed"
+		result.Details = baseDetails
+		result.Details["completed"] = "no"
 	}
+}
+
+// hopWalker is the platform ICMP abstraction behind the shared TTL
+// walk loop: send one echo request at the given TTL and classify the
+// answer (intermediate hop / target replied / error). Implementations
+// live in traceroute_unix.go (raw ICMP socket) and
+// traceroute_windows.go (native IP Helper ICMP API — user-mode, no
+// elevation, no tracert.exe, no shell).
+type hopWalker interface {
+	// probe sends one echo request with the given TTL and waits the
+	// bounded window. hopIP is non-empty when an intermediate router
+	// (or the target) answered; replied is true only when the TARGET
+	// itself answered the echo.
+	probe(ctx context.Context, target net.IP, echoID uint16, ttl int) (hopIP string, replied bool, err error)
+
+	// Close releases the underlying socket/handle.
+	Close() error
 }
 
 // walkTTLs sends bounded echo probes with increasing TTL and collects
 // hop addresses (from time-exceeded sources) until the target itself
 // answers.
-func walkTTLs(ctx context.Context, conn net.PacketConn, target net.IP, echoID uint16) (hops []string, probes int, reached bool, lastErr error) {
+func walkTTLs(ctx context.Context, walker hopWalker, target net.IP, echoID uint16) (hops []string, probes int, reached bool, lastErr error) {
 	const (
 		maxHops   = 20
 		probesPer = 2
 	)
-
-	buf := make([]byte, 1500)
 
 	for ttl := 1; ttl <= maxHops; ttl++ {
 		if ctx.Err() != nil {
 			return hops, probes, reached, ctx.Err()
 		}
 
-		hopIP, gotReply, err := probeTTL(ctx, conn, target, echoID, ttl, probesPer, buf)
-		probes += probesPer
+		var (
+			hopIP     string
+			gotReply  bool
+			hopFailed bool
+		)
 
-		if err != nil {
-			lastErr = err
+		for i := 0; i < probesPer; i++ {
+			if ctx.Err() != nil {
+				return hops, probes, reached, ctx.Err()
+			}
+
+			probes++
+
+			ip, replied, err := walker.probe(ctx, target, echoID, ttl)
+			if err != nil {
+				hopFailed = true
+				lastErr = err
+
+				// An explicit destination-unreachable verdict ends the
+				// walk immediately: the path itself answered.
+				if strings.Contains(strings.ToLower(err.Error()), "unreachable") {
+					return hops, probes, false, err
+				}
+
+				continue
+			}
+
+			hopFailed = false
+			lastErr = nil
+
+			if ip != "" {
+				hopIP = ip
+			}
+
+			if replied {
+				gotReply = true
+
+				break
+			}
+		}
+
+		if gotReply {
+			if hopIP != "" {
+				hops = append(hops, hopIP)
+			}
+
+			return hops, probes, true, nil
 		}
 
 		if hopIP != "" {
 			hops = append(hops, hopIP)
 		}
 
-		if gotReply {
-			return hops, probes, true, nil
-		}
-
-		// No answer at all for this TTL after retries: path is being
-		// filtered. One retry round is already covered by probesPer;
-		// stop honestly rather than looping to maxHops blind.
-		if hopIP == "" && err == nil {
+		// No answer at all for this TTL after retries: the path is
+		// being filtered. Stop honestly rather than looping to
+		// maxHops blind.
+		if hopIP == "" && !hopFailed {
 			return hops, probes, false, nil
 		}
 	}
 
 	return hops, probes, false, lastErr
-}
-
-// probeTTL sends probesPer echo requests with the given TTL and waits
-// (bounded) for either a time-exceeded from an intermediate hop or an
-// echo reply from the target.
-func probeTTL(
-	ctx context.Context,
-	conn net.PacketConn,
-	target net.IP,
-	echoID uint16,
-	ttl, count int,
-	buf []byte,
-) (hopIP string, targetReplied bool, err error) {
-	for i := 0; i < count; i++ {
-		if ctx.Err() != nil {
-			return "", false, ctx.Err()
-		}
-
-		seq := uint16(ttl<<8 | i)
-
-		payload := []byte("freeiran-traceroute-probe")
-		packet := buildICMPEcho(echoID, seq, payload)
-
-		if err := setPacketTTL(conn, ttl); err != nil {
-			return "", false, fmt.Errorf("set TTL %d: %w", ttl, err)
-		}
-
-		if _, err := conn.WriteTo(packet, &net.IPAddr{IP: target.To4()}); err != nil {
-			return "", false, err
-		}
-
-		deadline := time.Now().Add(time.Second)
-		if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
-			deadline = d
-		}
-
-		for time.Now().Before(deadline) {
-			_ = conn.SetReadDeadline(deadline)
-
-			n, from, readErr := conn.ReadFrom(buf)
-			if readErr != nil {
-				break // probe answer window over
-			}
-
-			hop, replied, matchErr := parseICMPResponse(buf[:n], from, target, echoID)
-			if matchErr != nil {
-				continue // not ours
-			}
-
-			if replied {
-				return hop, true, nil
-			}
-
-			if hop != "" {
-				return hop, false, nil
-			}
-		}
-	}
-
-	return "", false, nil
 }
 
 // buildICMPEcho encodes an ICMP echo request (RFC 792).
@@ -707,24 +729,24 @@ func parseExitIP(body []byte) string {
 // (never fabricated) and, when a tunnel is active, verifies the local
 // endpoint accepts a SOCKS5 CONNECT round trip.
 //
-// v0.11.2 routing semantics:
+// v0.11.2 routing semantics (statuses corrected v0.12.1):
 //
 //   - Direct path selected (req.Path == PathDirect): the user did not
-//     select a tunnel. Return "No tunnel selected" — never the legacy
-//     "no active tunnel" that read as a tunnel failure. The Transport
-//     field is cleared so the UI cannot mistake this for a successful
-//     socks5 probe.
+//     select a tunnel. There is nothing to diagnose — the honest
+//     status is not_applicable with the "No active tunnel" wording,
+//     never a red generic failure and never the legacy message that
+//     read as a tunnel breakdown. The Transport field is cleared so
+//     the UI cannot mistake this for a successful socks5 probe.
 //   - Tunnel path selected (req.Path == PathTunneled) but the caller
-//     could not supply an active TunnelSnapshot: return "Tunnel
-//     unavailable" with the precise reason — never silently fall back
-//     to a Direct probe. The Dial guard in Run() already intercepts
-//     this case for tools that need a DialContext; tunnel_diagnostics
+//     could not supply an active TunnelSnapshot: the tool requires a
+//     local endpoint that does not exist right now → not_configured
+//     with the precise reason — never silently falling back to a
+//     Direct probe. The Dial guard in Run() already intercepts this
+//     case for tools that need a DialContext; tunnel_diagnostics
 //     re-checks the snapshot so it cannot be confused by a stale
 //     caller-supplied snapshot whose Active flag is false.
 //   - Tunnel path selected, snapshot Active, but no local endpoint:
-//     return "Tunnel unavailable: active tunnel reports no local
-//     endpoint". This is a precise failure class, not a generic
-//     failure.
+//     not_configured with the precise "no local endpoint" class.
 //   - Tunnel path selected, snapshot Active, endpoint present: run a
 //     real SOCKS5 CONNECT through the endpoint. The measured latency
 //     is the authoritative round trip; the result is OK only when the
@@ -743,12 +765,13 @@ func (r *ToolRunner) runTunnelDiagnostics(req ToolRequest, result *ToolResult) {
 
 	result.Measurement.Tunnel = snap
 
-	// Direct path: the user did not ask for a tunnel probe. Report
-	// that honestly without inventing a tunnel failure.
+	// Direct path: the user did not ask for a tunnel probe. There is
+	// no tunnel to diagnose in this context — not_applicable, and the
+	// message answers the question the user actually asked.
 	if req.Path != PathTunneled {
 		result.Transport = ""
-		result.Status = ToolStatusFailed
-		result.Error = "No tunnel selected (Direct path). Switch the route to Tunnel and run again."
+		result.Status = ToolStatusNotApplicable
+		result.Error = "No active tunnel on the Direct path — nothing to diagnose. Switch the route to Tunnel and run again."
 		result.Details = map[string]string{
 			"route":     "direct",
 			"hint":      "Use a tunnel-path tool to verify the active tunnel",
@@ -763,7 +786,7 @@ func (r *ToolRunner) runTunnelDiagnostics(req ToolRequest, result *ToolResult) {
 	result.Transport = "socks5"
 
 	if !snap.Active {
-		result.Status = ToolStatusFailed
+		result.Status = ToolStatusNotConfigured
 		result.Error = "Tunnel unavailable: no active tunnel"
 		result.Details = map[string]string{
 			"route":  "tunneled",
@@ -775,7 +798,7 @@ func (r *ToolRunner) runTunnelDiagnostics(req ToolRequest, result *ToolResult) {
 	}
 
 	if snap.Endpoint == "" {
-		result.Status = ToolStatusFailed
+		result.Status = ToolStatusNotConfigured
 		result.Error = "Tunnel unavailable: active tunnel reports no local endpoint"
 		result.Details = map[string]string{
 			"route":    "tunneled",

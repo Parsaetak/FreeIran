@@ -545,13 +545,19 @@ function ToolCard({
   const [target, setTarget] = useState("");
   const [tunneled, setTunneled] = useState(false);
 
+  // v0.12.1 (§11): tunnel diagnostics REQUIRE an active tunnel —
+  // when none exists the action greys out with the honest hint
+  // instead of producing a red failure after the fact.
+  const requiresTunnel = info.id === "tunnel_diagnostics";
+  const blockedWithoutTunnel = requiresTunnel && !tunnelActive;
+
   const submit = () => {
-    if (running) return;
+    if (running || blockedWithoutTunnel) return;
 
     const request: ToolRunRequest = {
       tool: info.id,
       // The toggle is only meaningful while a live tunnel exists —
-      // otherwise the backend would honestly report "unsupported".
+      // otherwise the backend would honestly report "not configured".
       tunneled: tunneled && tunnelActive,
     };
 
@@ -565,11 +571,14 @@ function ToolCard({
   };
 
   return (
-    <div className="tool-card">
+    <div className={`tool-card ${blockedWithoutTunnel ? "tool-card-blocked" : ""}`}>
       <div className="tool-card-head">
         <span className="tool-card-title">{info.label}</span>
         <span className="tool-card-group">{info.group}</span>
       </div>
+
+      {/* v0.12.1 (§13): every card shows WHAT the tool measures. */}
+      {info.what && <div className="tool-card-what">{info.what}</div>}
 
       {info.takes_target && (
         <input
@@ -591,9 +600,16 @@ function ToolCard({
         via tunnel
       </label>
 
-      <button type="button" className="btn sm" disabled={running} onClick={submit}>
-        {running ? <span className="btn-spinner" /> : <IconPlay size={14} />} {running ? "Running…" : "Run"}
-      </button>
+      {blockedWithoutTunnel ? (
+        // The truthful hint — never a post-hoc red failure.
+        <button type="button" className="btn sm" disabled title="No active tunnel">
+          No active tunnel
+        </button>
+      ) : (
+        <button type="button" className="btn sm" disabled={running} onClick={submit}>
+          {running ? <span className="btn-spinner" /> : <IconPlay size={14} />} {running ? "Running…" : "Run"}
+        </button>
+      )}
     </div>
   );
 }
@@ -611,11 +627,14 @@ function ToolResultRow({ result, label }: { result: ToolResultView; label: strin
     .filter((part): part is string => Boolean(part))
     .join(" · ");
 
+  // v0.12.1: prerequisite states render neutrally, never red.
+  const rowClass = isPrerequisiteState(result.status) ? "tool-result prereq" : "tool-result";
+
   return (
-    <div className="tool-result">
+    <div className={rowClass}>
       <div className="tool-result-head">
         <span className="tool-result-title">{label}</span>
-        <span className={`badge ${toolStatusVariant(result.status)}`}>{result.status}</span>
+        <span className={`badge ${toolStatusVariant(result.status)}`}>{toolStatusLabel(result.status)}</span>
       </div>
 
       {meta && <div className="tool-result-meta">{meta}</div>}
@@ -756,21 +775,63 @@ function exitIpMatchText(measurement: ToolMeasurementView): string | undefined {
   return undefined;
 }
 
+/**
+ * v0.12.1 status presentation (§3/§13): every state gets its own
+ * visual band. "not configured", "unsupported" and "not applicable"
+ * are ENVIRONMENT facts — they must never wear red failure styling.
+ * Unreachable is a measured path verdict (distinct from a generic
+ * failure); partial keeps its success evidence visible.
+ */
 function toolStatusVariant(status: string): string {
   switch (status) {
     case "ok":
       return "success";
+    case "partial":
+      return "warn";
     case "failed":
       return "error";
+    case "unreachable":
+      return "error";
     case "timeout":
+      return "warn";
     case "invalid_target":
       return "warn";
     case "cancelled":
       return "neutral";
     case "unsupported":
       return "info";
+    case "not_configured":
+      return "info";
+    case "not_applicable":
+      return "neutral";
     default:
       return "neutral";
+  }
+}
+
+/**
+ * v0.12.1 (§13): the states that describe MISSING PREREQUISITES or
+ * an inapplicable context are not failures. The UI renders them in
+ * the neutral/info bands and never in red.
+ */
+function isPrerequisiteState(status: string): boolean {
+  return status === "not_configured" || status === "unsupported" || status === "not_applicable";
+}
+
+/**
+ * Human status labels (v0.12.1): the wire status stays the authority;
+ * the label adds the spacing the newer snake_case states need.
+ */
+function toolStatusLabel(status: string): string {
+  switch (status) {
+    case "not_configured":
+      return "Not configured";
+    case "not_applicable":
+      return "Not applicable";
+    case "invalid_target":
+      return "Invalid target";
+    default:
+      return status;
   }
 }
 

@@ -7,7 +7,11 @@
  * to normalize backend errors.
  */
 import * as appService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/appservice.js";
-import * as sourceService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/sourceservice.js";
+import * as sourceServiceBinding from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/sourceservice.js";
+// v0.12.1: targeted source refresh (§18) — hand-maintained ByName
+// binding (the Go contract test verifies every ByName method against
+// the real service).
+import * as sourceServiceV12 from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/sourceservice_v0121.js";
 import * as dataService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/dataservice.js";
 import * as storageService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/storageservice.js";
 import * as diagnosticsService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/diagnosticsservice.js";
@@ -38,7 +42,6 @@ import * as loggingModels from "../../bindings/github.com/Parsaetak/FreeIran/int
 
 export {
   appService,
-  sourceService,
   dataService,
   storageService,
   diagnosticsService,
@@ -58,6 +61,17 @@ export {
   loggingModels,
 };
 
+/**
+ * v0.12.1: the source surface = the generated bindings PLUS the
+ * hand-maintained targeted-refresh capability. One import surface for
+ * the UI; no call-site needs to know which generation a method came
+ * from.
+ */
+export const sourceService = {
+  ...sourceServiceBinding,
+  RefreshSource: sourceServiceV12.RefreshSource,
+};
+
 // Generated model types (synchronized with the Go backend by the
 // wails3 generator — do not duplicate these by hand).
 export type AppState = import("../../bindings/github.com/Parsaetak/FreeIran/engine/app/models.js").AppState;
@@ -70,6 +84,8 @@ export type MetricsSnapshot = import("../../bindings/github.com/Parsaetak/FreeIr
 export type StorageStats = import("../../bindings/github.com/Parsaetak/FreeIran/engine/store/models.js").Stats;
 export type StorageDiagnostics = import("../../bindings/github.com/Parsaetak/FreeIran/engine/store/models.js").Diagnostics;
 export type IngestionStats = import("../../bindings/github.com/Parsaetak/FreeIran/engine/pipeline/models.js").Stats;
+/** v0.12.1: per-source stats (the authoritative source health model). */
+export type SourceStatsView = import("../../bindings/github.com/Parsaetak/FreeIran/engine/source/models.js").Stats;
 export type SystemInfo = import("../../bindings/github.com/Parsaetak/FreeIran/system/models.js").Info;
 export type CoreBinary = import("../../bindings/github.com/Parsaetak/FreeIran/system/models.js").CoreBinary;
 export type ConnectionSnapshot = import("../../bindings/github.com/Parsaetak/FreeIran/engine/connection/models.js").Snapshot;
@@ -533,6 +549,8 @@ export interface ToolInfoView {
   id: string;
   label: string;
   group: string;
+  /** v0.12.1: one-line "what this tool measures" for the tool card. */
+  what?: string;
   takes_target: boolean;
   timeout_ms: number;
 }

@@ -27,10 +27,35 @@ measurement / error / details
   default (10 s standard; 20 s internet; 30 s traceroute; 15 s
   path-mtu/public-ip), hard cap 60 s. Cancellation is honoured at
   every stage.
-- **Statuses**: `ok`, `failed`, `timeout`, `cancelled`,
-  `invalid_target` (the safety layer rejected the target before any
-  bytes left the machine), `unsupported` (honest capability report —
-  see below).
+- **Statuses** (v0.12.1 — the exact, authoritative list):
+  - `ok` — the requested measurement completed successfully;
+  - `partial` — meaningful successful evidence exists while one or
+    more subchecks failed (e.g. two curated resolvers answered, the
+    system resolver did not); the successful measurements are
+    retained;
+  - `failed` — the measurement was applicable and configured, but the
+    actual operation failed (refused, reset, protocol error,
+    HTTP >= 400 ...);
+  - `timeout` — the run hit its configured deadline;
+  - `cancelled` — the caller cancelled the context;
+  - `invalid_target` — the safety layer rejected the target before
+    any bytes left the machine;
+  - `unsupported` — the capability genuinely cannot be executed by
+    this build/platform/context (a privilege gap, an IPv6-only
+    target on an IPv4 walker, QUIC through a SOCKS tunnel). Never a
+    lazy placeholder for an unfinished implementation;
+  - `not_configured` — the tool requires a local proxy / endpoint /
+    configuration and none exists (a missing prerequisite is an
+    environment state, NOT a network failure);
+  - `not_applicable` — the tool cannot meaningfully run in the
+    selected context (tunnel diagnostics on the Direct path);
+  - `unreachable` — the tool itself ran, but the target/path was
+    explicitly observed to be unreachable (ICMP "destination
+    unreachable", a hop chain that provably stops, a silent QUIC
+    path). The diagnostic implementation worked; the path did not.
+
+  The UI renders `not_configured`, `unsupported` and `not_applicable`
+  in calm info/neutral bands — never red failure styling.
 - **Measurements** (`ToolMeasurement`) carry the v0.9.8.1 canonical
   latency semantics (`engine/tester/latency.go`): `Measured` is the
   authority, 0 ms + `Measured` = sub-millisecond, `SubMS` marks
@@ -41,16 +66,16 @@ measurement / error / details
 | Tool | Group | Transport | Default target | Notes |
 |------|-------|-----------|----------------|-------|
 | `internet` | connectivity | aggregate | builtin probe set | the classic connectivity report (bounded sub-probes); v0.9.8.5: carries the staged ladder evidence (below) |
-| `dns` | connectivity | UDP/TCP 53 | system + curated resolvers | v0.9.8.5 DNS DIAGNOSTIC: system vs Cloudflare/Google/Quad9, A + AAAA, UDP with TCP fallback; per-resolver rows with transports, latencies, answer counts and honest failure classes (structured evidence in `result.dns`) |
+| `dns` | connectivity | UDP/TCP 53 + DoH | system + curated resolvers | v0.9.8.5 DNS DIAGNOSTIC: system vs Cloudflare/Google/Quad9, A + AAAA, UDP with TCP fallback; per-resolver rows with transports, latencies, answer counts and honest failure classes (structured evidence in `result.dns`). v0.12.1: query-level aggregation — some answers + some failures → `partial` (successful measurements retained); all applicable resolvers failing → `failed`; plus one bounded encrypted-DoH comparison row (RFC 8484 JSON, inside the same diagnostic — a hijacked plaintext path beside a working encrypted path is real censorship evidence). |
 | `tcp` | connectivity | TCP | `1.1.1.1:443` | raw reachability + RTT |
 | `tls` | connectivity | TLS | `www.gstatic.com:443` | TCP + TLS handshake; negotiated version/cipher reported |
 | `https` | connectivity | HTTP(S) | `https://www.gstatic.com/generate_204` | full GET with redirect/size caps |
-| `http_connect` | protocol | HTTP proxy CONNECT | `http://127.0.0.1:1080` | local proxy reachability |
-| `socks5` | protocol | SOCKS5 | `127.0.0.1:1080` | RFC 1928 CONNECT round trip |
-| `websocket` | protocol | WS/WSS | `wss://echo.websocket.events` | upgrade handshake |
+| `http_connect` | protocol | HTTP proxy CONNECT | none — resolved per run (v0.12.1) | target resolution: explicit user target → configured local HTTP inbound (settings `local_http_port`; the SOCKS session endpoint is NOT protocol-compatible) → `not_configured`. A missing proxy renders "Not configured", never a red failure. |
+| `socks5` | protocol | SOCKS5 | none — resolved per run (v0.12.1) | RFC 1928 CONNECT round trip. Target resolution: explicit user target → the ACTIVE session endpoint (a local SOCKS listener) → `not_configured`. No blind `127.0.0.1:1080` probe. |
+| `websocket` | protocol | WS/WSS | bounded curated set (2 endpoints) | upgrade handshake. Default runs probe the curated set and aggregate: all succeed → `ok`, mixed → `partial` (per-target evidence kept), all fail → `failed`. An explicit target answers exactly that target (one probe, no fallback). |
 | `udp` | protocol | UDP | `1.1.1.1:53` | datagram round trip (DNS query payload) |
-| `quic` | protocol | QUIC | — | **honestly unsupported**: no QUIC stack is compiled into this build; reports `unsupported` and points at the UDP tool. Nothing is claimed that was not verified. |
-| `traceroute` | path | raw ICMP TTL walk | `1.1.1.1` | **privilege-gated**: raw ICMP sockets require administrator privileges; reports the honest "requires administrator privileges" error (`unsupported`) instead of pretending when the socket cannot be created. |
+| `quic` | protocol | QUIC v1 | `www.cloudflare.com:443` (verified HTTP/3 endpoint) | **v0.12.1: a real bounded handshake probe** (HTTP/3 ALPN) built on `quic-go` — the minimal dedicated diagnostic dependency, measurement only, never a dataplane. Resolve→validate→pin honours the private-range policy; silence → `unreachable`; active-but-failed handshake → `failed`; completion → `ok` with ALPN/TLS/cipher details. Direct path only (SOCKS relays no UDP → `unsupported` when tunneled). |
+| `traceroute` | path | ICMP TTL walk | `1.1.1.1` | **v0.12.1: native Windows walker** — IP Helper ICMP API (`IcmpSendEcho` with per-probe TTL), user-mode, no elevation, no tracert.exe/route.exe/PowerShell/shell parsing; Unix keeps the raw-ICMP walker (privilege-gated → honest `unsupported` when refused). Status semantics: explicit destination-unreachable evidence → `unreachable`; hops observed then silence → `unreachable` WITH hop evidence; complete route → `ok`; no usable walker → `unsupported`. Hops are never fabricated. |
 | `path_mtu` | path | DNS payload ladder | `1.1.1.1:53` | bounded unfragmented-payload ladder, honestly labelled: DNS QNAME encoding caps the ladder at ~300 bytes — verifying the full 1500-byte MTU would require privileged raw-socket probing. |
 | `captive_portal` | path | HTTP | builtin portal probe set | portal detection with redirect reporting |
 | `public_ip` | identity | HTTPS | builtin identity endpoints | exit IP direct vs through the active tunnel, with match verdict |
@@ -188,9 +213,20 @@ Every run emits structured, credential-free events through
 `internal/logging`:
 
 - `network_tool_start` (debug) — tool, timeout, path, provider;
-- `network_tool_complete` (info) / `network_tool_failed` (warn) —
-  tool, status, `duration_ms`, target and `error_kind` (fixed classes:
-  timeout, refused, reset, tls, dns, unsupported, …).
+- **v0.12.1: one DISTINCT completion event per status class** —
+  `network_tool_complete` (ok), `network_tool_partial`,
+  `network_tool_failed`, `network_tool_timeout`,
+  `network_tool_cancelled`, `network_tool_invalid`,
+  `network_tool_unsupported`, `network_tool_not_configured`,
+  `network_tool_not_applicable`, `network_tool_unreachable`. Every
+  event carries tool, status, `duration_ms`, target and
+  `error_kind` (fixed classes: timeout, refused, reset, tls, dns,
+  unsupported, not_configured, not_applicable, unreachable, ...).
+  Severity: environment facts (partial / not_configured /
+  not_applicable / unsupported / cancelled) log at info; unreachable
+  and failed warn. The old contract — every non-OK outcome collapsed
+  into `network_tool_failed` — mislabeled environment states as
+  failures and is fixed by `TestToolStatusEventMapping`.
 
 Targets in events are the validated host:port / URL forms — never
 credentials, UUIDs or subscription URIs.
@@ -253,3 +289,29 @@ snapshot reports OBSERVED state only (interface by address, verified
 tunneled request), and the tools' live-tunnel view continues to
 classify per routing class — TUN adds a routing class, not a new
 trust shortcut.
+
+---
+
+## v0.12.1 addendum — truthful status semantics and the runtime log
+
+The v0.12.0 runtime log exposed six tools mislabelled as failures and
+a `core_discovered` provenance leak. v0.12.1 repairs both:
+
+- The ten-state model above is the authority. Two rules govern it:
+  **a missing prerequisite is an environment state** (`not_configured`
+  / `not_applicable` / `unsupported`), and **a measured path verdict
+  is evidence** (`unreachable`), never an implementation crash.
+- HTTP CONNECT and SOCKS5 resolve their target through the documented
+  priority (explicit target → protocol-compatible local endpoint →
+  `not_configured`); the runner never guesses an endpoint.
+- QUIC performs a real handshake (quic-go, measurement-only
+  dependency). UDP merely being answerable is NOT "QUIC works" — the
+  UDP tool already measures datagram reachability separately.
+- Traceroute distinguishes privilege-gap `unsupported` from measured
+  `unreachable` and keeps observed hop evidence.
+- The normal runtime log contains no core build provenance:
+  `core_discovered` prints the compact form ("xray 26.3.27
+  available"); full probe lines (commit hashes, `go1.x` tuples,
+  paths) are developer diagnostics at debug severity
+  (`core_discovered_details`). `compactCoreVersion` accepts
+  digits-and-dots tokens only.

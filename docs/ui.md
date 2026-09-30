@@ -168,8 +168,18 @@ usability is never blocked.
   the result names the provider (path `direct|tunneled`).
 - Nothing runs automatically: every tool execution is an explicit
   user action (the backend enforces user-triggered-only); honestly
-  unsupported tools (QUIC) and privilege-gated ones (traceroute)
-  render their honest statuses rather than fake results.
+  unsupported tools and privilege-gated ones (traceroute without a
+  usable ICMP walker) render their honest statuses rather than fake
+  results.
+- **v0.12.1 status presentation (§3/§13):** every tool row/card shows
+  the tool, what it measures (the catalogue's `what` line), the
+  target, Direct/Via-tunnel, the latest result, the measured value
+  and Run. The ten backend states get distinct bands — `ok` green,
+  `partial`/`timeout`/`invalid_target` warn, `failed`/`unreachable`
+  error — while `not_configured`, `unsupported` and `not_applicable`
+  render in calm info/neutral bands and are NEVER styled as red
+  failures. Tunnel diagnostics is blocked with the honest "No active
+  tunnel" hint while no tunnel is active (no post-hoc failure).
 
 ### Network Identity card (v0.9.8.5)
 
@@ -457,7 +467,7 @@ header's "App started …" line is untouched — it reads the engine's
 timestamp.
 
 **Version display:** the status bar and every user-facing version
-surface render the compact form `v<VERSION>` (e.g. `v0.12.0`)
+surface render the compact form `v<VERSION>` (e.g. `v0.12.1`)
 exactly — no commit, no Go
 toolchain tuple. Developer build provenance (commit, Go version)
 remains available on the Developer Info panel in Settings, which is
@@ -496,3 +506,38 @@ kill-switch state      — DIRECT → ARMING → ... → MONITORING ladder
 The evidence-first rule is inherited from the current surfaces: a
 failure state is rendered honestly ("Connected but IPv6 not
 verified"), and no badge may claim more than its evidence class.
+
+## v0.12.1 — source/subscription scopes, targeted actions, context-menu policy
+
+- **Scope rail (§16):** the configuration groups rail gains SOURCE
+  scopes (one chip per source/subscription with its authoritative
+  count from `SourceStatsList`). `All` stays the first-class default.
+  Selecting a source selects the server-side `source` filter; counts
+  are never recomputed in React.
+- **Source scope header (§17):** while a source scope is active, a
+  compact header shows the backend's measured evidence — name,
+  enabled/disabled badge, ROUTE-trust band, configuration/working
+  counts, last successful fetch, last failure and its recorded
+  reason — plus the actions Update source (targeted refresh),
+  Check source, Check untested and More (retry failed / retest
+  working in scope) and Exit scope. A user group never shows an
+  update action.
+- **Sources page integration (§27):** source rows carry compact
+  targeted actions — update this source, view its configurations
+  (lands in the matching scope through the `freeiran:navigate` event),
+  check its configurations (shared queue).
+- **Context-menu policy (§25):** the native browser/WebView menu is
+  suppressed app-wide (one shared policy mounted by the shell);
+  right-click on configurations opens FreeIran's own MenuSurface —
+  the ONE custom menu engine, with Escape, arrow keys, Home/End,
+  focus return, outside click, viewport flipping, scroll handling and
+  ARIA semantics intact. Text fields keep their native editing menu
+  so clipboard and IME behaviour survive.
+- **Keyboard UX (§30):** Ctrl+A selects the visible scope; Enter
+  opens the focused configuration (existing); Shift+F10 / ContextMenu
+  open the row menu (existing); Delete/Backspace removes from the
+  current user group (the existing supported removal).
+- **Performance rules (§28):** source selection is a server-side
+  filter; a single test result patches one record; a source refresh
+  reconciles its scope — virtualization, bounded page sizes and the
+  hot cache are untouched (see docs/configurations.md).

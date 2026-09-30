@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -833,9 +834,14 @@ func (a *App) Start() {
 
 		for _, backend := range a.coreRegistry.Backends() {
 			if backend.Status == core.StatusAvailable {
+				// v0.12.1: the normal runtime log is provenance-free —
+				// "xray 26.3.27 available", never commit hashes, Go
+				// runtime tuples or paths. The full probe line stays a
+				// developer diagnostic (debug profile).
 				a.logger.Info("core", "core_discovered",
-					"%s %s available at %s",
-					backend.Name, backend.Version, backend.Path)
+					"%s", coreDiscoveredMessage(backend.Name, backend.Version))
+				a.logger.Debug("core", "core_discovered_details",
+					"%s %s at %s", backend.Name, backend.Version, backend.Path)
 			}
 		}
 	}()
@@ -951,6 +957,38 @@ func (a *App) Discovery() *DiscoveryService {
 	return a.discovery
 }
 
+// coreDiscoveredMessage renders the compact, provenance-free
+// core_discovered message: "xray 26.3.27 available" — or
+// "xray available" when the probe produced no clean release token
+// (dev builds report a commit hash instead of a release number).
+// The v0.12.0 regression leaked raw probe lines
+// ("d2758a0 (go1.26.1 windows/amd64)") into the normal runtime log;
+// this helper is the ONE normal-log form (v0.12.1 §4).
+func coreDiscoveredMessage(name, rawVersion string) string {
+	if version := compactCoreVersion(rawVersion); version != "" {
+		return fmt.Sprintf("%s %s available", name, version)
+	}
+
+	return fmt.Sprintf("%s available", name)
+}
+
+// compactCoreVersion reduces a raw core version-probe line to the
+// clean release token: everything from the first parenthesis (build
+// tuples, marketing parentheticals) is cut, then the loose-semver
+// token is extracted from what remains. Provenance fragments — commit
+// hashes, "go1.x" runtime strings, platform tuples — can never
+// survive: the version-token extractor accepts digits and dots only.
+// Empty result: no release number could be identified.
+func compactCoreVersion(raw string) string {
+	line := raw
+
+	if idx := strings.Index(line, "("); idx >= 0 {
+		line = line[:idx]
+	}
+
+	return coremgr.ExtractVersionToken(line)
+}
+
 // RefreshCores re-runs protocol-core discovery against the locator
 // (which includes the managed bin directories). Call it after any
 // install/update/remove so Connect, Backends and the tester observe
@@ -973,11 +1011,27 @@ func (a *App) RefreshCores() {
 			continue
 		}
 
+		// v0.12.1 privacy fix: the normal-log message is the compact,
+		// provenance-free form ("xray 26.3.27 available"). Commit
+		// hashes, Go runtime tuples and paths never re-enter the
+		// normal runtime log (the v0.12.0 regression); they remain
+		// available to developer diagnostics at debug severity.
 		a.logger.Log(logging.Record{
 			Level:     logging.LevelInfo,
 			Subsystem: "core",
 			Event:     "core_discovered",
-			Message:   fmt.Sprintf("%s %s available at %s", backend.Name, backend.Version, backend.Path),
+			Message:   coreDiscoveredMessage(backend.Name, backend.Version),
+			Core:      backend.Name,
+			Status:    "available",
+			Fields: map[string]any{
+				"version": compactCoreVersion(backend.Version),
+			},
+		})
+		a.logger.Log(logging.Record{
+			Level:     logging.LevelDebug,
+			Subsystem: "core",
+			Event:     "core_discovered_details",
+			Message:   fmt.Sprintf("%s %s at %s", backend.Name, backend.Version, backend.Path),
 			Core:      backend.Name,
 			Status:    "available",
 			Fields: map[string]any{

@@ -211,6 +211,157 @@ func (s *SourceService) RefreshNow() (*pipeline.Stats, error) {
 	return s.app.lastStats, nil
 }
 
+// RefreshSource refreshes EXACTLY ONE source (v0.12.1 §18) through
+// the SAME ingestion architecture — the ONE fetcher, ONE parser
+// pipeline, ONE store, ONE scheduler. No second downloader, collector
+// or scheduler is created: the targeted operation snapshots the
+// single source and hands a one-element slice to the same Pipeline
+// instance the full cycles use.
+//
+// Concurrency contract (single-owner gate): the targeted refresh and
+// a full ingestion cycle share the same ingesting flag. While a full
+// cycle is in flight the targeted refresh waits (bounded), then takes
+// the gate; while the targeted refresh holds the gate, a concurrent
+// full cycle is skipped by its existing skip-if-busy CAS. Two
+// ingestion authorities can never race.
+//
+// The operation validates the source ID, respects the enabled policy
+// (a disabled source refuses an explicit refresh), preserves the
+// dedupe/content-hash behaviour (seenHashes), publishes the normal
+// source-refresh state and returns the source's own bounded stats.
+func (s *SourceService) RefreshSource(id string) (*source.Stats, error) {
+	if s.app.ctx == nil {
+		return nil, fmt.Errorf("app: not started")
+	}
+
+	if strings.TrimSpace(id) == "" {
+		return nil, fmt.Errorf("app: source id is required")
+	}
+
+	// Snapshot the single source under the lock (validated below).
+	s.app.mu.RLock()
+
+	var target source.Source
+
+	found := false
+
+	for _, src := range s.app.sources {
+		if src.ID == id {
+			target = src
+			found = true
+
+			break
+		}
+	}
+
+	seenHash := s.app.seenHashes[id]
+	started := s.app.started.Load()
+
+	s.app.mu.RUnlock()
+
+	if !found {
+		return nil, fmt.Errorf("app: source %q not found", id)
+	}
+
+	// Enabled/source policy: the scheduler never refreshes a disabled
+	// source, and neither does an explicit targeted refresh — enable
+	// it first (the UI surfaces the state honestly).
+	if !target.Enabled {
+		return nil, fmt.Errorf("app: source %q is disabled; enable it before refreshing", id)
+	}
+
+	// Single-owner gate shared with runIngestionCycle: wait politely
+	// for an in-flight cycle (bounded), then take the flag. If
+	// somebody else wins the CAS after the wait, the honest answer is
+	// a busy error — never a second competing cycle.
+	if started {
+		deadline := time.Now().Add(10 * time.Minute)
+
+		for s.app.ingesting.Load() && time.Now().Before(deadline) {
+			time.Sleep(200 * time.Millisecond)
+		}
+	}
+
+	if !s.app.ingesting.CompareAndSwap(false, true) {
+		return nil, fmt.Errorf("app: another ingestion cycle is running; wait for it to finish")
+	}
+
+	defer s.app.ingesting.Store(false)
+
+	// The targeted cycle is a real ingestion state change — publish
+	// the running state like every other cycle.
+	s.app.publishState()
+
+	single := []source.Source{target}
+	hashes := map[string]string{id: seenHash}
+
+	sink := pipeline.NewStoreSink(s.app.store, 512)
+
+	ctx, cancel := context.WithTimeout(s.app.ctx, 10*time.Minute)
+	defer cancel()
+
+	stats, newHashes, err := s.app.pipe.Run(ctx, single, sink, hashes)
+
+	// The candidate pool changed for this source: drop the ranking
+	// snapshot (the same consequence a full cycle triggers).
+	s.app.InvalidateRankingSnapshot()
+
+	s.app.mu.Lock()
+
+	for hashID, hash := range newHashes {
+		s.app.seenHashes[hashID] = hash
+	}
+
+	s.app.lastIngestionAt = time.Now().UTC().UnixMilli()
+
+	s.app.mu.Unlock()
+
+	if saveErr := s.app.saveSources(); saveErr != nil && err == nil {
+		err = saveErr
+	}
+
+	if err != nil {
+		persisted := int64(0)
+
+		if stats != nil {
+			persisted = stats.Persisted
+		}
+
+		s.app.logger.Error("source", "source_refresh_error", "cycle", "pipeline",
+			"targeted refresh of %q failed after %d persisted: %v", id, persisted, err)
+	} else {
+		s.app.logger.Info("source", "source_refresh_success",
+			"targeted refresh of %q complete: %d discovered, %d persisted, %d duplicates",
+			id, stats.Discovered, stats.Persisted, stats.Duplicates)
+	}
+
+	// Ingestion finished (or failed) — publish the final state.
+	s.app.publishState()
+
+	if err != nil {
+		return nil, err
+	}
+
+	// Bounded source-specific stats: the authoritative source model's
+	// own view — never recomputed in the UI.
+	s.app.mu.RLock()
+
+	var out *source.Stats
+
+	for _, src := range s.app.sources {
+		if src.ID == id {
+			view := src.Stats()
+			out = &view
+
+			break
+		}
+	}
+
+	s.app.mu.RUnlock()
+
+	return out, nil
+}
+
 // DataService exposes stored configurations to the UI.
 type DataService struct {
 	app *App

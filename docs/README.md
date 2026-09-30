@@ -21,6 +21,7 @@ domain has exactly ONE authoritative document.
 | Performance budgets | [performance.md](performance.md) |
 
 Supporting topic docs: [android.md](android.md) (Android plan),
+[configurations.md](configurations.md) (the configuration workspace),
 [discovery.md](discovery.md), [internet-tools.md](internet-tools.md),
 [latency.md](latency.md), [reuse.md](reuse.md).
 

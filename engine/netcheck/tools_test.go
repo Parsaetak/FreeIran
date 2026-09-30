@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -626,8 +627,11 @@ func TestToolTunneledRequiresDial(t *testing.T) {
 		// No dial supplied.
 	})
 
-	if result.Status != ToolStatusUnsupported {
-		t.Fatalf("status = %q, want unsupported (no tunnel)", result.Status)
+	// v0.12.1: a tunneled run without a live dial is not_configured —
+	// the tool exists and works; the local endpoint it must traverse
+	// is simply not there.
+	if result.Status != ToolStatusNotConfigured {
+		t.Fatalf("status = %q, want not_configured (no tunnel)", result.Status)
 	}
 }
 
@@ -677,12 +681,14 @@ func TestToolTunnelDiagnostics(t *testing.T) {
 		Tunnel: &TunnelSnapshot{Active: false},
 	})
 
-	if directResult.Status != ToolStatusFailed {
-		t.Fatalf("direct path status = %q, want failed", directResult.Status)
+	// v0.12.1: Direct + no active tunnel is NOT a failure — the
+	// context does not admit the measurement at all.
+	if directResult.Status != ToolStatusNotApplicable {
+		t.Fatalf("direct path status = %q, want not_applicable", directResult.Status)
 	}
 
-	if !strings.Contains(directResult.Error, "No tunnel selected") {
-		t.Fatalf("direct path error = %q, want \"No tunnel selected\"", directResult.Error)
+	if !strings.Contains(directResult.Error, "No active tunnel") {
+		t.Fatalf("direct path error = %q, want \"No active tunnel\"", directResult.Error)
 	}
 
 	// v0.11.2: Tunnel path selected but the snapshot reports inactive
@@ -694,8 +700,10 @@ func TestToolTunnelDiagnostics(t *testing.T) {
 		Tunnel: &TunnelSnapshot{Active: false},
 	})
 
-	if inactiveResult.Status != ToolStatusFailed {
-		t.Fatalf("tunnel-path inactive status = %q, want failed", inactiveResult.Status)
+	// v0.12.1: tunneled + no active tunnel is a missing prerequisite,
+	// not a measured failure.
+	if inactiveResult.Status != ToolStatusNotConfigured {
+		t.Fatalf("tunnel-path inactive status = %q, want not_configured", inactiveResult.Status)
 	}
 
 	if !strings.Contains(inactiveResult.Error, "Tunnel unavailable") {
@@ -710,8 +718,10 @@ func TestToolTunnelDiagnostics(t *testing.T) {
 		Tunnel: &TunnelSnapshot{Active: true, Provider: "tor", Endpoint: ""},
 	})
 
-	if emptyEndpoint.Status != ToolStatusFailed {
-		t.Fatalf("empty-endpoint status = %q, want failed", emptyEndpoint.Status)
+	// v0.12.1: an active tunnel without a local endpoint is a missing
+	// prerequisite (not_configured), not a measured failure.
+	if emptyEndpoint.Status != ToolStatusNotConfigured {
+		t.Fatalf("empty-endpoint status = %q, want not_configured", emptyEndpoint.Status)
 	}
 
 	if !strings.Contains(emptyEndpoint.Error, "no local endpoint") {
@@ -825,17 +835,79 @@ func TestToolInvalidURLForWebSocket(t *testing.T) {
 	}
 }
 
-func TestToolQUICHonestUnsupported(t *testing.T) {
+// TestToolQUICLocalHandshake pins the v0.12.1 QUIC contract: a REAL
+// QUIC v1 handshake against a deterministic LOCAL quic-go listener
+// (never a fragile public endpoint). A completed handshake is ok —
+// never inferred from UDP reachability.
+func TestToolQUICLocalHandshake(t *testing.T) {
+	addr := startFakeQUIC(t)
+
+	runner := localEndpointRunner()
+	runner.Safety.AllowInsecureTLS = true // the fixture serves a self-signed cert
+
+	result := runner.Run(context.Background(), ToolRequest{
+		Tool:    ToolQUIC,
+		Target:  addr,
+		Timeout: 10 * time.Second,
+	})
+
+	if result.Status != ToolStatusOK {
+		t.Fatalf("status = %q (%s), want ok", result.Status, result.Error)
+	}
+
+	if !result.MeasuredOK() {
+		t.Fatal("successful handshake must count as measured evidence")
+	}
+
+	if result.Details["alpn"] != "h3" {
+		t.Fatalf("alpn = %q, want h3", result.Details["alpn"])
+	}
+}
+
+// TestToolQUICSilentPort: a UDP port that answers nothing is
+// unreachable evidence — the probe ran, the path stayed silent. Never
+// "unsupported", never a fabricated ok.
+func TestToolQUICSilentPort(t *testing.T) {
+	listener, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	if err != nil {
+		t.Skipf("no loopback listener: %v", err)
+	}
+
+	addr := listener.LocalAddr().String()
+	listener.Close()
+
+	runner := localEndpointRunner()
+
+	result := runner.Run(context.Background(), ToolRequest{
+		Tool:    ToolQUIC,
+		Target:  addr,
+		Timeout: 4 * time.Second,
+	})
+
+	switch result.Status {
+	case ToolStatusUnreachable, ToolStatusTimeout, ToolStatusFailed:
+		// All three are honest classifications of silence/refusal on
+		// this platform; the forbidden states are ok/unsupported.
+	default:
+		t.Fatalf("status = %q, want unreachable/timeout/failed", result.Status)
+	}
+}
+
+// TestToolQUICTunneledUnsupported: QUIC cannot traverse the SOCKS
+// tunnel (no UDP relay) — the honest unsupported path choice.
+func TestToolQUICTunneledUnsupported(t *testing.T) {
 	runner := NewToolRunner()
 
-	result := runner.Run(context.Background(), ToolRequest{Tool: ToolQUIC})
+	result := runner.Run(context.Background(), ToolRequest{
+		Tool: ToolQUIC,
+		Path: PathTunneled,
+		Dial: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return nil, errors.New("unused")
+		},
+	})
 
 	if result.Status != ToolStatusUnsupported {
 		t.Fatalf("status = %q, want unsupported", result.Status)
-	}
-
-	if result.Error == "" {
-		t.Fatal("unsupported tools must explain WHY")
 	}
 }
 

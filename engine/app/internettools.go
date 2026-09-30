@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
 	"sync"
 	"time"
 
@@ -113,8 +114,29 @@ func (s *InternetToolsService) RunTool(view ToolRequestView) (netcheck.ToolResul
 			request.Provider = providerName
 			request.Dial = tunnelDial(endpoint)
 		}
-		// No live tunnel: the runner reports the honest "no active
-		// tunnel" status instead of silently probing directly.
+		// No live tunnel: the runner reports the honest "not
+		// configured" status instead of silently probing directly.
+	}
+
+	// v0.12.1 endpoint-tool target resolution (§6/§7): the service
+	// layer supplies the ONLY endpoint knowledge the tools consume —
+	// explicit user targets still win inside the tool; without one,
+	// the tool falls back to the protocol-compatible endpoint resolved
+	// HERE, or reports not_configured. No blind 127.0.0.1:1080 probe.
+	if tool == netcheck.ToolSOCKS5 && active && endpoint != "" {
+		request.LocalEndpoint = endpoint
+		request.LocalEndpointKind = "socks5"
+	}
+
+	if tool == netcheck.ToolHTTPConnect {
+		// The active session endpoint is SOCKS, never HTTP — it is
+		// NOT protocol-compatible and is deliberately not offered.
+		// The deterministically readable configured HTTP inbound is
+		// the second priority; absence is the honest not_configured.
+		if port := s.app.currentSettings().LocalHTTPPort; port > 0 {
+			request.LocalEndpoint = net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+			request.LocalEndpointKind = "http"
+		}
 	}
 
 	if tool == netcheck.ToolTunnelDiagnostics && active {

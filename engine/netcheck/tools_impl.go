@@ -27,6 +27,13 @@ import (
 // defaultToolTarget returns the safe autonomous default per tool.
 // Every default is a public, curated endpoint — private ranges are
 // blocked for autonomous targets by policy.
+//
+// v0.12.1: the local-endpoint tools (http_connect, socks5) have NO
+// hard-coded default target. Probing 127.0.0.1:1080 when FreeIran
+// owns no such endpoint produced fake "failures" — a missing proxy
+// is not_configured, not a network failure. Their target resolution
+// lives in the tool implementations (explicit target →
+// protocol-compatible local endpoint → not_configured).
 func defaultToolTarget(tool ToolID) string {
 	switch tool {
 	case ToolInternet:
@@ -39,16 +46,14 @@ func defaultToolTarget(tool ToolID) string {
 		return "www.gstatic.com:443"
 	case ToolHTTPS:
 		return "https://www.gstatic.com/generate_204"
-	case ToolHTTPConnect:
-		return "http://127.0.0.1:1080"
-	case ToolSOCKS5:
-		return "127.0.0.1:1080"
 	case ToolWebSocket:
 		return "wss://echo.websocket.events"
 	case ToolUDP:
 		return "1.1.1.1:53"
 	case ToolQUIC:
-		return ""
+		// Verified QUIC-capable public endpoint (HTTP/3 over
+		// QUIC v1 is served on :443).
+		return "www.cloudflare.com:443"
 	case ToolTraceroute:
 		return "1.1.1.1"
 	case ToolPathMTU:
@@ -278,7 +283,15 @@ func (r *ToolRunner) runDNS(ctx context.Context, req ToolRequest, result *ToolRe
 		// set by default — queries travel through the supplied dialer).
 		diagOpts.Resolvers = curatedResolverAddresses()
 		diagOpts.Dial = req.Dial
+		diagOpts.DoH = true
 		mode = "curated via tunnel"
+	} else if req.Target == "" || net.ParseIP(host) == nil {
+		// Default (system + curated) and hostname-target modes gain
+		// the encrypted-DoH comparison row: a hijacked plaintext path
+		// beside a working encrypted path is real censorship
+		// evidence. An explicit single-resolver diagnostic keeps the
+		// user's exact question.
+		diagOpts.DoH = true
 	}
 
 	report := RunDNSDiagnostic(ctx, diagOpts)
@@ -288,14 +301,14 @@ func (r *ToolRunner) runDNS(ctx context.Context, req ToolRequest, result *ToolRe
 	// Aggregate surface: the best successful evidence feeds the
 	// shared measurement fields; the status is honest about how many
 	// resolvers answered.
-	bestLatency, bestAnswers, okCount, total := summarizeDNSReport(&report)
+	bestLatency, bestAnswers, okQueries, totalQueries := summarizeDNSReport(&report)
 
 	result.Measurement = ToolMeasurement{
 		LatencyMS:    bestLatency,
 		Measured:     bestLatency > 0,
 		Addresses:    bestAnswers,
 		AddressCount: len(bestAnswers),
-		Probes:       total,
+		Probes:       totalQueries,
 	}
 
 	result.Details = map[string]string{
@@ -306,21 +319,45 @@ func (r *ToolRunner) runDNS(ctx context.Context, req ToolRequest, result *ToolRe
 		"user_action": "DNS diagnostics are never run automatically",
 	}
 
-	switch {
-	case okCount > 0:
-		result.Status = ToolStatusOK
-	case ctx.Err() != nil:
-		result.Status = ToolStatusCancelled
-		result.Error = "cancelled"
-	default:
-		result.Status = ToolStatusFailed
+	status, class, reason := dnsAggregateStatus(okQueries, totalQueries, ctx.Err() != nil, &report)
 
-		if class, msg := dominantDNSFailure(&report); class != "" {
-			result.Error = msg
-			result.Details["failure_class"] = class
-		} else {
-			result.Error = "every resolver failed"
+	result.Status = status
+	result.Error = reason
+
+	if class != "" {
+		result.Details["failure_class"] = class
+	}
+}
+
+// dnsAggregateStatus is the pure v0.12.1 DNS status decision:
+//
+//	all queries answered            → ok
+//	some answered, some failed      → partial (dominant class attached)
+//	none answered, run cancelled    → cancelled
+//	none answered                   → failed (dominant class attached)
+//
+// Pinned by TestDNSAggregateStatus. Collapsing partial evidence into
+// plain ok/failed hid real censorship evidence (a hijacking system
+// resolver beside healthy curated ones; an answerable A record beside
+// a blocked AAAA).
+func dnsAggregateStatus(okQueries, totalQueries int, cancelled bool, report *DNSDiagnosticReport) (ToolStatus, string, string) {
+	switch {
+	case okQueries > 0 && okQueries == totalQueries:
+		return ToolStatusOK, "", ""
+	case okQueries > 0:
+		if class, msg := dominantDNSFailure(report); class != "" {
+			return ToolStatusPartial, class, "partial: " + msg
 		}
+
+		return ToolStatusPartial, "", "partial: some resolver queries failed"
+	case cancelled:
+		return ToolStatusCancelled, "", "cancelled"
+	default:
+		if class, msg := dominantDNSFailure(report); class != "" {
+			return ToolStatusFailed, class, msg
+		}
+
+		return ToolStatusFailed, "", "every resolver failed"
 	}
 }
 
@@ -334,16 +371,22 @@ func curatedResolverAddresses() []string {
 }
 
 // summarizeDNSReport extracts the best successful evidence.
-func summarizeDNSReport(report *DNSDiagnosticReport) (bestLatency int64, bestAnswers []string, okCount, total int) {
+// v0.12.1: the aggregation is QUERY-level — okQueries answers the
+// "how many (resolver, record-type) rows succeeded" question that the
+// partial-vs-total status decision needs (resolver-level OK hides a
+// half-answered resolver).
+func summarizeDNSReport(report *DNSDiagnosticReport) (bestLatency int64, bestAnswers []string, okQueries, totalQueries int) {
 	bestSet := false
 
 	for _, resolver := range report.Resolvers {
 		for _, q := range resolver.Queries {
-			total++
+			totalQueries++
 
 			if !q.OK {
 				continue
 			}
+
+			okQueries++
 
 			if !bestSet || (q.LatencyMS > 0 && q.LatencyMS < bestLatency) {
 				bestSet = true
@@ -353,13 +396,7 @@ func summarizeDNSReport(report *DNSDiagnosticReport) (bestLatency int64, bestAns
 		}
 	}
 
-	for _, resolver := range report.Resolvers {
-		if resolver.OK {
-			okCount++
-		}
-	}
-
-	return bestLatency, bestAnswers, okCount, total
+	return bestLatency, bestAnswers, okQueries, totalQueries
 }
 
 // dominantDNSFailure renders the most common failure class of a
@@ -650,11 +687,38 @@ func (r *ToolRunner) boundedHTTPClient(req ToolRequest) *http.Client {
 // runHTTPConnect tests an HTTP proxy's CONNECT capability with a
 // bounded, manual exchange (no credentials — public proxies are not
 // supported by policy; local endpoints are the use case).
+//
+// v0.12.1 target resolution (in priority order):
+//
+//  1. explicit user target (req.Target) — always honoured;
+//  2. a protocol-compatible local endpoint supplied by the service
+//     layer (req.LocalEndpoint with LocalEndpointKind == "http" — a
+//     configured HTTP proxy, never the SOCKS session endpoint);
+//  3. none of the above → not_configured. A missing proxy is a
+//     configuration state, not a network failure — the legacy
+//     blind 127.0.0.1:1080 probe is gone.
 func (r *ToolRunner) runHTTPConnect(ctx context.Context, req ToolRequest, result *ToolResult) {
 	result.Transport = "http-connect"
 
-	// The proxy under test.
-	proxyHost, proxyPort := targetHostPort(req, 1080)
+	proxyAddr, ok := resolveEndpointTarget(req, "http")
+	if !ok {
+		result.Status = ToolStatusNotConfigured
+		result.Error = "no HTTP proxy is configured; set an explicit target or configure a local HTTP proxy"
+		result.Details = map[string]string{
+			"reason":    "no local HTTP proxy endpoint exists in the current configuration",
+			"user_path": string(req.Path),
+		}
+
+		return
+	}
+
+	proxyHost, proxyPort, err := splitProxyEndpoint(proxyAddr)
+	if err != nil {
+		result.Status = ToolStatusInvalid
+		result.Error = err.Error()
+
+		return
+	}
 
 	// CONNECT destination: a public, fixed target (never user URLs).
 	const connectHost = "www.gstatic.com"
@@ -718,6 +782,52 @@ func (r *ToolRunner) runHTTPConnect(ctx context.Context, req ToolRequest, result
 	}
 }
 
+// resolveEndpointTarget applies the v0.12.1 endpoint-tool target
+// resolution: an explicit user target wins; otherwise the service-
+// supplied local endpoint is used when it is protocol-compatible
+// (kind == want). ok=false means nothing is configured — the honest
+// not_configured state.
+func resolveEndpointTarget(req ToolRequest, want string) (string, bool) {
+	if target := strings.TrimSpace(req.Target); target != "" {
+		return target, true
+	}
+
+	endpoint := strings.TrimSpace(req.LocalEndpoint)
+
+	if endpoint != "" && req.LocalEndpointKind == want {
+		return endpoint, true
+	}
+
+	return "", false
+}
+
+// splitProxyEndpoint splits a resolved proxy endpoint (host, host:port
+// or http://host:port) into host + port for the dial path.
+func splitProxyEndpoint(endpoint string) (string, int, error) {
+	endpoint = strings.TrimSpace(endpoint)
+
+	// Accept an http:// URL form (the legacy default target shape).
+	if scheme, rest, found := strings.Cut(endpoint, "://"); found {
+		if !strings.EqualFold(scheme, "http") && !strings.EqualFold(scheme, "socks5") {
+			return "", 0, fmt.Errorf("unsupported proxy scheme %q", scheme)
+		}
+
+		endpoint = rest
+	}
+
+	host, portStr, err := net.SplitHostPort(endpoint)
+	if err != nil {
+		return "", 0, fmt.Errorf("invalid proxy endpoint %q: %v", endpoint, err)
+	}
+
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port < 1 || port > 65535 {
+		return "", 0, fmt.Errorf("invalid proxy port %q", portStr)
+	}
+
+	return host, port, nil
+}
+
 // parseHTTPStatusLine extracts the code from "HTTP/1.x CODE ...".
 func parseHTTPStatusLine(line string) int {
 	parts := strings.Fields(line)
@@ -735,11 +845,26 @@ func parseHTTPStatusLine(line string) int {
 
 // runSOCKS5 verifies a SOCKS5 endpoint performs a real CONNECT
 // round trip through the existing engine dialer.
+//
+// v0.12.1 target resolution (same priority contract as HTTP
+// CONNECT): explicit user target → the ACTIVE session endpoint when
+// it is SOCKS-compatible (it always is — the live tunnel is a local
+// SOCKS listener) → not_configured. The engine endpoint knowledge is
+// reused; no second SOCKS manager exists and none is created.
 func (r *ToolRunner) runSOCKS5(ctx context.Context, req ToolRequest, result *ToolResult) {
 	result.Transport = "socks5"
 
-	host, port := targetHostPort(req, 1080)
-	proxyAddr := net.JoinHostPort(host, strconv.Itoa(port))
+	proxyAddr, ok := resolveEndpointTarget(req, "socks5")
+	if !ok {
+		result.Status = ToolStatusNotConfigured
+		result.Error = "no SOCKS5 endpoint is configured; start a tunnel or set an explicit target"
+		result.Details = map[string]string{
+			"reason":    "no local SOCKS5 endpoint exists in the current configuration",
+			"user_path": string(req.Path),
+		}
+
+		return
+	}
 
 	dialer := socks5.Dialer{ProxyAddr: proxyAddr, Timeout: 8 * time.Second}
 
@@ -763,20 +888,167 @@ func (r *ToolRunner) runSOCKS5(ctx context.Context, req ToolRequest, result *Too
 
 // runWebSocket performs the upgrade handshake (plain TCP or TLS, via
 // the tunnel when requested) and reports the negotiated status.
+//
+// v0.12.1 resilience contract: one public echo endpoint's outage must
+// never read as a universal conclusion about the user's network.
+//
+//   - explicit target → exactly ONE probe; its failure is failed FOR
+//     THAT TARGET (no fallback set runs — the user asked a specific
+//     question).
+//   - no explicit target → a small bounded curated set runs; per-
+//     target evidence is kept, the aggregate is:
+//     all succeed → ok | mixed → partial | all fail → failed.
+//
+// No censorship conclusion is ever drawn from an endpoint outage.
 func (r *ToolRunner) runWebSocket(ctx context.Context, req ToolRequest, result *ToolResult) {
 	result.Transport = "ws"
 
+	targets := []string{}
+
 	target := strings.TrimSpace(req.Target)
-	if target == "" {
-		target = defaultToolTarget(ToolWebSocket)
+	if target != "" {
+		targets = []string{target}
+	} else {
+		targets = append(targets, curatedWebSocketTargets...)
 	}
 
-	parsed, err := url.Parse(target)
-	if err != nil {
-		result.Status = ToolStatusInvalid
-		result.Error = "invalid WebSocket URL: " + err.Error()
+	evidence := make([]wsEvidence, 0, len(targets))
+
+	okCount := 0
+
+	for _, wsTarget := range targets {
+		if ctx.Err() != nil {
+			break
+		}
+
+		ev := wsEvidence{target: wsTarget}
+		ev.status, ev.ms = r.wsHandshakeOnce(ctx, req, wsTarget, &ev.err)
+
+		if ev.err == "" {
+			okCount++
+		}
+
+		evidence = append(evidence, ev)
+	}
+
+	if ctx.Err() != nil && okCount == 0 {
+		result.Status = ToolStatusCancelled
+		result.Error = ctx.Err().Error()
 
 		return
+	}
+
+	// Aggregate + per-target detail.
+	result.Measurement.Probes = len(evidence)
+
+	details := make([]string, 0, len(evidence))
+
+	var bestMS int64
+
+	for _, ev := range evidence {
+		line := ev.target
+
+		switch {
+		case ev.err == "":
+			line += fmt.Sprintf(" ok %d ms", ev.ms)
+
+			if ev.ms > 0 && (bestMS == 0 || ev.ms < bestMS) {
+				bestMS = ev.ms
+			}
+		case ev.status > 0:
+			line += fmt.Sprintf(" HTTP %d", ev.status)
+		default:
+			line += " failed"
+		}
+
+		details = append(details, line)
+	}
+
+	result.Details = map[string]string{"targets": strings.Join(details, "; ")}
+
+	switch {
+	case len(evidence) == 0:
+		// Every probe was cut off before completing (cancel/timeout
+		// with no per-target evidence) — honest cancellation, never
+		// a fake success from an empty set.
+		result.Status = ToolStatusCancelled
+		result.Error = firstNonEmpty(errText(ctx), "no WebSocket probe completed")
+	case okCount == len(evidence):
+		result.Status = ToolStatusOK
+	case okCount > 0:
+		// One endpoint answered, another did not: partial. That
+		// is per-endpoint evidence, not a network verdict.
+		result.Status = ToolStatusPartial
+		result.Error = "partial: one or more WebSocket endpoints failed"
+	default:
+		result.Status = ToolStatusFailed
+		result.Error = firstNonEmpty(lastWSError(evidence), "every WebSocket endpoint failed")
+	}
+
+	if bestMS > 0 {
+		result.Measurement.LatencyMS = bestMS
+		result.Measurement.Measured = true
+	}
+
+	// An explicit-target run reports THAT target's evidence (status
+	// even on success — the row shows the negotiated code).
+	if len(evidence) == 1 {
+		if evidence[0].err != "" {
+			result.Error = evidence[0].err
+		}
+
+		if evidence[0].status > 0 {
+			result.Measurement.Status = evidence[0].status
+		}
+	}
+}
+
+// errText renders a context error for reporting (empty when none).
+func errText(ctx context.Context) string {
+	if ctx == nil || ctx.Err() == nil {
+		return ""
+	}
+
+	return ctx.Err().Error()
+}
+
+// wsEvidence is one per-target probe result of the WebSocket tool.
+type wsEvidence struct {
+	target string
+	status int
+	ms     int64
+	err    string
+}
+
+// lastWSError returns the last recorded error of a failed aggregate
+// (the most specific evidence of the run).
+func lastWSError(evidence []wsEvidence) string {
+	for i := len(evidence) - 1; i >= 0; i-- {
+		if evidence[i].err != "" {
+			return evidence[i].err
+		}
+	}
+
+	return ""
+}
+
+// curatedWebSocketTargets is the bounded fallback set used when no
+// explicit target is given. Two independently operated endpoints:
+// one failing must never decide the aggregate on its own.
+var curatedWebSocketTargets = []string{
+	"wss://echo.websocket.events",
+	"wss://ws.postman-echo.com/raw",
+}
+
+// wsHandshakeOnce runs ONE bounded WebSocket upgrade handshake and
+// returns (httpStatus, elapsedMS) — failures are reported through
+// errOut so the caller keeps per-target evidence.
+func (r *ToolRunner) wsHandshakeOnce(ctx context.Context, req ToolRequest, target string, errOut *string) (int, int64) {
+	parsed, err := url.Parse(target)
+	if err != nil {
+		*errOut = "invalid WebSocket URL: " + err.Error()
+
+		return 0, 0
 	}
 
 	host := parsed.Hostname()
@@ -795,9 +1067,9 @@ func (r *ToolRunner) runWebSocket(ctx context.Context, req ToolRequest, result *
 
 	conn, latency, err := toolDial(ctx, req, r.Safety, host, port)
 	if err != nil {
-		setStatusFromError(result, err)
+		*errOut = err.Error()
 
-		return
+		return 0, 0
 	}
 
 	defer conn.Close()
@@ -814,9 +1086,9 @@ func (r *ToolRunner) runWebSocket(ctx context.Context, req ToolRequest, result *
 		tlsStart := time.Now()
 
 		if err := tlsConn.HandshakeContext(ctx); err != nil {
-			setStatusFromError(result, err)
+			*errOut = err.Error()
 
-			return
+			return 0, 0
 		}
 
 		latency += time.Since(tlsStart)
@@ -841,33 +1113,33 @@ func (r *ToolRunner) runWebSocket(ctx context.Context, req ToolRequest, result *
 	writeStart := time.Now()
 
 	if _, err := raw.Write([]byte(request)); err != nil {
-		setStatusFromError(result, err)
+		*errOut = err.Error()
 
-		return
+		return 0, 0
 	}
 
 	line, err := bufio.NewReader(io.LimitReader(raw, 4096)).ReadString('\n')
 	elapsed := time.Since(writeStart)
 
 	if err != nil {
-		setStatusFromError(result, err)
+		*errOut = err.Error()
 
-		return
+		return 0, 0
 	}
 
 	status := parseHTTPStatusLine(line)
-	result.Measurement = measurementFor(latency + elapsed)
-	result.Measurement.Status = status
 
 	if status == 101 {
-		result.Status = ToolStatusOK
-	} else if status > 0 {
-		result.Status = ToolStatusFailed
-		result.Error = strings.TrimSpace(line)
-	} else {
-		result.Status = ToolStatusFailed
-		result.Error = "no HTTP response"
+		return status, (latency + elapsed).Milliseconds()
 	}
+
+	if status > 0 {
+		*errOut = strings.TrimSpace(line)
+	} else {
+		*errOut = "no HTTP response"
+	}
+
+	return status, 0
 }
 
 // randomWSKey produces a 16-byte base64-ish key (content is

@@ -29,10 +29,14 @@ package netcheck
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand"
 	"net"
+	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -187,6 +191,15 @@ type DNSDiagnosticOptions struct {
 	// tunneled diagnostic — they would silently bypass the tunnel.
 	Dial DialFunc
 
+	// DoH (v0.12.1) adds the bounded encrypted-DoH comparison row to
+	// the diagnostic (cloudflare-dns.com, RFC 8484 JSON — one extra
+	// row INSIDE this diagnostic, never a second resolver subsystem).
+	// Plaintext resolvers can be silently hijacked while encrypted
+	// resolution still works — that difference is real censorship
+	// evidence. The tool path sets it; direct unit tests leave it off
+	// so the default fixture set stays deterministic.
+	DoH bool
+
 	// AllowPrivateResolvers permits private resolver addresses. The
 	// tool surface NEVER sets it (the private-target policy applies —
 	// public resolvers only); it exists for deterministic local
@@ -339,6 +352,23 @@ func RunDNSDiagnostic(ctx context.Context, opts DNSDiagnosticOptions) DNSDiagnos
 		}
 	}
 
+	// v0.12.1: the bounded encrypted-DoH comparison row. It runs only
+	// when the caller opted in (the tool path) — explicit resolver
+	// fixtures and deterministic tests stay untouched.
+	if opts.DoH {
+		specs = append(specs, struct {
+			label   string
+			address string
+			system  bool
+		}{label: "Cloudflare DoH", address: curatedDoHEndpoint})
+	}
+
+	type specRow = struct {
+		label   string
+		address string
+		system  bool
+	}
+
 	results := make([]DNSResolverResult, len(specs))
 
 	var wg sync.WaitGroup
@@ -346,10 +376,17 @@ func RunDNSDiagnostic(ctx context.Context, opts DNSDiagnosticOptions) DNSDiagnos
 	for i, spec := range specs {
 		wg.Add(1)
 
-		go func(slot int, label, address string, system bool) {
+		go func(slot int, row specRow) {
 			defer wg.Done()
-			results[slot] = runOneResolver(ctx, label, address, system, opts)
-		}(i, spec.label, spec.address, spec.system)
+
+			if row.label == "Cloudflare DoH" {
+				results[slot] = runOneDoHResolver(ctx, row.label, opts)
+
+				return
+			}
+
+			results[slot] = runOneResolver(ctx, row.label, row.address, row.system, opts)
+		}(i, spec)
 	}
 
 	wg.Wait()
@@ -426,6 +463,197 @@ func runOneResolver(
 	result.Transport = dominantTransport(result.Queries)
 
 	return result
+}
+
+// curatedDoHEndpoint is the single bounded DoH endpoint of the
+// diagnostic (RFC 8484 JSON API). One endpoint, independently
+// operated, verified appropriate — the comparison row is a ladder
+// rung, not a resolver fleet.
+const curatedDoHEndpoint = "cloudflare-dns.com"
+
+// dohJSONResponse is the RFC 8484 JSON answer shape.
+type dohJSONResponse struct {
+	Status int `json:"status"`
+	Answer []struct {
+		Name string `json:"name"`
+		Type int    `json:"type"`
+		Data string `json:"data"`
+	} `json:"answer"`
+}
+
+// runOneDoHResolver probes A + AAAA through the encrypted DoH
+// endpoint. It is an ADDITIONAL row of the existing diagnostic — the
+// same report shape, the same failure classes, no second subsystem.
+func runOneDoHResolver(ctx context.Context, label string, opts DNSDiagnosticOptions) DNSResolverResult {
+	result := DNSResolverResult{
+		Resolver:  label,
+		Address:   curatedDoHEndpoint,
+		Transport: "doh",
+	}
+
+	for _, recordType := range opts.Types {
+		if ctx.Err() != nil {
+			result.Queries = append(result.Queries, cancelledQuery(label, curatedDoHEndpoint, opts.Name, recordType))
+
+			continue
+		}
+
+		query := runOneDoHQuery(ctx, opts.Name, recordType, opts.Timeout, opts.Dial)
+		result.Queries = append(result.Queries, query)
+
+		if query.OK && (result.LatencyMS == 0 || query.LatencyMS < result.LatencyMS) {
+			result.LatencyMS = query.LatencyMS
+		}
+	}
+
+	result.OK = allQueriesOK(result.Queries)
+
+	return result
+}
+
+// runOneDoHQuery performs ONE bounded DoH JSON query and renders the
+// shared evidence row.
+func runOneDoHQuery(ctx context.Context, name string, recordType DNSRecordType, timeout time.Duration, dial DialFunc) DNSQueryResult {
+	row := DNSQueryResult{
+		Resolver:   "Cloudflare DoH",
+		Address:    curatedDoHEndpoint,
+		Transport:  "doh",
+		QueryName:  name,
+		RecordType: recordType,
+		At:         time.Now().UTC(),
+	}
+
+	qtype, ok := qtypeCode(recordType)
+	if !ok {
+		row.FailureClass = DNSFailInvalid
+		row.Error = "unsupported record type"
+
+		return row
+	}
+
+	bounded := timeout
+	if bounded <= 0 {
+		bounded = dnsQueryTimeout
+	}
+
+	if bounded > 10*time.Second {
+		bounded = 10 * time.Second
+	}
+
+	transport := &http.Transport{
+		DisableKeepAlives:   true,
+		TLSHandshakeTimeout: bounded,
+		ForceAttemptHTTP2:   true,
+	}
+
+	if dial != nil {
+		// Tunneled diagnostic: the encrypted query travels through the
+		// tunnel dialer — the same path the plaintext rows compare
+		// against.
+		transport.DialContext = dial
+	}
+
+	client := &http.Client{Timeout: bounded, Transport: transport}
+	defer client.CloseIdleConnections()
+
+	target := fmt.Sprintf("https://%s/dns-query?name=%s&type=%d",
+		curatedDoHEndpoint, url.QueryEscape(name), qtype)
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		row.FailureClass = DNSFailInvalid
+		row.Error = err.Error()
+
+		return row
+	}
+
+	request.Header.Set("Accept", "application/dns-json")
+	request.Header.Set("User-Agent", "FreeIran-Tools/1.0")
+
+	started := time.Now()
+
+	resp, err := client.Do(request)
+	if err != nil {
+		row.FailureClass = DNSFailUnreachable
+		row.Error = boundedString(err.Error(), 120)
+
+		return row
+	}
+
+	defer resp.Body.Close()
+
+	latency := maxI64(time.Since(started).Milliseconds(), 1)
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if err != nil {
+		row.FailureClass = DNSFailMalformed
+		row.Error = boundedString(err.Error(), 120)
+
+		return row
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		row.FailureClass = DNSFailUnreachable
+		row.Error = fmt.Sprintf("DoH endpoint answered HTTP %d", resp.StatusCode)
+
+		return row
+	}
+
+	var answer dohJSONResponse
+
+	if err := json.Unmarshal(body, &answer); err != nil {
+		row.FailureClass = DNSFailMalformed
+		row.Error = "unparsable DoH response"
+
+		return row
+	}
+
+	row.Status = answer.Status
+	row.LatencyMS = latency
+	row.Measured = true
+
+	switch answer.Status {
+	case 0: // NOERROR
+	case 3: // NXDOMAIN
+		row.FailureClass = DNSFailNXDomain
+		row.Error = "no such domain"
+
+		return row
+	default:
+		row.FailureClass = DNSFailServfail
+		row.Error = fmt.Sprintf("DoH status %d", answer.Status)
+
+		return row
+	}
+
+	addresses := make([]string, 0, 4)
+
+	for _, a := range answer.Answer {
+		if int(a.Type) != int(qtype) {
+			continue
+		}
+
+		if ip := net.ParseIP(strings.TrimSpace(a.Data)); ip != nil {
+			addresses = append(addresses, ip.String())
+		}
+
+		if len(addresses) >= 8 {
+			break
+		}
+	}
+
+	if len(addresses) == 0 {
+		row.FailureClass = DNSFailEmpty
+		row.Error = "no answers"
+
+		return row
+	}
+
+	row.OK = true
+	row.Addresses = boundedAddresses(addresses, 8)
+	row.AnswerCount = len(addresses)
+
+	return row
 }
 
 // invalidQueries renders a per-type invalid rejection row set.

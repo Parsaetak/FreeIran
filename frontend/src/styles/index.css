@@ -5352,3 +5352,88 @@ html.reduced-motion .qc-mode-chip {
   color: var(--warning, #c7891d);
   cursor: help;
 }
+
+/* ------------------------------------------------------------------------
+ * v0.12.1 — Network tools status presentation + Configuration scope rail
+ * ------------------------------------------------------------------------ */
+
+/* §13: what the tool measures — one honest line per card. */
+.tool-card .tool-card-what {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-faint);
+}
+
+/* §11/§13: a tool whose prerequisite is missing (no active tunnel)
+   is greying out, not failing — the card stays calm, never red. */
+.tool-card.tool-card-blocked {
+  opacity: 0.62;
+}
+
+/* §13: prerequisite outcomes (not configured / unsupported / not
+   applicable) render in the calm neutral band — never red failure. */
+.tool-result.prereq {
+  border-style: dashed;
+}
+
+.tool-result.prereq .tool-result-title {
+  color: var(--text-faint);
+}
+
+/* §16: source chips share the group-chip language with a source cue. */
+.group-chip-source {
+  font-style: normal;
+}
+
+.group-chip-source .group-count {
+  margin-left: 6px;
+}
+
+/* §17: the source scope header — compact measured evidence + actions. */
+.source-scope-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3, 12px);
+  flex-wrap: wrap;
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--accent, var(--border));
+  border-radius: var(--radius, 8px);
+  background: var(--surface-sunken, transparent);
+  padding: var(--space-2, 8px) var(--space-3, 12px);
+}
+
+.source-scope-header .source-scope-main {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  min-width: 0;
+}
+
+.source-scope-header .source-scope-name {
+  font-weight: 600;
+  font-size: var(--text-sm, 13px);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.source-scope-header .source-scope-evidence {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3, 12px);
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--text-muted, var(--text-faint));
+}
+
+.source-scope-header .source-scope-evidence .source-scope-failure {
+  color: var(--warn, #b58900);
+}
+
+.source-scope-header .source-scope-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  flex-wrap: wrap;
+}

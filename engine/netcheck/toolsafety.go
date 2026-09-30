@@ -218,9 +218,11 @@ func (s Safety) ValidateToolTarget(req ToolRequest) error {
 		return nil
 	}
 
-	if tool == ToolQUIC {
-		return nil // capability report, no target
-	}
+	// v0.12.1: the ToolQUIC carve-out is gone — the QUIC probe now
+	// performs a real handshake to a host[:port] target, so its
+	// targets validate under the SAME host:port policy as tcp/tls
+	// (explicit private literals are blocked; the curated default is
+	// public).
 
 	target := strings.TrimSpace(req.Target)
 	if target == "" {

@@ -7,11 +7,13 @@ import {
   dataService,
   connectionService,
   testQueueService,
+  sourceService,
   call,
   type Config,
   type ConfigDetail,
   type QueueStatsView,
   type QueueLiveStateView,
+  type SourceStatsView,
 } from "../services";
 import {
   formatLatency,
@@ -68,6 +70,23 @@ function protocolLabel(type: string): string {
   if (type === "shadowsocks") return "ss";
 
   return type || "—";
+}
+
+/**
+ * v0.12.1 (§17): the trust band of the active source scope — the
+ * backend's ROUTE-trust classification, never recomputed in React.
+ */
+function trustBadgeClass(trust: string): string {
+  switch (trust) {
+    case "official":
+      return "success";
+    case "user":
+      return "info";
+    case "public":
+      return "warn";
+    default:
+      return "neutral";
+  }
 }
 
 /** v0.9.10 organize-by render item (§6 Configuration grouping). */
@@ -221,6 +240,13 @@ export function ConfigsPage() {
   const loadCollections = useCollectionsStore((state) => state.load);
   const toggleFavorite = useCollectionsStore((state) => state.toggleFavorite);
 
+  // v0.12.1 (§16): the configuration scope rail gains SOURCE scopes.
+  // The authoritative per-source evidence comes from the backend's
+  // SourceStatsList — the UI never recomputes source health.
+  const [sourceStats, setSourceStats] = useState<SourceStatsView[]>([]);
+  const [sourceFilter, setSourceFilter] = useState<string>("");
+  const [updatingSource, setUpdatingSource] = useState(false);
+
   // v0.11.2: `All` is a first-class scope. The default value is the
   // stable id "all" so the All chip renders active on first load and
   // the backend's groupMatches returns true for "all" + "" — both
@@ -241,6 +267,41 @@ export function ConfigsPage() {
   useEffect(() => {
     void loadCollections();
   }, [loadCollections]);
+
+  // v0.12.1: source scopes with authoritative counts. Reloaded after
+  // targeted updates (the update path refreshes this explicitly); the
+  // rail itself stays read-only otherwise — no duplicated counters.
+  const refreshSourceStats = useCallback(async () => {
+    try {
+      const stats = await call(() => sourceService.SourceStatsList());
+
+      setSourceStats(stats ?? []);
+    } catch {
+      /* the rail simply stays empty — never invented locally */
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshSourceStats();
+  }, [refreshSourceStats]);
+
+  // v0.12.1 (§27): Sources page actions land here through the shared
+  // navigation event: { page: "configs", source: <id> }.
+  useEffect(() => {
+    const off = Events.On("freeiran:navigate", (event: { data?: { source?: string } }) => {
+      const target = event?.data?.source;
+
+      if (target) {
+        setSourceFilter(target);
+        setGroupFilter("all");
+      }
+    });
+
+    return () => {
+      if (typeof off === "function") off();
+    };
+  }, []);
+
 
   const [protocol, setProtocol] = useState("");
   // v0.11.2: Internal configuration tabs. Opening config A then B
@@ -430,7 +491,15 @@ export function ConfigsPage() {
   // returns true for both "" and "all"), so we skip the filtered
   // round trip when the user explicitly picked All + no other filter.
   const loadFiltered = useCallback(async (limit: number) => {
-    if (statusFilter === "" && sortBy === "" && (groupFilter === "" || groupFilter === "all")) {
+    // v0.12.1: a source scope is a server-side filter
+    // (cfg.Source == sourceID) — the database is never downloaded to
+    // filter it in React.
+    if (
+      statusFilter === "" &&
+      sortBy === "" &&
+      (groupFilter === "" || groupFilter === "all") &&
+      sourceFilter === ""
+    ) {
       setFiltered(null);
 
       return;
@@ -449,7 +518,7 @@ export function ConfigsPage() {
             query: searchQuery || undefined,
             sort_by: sortBy || undefined,
             sort_desc: sortDesc,
-            source: undefined,
+            source: sourceFilter || undefined,
             backend: undefined,
             group: groupFilter || undefined,
           },
@@ -465,7 +534,7 @@ export function ConfigsPage() {
     } finally {
       setFilteredLoading(false);
     }
-  }, [protocol, statusFilter, sortBy, sortDesc, searchQuery, groupFilter]);
+  }, [protocol, statusFilter, sortBy, sortDesc, searchQuery, groupFilter, sourceFilter]);
 
   useEffect(() => {
     void loadFiltered(1000);
@@ -599,7 +668,78 @@ export function ConfigsPage() {
     }
   };
 
-  const exportCSV = () => {
+  // v0.12.1 (§30) KEYBOARD UX — professional desktop-client basics:
+  //
+  //   Ctrl+A  select every configuration in the visible scope
+  //   Delete/Backspace  the EXISTING supported removal in the active
+  //           context (leave the current user group)
+  //
+  // Text fields keep their native behaviour (the handler yields when
+  // an editable element owns the focus). Shift+F10 / ContextMenu stay
+  // row-level (already implemented on every row).
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const editable =
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT" ||
+          target.isContentEditable);
+
+      if ((event.ctrlKey || event.metaKey) && (event.key === "a" || event.key === "A") && !editable) {
+        // Ctrl+A: select the visible scope (bounded by the filter —
+        // selection drives the existing bulk actions).
+        event.preventDefault();
+
+        setSelected((prev) => {
+          const next = new Set(prev);
+
+          for (const item of visibleItems) {
+            next.add(String(item["id"]));
+          }
+
+          return next;
+        });
+
+        return;
+      }
+
+      if ((event.key === "Delete" || event.key === "Backspace") && !editable) {
+        // Delete in a user-group scope = the existing membership
+        // removal. Nowhere else does Delete have a supported action.
+        const group = userGroups.find((candidate) => candidate.id === groupFilter);
+
+        if (!group || selected.size === 0) return;
+
+        event.preventDefault();
+
+        const ids = [...selected];
+
+        void useCollectionsStore
+          .getState()
+          .removeManyFromGroup(group.id, ids)
+          .then(({ removed, failed, firstError }) => {
+            if (failed === 0) {
+              toast("success", `Removed ${removed} from ${group.name}`);
+            } else if (removed > 0) {
+              toast("warn", `Removed ${removed} of ${ids.length}`, `${failed} failed${firstError ? `: ${firstError}` : ""}`);
+            } else {
+              toast("error", `Could not remove from ${group.name}`, firstError ?? "All removals failed.");
+            }
+
+            setSelected(new Set());
+            setViewVersion((v) => v + 1);
+          });
+      }
+    };
+
+    document.addEventListener("keydown", onKeyDown);
+
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [visibleItems, selected, userGroups, groupFilter]);
+
+    const exportCSV = () => {
     const worker = new ExportWorker();
 
     worker.postMessage({
@@ -676,7 +816,9 @@ export function ConfigsPage() {
           scope,
           fingerprints: scope === "selected" ? [...selected] : undefined,
           protocol: protocol || undefined,
-          source: undefined,
+          // v0.12.1: bulk tests honour the active source scope — the
+          // ONE shared queue stays the sole testing authority.
+          source: sourceFilter || undefined,
           limit: undefined,
           priority: undefined,
           // v0.11.0: the UI's testing actions are EXPLICIT user
@@ -693,6 +835,72 @@ export function ConfigsPage() {
       }
     } catch (error) {
       toast("error", "Batch test failed", describeError(error));
+    }
+  };
+
+  // v0.12.1 (§17/§18): the active source scope's OWN evidence view.
+  const activeSourceScope = useMemo(
+    () => sourceStats.find((source) => source.id === sourceFilter) ?? null,
+    [sourceStats, sourceFilter],
+  );
+
+  // v0.12.1 (§18): update ONE source through the targeted refresh —
+  // the same ingestion architecture, never a second pipeline.
+  const updateActiveSource = async () => {
+    if (!activeSourceScope || updatingSource) return;
+
+    setUpdatingSource(true);
+
+    try {
+      const stats = await call(() => sourceService.RefreshSource(activeSourceScope.id));
+
+      await refreshSourceStats();
+
+      setViewVersion((v) => v + 1);
+
+      if (stats) {
+        toast(
+          "success",
+          "Source updated",
+          `${stats.name}: ${stats.config_count} configurations, ${stats.working_count} working.`,
+        );
+      } else {
+        toast("success", "Source updated");
+      }
+    } catch (error) {
+      toast("error", "Source update failed", describeError(error));
+    } finally {
+      setUpdatingSource(false);
+    }
+  };
+
+  // v0.12.1 (§19): check ONE source through the shared bounded queue
+  // (EnqueueByFilter with source = selectedSourceID). The UI never
+  // loops and launches test processes itself.
+  const checkActiveSource = async (scope: "all" | "untested" | "failed" | "working") => {
+    if (!activeSourceScope) return;
+
+    try {
+      const result = await call(() =>
+        testQueueService.EnqueueByFilter({
+          scope,
+          fingerprints: undefined,
+          protocol: undefined,
+          source: activeSourceScope.id,
+          limit: undefined,
+          priority: undefined,
+          // Explicit user action — never a background sweep.
+          origin: "user",
+        }),
+      );
+
+      if (result && result.enqueued === 0) {
+        toast("info", "Nothing to test", "No configuration matched this scope.");
+      } else {
+        toast("success", "Source check queued", `${result?.enqueued ?? 0} configuration(s) queued.`);
+      }
+    } catch (error) {
+      toast("error", "Source check failed", describeError(error));
     }
   };
 
@@ -1069,6 +1277,36 @@ export function ConfigsPage() {
           );
         })}
 
+        {/*
+         * v0.12.1 (§16) SOURCE SCOPES: one chip per source/subscription
+         * group with its authoritative configuration count. Selecting a
+         * source clears the group scope — the two are independent
+         * scopes of the same ONE server-side filter pipeline.
+         */}
+        {sourceStats.length > 0 && <span className="toolbar-divider" aria-hidden />}
+
+        {sourceStats.map((source) => {
+          const active = sourceFilter === source.id;
+
+          return (
+            <button
+              key={source.id}
+              type="button"
+              className={`group-chip group-chip-source ${active ? "active" : ""}`}
+              aria-pressed={active}
+              title={`${source.name} — ${source.config_count} configurations (${source.working_count} working)`}
+              onClick={() => {
+                setSourceFilter(active ? "" : source.id);
+                setGroupFilter("all");
+                setStatusFilter("");
+              }}
+            >
+              {source.name}
+              <span className="group-count">{source.config_count}</span>
+            </button>
+          );
+        })}
+
         {userGroups.length > 0 && <span className="toolbar-divider" aria-hidden />}
 
         {userGroups.map((group) => (
@@ -1204,6 +1442,106 @@ export function ConfigsPage() {
             Cancel
           </button>
         </div>
+      )}
+
+      {/*
+       * v0.12.1 (§17) SOURCE SCOPE HEADER: when a real source/
+       * subscription group is selected, a compact header shows the
+       * backend's MEASURED evidence (counts, freshness, trust band)
+       * and the per-source actions. A user group is NOT a remote
+       * source — it never gets an Update action.
+       */}
+      {activeSourceScope && (
+        <section className="source-scope-header" aria-label="Source scope">
+          <div className="source-scope-main">
+            <span className="source-scope-name" title={activeSourceScope.id}>
+              {activeSourceScope.name}
+            </span>
+            <span className={`badge ${activeSourceScope.enabled ? "success" : "neutral"}`}>
+              {activeSourceScope.enabled ? "Enabled" : "Disabled"}
+            </span>
+            <span className={`badge ${trustBadgeClass(activeSourceScope.trust)}`}>
+              {activeSourceScope.trust || "public"}
+            </span>
+          </div>
+
+          <div className="source-scope-evidence">
+            <span>
+              {formatNumber(activeSourceScope.config_count)} configurations
+            </span>
+            <span>
+              {formatNumber(activeSourceScope.working_count)} working
+            </span>
+            {activeSourceScope.last_successful_fetch && (
+              <span title={new Date(activeSourceScope.last_successful_fetch).toLocaleString()}>
+                last fetch {relativeTime(new Date(activeSourceScope.last_successful_fetch).getTime())}
+              </span>
+            )}
+            {activeSourceScope.last_failure && (
+              <span
+                className="source-scope-failure"
+                title={activeSourceScope.last_failure_reason || undefined}
+              >
+                failed {relativeTime(new Date(activeSourceScope.last_failure).getTime())}
+                {activeSourceScope.last_failure_reason ? ` — ${activeSourceScope.last_failure_reason}` : ""}
+              </span>
+            )}
+          </div>
+
+          <div className="source-scope-actions">
+            <button
+              type="button"
+              className="btn sm primary"
+              disabled={updatingSource}
+              onClick={() => void updateActiveSource()}
+            >
+              {updatingSource ? <span className="btn-spinner" aria-hidden /> : <IconRefresh size={13} />}
+              {updatingSource ? "Updating…" : "Update source"}
+            </button>
+            <button
+              type="button"
+              className="btn sm"
+              disabled={updatingSource}
+              onClick={() => void checkActiveSource("all")}
+            >
+              <IconPlay size={13} /> Check source
+            </button>
+            <button
+              type="button"
+              className="btn sm"
+              disabled={updatingSource}
+              onClick={() => void checkActiveSource("untested")}
+            >
+              Check untested
+            </button>
+            <Menu
+              ariaLabel="More source actions"
+              label={
+                <>
+                  More
+                  <IconChevronDown size={13} />
+                </>
+              }
+              items={[
+                {
+                  id: "check-failed",
+                  label: "Retry failed in source",
+                  disabled: updatingSource,
+                  onSelect: () => void checkActiveSource("failed"),
+                },
+                {
+                  id: "check-working",
+                  label: "Retest working in source",
+                  disabled: updatingSource,
+                  onSelect: () => void checkActiveSource("working"),
+                },
+              ]}
+            />
+            <button type="button" className="btn sm ghost" onClick={() => setSourceFilter("")}>
+              <IconX size={13} /> Exit scope
+            </button>
+          </div>
+        </section>
       )}
 
       {/*
@@ -1559,10 +1897,14 @@ export function ConfigsPage() {
             {renderItems.length === 0 && !loading && !searching ? (
               <EmptyState
                 icon={<IconSearch size={20} />}
-                title={searchQuery || protocol || groupFilter ? "No matching configurations" : "No configurations yet"}
+                title={
+                  searchQuery || protocol || groupFilter || sourceFilter
+                    ? "No matching configurations"
+                    : "No configurations yet"
+                }
                 hint={
-                  searchQuery || protocol || groupFilter
-                    ? "Try a different search term, protocol filter or group."
+                  searchQuery || protocol || groupFilter || sourceFilter
+                    ? "Try a different search term, protocol filter, source or group."
                     : "Add a source and refresh to populate the database."
                 }
               />

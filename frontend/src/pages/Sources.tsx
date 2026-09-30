@@ -1,12 +1,14 @@
 import { useEffect, useState } from "react";
+import { Events } from "@wailsio/runtime";
 import { useSourcesStore } from "../state/stores";
 import { useReliabilityStore } from "../state/collectionsStore";
 import { truncate } from "../utilities/format";
 import { describeError, toast } from "../state/toastStore";
 import { ConfirmDialog, FormDialog } from "../components/Dialog";
 import { EmptyState } from "../components/common";
-import { IconPlus, IconRefresh, IconSources, IconTrash } from "../components/Icons";
+import { IconConfigs, IconPlay, IconPlus, IconRefresh, IconSources, IconTrash } from "../components/Icons";
 import { formatLatency } from "../utilities/format";
+import { call, sourceService, testQueueService } from "../services";
 
 /** Sources page: managed subscription lists with refresh flow. */
 export function SourcesPage() {
@@ -52,6 +54,58 @@ export function SourcesPage() {
       toast("error", "Could not update source", describeError(error));
     } finally {
       setPendingIds((current) => current.filter((value) => value !== id));
+    }
+  };
+
+  // v0.12.1 (§27): the Sources page participates in the same product
+  // as Configurations — one navigation event model, one test queue,
+  // one ingestion pipeline. No second route framework, no second
+  // queue.
+  const refreshOneSource = async (id: string) => {
+    try {
+      const stats = await call(() => sourceService.RefreshSource(id));
+
+      await useSourcesStore.getState().load();
+
+      if (stats) {
+        toast("success", "Source updated", `${stats.name}: ${stats.config_count} configurations.`);
+      } else {
+        toast("success", "Source updated");
+      }
+    } catch (error) {
+      toast("error", "Source update failed", describeError(error));
+    }
+  };
+
+  const openSourceScope = (id: string) => {
+    try {
+      Events.Emit("freeiran:navigate", { page: "configs", source: id });
+    } catch {
+      /* navigation is best-effort */
+    }
+  };
+
+  const checkSourceConfigs = async (id: string) => {
+    try {
+      const result = await call(() =>
+        testQueueService.EnqueueByFilter({
+          scope: "all",
+          fingerprints: undefined,
+          protocol: undefined,
+          source: id,
+          limit: undefined,
+          priority: undefined,
+          origin: "user",
+        }),
+      );
+
+      if (result && result.enqueued === 0) {
+        toast("info", "Nothing to test", "No configuration matched this source.");
+      } else {
+        toast("success", "Source check queued", `${result?.enqueued ?? 0} configuration(s) queued.`);
+      }
+    } catch (error) {
+      toast("error", "Source check failed", describeError(error));
     }
   };
 
@@ -195,6 +249,39 @@ export function SourcesPage() {
                   <span className="badge neutral hide-sm">not fetched</span>
                 )}
 
+                {/*
+                  v0.12.1 (§27): compact per-source actions — the row
+                  links straight into the matching configuration scope
+                  and offers the targeted update + check.
+                */}
+                <button
+                  type="button"
+                  className="btn sm ghost hide-sm"
+                  aria-label={`Update ${source.name || source.id} now`}
+                  title="Refresh this source (targeted)"
+                  disabled={pending || !source.enabled}
+                  onClick={() => void refreshOneSource(source.id)}
+                >
+                  <IconRefresh size={13} />
+                </button>
+                <button
+                  type="button"
+                  className="btn sm ghost hide-sm"
+                  aria-label={`View configurations of ${source.name || source.id}`}
+                  title="View configurations in this scope"
+                  onClick={() => openSourceScope(source.id)}
+                >
+                  <IconConfigs size={13} />
+                </button>
+                <button
+                  type="button"
+                  className="btn sm ghost hide-sm"
+                  aria-label={`Check configurations of ${source.name || source.id}`}
+                  title="Check this source's configurations (shared test queue)"
+                  onClick={() => void checkSourceConfigs(source.id)}
+                >
+                  <IconPlay size={13} />
+                </button>
                 <button
                   type="button"
                   className="btn sm danger"

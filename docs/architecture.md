@@ -983,13 +983,23 @@ composite) with no hardcoded priority; choices are explainable.
 
 The diagnostics package gains the shared user-triggered tools engine
 (§5): fifteen tools (internet, dns, tcp, tls, https, http_connect,
-socks5, websocket, udp, quic — honestly unsupported, traceroute —
-privilege-gated, path_mtu — DNS-ladder capped ~300 B, captive_portal,
+socks5, websocket, udp, quic, traceroute, path_mtu, captive_portal,
 public_ip, tunnel_diagnostics) with one structured result contract,
 timeouts clamped [1 s, 60 s], and the `toolsafety.go` policy (scheme
 allowlist, no credentials in URLs, private-range blocking,
 DNS-rebinding guard, redirect cap 3, response cap 256 KiB,
 user-triggered ONLY, bounded concurrency of 3 in the app service).
+
+**v0.12.1 status semantics:** every tool result carries one of TEN
+statuses (ok, partial, failed, timeout, cancelled, invalid_target,
+unsupported, not_configured, not_applicable, unreachable) — each with
+its own structured log event. QUIC performs a real bounded QUIC v1
+handshake probe (the `quic-go` dependency is measurement-only and
+never a dataplane); traceroute walks the path through the native
+Windows IP Helper ICMP API (user-mode) or the Unix raw-ICMP walker;
+http_connect/socks5 resolve targets through documented endpoint
+priorities (never a hard-coded 127.0.0.1:1080). The exact semantics:
+docs/internet-tools.md.
 
 ### Latency measurement semantics
 

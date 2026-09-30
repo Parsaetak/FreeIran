@@ -11,6 +11,162 @@ are historical: version numbers, core pins and verification claims
 inside them describe the state of that release, not the current
 state.
 
+## v0.12.1 — network-tool truth, per-source configuration workspace, desktop-class context UX
+
+v0.12.1 fixes what the v0.12.0 runtime log exposed (six mislabeled
+network diagnostics, the `core_discovered` provenance leak) and turns
+Configurations into a source/subscription-aware workspace — on the
+existing architecture, with no second engine anywhere.
+
+### Network tools — status semantics and logging (§2–§4)
+
+- **Ten-state tool model.** `ToolStatus` grows `partial`,
+  `not_configured`, `not_applicable` and `unreachable` beside the
+  existing `ok` / `failed` / `timeout` / `cancelled` /
+  `invalid_target` / `unsupported`. Every state has a DISTINCT
+  structured event (`network_tool_partial`,
+  `network_tool_not_configured`, `network_tool_unreachable`, ...):
+  the old contract collapsed every non-OK outcome into
+  `network_tool_failed`. Pinned by `TestToolStatusEventMapping`.
+- **Severity policy.** Environment facts (not configured / not
+  applicable / unsupported / cancelled / partial) log at info;
+  measured path verdicts (unreachable) and genuine failures warn.
+- **DNS (§5).** Aggregation is query-level: some answers + some
+  failures → `partial` with the successful measurements retained and
+  the dominant failure class attached; all applicable resolvers
+  failing → `failed`; a bounded encrypted-DoH comparison row
+  (cloudflare-dns.com, RFC 8484 JSON) now rides INSIDE the existing
+  diagnostic (never a second resolver subsystem) — a hijacked
+  plaintext path beside a working encrypted path is real censorship
+  evidence. Tunneled runs fetch DoH through the tunnel dialer.
+- **HTTP CONNECT / SOCKS5 (§6/§7).** The hard-coded
+  `127.0.0.1:1080` default is gone. Target resolution:
+  explicit user target → protocol-compatible local endpoint supplied
+  by the service layer (the live session's SOCKS endpoint for SOCKS5;
+  a configured local HTTP inbound for HTTP CONNECT — the SOCKS
+  session endpoint is never offered to the HTTP tool) →
+  `not_configured`. A missing proxy renders "Not configured", not a
+  red failure.
+- **QUIC (§8).** A real, bounded QUIC v1 handshake probe with the
+  HTTP/3 ALPN, built on `github.com/quic-go/quic-go` — the minimal
+  dedicated diagnostic dependency (measurement only; never a
+  dataplane, never user traffic). Resolve→validate→pin honours the
+  private-range policy; silence classifies `unreachable`, an active
+  but failed handshake classifies `failed`, completion is `ok` with
+  ALPN/TLS/cipher details. Deterministic local `quic-go` listener
+  fixtures; CI never depends on a public QUIC endpoint.
+- **WebSocket (§9).** Default runs probe a bounded two-endpoint
+  curated set and aggregate honestly: all succeed → `ok`, mixed →
+  `partial` with per-target evidence, all fail → `failed`. An
+  explicit target answers exactly that target (one probe, no
+  fallback). An endpoint outage never becomes a censorship verdict.
+- **Traceroute (§10).** Windows now walks the path through the native
+  IP Helper ICMP API (IcmpCreateFile/IcmpSendEcho with per-probe TTL
+  in IP_OPTION_INFORMATION) — user-mode, no elevation, no
+  tracert.exe/route.exe/PowerShell/shell parsing. Unix keeps the raw
+  ICMP walker behind the shared `hopWalker` interface. Status
+  semantics: privilege gap → `unsupported`; explicit
+  destination-unreachable evidence → `unreachable`; hops observed
+  then silence → `unreachable` WITH the hop evidence; complete route
+  → `ok`. Hops are never fabricated.
+- **Tunnel diagnostics (§11).** Direct path + no tunnel →
+  `not_applicable` ("No active tunnel" — the v0.11.2 wording read as
+  a tunnel breakdown); tunneled + no tunnel → `not_configured`;
+  active tunnel → the existing live snapshot + real SOCKS5 CONNECT.
+  The UI greys the action with the honest hint while no tunnel is
+  active.
+- **Full catalogue audit (§12).** Every tool's target handling,
+  prerequisites, status classification, timeout, cancellation,
+  direct/tunneled semantics, logging and UI label verified; the
+  shared ToolRunner, catalogue, safety layer, timeout policy, result
+  model and log path remain the ONE of each (no duplicate network
+  diagnostics engine).
+
+### Runtime-log privacy (§33)
+
+- **`core_discovered` is provenance-free again.** The normal log
+  prints the compact form ("xray 26.3.27 available"); commit hashes,
+  `go1.x` tuples and paths move to a debug-severity
+  `core_discovered_details` record (developer diagnostics keep full
+  provenance). `compactCoreVersion` accepts digits-and-dots tokens
+  only, so runtime/commit fragments can never re-enter the normal
+  log. Pinned by `TestCoreDiscoveredMessageProvenanceFree`.
+
+### Configuration workspace (§14–§22)
+
+- **Source scopes in the scope rail (§15/§16).** A "folder" is a
+  logical browsing scope; source/subscription scopes map to
+  `cfg.Source` and filter through the ONE server-side pipeline
+  (`DataService.ListConfigsFiltered` with `source`). Counts come from
+  the authoritative `SourceStatsList` — no React-side health
+  recomputation, no duplicated counters.
+- **Source scope header (§17).** Name, enabled/disabled, trust band,
+  configuration/working counts, last successful fetch, last failure
+  and its recorded reason — backend evidence only. Actions: **Update
+  source**, **Check source**, **Check untested**, and More
+  (retry failed / retest working in scope).
+- **Targeted refresh (§18).** `SourceService.RefreshSource(id)`
+  refreshes exactly one source through the SAME ingestion
+  architecture (one fetcher, one parser pipeline, one store, one
+  scheduler): validates the ID, respects the enabled policy,
+  preserves dedupe/content-hash behaviour, updates stored configs,
+  publishes normal source-refresh state and returns the source's
+  bounded stats. Single-owner gate: targeted refresh and full cycles
+  share the `ingesting` flag — two requests can never create two
+  ingestion authorities (`TestConcurrentRefreshSourceOnlyOneCycle`).
+- **Targeted check (§19).** Per-source check actions enqueue through
+  the existing `TestQueueService.EnqueueByFilter` with
+  `source = selectedSourceID` — the queue stays the sole test
+  authority.
+- **User groups (§20).** Test/rename/membership actions only — a user
+  group is not a remote source and never offers "Update source".
+- **Interaction density (§21/§26).** The dense virtualized table,
+  sticky sortable header, organize-by, detail tabs and multi-select
+  action model are preserved unchanged; v2rayN's interaction patterns
+  remain the reference, never its visuals.
+- **Sources integration (§27).** Source rows gain targeted actions
+  (update this source / view its configurations / check them) that
+  land in the matching configuration scope through the existing
+  `freeiran:navigate` event model.
+- **Performance (§28).** Source selection is a server-side filter,
+  single-test results patch one record, source refresh reconciles the
+  affected scope — no full-database refresh, no N+1 calls, and the
+  ~20k-configuration virtualized surface is untouched.
+
+### Desktop-class context/keyboard UX (§25/§29/§30)
+
+- **The native browser/WebView context menu is suppressed
+  app-wide** through one shared policy
+  (`utilities/contextMenuPolicy.ts`): right-click on configurations
+  opens FreeIran's own MenuSurface (unchanged single menu engine —
+  Escape, arrows, Home/End, focus return, viewport flipping, scroll
+  handling and ARIA semantics preserved); right-click anywhere else
+  opens nothing. Text fields keep their native editing menu so
+  Ctrl+C/Ctrl+V/Ctrl+A and IME editing are never broken.
+- **Keyboard basics:** Ctrl+A selects the visible scope;
+  Shift+F10 / ContextMenu open the row menu (existing); Delete in a
+  user-group scope is the existing membership removal.
+
+### Version + verification (§32/§34/§37)
+
+- Version surfaces bumped to **0.12.1** (VERSION,
+  `internal/version/version.go`, frontend package, package-lock,
+  `build/winres.json`); historical release references preserved.
+- Docs: README/ROADMAP/CHANGELOG updated; `docs/internet-tools.md`
+  documents the exact ten-state semantics; `docs/configurations.md`
+  (new) is the authoritative description of the configuration
+  workspace; `docs/ui.md`, `docs/architecture.md` and
+  `docs/autonomous-connectivity.md` reconciled.
+- Tests: Go — status/event mapping, DNS aggregation, endpoint-tool
+  prerequisites, QUIC local handshake + silence + tunneled-unsupported,
+  WebSocket aggregation, tunnel-diagnostics applicability, targeted
+  refresh (scoping/enabled policy/single-owner gate/concurrency),
+  provenance-free core messages. Frontend — prerequisite vs failure
+  presentation, tunnel-diagnostics gating, tool descriptions, source
+  scope rail/header/actions, user-group action differences, row
+  right-click MenuSurface, native-menu suppression policy,
+  keyboard Ctrl+A. All tool fixtures local and deterministic.
+
 ## v0.12.0 — documentation consolidation + autonomous connectivity architecture handoff
 
 v0.12.0 is a documentation/architecture-consolidation release: no

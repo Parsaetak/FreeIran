@@ -9,7 +9,7 @@ configurations.
 **Project:** FreeIran — A SHEYTAN Digital System
 **Architect:** Parsa Tak / SHEYTAN
 **Repository:** https://github.com/Parsaetak/FreeIran
-**Current version:** 0.12.0 (see `VERSION`)
+**Current version:** 0.12.1 (see `VERSION`)
 **Status:** production architecture — multi-core protocol runtime with
 managed installation, multi-level node discovery, Ping/URL test modes
 with measured ranking, verified-connection engine with racing,
@@ -20,44 +20,67 @@ supervision, evidence-based failure classification with
 transport-agile route selection, and schema-verified ECH support
 through sing-box.
 
-## What's new in v0.12.0
+## What's new in v0.12.1
 
-v0.12.0 is a **documentation/architecture-consolidation release** —
-no features, no architecture replaced:
+v0.12.1 is a **network-tool truth + configuration-workspace release** —
+three goals, no architecture replaced:
 
-- `docs/autonomous-connectivity.md` is added as the canonical
-  long-term architecture contract (distilled from the September 2026
-  R&D report): the future connection/privacy/routing/transport/
-  evidence engines, the WFP kill-switch target, DNS authority,
-  ConnectionProof, adaptive transport selection, Tor/I2P/AmneziaWG
-  integration models, testing and clean-room acceptance — all
-  explicitly marked PLANNED.
-- `docs/README.md` indexes documentation authority (current behavior
-  vs future contract vs release history).
-- README/ROADMAP/CHANGELOG are de-duplicated: release narratives
-  moved to the CHANGELOG, ROADMAP rewritten as a forward phase
-  ladder, README refocused on the current product.
-- Version metadata bumped to 0.12.0 across all current surfaces
-  (VERSION, internal/version, frontend package, winres). Historical
-  release references are untouched.
-- Stale current-state wording repaired: the `engine/tunnel` package
-  comment and docs that still described TUN as disabled/experimental,
-  and stale sing-box 1.14.0-as-current references.
-- sing-box pin re-checked: upstream stable is now 1.14.2; the
-  verified 1.14.1 pin is intentionally retained (a dataplane upgrade
-  is a deliberate, separately verified change — never a documentation
-  side effect).
+- **Network tools report truthfully.** Every diagnostic state carries
+  its own meaning and its own log event: `ok`, `partial`, `failed`,
+  `timeout`, `cancelled`, `invalid_target`, `unsupported`,
+  `not_configured`, `not_applicable`, `unreachable`. A missing local
+  proxy is "Not configured" (never a red failure); tunnel diagnostics
+  on the direct path is "Not applicable"; a silent QUIC path is
+  "unreachable" evidence; a half-answering DNS run is "partial" with
+  its successful measurements retained.
+- **HTTP CONNECT and SOCKS5 lost their fake default.** Neither tool
+  blindly probes `127.0.0.1:1080` anymore. Targets resolve through
+  explicit user target → protocol-compatible local/session endpoint →
+  an honest `not_configured`.
+- **QUIC became a real diagnostic.** A bounded QUIC v1 handshake probe
+  (HTTP/3 ALPN) built on `quic-go` — the minimal dedicated diagnostic
+  dependency, used for measurement only and never as a dataplane.
+- **WebSocket stopped blaming the network for one endpoint's outage.**
+  The default run probes a small bounded curated set and aggregates
+  honestly (one up one down → `partial`); an explicit target still
+  answers exactly that target.
+- **Traceroute grew a native Windows walker.** The IP Helper ICMP API
+  (IcmpSendEcho with per-probe TTL) walks the path in user mode — no
+  elevation, no tracert.exe, no shell — and the classification
+  distinguishes privilege-gap `unsupported` from measured
+  `unreachable` with hop evidence retained.
+- **DNS gained a bounded DoH comparison row** inside the existing
+  diagnostic (RFC 8484 JSON, one endpoint): a hijacked plaintext path
+  beside a working encrypted path is real censorship evidence.
+- **The runtime log stays clean.** `core_discovered` is compact and
+  provenance-free ("xray 26.3.27 available") — the v0.12.0 regression
+  that leaked commit hashes and Go build tuples into the normal log is
+  fixed and pinned by tests. Every tool status has its own event
+  (`network_tool_not_configured`, `network_tool_unreachable`, ...).
+- **Configurations became a source-aware workspace.** The scope rail
+  adds per-source/subscription scopes with authoritative counts from
+  `SourceStatsList`; a source scope header shows the backend's
+  measured evidence (counts, freshness, trust band) with per-source
+  **Update** (targeted single-source refresh through the ONE ingestion
+  pipeline) and **Check** actions (through the ONE shared test
+  queue). User groups keep test-only actions — a group is not a remote
+  source. The dense virtualized table, server-side filtering, detail
+  tabs and per-config test affordances are all preserved.
+- **The native browser context menu is gone.** One application-wide
+  policy suppresses it; right-click on configurations opens FreeIran's
+  own MenuSurface, and text fields keep native editing/clipboard
+  behaviour. Keyboard UX grows the desktop-client basics (Ctrl+A
+  select visible scope, Shift+F10/Menu-key context menus, Delete =
+  leave the current user group).
+- Sources page rows gained targeted actions (update this source, view
+  its configurations, check them) that land in the matching
+  configuration scope through the existing navigation event model.
 
-> **Runtime verification status (honest):** v0.12.0 changes
-> documentation, version constants and comments only. It is verified
-> locally by the full-tree `go build` + `go vet` of the touched Go
-> surfaces, the version-surface tests, the frontend battery
-> (typecheck + unit tests + production `build:embed`), a repo-wide
-> version/stale-text audit and a documentation link audit. Remote
-> Actions were NOT re-run (no push, no PR, no release — per the
-> release rules); the next maintainer push produces that evidence.
-> The Windows TUN physical runtime remains NOT VERIFIED (unchanged;
-> see docs/tun.md).
+> **Honesty boundary (unchanged):** the Network tools are measurement
+> tools. Nothing in v0.12.1 claims QUIC protection, WebSocket
+> censorship resistance, DNS-leak prevention, IPv6 protection or a WFP
+> kill switch. The future-architecture contract in
+> docs/autonomous-connectivity.md remains PLANNED, not implemented.
 
 Release history (v0.11.5 GUI launch fix and earlier): see
 [CHANGELOG.md](CHANGELOG.md).

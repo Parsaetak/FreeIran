@@ -18,7 +18,7 @@ Rules:
 - `Connected` is never `Protected`; no future item may be marketed
   beyond its evidence.
 
-## Current Baseline (v0.12.0)
+## Current Baseline (v0.12.1)
 
 - Multi-core managed runtime (Xray, V2Ray, sing-box — digest-verified
   install/update/rollback; Mihomo core-manager-managed without a
@@ -36,6 +36,19 @@ Rules:
   verification with pinned binaries (sing-box 1.14.1 — upstream
   stable is 1.14.2; the verified pin is retained deliberately),
   security battery. GUI launch proof executes in CI.
+- Network tools as a truthful diagnostic system (v0.12.1): ten-state
+  status semantics with distinct log events, honest endpoint-tool
+  target resolution (no blind 127.0.0.1:1080), a real bounded QUIC v1
+  handshake probe (measurement-only quic-go dependency), WebSocket
+  multi-target aggregation, native Windows ICMP walker (IP Helper
+  API, user mode), DNS partial evidence + bounded DoH comparison row,
+  and provenance-free `core_discovered` normal logs.
+- Configuration workspace as a source-aware browsing surface
+  (v0.12.1): source/subscription scopes with authoritative counts,
+  per-source targeted refresh through the ONE ingestion pipeline,
+  per-source check through the ONE test queue, app-wide native
+  context-menu suppression with FreeIran's own MenuSurface, and
+  desktop-class keyboard basics.
 - v0.12.0 itself: documentation/architecture consolidation — the
   long-term direction is now captured canonically (no new features,
   no architecture change).
@@ -144,6 +157,7 @@ still load-bearing is linked where it matters.
 | v0.11.4 | Security root-fix (secret-shaped test literals derived at runtime), Windows CI bounded-timeout hardening, TUN correctness hardening (fail-closed addressing, exact-adapter identity, native route-path observation), sing-box 1.14.0→1.14.1 alignment |
 | v0.11.5 | Windows GUI startup fix (root-caused against pinned Wails beta.19 source), real GUI launch proof (native user32 observation, CI + release wired), metadata-free runtime log, Wails diagnostics bridge |
 | v0.12.0 | Documentation/architecture consolidation: canonical future-architecture contract (docs/autonomous-connectivity.md), docs index, README/ROADMAP/CHANGELOG de-duplication, version bump, stale-wording repair |
+| v0.12.1 | Network-tool truth (ten-state semantics, distinct log events, honest endpoint resolution, real QUIC probe, native Windows traceroute, DNS DoH row, provenance-free core logs) + source/subscription configuration workspace (targeted refresh + check, scope rail, scope header) + app-wide native context-menu suppression and keyboard UX |
 
 ---
 

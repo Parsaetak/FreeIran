@@ -1,12 +1,13 @@
 module github.com/Parsaetak/FreeIran
 
-go 1.25.0
+go 1.26.0
 
 toolchain go1.26.8
 
 require (
+	github.com/quic-go/quic-go v0.63.0
 	github.com/wailsapp/wails/v3 v3.0.0-beta.19
-	golang.org/x/sys v0.46.0
+	golang.org/x/sys v0.47.0
 )
 
 require (
@@ -17,4 +18,6 @@ require (
 	github.com/jchv/go-winloader v0.0.0-20250406163304-c1995be93bd1 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
+	golang.org/x/crypto v0.54.0 // indirect
+	golang.org/x/net v0.56.0 // indirect
 )

@@ -137,6 +137,13 @@ const (
 	// ToolStatusOK: the tool ran and succeeded.
 	ToolStatusOK ToolStatus = "ok"
 
+	// ToolStatusPartial (v0.12.1): the tool produced meaningful
+	// successful evidence while one or more subchecks failed —
+	// e.g. the DNS diagnostic where two curated resolvers answered
+	// and the system resolver did not. Partial is neither OK nor a
+	// generic failure: the measurement keeps the successful rows.
+	ToolStatusPartial ToolStatus = "partial"
+
 	// ToolStatusFailed: the tool ran and failed (refused, reset,
 	// protocol error, HTTP >= 400 ...).
 	ToolStatusFailed ToolStatus = "failed"
@@ -153,8 +160,28 @@ const (
 
 	// ToolStatusUnsupported: the capability is honestly not available
 	// in this build / on this platform / without privileges. Nothing
-	// is claimed that was not verified.
+	// is claimed that was not verified — and it is never a lazy
+	// placeholder for an unfinished implementation.
 	ToolStatusUnsupported ToolStatus = "unsupported"
+
+	// ToolStatusNotConfigured (v0.12.1): the tool requires a local
+	// proxy / endpoint / configuration and none exists — e.g. the
+	// HTTP CONNECT tool with no HTTP proxy anywhere in the
+	// configuration. A missing prerequisite is NOT a network
+	// failure and must never render as red "failed".
+	ToolStatusNotConfigured ToolStatus = "not_configured"
+
+	// ToolStatusNotApplicable (v0.12.1): the tool cannot meaningfully
+	// run in the selected context — e.g. tunnel diagnostics on the
+	// Direct path with no tunnel to diagnose. The request itself was
+	// understood; the context just does not admit the measurement.
+	ToolStatusNotApplicable ToolStatus = "not_applicable"
+
+	// ToolStatusUnreachable (v0.12.1): the tool itself ran, but the
+	// target/path was explicitly observed to be unreachable (ICMP
+	// "destination unreachable", a hop chain that provably stops).
+	// The diagnostic implementation worked; the path did not.
+	ToolStatusUnreachable ToolStatus = "unreachable"
 )
 
 // ToolPath says whether a tool ran direct or through the active
@@ -258,6 +285,14 @@ type ToolResult struct {
 // OK reports whether the tool succeeded.
 func (r ToolResult) OK() bool { return r.Status == ToolStatusOK }
 
+// MeasuredOK (v0.12.1) reports whether the run produced meaningful
+// successful evidence: full success (ok) or a partial result whose
+// successful subchecks carry measurements. The UI uses it to keep
+// measurement rows visible for partial outcomes.
+func (r ToolResult) MeasuredOK() bool {
+	return r.Status == ToolStatusOK || r.Status == ToolStatusPartial
+}
+
 // ToolRequest is one tool invocation.
 type ToolRequest struct {
 	// Tool selects the tool.
@@ -284,6 +319,18 @@ type ToolRequest struct {
 
 	// Tunnel supplies live tunnel state for tunnel_diagnostics.
 	Tunnel *TunnelSnapshot
+
+	// LocalEndpoint (v0.12.1) is the live/configured local proxy
+	// endpoint the SERVICE layer resolved for this run (host:port
+	// — the active session's SOCKS endpoint, or a configured HTTP
+	// proxy). LocalEndpointKind states its protocol ("socks5" or
+	// "http") so an endpoint is only offered to protocol-
+	// compatible tools. The endpoint tools resolve their target
+	// in the documented priority order: explicit user target →
+	// protocol-compatible local endpoint → not_configured. The
+	// legacy hard-coded 127.0.0.1:1080 default is gone.
+	LocalEndpoint     string
+	LocalEndpointKind string
 }
 
 // DialFunc connects to host:port on behalf of a tool. The socks5
@@ -335,7 +382,12 @@ func (r *ToolRunner) Run(ctx context.Context, req ToolRequest) ToolResult {
 		// run lets it produce the precise "Tunnel unavailable" reason
 		// (no active tunnel / no local endpoint / SOCKS5 connect
 		// failed) instead of a generic "unsupported".
-		result.Status = ToolStatusUnsupported
+		//
+		// v0.12.1: the honest status is not_configured, not
+		// unsupported — the tool exists and works; the local
+		// endpoint it must traverse is simply not there. Nothing
+		// about the capability changed.
+		result.Status = ToolStatusNotConfigured
 		result.Error = "no active tunnel"
 		finishTool(&result, started)
 		return result
@@ -389,11 +441,12 @@ func (r *ToolRunner) Run(ctx context.Context, req ToolRequest) ToolResult {
 	case ToolUDP:
 		r.runUDP(ctx, req, &result)
 	case ToolQUIC:
-		// Honest capability report: this build carries no QUIC
-		// transport stack. UDP reachability is covered by ToolUDP.
-		result.Status = ToolStatusUnsupported
-		result.Transport = "quic"
-		result.Error = "QUIC handshake probing is not compiled into this build; use the UDP tool for datagram reachability"
+		// v0.12.1: a bounded, real QUIC handshake probe (quic-go
+		// as the minimal dedicated diagnostic dependency — never
+		// a dataplane). A UDP datagram being answerable is not
+		// "QUIC works": the probe completes a real QUIC v1
+		// TLS handshake or reports the honest failure class.
+		r.runQUIC(ctx, req, &result)
 	case ToolTraceroute:
 		r.runTraceroute(ctx, req, &result)
 	case ToolPathMTU:
@@ -480,6 +533,12 @@ func displayTarget(req ToolRequest) string {
 		return req.Target
 	}
 
+	// v0.12.1: endpoint tools resolved a live/configured local
+	// endpoint — report THAT, never the legacy hard-coded default.
+	if req.LocalEndpoint != "" {
+		return req.LocalEndpoint
+	}
+
 	return defaultToolTarget(req.Tool)
 }
 
@@ -503,20 +562,18 @@ func logToolStart(req ToolRequest, timeout time.Duration) {
 // logToolResult emits the structured completion event. Targets are
 // host:port / URL forms validated by the safety layer — never
 // credentials, UUIDs or subscription URIs.
+//
+// v0.12.1: every status class carries its OWN event name. The old
+// contract collapsed every non-OK outcome into network_tool_failed,
+// which mislabeled not_configured / not_applicable / unsupported /
+// unreachable evidence as generic failures. The messages stay short
+// and credential-free; the status field keeps the exact state.
 func logToolResult(result ToolResult) {
-	level := logging.LevelInfo
-	event := "network_tool_complete"
-
-	if result.Status != ToolStatusOK {
-		level = logging.LevelWarn
-		event = "network_tool_failed"
-	}
-
 	logging.LogR(logging.Record{
-		Level:      level,
+		Level:      toolStatusLevel(result.Status),
 		Subsystem:  Subsystem,
-		Event:      event,
-		Message:    ToolLabel(result.ToolID) + " " + string(result.Status),
+		Event:      toolStatusEvent(result.Status),
+		Message:    ToolLabel(result.ToolID) + " " + toolEventPhrase(result.Status),
 		Status:     string(result.Status),
 		DurationMS: result.DurationMS,
 		Fields: map[string]any{
@@ -530,6 +587,81 @@ func logToolResult(result ToolResult) {
 	})
 }
 
+// toolStatusEvent maps one status to its DISTINCT structured event
+// name (v0.12.1 §4). Pinned by TestToolStatusEventMapping: the old
+// contract collapsed every non-OK outcome into network_tool_failed,
+// which mislabeled not_configured / not_applicable / unsupported /
+// unreachable evidence as generic failures.
+func toolStatusEvent(status ToolStatus) string {
+	switch status {
+	case ToolStatusOK:
+		return "network_tool_complete"
+	case ToolStatusPartial:
+		return "network_tool_partial"
+	case ToolStatusFailed:
+		return "network_tool_failed"
+	case ToolStatusUnsupported:
+		return "network_tool_unsupported"
+	case ToolStatusNotConfigured:
+		return "network_tool_not_configured"
+	case ToolStatusNotApplicable:
+		return "network_tool_not_applicable"
+	case ToolStatusUnreachable:
+		return "network_tool_unreachable"
+	case ToolStatusCancelled:
+		return "network_tool_cancelled"
+	case ToolStatusTimeout:
+		// A deadline is not the same evidence class as a refusal.
+		return "network_tool_timeout"
+	default: // ToolStatusInvalid and anything future
+		return "network_tool_invalid"
+	}
+}
+
+// toolStatusLevel maps one status to its log severity: honest
+// non-failure states (environment facts, cancellations, partial
+// success) are informational; measured path verdicts (unreachable)
+// and genuine failures warn.
+func toolStatusLevel(status ToolStatus) logging.Level {
+	switch status {
+	case ToolStatusOK, ToolStatusPartial, ToolStatusUnsupported,
+		ToolStatusNotConfigured, ToolStatusNotApplicable, ToolStatusCancelled:
+		return logging.LevelInfo
+	default:
+		return logging.LevelWarn
+	}
+}
+
+// toolEventPhrase renders the short, human-readable status phrase of
+// a completion event ("DNS diagnostic ok", "HTTP CONNECT not
+// configured", ...). One shared vocabulary for every tool event.
+func toolEventPhrase(status ToolStatus) string {
+	switch status {
+	case ToolStatusOK:
+		return "ok"
+	case ToolStatusPartial:
+		return "partial"
+	case ToolStatusFailed:
+		return "failed"
+	case ToolStatusTimeout:
+		return "timed out"
+	case ToolStatusCancelled:
+		return "cancelled"
+	case ToolStatusInvalid:
+		return "invalid target"
+	case ToolStatusUnsupported:
+		return "unsupported"
+	case ToolStatusNotConfigured:
+		return "not configured"
+	case ToolStatusNotApplicable:
+		return "not applicable"
+	case ToolStatusUnreachable:
+		return "unreachable"
+	default:
+		return string(status)
+	}
+}
+
 // toolErrorKind classifies failures for structured logging.
 func toolErrorKind(result ToolResult) string {
 	switch result.Status {
@@ -541,6 +673,14 @@ func toolErrorKind(result ToolResult) string {
 		return "invalid_target"
 	case ToolStatusUnsupported:
 		return "unsupported"
+	case ToolStatusNotConfigured:
+		return "not_configured"
+	case ToolStatusNotApplicable:
+		return "not_applicable"
+	case ToolStatusUnreachable:
+		return "unreachable"
+	case ToolStatusPartial:
+		return "partial"
 	case ToolStatusFailed:
 		return classifyToolError(result.Error)
 	default:
@@ -576,11 +716,53 @@ func classifyToolError(err string) string {
 
 // ToolCatalogue returns the catalogue with labels for the UI.
 type ToolInfo struct {
-	ID      ToolID `json:"id"`
-	Label   string `json:"label"`
-	Group   string `json:"group"`
+	ID    ToolID `json:"id"`
+	Label string `json:"label"`
+	Group string `json:"group"`
+	// What (v0.12.1) is the one-line "what this tool measures"
+	// description surfaced on the tool card.
+	What    string `json:"what"`
 	Target  bool   `json:"takes_target"` // user may supply a custom target
 	Timeout int64  `json:"timeout_ms"`   // default timeout
+}
+
+// toolWhat returns the one-line "what this tool measures" description
+// for the UI (v0.12.1 §13: every tool row shows what it measures).
+func toolWhat(id ToolID) string {
+	switch id {
+	case ToolInternet:
+		return "Aggregate reachability of a bounded probe set"
+	case ToolDNS:
+		return "Resolve a probe name via system + curated resolvers (A/AAAA, UDP/TCP, DoH fallback)"
+	case ToolTCP:
+		return "Raw TCP connect round trip to one endpoint"
+	case ToolTLS:
+		return "TCP connect plus a real TLS handshake"
+	case ToolHTTPS:
+		return "Full HTTPS GET with bounded redirects and body"
+	case ToolHTTPConnect:
+		return "HTTP proxy CONNECT protocol test against a configured proxy"
+	case ToolSOCKS5:
+		return "SOCKS5 CONNECT round trip through a local endpoint"
+	case ToolWebSocket:
+		return "WebSocket upgrade handshake against a curated target set"
+	case ToolUDP:
+		return "UDP datagram round trip carrying a real DNS query"
+	case ToolQUIC:
+		return "Real QUIC v1 handshake probe (HTTP/3 ALPN) to one endpoint"
+	case ToolTraceroute:
+		return "ICMP TTL walk of the route to one target"
+	case ToolPathMTU:
+		return "Unfragmented DNS payload ladder toward one resolver"
+	case ToolCaptivePortal:
+		return "Captive-portal interception signatures on known 204 endpoints"
+	case ToolPublicIP:
+		return "Exit IP identity, direct path versus active tunnel"
+	case ToolTunnelDiagnostics:
+		return "Live active-tunnel truth with a real SOCKS5 CONNECT check"
+	default:
+		return ""
+	}
 }
 
 // ToolCatalogue lists every tool with its UI metadata.
@@ -607,6 +789,7 @@ func ToolCatalogue() []ToolInfo {
 
 	for i := range infos {
 		infos[i].Timeout = int64(normalizedToolTimeout(infos[i].ID, 0) / time.Millisecond)
+		infos[i].What = toolWhat(infos[i].ID)
 	}
 
 	return infos

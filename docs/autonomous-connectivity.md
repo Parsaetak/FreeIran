@@ -17,6 +17,14 @@ Authority rules:
   contract for future work, not a description of what exists.
 - v0.12.0 records this contract **without implementing it**. Nothing
   in this document may be cited as evidence of a current capability.
+- **v0.12.1 boundary note:** the v0.12.1 network-tool work (real QUIC
+  handshake probe, DNS DoH comparison row, native Windows ICMP walker,
+  ten-state status semantics) are MEASUREMENT capabilities only. They
+  do not implement the ConnectionProof, DNS authority, WFP kill
+  switch, adaptive transport engine or any other planned component
+  below, and they must never be cited as censorship-resistance or
+  protection claims. The boundary stands: the tools measure; the
+  planned engines protect.
 
 Status vocabulary used throughout:
 
