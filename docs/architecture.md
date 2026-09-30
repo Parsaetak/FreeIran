@@ -1,7 +1,43 @@
 # FreeIran Architecture
 
 This document describes the architecture that exists in the repository
-today. Every component listed here is implemented and tested.
+today. Every component listed here is implemented and tested. The
+long-term target architecture lives in
+[autonomous-connectivity.md](autonomous-connectivity.md) — it is a
+future-work contract, not a description of this repository.
+
+## Current architecture vs target architecture
+
+CURRENT (implemented — the rest of this document describes it):
+
+```text
+React/Wails (TypeScript UI → generated bindings)
+  → Go application orchestration (engine/app)
+  → discovery / storage / testing / ranking
+  → core manager + process supervisor
+  → Xray / V2Ray / sing-box (managed, digest-verified cores)
+  → Tor / Psiphon providers (one provider manager)
+  → system proxy (WinINet) / TUN (sing-box native dataplane)
+```
+
+TARGET (PLANNED — none of these components exists yet; see
+[autonomous-connectivity.md](autonomous-connectivity.md) for the
+complete contract):
+
+```text
+Connection Engine    (adaptive, evidence-driven path selection)
++ Privacy Engine     (DNS authority, IPv4/IPv6 proof, WFP kill switch)
++ Routing Engine     (engine/routing/ — canonical, compiled per core)
++ Transport Engine   (adaptive candidates across all cores/providers)
++ Evidence Engine    (ConnectionProof, failure stages, health history)
++ Provider/Core Manager (the existing manager, extended lifecycle)
+```
+
+The target components are built by EXTENDING the current
+foundations — no duplicate connection manager, core manager,
+provider manager, process supervisor, downloader, routing
+authority, DNS authority, session model or TUN engine is ever
+created. Phase order and acceptance live in ROADMAP.md.
 
 ## 1. Layer model
 
@@ -1038,9 +1074,13 @@ the implementation-ready architecture note (shared Go engine,
 platform tunnel boundary via VPNService with the same transactional
 ownership contract as WinINet, UI bridge, pinned per-ABI core
 distribution, verification and permission requirements). The desktop
-TUN experiment remains EXPERIMENTAL/DISABLED — an Android TUN must be
-a new transactional implementation that passes real rollback/recovery
-tests, never a re-enable of the old code.
+TUN is a CURRENT feature (the sing-box native dataplane since
+v0.11.3, hardened in v0.11.4 — see the tunnel section and
+docs/tun.md); an Android TUN remains a future, separately
+implemented transactional boundary that must pass real
+rollback/recovery tests — never a port of the old removed desktop
+code (that history is preserved in the CHANGELOG and in
+`engine/tunnel/tun.go` comments).
 
 ---
 

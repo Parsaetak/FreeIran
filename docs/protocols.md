@@ -1,7 +1,10 @@
-# Protocol × core capability matrix (v0.11.0)
+# Protocol × core capability matrix
 
-This document is the truthful statement of what FreeIran can execute.
-Status levels:
+This document is the truthful statement of what FreeIran can execute
+(current as of v0.12.0). Future adaptive-transport candidates that are
+NOT in this matrix are listed at the bottom and governed by
+[autonomous-connectivity.md](autonomous-connectivity.md). Status
+levels:
 
 - **tested** — verified against the pinned real binary in CI or in
   the real-binary smoke suite (config accepted → process starts →
@@ -21,7 +24,12 @@ and the pinned core binaries — never "connected because a process
 launched", never fabricated public-IP evidence.
 
 Pinned core versions (engine/core/versions.go): xray 26.3.27,
-v2ray 5.53.0, sing-box 1.14.0.
+v2ray 5.53.0, sing-box 1.14.1 (the 1.14.0 → 1.14.1 alignment happened
+in v0.11.4; the full real-binary smoke suite and the TUN document
+check were re-run against the official 1.14.1 release then — see
+CHANGELOG). Rows below that cite a 1.14.0 smoke run describe the
+evidence as it was executed in that release cycle; every row has
+remained green against the 1.14.1 pin since.
 
 ## Outbound protocols
 
@@ -93,9 +101,11 @@ configuration fingerprint (same rationale as ALPN/Insecure: TLS-layer
 tuning, not identity).
 
 Evidence table — every row was probed against the PINNED real
-binaries before a single line of support was declared:
+binaries before a single line of support was declared (originally
+executed against sing-box 1.14.0 in v0.11.0; the smoke suite carrying
+these shapes passed again against the 1.14.1 pin in v0.11.4):
 
-| Case | sing-box 1.14.0 | xray 26.3.27 | v2ray 5.53.0 |
+| Case | sing-box (1.14.x pin) | xray 26.3.27 | v2ray 5.53.0 |
 |---|---|---|---|
 | `ech.enabled` + `ech.config` (PEM `-----BEGIN ECH CONFIGS-----`) | **accepted** (check + startup) | `echConfigList` field exists in schema but content is NOT validated by `xray run -test` | field silently IGNORED (wrong-typed value passes `v2ray test`) |
 | `ech.config` raw base64 (no PEM envelope) | rejected: "invalid ECH configs pem" | — | — |
@@ -126,7 +136,8 @@ DNS HTTPS record `ech=` payload shape) and wraps it into the PEM
 envelope the pinned binary requires.
 
 **Evidence scope — do not upgrade:** "accepted" means the pinned
-sing-box 1.14.0 PEM-parses and base64-decodes the config at `check`
+sing-box 1.14.x binary PEM-parses and base64-decodes the config at
+`check`
 time and the core completes a full startup + listener-ready cycle
 with the ECH object present (all three shapes ride the real-binary
 smoke suite in CI). It does NOT mean live ECH negotiation with a real
@@ -180,3 +191,26 @@ transport is preferred (see docs/architecture.md).
 - A protocol the installed core cannot execute is displayed as "not
   runnable" in the import preview — never silently saved as
   connectable.
+
+## Future adaptive-transport candidates (PLANNED — NOT in the matrix above)
+
+The long-term direction treats transports/protocols as adaptive
+candidates selected by observed failure-stage evidence, not as a fixed
+"best protocol". Contracts live in
+[autonomous-connectivity.md](autonomous-connectivity.md); the split:
+
+```text
+implemented / current   = only what this matrix records with real-core evidence
+planned                 = REALITY/XHTTP as adaptive candidates, Hysteria2/TUIC/
+                          Shadowsocks/WireGuard under the adaptive engine,
+                          AmneziaWG (WireGuard variant, security-reviewed
+                          privileged components required),
+                          Tor transports (obfs4/Snowflake/WebTunnel/meek), I2P
+not verified            = anything an upstream core supports but FreeIran has
+                          no real-binary evidence for — upstream support NEVER
+                          promotes a row to implemented
+```
+
+Upstream support in a core (or in another client such as v2rayN) is
+never a promotion criterion; only executed real-core evidence at the
+classes this document records is.

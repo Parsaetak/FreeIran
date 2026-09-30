@@ -5,8 +5,8 @@
 // injected at build time by CI through ldflags. The default value matches
 // the VERSION file so local builds never report a stale version.
 //
-// v0.11.5: the user-facing representation is COMPACT. String() renders
-// exactly "v" + Version (e.g. "v0.11.5") — no git commit, no Go runtime
+// v0.11.5 introduced the COMPACT user-facing representation. String()
+// renders exactly "v" + Version (e.g. "v0.12.0") — no git commit, no Go runtime
 // version, no build tuple. The runtime log and every user-visible surface
 // (status bar, diagnostic report, application_start) go through String()
 // and therefore stay metadata-free. Build provenance that developer
@@ -20,7 +20,7 @@ package version
 // Build systems override this via:
 //
 //	-ldflags "-X github.com/Parsaetak/FreeIran/internal/version.Version=x.y.z"
-var Version = "0.11.5"
+var Version = "0.12.0"
 
 // Commit is the git commit the binary was built from. CI overrides it
 // with ldflags; local builds report "dev".
@@ -49,7 +49,7 @@ func UserAgent() string {
 }
 
 // Display returns the user-facing version representation: exactly
-// "v" + Version. For VERSION=0.11.5 it renders "v0.11.5".
+// "v" + Version. For VERSION=0.12.0 it renders "v0.12.0".
 func Display() string {
 	return "v" + Version
 }

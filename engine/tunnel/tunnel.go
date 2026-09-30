@@ -3,13 +3,17 @@
 //   - System Proxy: sets Windows system proxy through WinINet's
 //     per-connection options, with safe save/restore of the previous
 //     settings. PRODUCTION-supported.
-//   - TUN mode: DISABLED in this release. The v0.9.8.6 audit removed
-//     the unfinished Wintun backend (inverted route tracking,
-//     non-transactional DNS "restore", unverified curl/PowerShell
-//     acquisition, unbounded extraction) — see tun_unavailable.go
-//     for the full defect list. TUN is NOT a kill switch and must
-//     never be described as one; re-enabling it requires a
-//     transactional implementation with verified rollback.
+//   - TUN mode: CURRENT (since v0.11.3, hardened in v0.11.4) — the
+//     managed sing-box core IS the TUN dataplane (native tun inbound,
+//     Wintun-backed on Windows) with transactional, observed
+//     activation; see tun.go and docs/tun.md for the design and the
+//     evidence ladder. Historical note: the v0.6 shell-command Wintun
+//     backend was removed in v0.9.8.6 for cause (inverted route
+//     tracking, non-transactional DNS "restore", unverified
+//     curl/PowerShell acquisition, unbounded extraction) and is NOT
+//     the current implementation. TUN is NOT a kill switch and must
+//     never be described as one; a Windows Filtering Platform kill
+//     switch is explicitly future work (docs/autonomous-connectivity.md).
 //
 // Both modes require explicit user action and run independently of
 // the protocol-core execution boundary (engine/core). They consume

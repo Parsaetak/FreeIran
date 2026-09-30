@@ -1,3357 +1,564 @@
 # Changelog
 
-Release history for FreeIran. The newest release is documented in the
-[README](README.md); everything older lives here, newest first.
+Historical release record — the authoritative home for release facts
+and evidence. Structure since the v0.12.0 consolidation: current
+product description lives in the README, forward phases in ROADMAP.md,
+detailed architecture in the docs/ tree (see docs/README.md). Older
+entries below v0.11.0 are compacted to version / purpose / key
+changes / important evidence and limitations; their full original
+narratives remain retrievable from git history. Historical entries
+are historical: version numbers, core pins and verification claims
+inside them describe the state of that release, not the current
+state.
+
+## v0.12.0 — documentation consolidation + autonomous connectivity architecture handoff
+
+v0.12.0 is a documentation/architecture-consolidation release: no
+features, no architecture replaced, no dataplane change. Its purpose
+is to permanently capture the FreeIran R&D direction (September 2026
+report, `Parsaetak/Contents` Research-and-Development
+`FreeIran-2026-09.md`) inside the canonical repository documentation
+so future coding agents can implement it incrementally without
+rediscovering the research.
+
+### Canonical future-architecture document
+
+- **`docs/autonomous-connectivity.md` (new)** — the single authority
+  for long-term architecture: product objective
+  ("the transport connects, the engine decides, the evidence
+  proves"), the seven-layer threat model, full-device protection
+  target, central DNS authority, IPv4/IPv6 proof states +
+  `ConnectionProof` contract, the Windows Filtering Platform
+  kill-switch state machine (explicitly future work — the current
+  TUN is NOT a kill switch), censorship differential evidence
+  (probe ladder + privacy-safe failure metadata), the adaptive
+  transport engine, transport/protocol roadmap, AmneziaWG
+  integration model (one lifecycle, no GUI fork, no second process
+  manager), Tor modes (Tor Circumvention / Onion Only), I2P as a
+  private overlay, multi-hop as trust topology, the canonical routing
+  engine (engine/routing/), infrastructure-aware recovery,
+  evidence-first recovery policy, the privacy exposure audit,
+  public-IP verification states, privacy modes, the
+  browser-anonymity boundary, the extended provider lifecycle,
+  testing/clean-room acceptance, and the non-goals (banned claims).
+  Every future item is explicitly PLANNED/NOT VERIFIED; no current
+  capability is invented.
+- **`docs/README.md` (new)** — documentation index: which document is
+  authoritative for which domain (current behavior vs future
+  contract vs release history), version source of truth, wording
+  rules for current/historical/planned statements.
+
+### Existing documentation updated (no duplication)
+
+- `docs/architecture.md`: "Current architecture vs target
+  architecture" section added (target components explicitly do not
+  exist yet); stale Android-section wording that still described the
+  desktop TUN as EXPERIMENTAL/DISABLED corrected (the desktop TUN is
+  current since v0.11.3; Android remains a plan).
+- `docs/tun.md`: evergreen header; new "Planned future work"
+  section (IPv6 leak proof, DNS engine, WFP kill switch, continuous
+  monitoring — all PLANNED); the evidence ladder is unchanged and
+  not weakened.
+- `docs/protocols.md`: current pin corrected to sing-box 1.14.1
+  (stale 1.14.0-as-current wording; the 1.14.0 references in
+  per-row evidence remain, now explicitly labeled as the evidence as
+  executed in those release cycles); compact future
+  adaptive-transport section (implemented / planned / not verified
+  split; upstream support never promotes a row).
+- `docs/providers.md`: future providers section (Tor circumvention,
+  I2P, AmneziaWG) under the SAME one-manager lifecycle.
+- `docs/security.md`: future privacy-security contract (minimal
+  metadata, no hardware identifiers, no telemetry, evidence-first
+  protection, WFP kill-switch target, privacy-safe diagnostics,
+  banned claims).
+- `docs/ui.md`: future UI concepts (privacy modes, ConnectionProof,
+  trust topology, evidence surfaces) — current UI not redesigned;
+  stale 1.14.0-as-current ECH wording corrected.
+- `docs/ci.md`: future acceptance matrix (unit/integration/Windows/
+  clean-room targets); all existing v0.11.5 CI evidence preserved.
+- `docs/development.md`: documentation-maintenance rules (version
+  source of truth, docs authority hierarchy, generated
+  frontend/embed workflow, no stale current-version claims,
+  current-vs-historical terminology, core-pin policy).
+
+### README / ROADMAP / CHANGELOG de-duplication
+
+- README rewritten around the current product: identity, current
+  verified capabilities, current limitations, architecture summary,
+  security/privacy contract, build, repository structure, short
+  roadmap, documentation links, license. The fourteen repeated
+  "What's new in v0.x" sections (v0.9.8.6 → v0.11.5) moved out —
+  release history lives here. The stale repository-structure line
+  that said `VERSION 0.9.11` is fixed (generic reference to the
+  version source of truth).
+- ROADMAP rewritten as a forward phase ladder (baseline, v0.12.0,
+  Phases 1–6 matching the R&D phase order, testing/evidence
+  standard, release acceptance, compact historical milestone table);
+  the old per-release status narratives and duplicated
+  implementation detail are removed (facts preserved here and in
+  docs/); no future item is marked completed.
+- This changelog keeps release facts; older entries compacted per
+  the header note.
+
+### Version bump + stale-consistency cleanup
+
+- Version metadata moved to 0.12.0 in: `VERSION`,
+  `internal/version/version.go` (default + comment),
+  `frontend/package.json`, `frontend/package-lock.json`,
+  `build/winres.json` (file/product version + manifest identity).
+  Historical references (v0.11.4/v0.11.5/v0.10.4 and older, core
+  pins, fixture versions) are untouched — classified by a repo-wide
+  audit, only current-release surfaces updated.
+- `engine/tunnel/tunnel.go` package comment repaired: it still said
+  "TUN mode: DISABLED in this release" (the pre-v0.11.3 state);
+  it now describes the current sing-box dataplane backend and
+  preserves the v0.9.8.6 removal rationale as history. Comment-only
+  change — no code behavior touched.
+- sing-box upstream re-checked: upstream stable is 1.14.2 (also
+  1.15.0-alpha.x prereleases); FreeIran intentionally retains the
+  verified 1.14.1 pin — no digest fabricated, no half-upgrade, no
+  dataplane change for documentation freshness (see
+  docs/development.md core-pin policy).
+
+### Verification scope (v0.12.0, explicit)
+
+Documentation/version/comment changes only. Verified locally:
+`git diff --check` (clean), full-tree `go build ./...` + `go vet` of
+the touched Go surfaces (internal/version, engine/tunnel) + the
+version-surface unit tests, frontend dependency install (`npm ci`)
++ typecheck + unit tests + production `build:embed`, a repo-wide
+version/stale-text audit, a documentation link/path audit and a
+clean-package audit of the source archive. Remote Actions were NOT
+re-run (no push, no PR, no release — per the release rules); the
+next maintainer push produces that evidence. The Windows TUN
+physical runtime remains NOT VERIFIED (unchanged; docs/tun.md).
+
+NOT VERIFIED in v0.12.0: any runtime behavior change (there is none
+— no functional code changed); post-change remote CI/Security
+verdicts (arrive with the next push).
+
+---
 
 ## v0.11.5 — Windows GUI launch fix, real GUI launch proof, metadata-free runtime log
 
-v0.11.5 is a focused repair release. Evidence scope (honest, at the
-level actually executed for this release): the full local Linux `go
-test` suite for `engine/...` + `system/...` + `internal/...`;
-windows/amd64 `go vet` of the complete tree (which compiles every
-windows-tagged test file, the local equivalent of CI's Layer A) and
-the windows/amd64 `-trimpath -ldflags "-H=windowsgui"` desktop build
-with the release version stamps; the PE-subsystem check of the built
-binary (subsystem 2, WINDOWS_GUI) via debug/pe; frontend typecheck,
-all unit tests and the production `build:embed`; and binding
-regeneration with the pinned wails3 v3.0.0-beta.19 CLI, run twice with
-byte-identical output and passing the binding contract tests (77 ByID
-calls across 20 files). Remote Actions were NOT re-run (no push, no
-PR, no release — per the release rules); the GUI launch proof and the
-headless smoke execute in CI, not in the authoring environment.
+Focused repair release; no features, no architecture replaced.
+Evidence scope: full local Linux `go test` suite (engine/system/
+internal), windows/amd64 `go vet` of the complete tree, the
+windows/amd64 `-H=windowsgui` desktop build with release stamps,
+PE-subsystem check (WINDOWS_GUI) via debug/pe, frontend typecheck +
+unit tests + production `build:embed`, binding regeneration with the
+pinned wails3 v3.0.0-beta.19 CLI (twice, byte-identical, binding
+contract tests green). Remote Actions NOT re-run.
 
-### The Windows GUI startup defect — root-caused and fixed
+- **GUI startup defect — root-caused and fixed (the headline).** The
+  v0.11.4-ci binary booted the engine (application_start →
+  store_open → manager_init → application_ready) but never showed a
+  window. Root cause verified against the pinned wails
+  v3.0.0-beta.19 source: the pre-Run initial tray reconcile
+  dispatched through `application.InvokeAsync`, whose first step
+  dereferences Wails' platform-app handle — assigned only inside
+  `Run()` — so the panic killed the process on the main goroutine
+  after the engine logs and before any window existed (windowsgui
+  binaries have no console; no visible trace). Contributing
+  fragility: a beta.19 pre-Run window is built without
+  `WS_VISIBLE`, pre-Run `Show()` is a no-op, and visibility
+  otherwise depended on WebView2 navigation completing. Fix: the ONE
+  main window is created and shown from the `ApplicationStarted`
+  event (deterministic create → show → hook → tray sequence); all
+  v0.11.3 tray semantics unchanged; no second window, no sleeps, no
+  headless downgrade.
+- **Real Windows GUI launch proof.** New windows-only
+  `TestWindowsGUILaunchProof` launches the ACTUAL built FreeIran.exe
+  (not `--smoke-test`) in an isolated `FREEIRAN_HOME` workspace and
+  FAILS unless a visible top-level window owned by the launched PID
+  is observed natively (user32 EnumWindows + IsWindowVisible +
+  GetWindowThreadProcessId) within a bounded timeout; distinguishes
+  "process alive" from "GUI visible"; dumps window inventory/output/
+  runtime-log tail on failure; always terminates by exact PID
+  (tree force-kill). Wired into the CI Windows job and the release
+  workflow after the real desktop executable is built; the release
+  install rehearsal runs it against the INSTALLED executable.
+- **Runtime log is metadata-free.** `ts` removed from the Entry
+  schema and every UI/copy surface; no `commit` field and no
+  Go-toolchain metadata; `seq` remains the ordering/paging
+  mechanism; `application_start` compact ("FreeIran v0.11.5
+  starting"); user-facing version renders exactly `v0.11.5`
+  everywhere through `version.String()`; copied diagnostics carry
+  the per-session seq prefix; developer-only provenance (commit, Go
+  version) stays on the Developer Info surface. Regressions assert
+  the raw JSON shape.
+- **Wails warning bridge.** Wails-internal warnings/errors
+  (WebView2 probing, navigation, environment) land in the runtime
+  log (subsystem `wails`) through an slog bridge + ErrorHandler,
+  with a deliberate Warn floor so Wails' own toolchain/vcs startup
+  records can never reintroduce metadata.
+- **Version/binding cleanup.** All version surfaces moved to 0.11.5;
+  bindings regenerated with the pinned wails3 CLI (closing
+  PRE-EXISTING v0.11.4 drift: OpenShellAtDataDir, CoreMihomo,
+  TUNSnapshot, removed Entry timestamp).
+- **sing-box drift check.** Upstream stable was 1.14.2; the verified
+  1.14.1 pin retained deliberately (no unverified checksum, no
+  half-upgrade); the Windows TUN physical runtime remained NOT
+  VERIFIED (docs/tun.md).
 
-- **User evidence.** A downloaded v0.11.4-ci Windows binary wrote
-  application_start, store_open, manager_init and application_ready —
-  and never showed a window. Two captured log blocks carry different
-  session_ids and reset seq counters: two real launches, both dying at
-  the same invisible point.
-- **Root cause (verified against the pinned wails v3.0.0-beta.19
-  source, module-cache bytes, not assumptions).** `cmd/freeiran`
-  performed the initial tray reconcile BEFORE `wailsApp.Run()`.
-  `trayManager.Reconcile` dispatches via `application.InvokeAsync` →
-  `App.dispatchOnMainThread`, whose FIRST statement calls
-  `a.impl.isOnMainThread()`. `a.impl` (the platform app) is assigned
-  only inside `Run()` (application.go:659) and `dispatchOnMainThread`
-  has no nil guard, so the call panicked on the main goroutine before
-  Run ever started — after every engine log line the user quoted, and
-  without any visible trace (windowsgui binaries have no console; the
-  panic also predates any runtime-log record).
-- **Contributing visibility fragility (also fixed).** In beta.19 a
-  pre-Run window is built with `WS_OVERLAPPEDWINDOW` (no `WS_VISIBLE`)
-  and becomes visible only when the WebView2 navigation-completed
-  callback calls `Show()`; a `Show()` issued before `Run()` is a no-op
-  (`globalApplication.impl == nil`). If WebView2 initialization
-  failed, `setupChromium` returned early, `Embed` never ran and the
-  window stayed invisible while the process lived. Missing WebView2 on
-  user machines was NOT observed and is not claimed; the fix makes the
-  window visible regardless and captures WebView2 failures into the
-  runtime log (below).
-- **The fix.** The ONE main window is created and shown from the
-  `ApplicationStarted` event — where the platform app and message
-  loop exist — followed by the close-hook and the initial tray
-  reconcile: the deterministic create → show → hook → tray sequence
-  Wails' own updater host uses (NewWithOptions constructs the window
-  synchronously once running; the HWND is built on the main thread).
-  Exactly one main window; tray ON/OFF semantics, close-to-tray, tray
-  Show/Focus restore and shutdown ordering (tray destroyed before
-  engine teardown) are byte-for-byte the v0.11.3 architecture. No
-  sleeps, no second UI runtime, no headless downgrade, no Wails
-  replacement.
-
-### The real Windows GUI launch proof (P0-B)
-
-- New windows-only `TestWindowsGUILaunchProof`
-  (cmd/freeiran/gui_launch_windows_test.go), reusing the existing
-  `FREEIRAN_GUI_EXE` mechanism — no parallel test architecture. It
-  launches the ACTUAL built FreeIran.exe (never `--smoke-test`) in an
-  isolated `FREEIRAN_HOME` temp workspace, polls natively (user32
-  EnumWindows + IsWindowVisible + GetWindowThreadProcessId +
-  GetWindowTextW) for a VISIBLE top-level window owned by the launched
-  PID within a bounded 45s window, and distinguishes "process alive"
-  from "GUI visible": a child that exits early fails with its captured
-  output plus the isolated runtime-log tail; a child that stays alive
-  windowless fails with its full PID-owned window inventory (visible
-  and hidden).
-- Termination is by exact PID (`taskkill /T /F`) on every path — no
-  image-name matching — so a fresh-workspace default `tray_enabled`
-  can never strand the instance in the tray; the host's real settings
-  are untouched. No `continue-on-error` anywhere; the existing
-  PE-subsystem test is preserved unchanged.
-- Wired into BOTH workflows: the CI Windows job and the release
-  pipeline run the proof against the built executable after the PE
-  check, and the release install rehearsal now runs it against the
-  INSTALLED executable (the rehearsal's `--smoke-test` launch never
-  touched the webview).
-
-### Runtime log: metadata-free schema (P0-C)
-
-- `Entry` no longer carries `Time`/`json:"ts"` — the field is removed
-  from the schema, both population sites (emit, log_rotated note) and
-  the generated bindings. `seq` remains the ordering/paging mechanism;
-  `duration_ms`/`status` and all measured fields survive; unrelated
-  timestamps (diagnostic reports, recovery markers, store metadata)
-  are untouched.
-- `application_start` is compact: message "FreeIran v0.11.5 starting",
-  the `commit` field removed, no Go-runtime token. The redundant
-  stderr startup announcement in the entrypoint is gone (app.New owns
-  the ONE authoritative start record).
-- `version.String()` now renders exactly `v0.11.5` (the compact
-  user-facing form); every user surface (status bar, diagnostic
-  report, copied diagnostics — now prefixed with the per-session seq
-  instead of a timestamp) renders through it. Developer-only
-  provenance (commit, Go version) intentionally remains on the
-  Developer Info diagnostics surface, never in the runtime log.
-- Regressions: marshalled runtime entries must contain no `ts` key
-  (asserted against raw JSON lines); application_start must contain no
-  `commit` key and no `go1.` token with the exact compact message;
-  version display must equal `v0.11.5`; rotation notes follow the
-  compact schema; redaction, rotation, concurrency, subscription and
-  incremental-filter tests all preserved and green.
-- The generated bindings were REGENERATED with the official pinned
-  wails3 CLI (never hand-edited). The run also surfaced and closed
-  PRE-EXISTING drift: v0.11.4 Go surface changes (OpenShellAtDataDir/
-  OpenShellAtWorkspace methods, CoreMihomo enum, TUNSnapshot export)
-  had never been regenerated into the committed bindings.
-
-### Wails diagnostics bridge
-
-- Wails-internal warnings and errors (WebView2 probing, environment/
-  controller creation, navigation) now land in the FreeIran runtime
-  log (subsystem `wails`) through an slog bridge plus the
-  application ErrorHandler. The bridge admits Warn-and-above only:
-  Wails' dev-mode "Build Info"/"Platform Info" startup records carry
-  Go-toolchain and vcs-revision metadata and must never re-enter the
-  runtime log the same release removed it from.
-
-### Version + documentation surfaces
-
-- VERSION, internal/version, frontend/package.json,
-  frontend/package-lock.json and build/winres.json all move to
-  0.11.5; README, ROADMAP, docs/architecture.md, docs/ui.md,
-  docs/ci.md, docs/development.md updated with the evidence-honest
-  descriptions above. docs/security.md and docs/tun.md are untouched
-  by this release (no security-surface or TUN-evidence wording
-  changed).
-- sing-box version drift check performed against official upstream
-  release data: the official `releases/latest` target currently
-  resolves to **v1.14.2** (a stable, not a prerelease). The intended
-  pin REMAINS 1.14.1 for this focused repair release — the TUN
-  document and real-binary smoke evidence are verified against the
-  1.14.1 binaries, and swapping the dataplane pin without a
-  physical-host re-verification cycle is not a repair-release change;
-  core-manager, CI, tests and docs stay consistent at 1.14.1 (no
-  unverified checksum was fabricated and no half-upgraded state
-  created). The 1.14.2 upgrade is recorded as a deliberate, verified
-  follow-up. The Windows TUN physical runtime remains NOT VERIFIED
-  (unchanged, requires an elevated Windows host).
+NOT VERIFIED: the GUI launch proof's live verdict in the authoring
+environment (executes in CI/release); post-release remote Actions.
 
 ---
 
 ## v0.11.4 — security repair, Windows CI hardening, TUN correctness hardening, documentation alignment
 
-v0.11.4 is a repair + hardening release: no new features, one
-security-fixture root-cause fix, three TUN correctness defects closed,
-the Windows CI failure diagnosed from live evidence, the sing-box
-version pins aligned, and every document that overclaimed corrected to
-its actual evidence level. Evidence scope (honest, at the level
-actually executed for this release): the full local Linux `go test`
-suite for `engine/...` + `system/...` + `internal/...`, `-race` runs
-for the affected tunnel/app/singbox packages, `go vet` (Linux +
-windows/amd64 targets), the windows/amd64 cross-build
-(`CGO_ENABLED=0 go build ./cmd/freeiran`), a local Gitleaks 8.24.3
-reproduction of the exact CI failure and of the repaired state
-(before/after), the real-core TUN document verification against the
-official sing-box 1.14.1 binary (`sing-box check`), and the upstream
-release verification for the new pin. Remote Actions were NOT re-run
-(no push, no PR, no release — per the release rules); the live
-v0.11.3 runs were inspected and their evidence is quoted below.
+Repair + hardening release; no features, no architecture replaced.
+Evidence scope: full Linux Go suite, windows/amd64 vet + build,
+generated-config verification against the real pinned 1.14.1 binary,
+Gitleaks reproduction with the exact CI scanner version, live-run
+diagnosis of the Windows CI failure.
 
-### Security — the Gitleaks current-commit finding, fixed at the root
+- **Security root-cause fix (the headline).** The v0.11.3 Security
+  run's secret-scan failure (a committed WireGuard-shaped test
+  literal in `engine/core/singbox/tun_test.go`) fixed at the ROOT:
+  fixture material derived deterministically at runtime — no
+  allowlist added, no rule weakened, no path excluded — plus a
+  package-level regression test failing during ordinary `go test` if
+  any committed key-shaped literal returns to the singbox test
+  surface. docs/security.md describes the ACTUAL scan semantics.
+- **TUN correctness hardening (three defects closed):** address
+  selection FAILS CLOSED when every IPv4 candidate collides (no
+  silent overlapping-range fallback); activation identity requires
+  the EXACT session adapter (recorded name AND expected address on
+  that same interface); "real traffic" proof strengthened with
+  native read-only route observation (Windows IP Helper forwarding
+  table: the TUN must OWN the covering IPv4 routes) plus the
+  upstream route-loop check (no sing-box TCP socket sourced from the
+  TUN address; positive physical-side pinning when TCP-observable;
+  UDP-family outbounds honestly reported "not observable"). No
+  netsh/route.exe/PowerShell anywhere; observation is lazy,
+  bounded, fail-closed syscalls.
+- **Windows CI hardening.** The v0.11.3 Windows job failed with a
+  hosted-runner communication loss (47m vs v0.11.2's 3m07s);
+  diagnosed from live run evidence; hardened with bounded
+  `timeout-minutes: 60` and ZERO coverage loss.
+- **sing-box 1.14.0 → 1.14.1 alignment.** CI real-core job + docs +
+  evidence aligned; SHA-256 computed from the OFFICIAL upstream
+  release asset; new real-binary test passes the complete TUN
+  document through `sing-box check` of the pinned binary; the full
+  existing real-binary smoke suite passes against 1.14.1.
+- **Tray persistence regression checks + documentation truth
+  repairs** (corrected Wintun packaging model — the official
+  wintun.dll embedded in the sing-box binary via sing-tun v0.9.3,
+  loaded from memory; honest evidence ladder; corrected scan
+  semantics).
 
-- Security run `36459948025` (v0.11.3) failed Secret scanning with
-  exactly one finding: `generic-api-key` on
-  `engine/core/singbox/tun_test.go:191` (commit `bf533da`) — the
-  v0.11.3 TUN fixture committed a WireGuard-shaped PrivateKey literal
-  (with a secret-shaped PublicKey literal beside it). Reproduced
-  locally with the exact CI version (gitleaks 8.24.3) before any
-  change: same rule, file, line, commit.
-- Root-cause repair, NOT a suppression: both literals are removed and
-  the WireGuard test material in `tun_test.go` is derived at RUNTIME
-  (`deterministicTUNTestKey` — the same integer-ramp → 32-byte →
-  44-char padded-base64 mechanism the v0.10.3 repair established; the
-  internal-test package could not import the existing
-  singbox_test/app helpers, so the identical mechanism is declared
-  once locally). The assertions never depended on specific key
-  values, only on the endpoint/document SHAPE.
-- Nothing was weakened: no allowlist entry added for the file, the
-  directory, the rule, or the v0.11.3 commit; `useDefault = true` and
-  the single historical exception (`dd62f17c`, v0.10.2 synthetic
-  fixtures) are unchanged; no path-based exception introduced; no
-  current commit is allowlisted.
-- Verified locally (gitleaks 8.24.3): the v0.11.3 finding reproduced
-  exactly before the change; after the change the working tree scans
-  clean, the push-range scan of the v0.11.4 commit
-  (`bf533da..HEAD`) exits 0, and a scratch key-shaped literal in a
-  fresh scratch commit is STILL DETECTED — future secrets continue
-  to fail the gate.
-- New regression: `TestNoCommittedSecretShapedLiterals` scans every
-  `engine/core/singbox/*_test.go` source for committed 44-char
-  base64 key-shaped literals — the exact Gitleaks signature — so the
-  class fails in every ordinary `go test` run, on every platform, not
-  only in the Security workflow.
-- `docs/security.md` and `.gitleaks.toml` now describe the ACTUAL
-  scan semantics: gitleaks-action@v3 scans event-specifically (push →
-  the commits new in the push; PR → the PR's commits; the checkout is
-  full-depth). The previous "full history on every event" claim was
-  wrong and is corrected. A full-history AUDIT still surfaces the
-  superseded v0.11.3 fixture commit (history is never rewritten) —
-  disclosed in docs/security.md, deliberately NOT allowlisted.
+NOT VERIFIED: end-to-end Windows TUN runtime on a physical elevated
+host (documented as such in docs/tun.md); post-release remote
+Actions.
 
-### Windows CI — diagnosed from live evidence, hardened without coverage loss
-
-- CI run `36459947866` (v0.11.3): the Windows job
-  (`109057267406`) **failed in 47m 0s** with the annotation "The
-  hosted runner lost communication with the server. Anything in your
-  workflow that terminates the runner process, starves it for
-  CPU/Memory, or blocks its network access can cause this error.",
-  killed mid-step ("Windows behavioral tests (platform-critical
-  packages)" still `in_progress`; every later step pending — the
-  repeated battery with `if: always()` never started, so the job was
-  terminated ABRUPTLY, not failed by a test).
-- Comparison evidence: the identical v0.11.2 Windows job
-  (run `36418242337`) completed the whole pipeline in **3m07s**
-  (success). The v0.11.3 code delta in the killed step's packages is
-  only the new TUN config/state tests — sub-second runtime, no child
-  processes, no WinINet mutation, no polling loops — which cannot
-  account for a ~44-minute stall; `go test -timeout=10m` would have
-  produced a visible panic + failure instead of an abrupt kill.
-- Diagnosis (stated at exactly this strength): a hosted-runner
-  infrastructure failure ("lost communication"), whose reported
-  duration includes GitHub's communication-loss grace window. No
-  test-level failure was ever recorded; a code-level root cause is
-  not supported by the evidence. NOT VERIFIED: whether a re-run
-  passes (no push/re-run was performed from this repair).
-- Hardening (coverage-preserving, no `continue-on-error`, no
-  compile-only downgrade, no coverage removal): the Windows job gains
-  an explicit `timeout-minutes: 60` — a REDUCTION from the 360-minute
-  default that bounds any future infra-level hang to a visible
-  failure while giving even a cold-cache run 10x the healthy 3m07s
-  budget. The A/B/C layer architecture (compile-all / behavioral /
-  repeated battery) is byte-identical.
-
-### TUN — three correctness defects closed (architecture unchanged)
-
-- **Fail-closed address selection**: `pickTUNAddresses` no longer
-  falls back to the first candidate when every IPv4 TUN candidate
-  collides with a live interface prefix — that silent fallback could
-  route an existing local network into the tunnel. The enable now
-  FAILS with an explicit error before the core is launched
-  (`TestPickTUNAddressesFailClosed`, with an injectable live-prefix
-  seam so collision cases are tested deterministically without
-  touching the user's network). IPv6 remains honestly best-effort
-  (IPv4-only sessions are safe and say so).
-- **Exact adapter identity**: `findTUNInterface` now requires the
-  recorded FreeIran adapter NAME and the session's expected ADDRESS
-  on that SAME interface. The v0.11.3 address-first scan accepted the
-  expected address on a DIFFERENT adapter (a false-positive
-  activation proof) and the right name without the address
-  (`TestFindTUNInterfaceExactIdentity` pins both rejections). The
-  teardown/residual path uses the FreeIran-owned NAME (collision-free
-  by construction) as its presence signal.
-- **Route-path observation (the strengthened "real traffic" proof)**:
-  before `Active` is published the activation gate now observes, read
-  only and bounded, through the native Windows IP Helper APIs
-  (lazy syscalls — no netsh/route.exe/PowerShell, ever): (1) the
-  exact session adapter exists with the expected address; (2) that
-  adapter OWNS the covering IPv4 route state (`GetIpForwardTable` —
-  0.0.0.0/0 or the 0.0.0.0/1 + 128.0.0.0/1 pair); (3) the clean
-  no-explicit-proxy request succeeds; (4) after that traffic, the
-  sing-box process owns NO TCP socket sourced from the TUN address
-  (`GetExtendedTcpTable` — the route-loop failure mode is a hard
-  failure), with positive physical-side pinning evidence for
-  TCP-based outbounds and an honest "not observable through the TCP
-  owner table" verdict for UDP-family outbounds. Observation errors
-  fail CLOSED.
-- The whole gate is extracted into `verifyTUNActivation` over
-  injectable seams: every evidence failure mode is unit-tested on
-  Linux (`TestVerifyTUNActivationEvidenceMatrix` — 8 scenarios).
-  Rollback/residual contracts are pinned
-  (`TestRollbackEnableClearsSessionState`,
-  `TestRollbackEnableSurfacesResidual`), and the stale-session report
-  now distinguishes adapter-with-address / name-without-address /
-  adapter-gone (`TestStaleTUNSessionDetailPrecision`).
-- New structured events (privacy-safe):
-  `tun_starting`, `tun_interface_observed`, `tun_route_observed`,
-  `tun_traffic_verified`, `tun_upstream_observed`, `tun_active`,
-  `tun_stop`, `tun_residual`, `tun_stale_session`.
-- Wintun documentation corrected against the ACTUAL official sing-box
-  1.14.1 windows-amd64 binary: the TUN inbound embeds wintun.dll via
-  sing-tun v0.9.3's internal bindings (`//go:embed`, loaded from
-  memory through the bundled memory-module loader); the previously
-  cited `golang.zx2c4.com/wintun` package serves the WireGuard
-  transport path (disk-loaded), not the TUN inbound. docs/tun.md now
-  carries the verified statement with the evidence trail.
-- The evidence ladder in docs/tun.md is restated at the exact level
-  proven: generated-config VERIFIED (real 1.14.1 binary), Linux/unit
-  VERIFIED, Windows compile VERIFIED, Windows CI behavioral EXECUTED
-  BY CI, and the physical elevated Windows TUN runtime **NOT
-  VERIFIED** — with no class worded as another.
-
-### sing-box version alignment (1.14.0 → 1.14.1)
-
-- Drift closed: v0.11.3 documentation/evidence referenced sing-box
-  1.14.1 while the CI real-core job still pinned 1.14.0. The upstream
-  v1.14.1 release was verified against the official source: the
-  release exists, the `sing-box-1.14.1-linux-amd64.tar.gz` asset
-  name is correct, the SHA-256 was computed from the OFFICIAL
-  downloaded asset (not copied from any prompt) and the extracted
-  binary reports "sing-box version 1.14.1".
-- The CI real-core job now installs 1.14.1 with the re-verified
-  checksum; `TestSingBoxTUNDocumentRealBinary` (new) passes the
-  complete TUN document through the real binary's `sing-box check`
-  (dual-stack + IPv4-only shadowsocks, WireGuard endpoint) —
-  configuration VERIFIED against the exact pinned runtime; the full
-  existing real-binary smoke suite passes against 1.14.1 as well.
-- coremgr needs no change (it tracks releases through the official
-  API with a 1.10.0 floor — no hard pin). Docs updated
-  (README, docs/ci.md, docs/tun.md).
-
-### Tray ON/OFF — regression-checked, unchanged
-
-- The v0.11.3 tray architecture (persistent `tray_enabled`, Settings
-  toggle, native checkbox, reconcile, close-to-tray, teardown) is
-  untouched. New focused persistence tests pin the contract the
-  desktop layer depends on: nil-pointer migration policy
-  (`TrayEnabledOrDefault`), true/false round-trips through the ONE
-  settings path (saved return value, settings.json content and the
-  reload path agree — no drift), and the omitted-key on-disk shape
-  for nil (`TestTrayEnabledOrDefaultResolution`,
-  `TestTrayEnabledPersistsTrueAndFalse`,
-  `TestTrayEnabledNilOmittedFromDisk`). The native tray lifecycle
-  itself remains the Windows CI surface's scope (no headless Wails
-  integration test was attempted — the architecture does not support
-  one).
-
-### Documentation truth repairs
-
-- ROADMAP's current-release heading moved forward to v0.11.4 (the
-  stale "Roadmap ladder (v0.11.2)" top-level state is gone); item
-  completion states were re-graded against actual evidence.
-- README: current version + sing-box references aligned (1.14.1 for
-  the TUN/real-core evidence; the historical 1.14.0 evidence lines
-  for older releases are preserved as history).
-- docs/security.md: the scan-semantics correction + the v0.11.4
-  fixture-repair record (above); the workflow's stale file reference
-  (`engine/tunnel/tun_singbox.go` → `tun.go`) fixed.
-- docs/ci.md: the Windows-job diagnosis + bounded timeout + the
-  sing-box 1.14.1 pin; docs/development.md and docs/architecture.md
-  checked and corrected where they carried v0.11.3-only statements.
-- Version surfaces synchronized: `VERSION`, `internal/version`,
-  `frontend/package.json` + lock, `build/winres.json`.
-
-### Verification scope (v0.11.4, explicit)
-
-- VERIFIED locally: full Linux Go suite (engine/system/internal);
-  `-race` on the affected packages; `go vet` (both targets);
-  windows/amd64 build; gofmt-clean changed files; Gitleaks 8.24.3
-  before/after (finding reproduced; tree + push-range clean; future
-  secret detected); the suspicious-pattern + dangerous child-process
-  scans (clean, no weakening); the real-core TUN document check +
-  full smoke against the official 1.14.1 binary; tray persistence
-  tests; version consistency across surfaces.
-- NOT EXECUTED (per the rules): push, PR, GitHub release, Actions
-  re-run — the v0.11.4 CI/Security verdicts belong to the maintainer's
-  push.
-- NOT VERIFIED: the physical elevated Windows TUN runtime (unchanged
-  honest scope); the Windows job's post-hardening green state (will
-  be evidenced by the next push).
+---
 
 ## v0.11.3 — functional Windows TUN (sing-box dataplane), tray ON/OFF setting, Security workflow repairs
 
-v0.11.3 is a capability + repair release. Evidence scope (honest): the
-full Linux Go test suite (engine/... + system/ + internal/...), the
-windows/amd64 cross-build (`CGO_ENABLED=0 go build ./cmd/freeiran`),
-`go vet` (both targets), the frontend typecheck + 159 vitest cases +
-production build + canonical embed regen, a local gitleaks 8.28
-reproduction of the exact CI findings (baseline exit 2 → config exit
-0, all 112 commits scanned), and `sing-box check` against the pinned
-v1.14.1 binary for the generated TUN document (shadowsocks outbound
-and WireGuard endpoint forms). The end-to-end Windows TUN runtime on a
-physical host is NOT VERIFIED and is documented as such (docs/tun.md,
-ROADMAP).
+Capability + repair release. Evidence scope: full Linux Go suite,
+windows/amd64 cross-build + vet, frontend typecheck + tests +
+production build, `sing-box check` of the generated TUN document
+against the pinned real binary.
 
-### TUN — functional Windows mode (headline)
+- **Functional Windows TUN (the headline).** TUN is no longer the
+  v0.9.8.6 honest refusal: the managed, digest-verified sing-box
+  core IS the TUN dataplane (native sing-box tun inbound,
+  Wintun-backed). Transactional, OBSERVED activation: elevation
+  check → verified core → compatibility validation → collision-free
+  addressing from the live interface table → launch through the
+  existing supervisor → readiness → adapter observed → DNS hijack
+  (answered by sing-box's resolver over the proxy; system adapter
+  DNS never mutated) → real no-explicit-proxy tunneled request
+  verified → durable session marker → Active. Transactional disable
+  with honest residual reporting; crash recovery via boot-time stale
+  report inspecting only FreeIran's own recorded adapter. No new
+  supervisor/queue/downloader. Full design: docs/tun.md.
+- **Security workflow repairs (both push failures):** historical
+  synthetic-fixture commit allowlist in `.gitleaks.toml`
+  (commit-scoped, default rules fully active) and the reviewed
+  `system/open_shell.go` dangerous-pattern exception with the
+  contract inline (docs/security.md).
+- **System Tray ON/OFF as a persistent setting** (`tray_enabled`,
+  default ON, through the ONE settings store; native checkbox;
+  setting-aware close-to-tray; recoverable from Settings).
+- Everything from v0.11.2 preserved.
 
-- The managed sing-box core IS the TUN dataplane: a native sing-box
-  tun inbound (Wintun-backed) runs the active/selected configuration
-  system-wide. The v0.9.8.6 honest refusal (`ErrTunExperimental`) is
-  replaced by a real implementation; the v0.9.8.5 patterns (netsh,
-  route add/delete, PowerShell/curl acquisition) did NOT return.
-- New: `engine/core/singbox/tun.go` — `TUNSettings`, `BuildTUNDocument`
-  (tun inbound + mixed readiness inbound + current-format DNS module +
-  `auto_route`/`strict_route`/`auto_detect_interface` +
-  `hijack-dns`/`sniff` actions) and `StartTUN` through the shared
-  `core.Launch` supervisor.
-- New: `engine/tunnel/tun.go` — the transactional
-  `singboxTUNBackend`: elevation check (x/sys TokenElevation; no UAC
-  prompts), managed-core resolution via the new `TUNCoreResolver`
-  seam (implemented over the coremgr manifest — no second manager),
-  collision-free TUN addressing derived from the live interface
-  table, observed interface activation, verified no-proxy tunneled
-  Internet request, durable session marker, transactional disable
-  with residual reporting, boot-time stale-session recovery that only
-  ever inspects FreeIran's own recorded adapter.
-- Controller/service surface: `Controller.EnableTUN`,
-  `TunnelService.EnableTUN(configID)` (sing-box compatibility is
-  validated through the existing backend capability system before
-  anything launches), `State.TUN` carries the live snapshot, and the
-  Connection page renders Direct / System Proxy / TUN with observed
-  state (interface, IPv4/IPv6, DNS, routes, core, configuration).
-- Wintun integrity: the official sing-box Windows build embeds the
-  official wintun.dll (golang.zx2c4.com/wintun); no product download,
-  no PATH trust, no wintun.sys distribution, no invented digests.
-- Focused tests: backend selection, controller transaction behavior,
-  TUN document structure (including the route-loop prevention
-  invariant `auto_detect_interface=true`), version guard, address
-  selection, marker lifecycle.
+NOT VERIFIED: end-to-end Windows TUN runtime on a physical elevated
+host (requires an elevated Windows host; documented in docs/tun.md).
 
-### Security workflow repairs (both failures)
-
-- Gitleaks: `.gitleaks.toml` added — extends the DEFAULT rule set and
-  allowlists exactly the historical commit `dd62f17c` whose two
-  generic-api-key findings are synthetic WireGuard fixtures; no path
-  allowlist, no test-file exclusion (docs/security.md v0.11.3
-  addendum).
-- Static analysis: `system/open_shell.go` added as the second exact
-  allowlist case (after `system/resolve_windows.go`) with the full
-  justification inline; the pattern set is byte-identical and remains
-  fail-closed for every other file.
-- govulncheck untouched (pinned v1.8.0, both targets).
-
-### Tray ON/OFF
-
-- Persistent `tray_enabled` setting (pointer-optional; nil = enabled,
-  so pre-0.11.3 settings files keep the tray) through the existing
-  Settings store — no second store. The tray menu gains a real
-  "System Tray" checkbox reflecting the persisted value; Settings UI
-  gains the matching toggle. Disabling destroys the tray (no dead
-  icon) and makes window close a normal application close; re-enable
-  from Settings. Shutdown destroys the tray before engine teardown;
-  close-to-tray is now setting-aware.
-
-### Version surfaces
-
-- VERSION, internal/version/version.go, frontend/package.json,
-  frontend/package-lock.json (both entries), build/winres.json (all
-  five literals) and the README current-version line synchronized to
-  0.11.3. `cmd/freeiran/frontend/dist` regenerated through the
-  canonical `npm run build:embed` path (13-file canonical inventory
-  verified).
+---
 
 ## v0.11.2 — Mihomo managed core, internal config tabs, native Windows tray, honest tunnel diagnostics
 
-v0.11.2 is a feature + repair release. Every change is scoped to what
-the local Linux build + the windows/amd64 cross-build + the full Go
-test suite (engine/... + internal/... + system/, including new
-regressions) + the frontend typecheck/build/test battery actually
-verified before packaging. The Windows-native CI matrix (Layer A
-compile + Layer B runtime) runs in CI when the tree is pushed; it is
-NOT claimed as executed in this changelog.
+Feature + repair release. Evidence scope: full Go suite (Linux) +
+windows/amd64 cross-build + vet + the frontend battery, all executed
+before packaging.
 
-### P0 — Mihomo as a first-class managed core
+- **Mihomo as a coremgr-managed core** (download/health/UI; same
+  verified pipeline, `.gz` extraction added); the connection-engine
+  adapter deliberately out of scope — Mihomo is NOT advertised as a
+  runnable backend until that adapter ships (asserted by test).
+- **Configurations All scope + internal configuration tabs** keyed by
+  stable configuration ID (open/focus/close/close others/close
+  all/return to All).
+- **Honest tunnel diagnostics** (Direct → "No tunnel selected";
+  Tunnel path inactive → "Tunnel unavailable: no active tunnel" —
+  never silently reported as tunneled).
+- **Native Windows taskbar + system tray** (menu, show/focus
+  restore, close-to-tray, teardown ordering).
+- **Tor/Psiphon verification hardening; safe "Open shell here"**
+  (exact, justified scanner exception); Diagnostics numerical
+  spacing; queue/memory/logging safeguards preserved.
 
-- `engine/coremgr/manager.go`: `CoreMihomo` (`"mihomo"`) is a new
-  `CoreName` constant, and `AllCores` enumerates it alongside
-  Xray/V2Ray/sing-box. No new manager, downloader or process
-  supervisor: Mihomo rides the EXACT same managed-core pipeline
-  (download → verify → unpack → validate → smoke → atomic activate
-  → version probe → manifest → health).
-- `engine/coremgr/sources.go`: `DefaultSources` carries a
-  MetaCubeX/Mihomo entry. ReleaseAPI is the official GitHub Releases
-  endpoint (no third-party mirrors, no invented URLs). Asset patterns
-  prefer the broad-architecture Windows amd64 build, falling back to
-  the v3 (Haswell+) variant. ConfigCheckArgs `run -t -f` and RunArgs
-  `-f` mirror Mihomo's CLI.
-- `engine/coremgr/health.go`: `minimalConfig` and `smokeRunConfig`
-  produce the Clash YAML Mihomo accepts (mixed-port + direct mode +
-  localhost bind). The smoke launch listens on localhost only and
-  the smoke probe dials the local endpoint from the same machine.
-- `engine/provider/cores.go`: the `CoreProviderAdapter` (which
-  adapts every managed core to the Provider contract) now carries a
-  Mihomo entry in `coreLicenses` with its GPL-3.0 license and
-  MetaCubeX attribution. The adapter remains a thin wrapper; no
-  parallel install machinery exists.
-- `internal/safearchive/safearchive.go`: extended to unpack a
-  single-file `.gz` (the Mihomo Linux release shape — a gzipped
-  executable, not a `.tar.gz`). The unpacker peeks the gzip stream's
-  first tar header; if a valid tar header is present, the existing
-  tar path is used; otherwise the decompressed bytes are written to a
-  single output file named after the archive (`.gz` suffix stripped)
-  and marked executable. The single-file path inherits the same
-  `MaxFileBytes` / `MaxTotalBytes` bounds as the tar path, so a
-  hostile single-file gzip cannot exhaust disk.
-- `internal/safearchive/safearchive_mihomo_gz_test.go`: new
-  regression tests for the single-file `.gz` path — happy-path
-  extraction (executable bit set, byte-equivalent payload),
-  tar.gz-inside-`.gz` fallback, oversized single-file rejection.
-- Mihomo is coremgr-managed (download + health + UI surface) but is
-  NOT advertised as a runnable protocol-core backend in the
-  connection engine yet. The connection-engine adapter (Clash-YAML
-  config builder + selection + Register call) is out of scope for
-  v0.11.2 per the spec ("No large unrelated refactor" + "Only
-  advertise actual compatibility"). `engine/app/core_integration_test.go`
-  now asserts Mihomo is discoverable on disk AND not advertised as a
-  runnable backend — that assertion becomes the gate that flips when
-  a future release wires the adapter honestly.
-
-### P0 — Configurations: All scope + internal config tabs
-
-- `frontend/src/pages/Configs.tsx`: `All` is now a first-class scope.
-  The default `groupFilter` value is `"all"` so the All chip is active
-  on first load; clicking All is a no-op (the user cannot end up in
-  a "no group selected" limbo); other chips toggle the active scope
-  back to `"all"` when de-selected. The `loadFiltered` early-return
-  treats `""` and `"all"` as equivalent (both spellings match every
-  record on the server side; no extra round trip).
-- New internal configuration tabs rail: opening config A then B
-  produces `All | A | B`; opening A again FOCUSES A instead of
-  creating a duplicate. Tabs are keyed by the STABLE configuration
-  ID, never by row index, so reorder/sort/filter cannot misroute a
-  tab to the wrong config. The rail supports: open, activate/focus,
-  close, close others, close all, return to All. Closing the last
-  open tab hides the rail and returns focus to the wide table.
-- The existing dense table, virtualization, sorting/filtering,
-  Favorites/Working/Untested/Fast/Recently tested/user groups,
-  bulk testing and v0.11.0 group-action honesty (all succeed →
-  success; partial → warning; all fail → error) are preserved.
-
-### P0 — Honest tunnel diagnostics
-
-- `engine/netcheck/tools_path.go`: `runTunnelDiagnostics` no longer
-  reports a generic "no active tunnel" failure for every inactive
-  snapshot. The semantics are now precise:
-  - Direct path selected → "No tunnel selected (Direct path)."
-    The Transport field is cleared so the UI cannot mistake this
-    for a successful socks5 probe.
-  - Tunnel path selected but no active tunnel → "Tunnel unavailable:
-    no active tunnel" — never silently falls back to a direct probe.
-  - Tunnel path selected, snapshot Active but no endpoint →
-    "Tunnel unavailable: active tunnel reports no local endpoint."
-  - Tunnel path selected, snapshot Active + endpoint, SOCKS5
-    CONNECT failure → "Tunnel unavailable: local endpoint failed
-    SOCKS5 CONNECT: ..." with the precise underlying error.
-- `engine/netcheck/tools.go`: the Run() guard that intercepts
-  `Path == PathTunneled && req.Dial == nil` now carves out
-  `ToolTunnelDiagnostics` — the tool's purpose is to REPORT on the
-  tunnel state including the unavailable state, so it must run and
-  produce the precise reason above instead of a generic
-  "unsupported".
-- `engine/netcheck/tools_test.go`: `TestToolTunnelDiagnostics`
-  rewritten to cover all four routing classes (Direct path,
-  Tunnel unavailable / no active tunnel, Tunnel unavailable /
-  no local endpoint, active tunnel + OK measurement + result.Path
-  == PathTunneled).
-
-### P0 — Native Windows taskbar + system tray
-
-- `cmd/freeiran/main.go`: native Wails v3 `SystemTray` is wired
-  (NOT a React fake). The tray carries: Show, Hide, Configurations,
-  Network, Diagnostics, Settings, Quit. Navigation actions restore
-  the main window AND emit `freeiran:navigate` with `{page}` so the
-  React shell syncs the active page. The main window's
-  `WindowClosing` hook now hides to tray instead of quitting —
-  close-to-tray is the canonical Windows desktop client behavior.
-  Quit runs the existing `applicationInstance.Shutdown()` hook so
-  the connection/provider/core cleanup uses the SAME lifecycle path
-  as a normal close (no orphan processes).
-- `frontend/src/App.tsx`: subscribes to `freeiran:navigate` and
-  calls `setPage(target)` so tray navigation lands on the right
-  surface. No duplicate application windows are ever opened.
-- The BLACK/WHITE/RED icon family and generated Windows resources
-  (`build/winres.json`, `assets/freeiran-icon.{png,ico,svg}`) are
-  preserved. No green icon derivatives are reintroduced.
-
-### P0 — Tor / Psiphon (verification, not rewrite)
-
-- The v0.11.0 baseline already implemented the spec's required Tor
-  lifecycle: official Tor Project source (dist + archive split for
-  the production topology), real `sha256sums-signed-build.txt`
-  checksum verification, safe archive extraction, real bootstrap
-  readiness (from Tor's own notice-log "Bootstrapped 100%" line,
-  not timers), real SOCKS readiness observation, existing managed-
-  binary pipeline and existing process supervisor. v0.11.2
-  preserves this implementation unchanged; the v0.11.0 provider
-  tests pass against the v0.11.2 tree without modification.
-- The v0.11.0 baseline already implemented the spec's required
-  Psiphon user-binary path: copy (not move) into FreeIran-managed
-  provider storage, content-addressed name (SHA-256), byte-
-  equivalent verification of the managed copy, validation + smoke
-  launch of the MANAGED COPY (never the user's original),
-  `OriginUser` / `Acquisition "user-binary"` manifest provenance.
-  v0.11.2 preserves this implementation unchanged.
-
-### P1 — Safe PowerShell/CMD "Open here"
-
-- `system/open_shell.go`: new `OpenShellAtDirectory(path, shellType)`
-  operation. SECURITY CONTRACT — this is NOT a generic command
-  executor: the only thing it can do is open the chosen shell
-  binary (PowerShell or CMD) with the chosen directory as cwd, with
-  NO arguments supplied by the caller. The executable path is
-  resolved through OS lookup (or the well-known System32 location
-  for cmd.exe / Windows PowerShell), never from a user-supplied
-  string. The working directory is set through `cmd.Dir` (not
-  `cd path &&` concatenation) so spaces, Unicode and UNC paths are
-  handled by the OS shell-launch path directly — no shell
-  interpolation of the directory is performed. Allowed shells are
-  explicitly enumerated; any other value returns
-  `ErrUnsupportedShell` rather than silently defaulting.
-- `engine/app/storageoverview.go`: `OpenShellAtWorkspace` and
-  `OpenShellAtDataDir` surface the operation through the existing
-  `StorageService` (which already owns `OpenWorkspace` /
-  `OpenDataDir`). No new service is introduced.
-- Frontend bindings for the new methods are regenerated by the
-  Wails toolchain at release time; the Go methods exist and are
-  verifiable in this ZIP.
-
-### P1 — Diagnostics numerical spacing
-
-- `frontend/src/styles/index.css`: `.stat-value` /
-  `.stat-value.sm` / `.stat-label` now use `font-variant-numeric:
-  tabular-nums` and a slight negative `letter-spacing` so latency /
-  duration / port / counts / memory / queue / timings read
-  compactly at 100%/125%/150%/175% DPI scaling. No layout redesign
-  of unrelated pages.
-
-### P1 — Queue/memory/logging safeguards preserved
-
-- The v0.11.0 bounded/deferred queue admission, adaptive workers,
-  memory-pressure backpressure, core-process caps, duplicate
-  suppression, cancellation, bulk-log aggregation, structured JSONL
-  Normal/Detailed/Debug modes, redaction/rotation/retention all
-  remain intact. No new queue or worker pool was introduced; the
-  `engine/testqueue`, `engine/mempressure`, `internal/logging` and
-  `engine/coremgr` packages pass the v0.11.0 test battery unchanged.
-
-### P2 — Version + documentation
-
-- `VERSION`, `internal/version/version.go`,
-  `build/winres.json`, `frontend/package.json`,
-  `frontend/package-lock.json` all bumped to 0.11.2.
-  `TestVersionSurfacesConsistent` (the structural regression gate
-  for version drift) passes.
-- `README.md` updated to 0.11.2; this CHANGELOG entry is the
-  authoritative change list.
-
-### Verification evidence (executed before packaging)
-
-- `gofmt` clean on every changed Go file (engine/, system/,
-  internal/, cmd/).
-- `go build ./engine/... ./internal/... ./system/` (linux/amd64,
-  Go 1.25, GOTOOLCHAIN=local) — success.
-- `GOOS=windows GOARCH=amd64 go build ./cmd/freeiran/` — success
-  (20.9 MiB PE binary; tray code, Mihomo additions, OpenShell
-  additions and tunnel-diagnostics fix all compile for Windows).
-- `go test -count=1 ./engine/... ./internal/... ./system/` (with
-  fake-core fixtures staged) — every package passes.
-- `npm run typecheck` + `npm run build` + `npm test` in
-  `frontend/` — typecheck clean, Vite build clean, 159/159
-  frontend tests pass (including the 10 Configs tests with the new
-  internal tabs rail).
-
-### NOT VERIFIED in this release
-
-- Windows-native runtime: the Wails v3 Linux build path needs
-  gtk4/webkitgtk-6.0 dev packages that are not present in this
-  packaging environment, so the binary is cross-built for
-  windows/amd64 but not executed on Windows in this release. CI
-  runs the Windows-native matrix when the tree is pushed.
-- Mihomo as a runnable protocol-core backend: the connection-
-  engine adapter (Clash-YAML config builder + selection + Register
-  call) is intentionally out of scope per the spec; Mihomo is
-  coremgr-managed only. The `engine/app/core_integration_test.go`
-  test now asserts Mihomo is NOT advertised as a runnable backend
-  so the capability surface stays honest.
-- Tray navigation event delivery on Windows: the React shell
-  listens for `freeiran:navigate`; the runtime event path runs in
-  CI on Windows when the tree is pushed.
-- Live Internet verification of the Mihomo asset patterns: the
-  patterns are derived from MetaCubeX Mihomo's documented release
-  naming convention (`mihomo-{os}-{arch}-{tag}.{ext}`); CI verifies
-  them against the live release API when the tree is pushed.
+---
 
 ## v0.11.0 — compact Windows CI (two-layer proof), failure classification, transport agility, ECH foundation
 
-v0.11.0 is a CI-architecture and resilience-foundation release. Every
-claim below is scoped to evidence actually executed for this release
-(full Linux suite + `-race`, frontend battery, real-core verification
-with the three pinned cores including the new ECH shapes, the security
-battery, windows/amd64 cross-build + PE verification from Linux, and a
-Windows compile-surface proof from Linux). The Windows-native CI gate
-(the NEW two-layer matrix itself) is NOT claimed as executed — it runs
-in CI when this tree is pushed.
+CI-architecture + resilience-foundation release. Evidence scope:
+full Linux suite including `-race`, frontend battery, real-core
+verification with the three pinned cores (including the new ECH
+shapes), security battery, windows/amd64 cross-build +
+PE-subsystem verification, Windows compile-surface proof.
 
-### Windows CI — measured, redesigned, no hidden coverage reduction
+- **Windows CI redesigned to a two-layer proof** (local
+  windows/amd64 vet+build from Linux + the Windows-native job)
+  after measuring that the full hosted matrix duplicated
+  platform-neutral execution; every Windows-specific behavior still
+  executes on Windows.
+- **Nine-class failure classification** (dns/tcp/tls/handshake/
+  listener/verify/reset/timeout/transport) derived from observed
+  failed-facet shapes only; stored per configuration and per
+  history; repeated protocol-specific streaks demote candidates in
+  automatic selection.
+- **Route freshness / evidence tuple** (rank must not outrun the
+  evidence that produced it).
+- **Transport agility — preference, not a second failover engine.**
+- **ECH support, schema-verified, sing-box-only** (four dedicated
+  fields; evidence table of accept/reject shapes against the pinned
+  binaries; honestly scoped: check/startup-level acceptance, NOT
+  live ECH negotiation — docs/protocols.md).
+- Machine-generated bindings restored (hand-maintained layer
+  removed); bounded test admission; compact Normal logging; dense
+  Configurations table; Black/White/Red icon; Android strategy
+  documented as a plan.
 
-- The bottleneck was measured, not guessed: the v0.10.5 step
-  `go test -count=1 -p 1 -timeout=20m ./...` spent its time on
-  platform-NEUTRAL suites the Linux `go` job already runs (and runs
-  again under `-race`) — connection 42.3 s, testqueue 31.1 s,
-  provider 31.1 s, app 30.4 s, coremgr 28.7 s, netcheck 15.3 s on
-  Linux — multiplied by Windows runner overhead and serialized by
-  `-p 1` (docs/performance.md §15 carries the table).
-- Layer A — compile the COMPLETE Windows test surface:
-  `go test -run '^$' -count=1 -p 1 -timeout=10m ./...`. Every package
-  and test binary compiles and links for Windows, including every
-  `//go:build windows` test file Linux never compiles, and every
-  TestMain runs (provider's fixture build included — the fixtures
-  must compile for Windows too).
-- Layer B — execute the Windows-sensitive behavior: the four
-  platform-critical packages run FULL (engine/tunnel — real WinINet
-  round-trips + recovery machinery; system — process/job supervision,
-  hidden console, cmd.exe resolver, workspace lifecycle, executable
-  discovery; engine/store — the open-handle-blocks-deletion defect
-  class; internal/httpx — the v0.9.6 read-only Sync finalization
-  asymmetry), and targeted `-run` patterns cover the Windows-material
-  subset of coremgr (exec_windows), netcheck (environment/staged
-  diagnostics ladder, traceroute privilege guard), app
-  (boots/shutdown/boot phases, crash-recovery boots against the real
-  backend) and connection (hung-core teardown with image release,
-  mid-session crash, cancel/deadline survival, reconnect replacement,
-  goroutine-leak cycles, provider sessions).
-- Layer C — the repeated WinINet/recovery battery is UNCHANGED in
-  scope (`-count=5 -p 1`, `if: always()` so a failing layer never
-  hides the repeated evidence). `-v` was dropped: failures print full
-  diagnostics regardless and 5× verbose passes buried the signal.
-- Every layer has an explicit bounded timeout (10m compile-all, 10m
-  platform-critical, 4–8m per targeted group, 10m battery) — no
-  20-minute blanket hiding an unknown slow test.
-- Job dependencies audited and deliberately unchanged: windows needs
-  [go, frontend]; protocol-cores and the Security workflow stay
-  independent (security evidence never waits on Windows).
-
-### Runtime work: bounded admission, compact Normal logging, group root-fixes, dense Configs table, Black/White/Red icon
-
-Engineering pass on the v0.11.0 runtime behavior itself (same tree,
-same version — the release notes above document the CI/classification
-work; this section documents the runtime pass):
-
-- **Bounded batch admission** (engine/testqueue): the queue owns a
-  deferred-admission backlog. A bulk plan materializes a small
-  bounded batch (default 200) and admits more only while the queue
-  drains under the admission floor (default 1000). The old
-  `Limit <= 0 → 10000` burst is gone: the runtime log line
-  "untested enqueued=10000" can no longer materialize as 10,000
-  queued tasks. Explicit user tests keep the 10,000 planning ceiling;
-  automatic/background testing defaults to a 500 total with a lower
-  priority (`TestFilter.Origin` distinguishes them). Cancellation
-  drops the backlog with the live tasks and reports dropped
-  candidates honestly.
-- **Memory-aware backpressure**: from HIGH memory pressure upward the
-  controller holds deferred admission (queue drains, never refills
-  under stress); recovery to elevated or better resumes it. Queues
-  created while pressure is high/critical start held. The adaptive
-  booster still floors worker concurrency at critical; the
-  core-process cap (2, hard max 4) is untouched.
-- **Bulk-log aggregation + Normal-profile compaction**: bulk tests
-  emit `bulk_test_start` / throttled `bulk_test_progress` (one per
-  10 s window) / exactly one `bulk_test_complete` with honest totals.
-  Successful PROBE core launches (`core_ready`) are lifecycle-tier
-  records — suppressed by Normal, retained with full structured
-  evidence by Detailed/Debug; failures stay individually diagnosable
-  in every profile. Message/field duplication audited out. The JSONL
-  format, redaction, rotation and structured fields are preserved.
-- **Advanced Logging settings**: the existing profile/level/size/
-  backups controls gain an explicit age-retention knob
-  (`log_retention_days`, applied live via the logger's existing
-  age-sweep) with concrete per-profile explanations in Settings.
-- **User configuration groups root-fixed**: group filtering no longer
-  re-locks and re-scans collections PER RECORD (the 20k-records ×
-  group-membership quadratic trap) — membership is snapshotted once
-  per listing into a set and answered O(1) per record, semantics
-  unchanged. The frontend "Add selected to group" path no longer
-  swallows per-item errors: all-succeeded → success, partial →
-  diagnostic with the backend error preserved, all-failed → error
-  (regression-tested: a group-action failure cannot produce a
-  success toast). Group membership continues to ride the one stable
-  identity (store fingerprint → Config.ID → selection → collections)
-  — never row indices. Rename joins create/delete on the group rail;
-  deletion still never touches configurations.
-- **Dense Configs table**: wide viewports render a professional
-  single-line node table (36 px rows, sticky sortable header:
-  favorite/protocol/name/endpoint/transport/latency/status/source)
-  with the full testing lifecycle per row (Idle → Queued → Preparing
-  → Testing → Measuring → Passed/Failed/Timed out/Cancelled) from
-  measured evidence. Sorting rides the one server-side pipeline;
-  virtualization is retained; narrow viewports keep the two-line
-  cards. Bulk actions are scope-aware and explicitly user-origin.
-- **Application icon**: the canonical asset (assets/freeiran-icon.svg)
-  and the whole derivative chain (PNG, ICO, embedded appicon PNG,
-  Windows .syso resource) moved from the old brand-green accent to
-  the project's strict BLACK / WHITE / RED visual language (white
-  bolt, red lower facet, red ring on near-black). Unrelated UI
-  components were not recolored.
-
-### Failure classification + route freshness (evidence model)
-
-- A stable nine-class failure vocabulary (dns, tcp, tls, handshake,
-  listener, verify, reset, timeout, transport) derived from
-  observations only, in precedence order: failed-facet shape → the
-  URL-test's own canonical vocabulary → classified error text. The
-  URL-test phase timings are explicitly NOT failure evidence
-  (documented why: none of them marks the failing phase).
-- Per-configuration evidence: `last_failure_at`, `last_failure_class`
-  and a bounded freshness tuple (`Evidence()`: last_verified_at,
-  last_failure_at, recent_failure_class, verification_age). History
-  observations carry their class. Unknown classes are dropped by
-  normalization rather than trusted.
-- The `timed_out` scope filter consults the class first (legacy
-  free-text fallback preserved for old records).
-
-### Transport agility — preference, not a second failover engine
-
-- A trailing streak of ≥2 failures sharing one PROTOCOL-SPECIFIC
-  class (tls/handshake/transport) demotes the candidate in BOTH
-  ranking surfaces by a bounded, saturating factor (2 ×0.85, 3 ×0.70,
-  ≥4 ×0.55) with an explicit explanation line. Quick Connect,
-  recovery and discovery all select through this scoring, so repeated
-  protocol-specific evidence naturally moves automatic preference to
-  a different already-supported transport. Mixed or unattributed
-  trailing classes do NOT demote; the factor never zeroes a candidate
-  (manual selection still works); no "confidence score" exists
-  anywhere.
-
-### ECH (Encrypted Client Hello) — verified, scoped, honestly declared
-
-- Four dedicated config fields map 1:1 onto sing-box 1.14's
-  `tls.ech` (enabled/config/config_path/query_server_name); nothing
-  overloads Host/Network/Security/Fingerprint/SpiderX; not part of
-  the fingerprint. Validation encodes EMPIRICALLY VERIFIED binary
-  behavior: PEM "ECH CONFIGS" envelope with a base64 body (raw
-  base64/hex/other header spellings rejected by the binary), REALITY
-  conflict rejected before generation, TLS required, config XOR
-  config_path. Normalization wraps the raw base64 ECHConfigList (the
-  DNS HTTPS `ech=` payload shape) into the PEM envelope.
-- Capability-routed to sing-box ONLY: the pinned V2Ray 5.53.0
-  silently ignores an `echConfigList` field (wrong-typed values pass
-  `v2ray test`), and Xray 26.3.27 accepts the field in schema but
-  does not content-validate it at check level — neither is claimable,
-  so the matcher never routes ECH configs to them (silently
-  connecting without ECH would be a lie).
-- Real-core proof: the three ECH shapes (inline PEM config,
-  config_path file, query_server_name) ride the pinned sing-box
-  1.14.0 smoke suite (`check` + startup + listener readiness).
-  EVIDENCE SCOPE: schema-level acceptance, NOT live ECH negotiation
-  with an ECH-capable server — stated in the UI, the capability
-  notes and docs/protocols.md.
-- Import surface: the structured/JSON representation carries the ECH
-  fields; NO URI parameter is invented (the ecosystem has no
-  standardized ECH URI parameter — pinned by test).
-
-### Machine-generated bindings restored (hand-maintained layer removed)
-
-- The pinned wails3 v3.0.0-beta.19 CLI was built (CGO-free, per the
-  v0.9.8.7 procedure) and the bindings regenerated: a second
-  generation is byte-identical (reproducibility contract re-verified).
-- The v0.9.11 hand-maintained files (profiletypes.js, importtypes.js,
-  tunnelownership.js) are REMOVED — the generator covers their entire
-  surface. `TestProfileBindingModelsMatchGoStructs` was repurposed
-  (not deleted): it now pins the machine-generated models.js
-  ProfileView/ProfileSpec field-for-field against the Go structs, so
-  a stale committed binding still fails loudly.
-- Frontend migrated to the generated surface (ImportDialog, Connection
-  ownership calls, profile type imports, QuickConnect ProfileSpec
-  construction); 157/157 frontend tests pass, typecheck clean.
-
-### UI evidence surfaces (no fake badges)
-
-- The configuration detail panel gains a "Failure evidence" section
-  (streak, class, credential-free detail, last-failure/last-verified
-  times) and an ECH section with FOUR distinct states — configured /
-  core support / core acceptance / connectivity — each rendered from
-  recorded facts, with a truth note bounding the ECH claim to
-  schema-level evidence.
-
-### Android strategy (plan only)
-
-- docs/android.md: an implementation-ready architecture note (shared
-  Go engine, VPNService tunnel boundary with the same transactional
-  ownership contract as WinINet, UI bridge, pinned per-ABI core
-  distribution, verification and permission requirements, and a
-  six-step independently-verifiable ladder). No Android product
-  exists, no Android code is claimed, and TUN remains
-  experimental/disabled (an Android TUN must be a new transactional
-  implementation that passes real rollback/recovery tests).
-
-### Known states (documented, not fixed)
-
-- `TestReleaseMetadataConcurrentRequestsDeduplicated` (engine/coremgr,
-  `-race`) remains load-sensitive as documented in v0.10.5; no test
-  was weakened.
-- The Windows-native gate for THIS tree runs in CI when pushed; until
-  it passes, v0.11.0 is not "Windows-verified" (same honest scoping
-  as every previous release).
+---
 
 ## v0.10.5 — comment-aware security scanning, discovery route-trust policy
 
-v0.10.5 is a security-tooling correctness release plus one trust-policy
-gap fix. It replaces the raw-text suspicious-pattern scan — which could
-not distinguish documentation from executable code and failed on a
-protocol documentation comment — with a tokenizing, comment-aware
-scanner whose detection domain on executable code is EXACTLY the old
-scan's domain. Every claim below is scoped to evidence actually
-executed for this release: the full Linux suite (plus `-race`), the
-frontend battery, real-core verification with the three pinned cores,
-and windows/amd64 cross-build + PE-subsystem verification from Linux.
-The Windows-native battery (WinINet round-trips, Windows runtime smoke,
-desktop build on a Windows runner) is NOT claimed — it runs in CI when
-this tree is pushed.
-
-### Security scanning — root cause, not symptom
-
-- The Static analysis job failed on `engine/config/validate.go:105` —
-  a documentation COMMENT describing the Hysteria2 URI form
-  (`obfs-password=<pw>`). The raw grep (`password=|secret=`) cannot
-  tell documentation from executable code. The failure was reproduced
-  locally with the exact CI command before anything was changed: the
-  failure surface was exactly that one comment line, and no real
-  finding hid behind it.
-- New tool `tools/gosecscan`: tokenizes each Go file with `go/scanner`
-  and reconstructs the source with every comment span removed
-  (multiline block comments keep their line count, so reported
-  `file:line` references stay true), then matches the SAME patterns
-  against the remaining executable text — byte-identical to the old
-  scan's domain on executable code, including verbatim string-literal
-  contents.
-  - Documentation (line/block/inline comments) can never trigger the
-    credential gate again.
-  - A real hardcoded credential in executable text still fails the
-    job — regression-tested for interpreted strings, multiline raw
-    strings and no-space assignment shapes.
-  - Fail-closed both ways: any match exits 1; a file that cannot be
-    tokenized exits 2 (an unscannable file never passes silently);
-    the workflow refuses an empty file list (no vacuous pass).
-  - No allowlists, no `|| true`, no `continue-on-error`, no disabled
-    checks. Gitleaks and govulncheck are untouched.
-- The dangerous child-process scan moves from the line-oriented
-  comment filter — which false-positived on inline comments and
-  non-star-prefixed block-comment interiors, and missed raw-string
-  lines starting with `//` — to the same structural tokenization.
-  The allowlist (tests, `engine/core/contract`, the validated cmd.exe
-  PATH resolver) is unchanged and the pattern set is unchanged. The
-  `sh -c` check becomes spacing-tolerant: the old grep matched one
-  exact source spelling only.
-- Regression suite `tools/gosecscan/scan_test.go` pins BOTH
-  directions: six documentation classes accepted (including the exact
-  validate.go:105 shape, plus a test that scans the real file), four
-  executable-finding classes rejected with line-number assertions,
-  the spacing-tolerant `sh -c` pattern, and the CLI exit-code
-  contract (0 clean / 1 violations / 2 operational).
-- CI vet/test coverage extended to `./tools/...` so the scanner's
-  regression suite runs on the Linux gate as well.
-
-### Discovery flow — route-trust policy gap closed
-
-- `DiscoveryService.StartFlow`'s AUTOMATIC selection connected the
-  best ranked candidate with no trust filter — a gap against the
-  v0.9.8.6 route-trust boundary ("Quick Connect and Auto connect
-  through trusted routes only, unless the user explicitly enables
-  untrusted public routes"): discovery-driven auto-connect IS an
-  automatic selection path. The flow now filters ranked candidates to
-  trusted routes (official/user) unless `AllowUntrustedPublicRoutes`
-  is set, and reports `FlowStageNoUsable` with the exclusion count in
-  the diagnostics log when only untrusted candidates remain. MANUAL
-  selection is explicit user choice and is never filtered — public
-  nodes stay fully reachable through explicit selection.
-
-### Real-core coverage
-
-- TUIC `new_reno` now rides the real sing-box binary: the full
-  congestion-control domain (bbr | cubic | new_reno) is exercised
-  through `sing-box check` + startup + listener readiness, not only
-  the unit-mocked generator.
-
-### Known states (documented, not fixed)
-
-- `TestReleaseMetadataConcurrentRequestsDeduplicated`
-  (engine/coremgr, `-race`) is load-sensitive: under the fully
-  parallel race suite the deduplication window can observe 2 API
-  hits. It passed on the v0.10.4 tree, in isolation (11/11) and on a
-  second full run of this tree; a pre-existing timing sensitivity,
-  not a regression. No test was weakened.
+Security-tooling correctness + trust-policy gap fix. The raw-text
+suspicious-pattern scanner (which could not distinguish documentation
+from executable code) was replaced with a tokenizing, comment-aware
+scanner — same detection intent, fewer false classes; discovery gained
+an explicit route-trust boundary (source content routing policy).
+Evidence: full local suites + the security battery; no scan rule
+weakened.
 
 ## v0.10.4 — TUIC/Hysteria semantic corrections, WinINet bypass-grammar fix, documented query order
 
-v0.10.4 is a protocol-semantics correction release. It fixes the last
-full-suite Windows failure of the v0.10.3 battery (an invalid test
-fixture, not production code), corrects the TUIC `udp_relay_mode`
-domain and the Hysteria family's obfs semantics against the pinned
-sing-box v1.14.0, and hardens WinINet diagnostics. Every claim below
-is scoped to the evidence actually executed for this release: the full
-Linux suite (plus `-race`), `GOOS=windows` vet/build/test-compile
-checks, and real-core verification with the pinned sing-box 1.14.0
-binary (`sing-box check` + startup + listener readiness). The
-Windows-native WinINet round-trips run in CI on GitHub-hosted Windows
-runners; they are NOT claimed from Linux.
-
-### Windows WinINet — root cause and hardening
-
-- `TestWinINetExplicitProxyRoundTrip` failed while applying its
-  synthetic `original` snapshot — BEFORE the intended
-  Enable/Disable round-trip. Root cause: the fixture's bypass list
-  carried `10.0.0.0/8`. WinINet's documented bypass grammar supports
-  host names, IP literals, wildcard patterns and `<local>` — CIDR
-  notation is not valid syntax — so `InternetSetOption` rejected the
-  whole per-connection list with `ERROR_INVALID_PARAMETER`, surfaced
-  by the guaranteed-restore path as "restore runner proxy settings:
-  The parameter is incorrect." The fixture now uses `192.168.1.*`
-  (deterministic, documented syntax). Production WinINet code was NOT
-  widened to accept CIDR.
-- New `TestWinINetBypassGrammar` pins the supported grammar and
-  rejects CIDR/separator/scheme/assignment forms at grammar level, so
-  an invalid fixture fails with a named cause instead of a syscall
-  error inside a restore path. `recovery_test.go`'s recorded-previous
-  fixture was aligned to WinINet-plausible syntax as well.
-- Documented Windows 7+ query order implemented in `queryCore`:
-  `INTERNET_PER_CONN_FLAGS_UI` first, falling back to
-  `INTERNET_PER_CONN_FLAGS` if the UI tag is rejected; setting keeps
-  using `INTERNET_PER_CONN_FLAGS` (the documented transaction
-  contract). One authoritative per-connection transaction per
-  mutation, unchanged.
-- WinINet syscall failures now report the failing operation and the
-  numeric code (`win32 error 87 (...)` via the new `win32CallError`
-  rendering) — "The parameter is incorrect." alone hid the errno.
-- `notifyChanged` failures are reported through the structured
-  diagnostics log per stage (`proxy_notify_failed`: activate /
-  restore-previous / reset-to-direct / recovery-restore). The
-  transaction contract is unchanged: platform mutation + verification
-  stays the hard correctness gate; a failed notification is surfaced,
-  never silently discarded, and never rolls back verified state.
-- `Options.Bypass` documentation now states the WinINet grammar
-  contract explicitly (the old comment used `10.0.0.0/8` as an
-  example — the exact mistake the fixture regression pinned).
-
-### TUIC — the relay-mode domain is real
-
-- `UDPRelayModeQuadratic = "quadratic"` was an INVENTED value: no
-  sing-box release documents it. The model, validation and generation
-  now use the documented domain **native | quic**
-  (`UDPRelayModeQUIC`). `congestion_control` remains
-  cubic | new_reno | bbr and still never touches the transport slot.
-- New tests pin the full matrix end-to-end: default relay behavior
-  (generation pins the documented `native`), explicit `native`,
-  explicit `quic`, cubic, new_reno, bbr, invalid congestion control
-  and invalid relay mode rejected at parse AND build time, and no
-  leakage into `Network` for any variant.
-
-### Hysteria2 — gecko added; Hysteria v1 — obfs is a string
-
-- Hysteria2's obfs domain is now **salamander | gecko** (sing-box
-  1.14 documents both; the Hysteria2 URI format carries both;
-  v0.10.3 rejected gecko). Generated JSON remains the object
-  `{"type": "salamander"|"gecko", "password": "..."}` — never
-  Security/Host/Network.
-- Hysteria (v1) is a DIFFERENT protocol with a different sing-box
-  schema: its `obfs` is the obfuscation password as a plain JSON
-  STRING, omitted when absent. v0.10.3 emitted the Hysteria2 object
-  shape for v1 AND rejected real v1 obfs passwords through the v2
-  salamander enum. The v1 URI semantics (`obfs` = password) are
-  implemented only where the actual v1 format supports them;
-  Hysteria2's `obfs` + `obfs-password` URI semantics are unchanged.
-- Exact JSON type assertions pin all three cases: v1 obfs absent →
-  key omitted; v1 obfs present → JSON string; Hysteria2 obfs present
-  → JSON object. All variants (plus TUIC relay/congestion variants
-  and the WireGuard endpoint) passed through the REAL pinned
-  sing-box 1.14.0 binary: `sing-box check` accepted every generated
-  document and every variant reached listener readiness.
-
-### WireGuard — documentation truth pass
-
-- The deterministic fallback local address pair (172.19.0.2/32 +
-  fdfe:dcba:9876::2/128) generated when an imported configuration
-  carries no INI `Address` is FreeIran-generated — stable across runs
-  for reproducible documents — and is NOT a sing-box "documented
-  default". Misleading wording in the generator comment, the capability
-  notes and docs/protocols.md was corrected.
-- The conceptual split is unchanged and pinned by tests: INI/URI
-  `Address` → endpoint `address`, peer `AllowedIPs` →
-  `peers[].allowed_ips`, peer endpoint stays the peer endpoint;
-  interface addresses never merge into AllowedIPs. Both
-  `wireguard://` and `wg://` URI spellings are regression-tested.
-- Fingerprints unchanged — stored configuration IDs remain stable
-  across the whole release.
+Protocol-semantics correction release against the pinned sing-box
+binary: TUIC `udp_relay_mode` domain corrected to native | quic (the
+prior "quadratic" was an invented value); Hysteria2 obfs domain
+(salamander | gecko) and Hysteria v1 obfs (the v1 password string)
+corrected; WireGuard endpoint semantics pinned; WinINet bypass-list
+grammar fixed; the URL-test query order documented. All variants
+re-verified through the real pinned binary (`check` + startup +
+listener readiness).
 
 ## v0.10.3 — Windows WinINet ABI/semantics repair, protocol data-model truth pass, secret-free test material
 
-v0.10.3 is a correctness release. It repairs the v0.10.2 Windows
-test/verification failures at root cause (a wrong test expectation, a
-WinINet fidelity gap and a cross-process test race), moves TUIC /
-Hysteria / WireGuard protocol details into their OWN semantic fields
-(replacing the v0.10.2 overloading), and removes committed key-shaped
-test literals that tripped Gitleaks. Every claim below is scoped to
-the evidence actually executed (Linux CI suite, Windows cross-compile
-and static analysis); the Windows-native round-trips run in CI on
-GitHub-hosted Windows runners.
-
-### Windows WinINet — the v0.10.2 CI failures, root-caused
-
-- `TestWinINetStructLayout` failed against a CORRECT production
-  struct: the test's own expectation computed
-  `ptrSize*3 + 16 = 40` bytes on amd64 for
-  `INTERNET_PER_CONN_OPTION_LIST`, while the C structure is **32
-  bytes** (dwSize+pad | pszConnection | counts | pOptions — a
-  double-counted slot in the test formula). The expectation now
-  counts the four pointer-class slots (32 on amd64, 20 on 386). The
-  production mirrors were byte-exact and unchanged.
-- WinINet WPAD fidelity: the connection's autodiscovery policy lives
-  in the SEPARATE `INTERNET_PER_CONN_AUTODISCOVERY_FLAGS` option
-  (the `AUTO_PROXY_FLAG_*` mask), not only in the
-  `PROXY_TYPE_AUTO_DETECT` flag bit. v0.10.2 neither captured nor
-  restored it, so a save/restore cycle could not faithfully restore
-  the autodetect state and restore VERIFICATION could observe an
-  `AUTO_DETECT` bit the record never described. The snapshot now
-  captures the option tolerantly (some builds reject it when no
-  autodiscovery policy exists), persists it in the marker
-  (`autodiscovery_flags`, backward compatible — schema stays v2),
-  and applies it back in the SAME per-connection transaction when a
-  record carries it. Zero still means "not captured" everywhere.
-- `proxyStatesEqual` comparison semantics are now documented per
-  field: mode/server/bypass always compare; the PAC URL compares
-  when the autoconfig mode is claimed (Windows PRESERVES a
-  stored-but-inactive URL — an inactive stale value is not part of
-  the effective state); `AutoDetect` compares only when at least one
-  side is a captured (non-legacy) snapshot — a v1 record never
-  recorded autodetect (the documented v1 fidelity limit);
-  `AutoDiscoveryFlags` compares only when the expected side recorded
-  it. Nothing was weakened silently; each rule names the platform
-  behavior it models.
-- Cross-process test race removed: `engine/app`'s boot-recovery test
-  performs a REAL WinINet restore during boot (machine-global
-  mutation) and had NO restore path — under `-p 2` it raced
-  `engine/tunnel`'s round-trip tests on the same registry-backed
-  state. The runner's proxy state is now captured before the boot
-  and restored VERIFIED afterwards (guaranteed restore path, §16),
-  through new `tunnel.CaptureSystemProxySnapshot` /
-  `tunnel.RestoreSystemProxySnapshot` helpers; and the Windows test
-  step serializes package binaries with `-p 1` because mutating
-  machine-global WinINet state from two processes is inherently
-  nondeterministic.
-- §16 diagnostics: every WinINet round-trip/recovery verification
-  failure now dumps BOTH states field-by-field (flags, effective
-  mode, server, bypass, PAC URL, autodetect, autodiscovery,
-  override) via `dumpProxyState`; the crash-recovery battery in CI
-  runs `-v`, `-p 1`, and `if: always()` so a failing full matrix can
-  never hide the targeted diagnostic evidence again.
-
-### Protocol data model — every detail in its own semantic field
-
-- TUIC: `congestion_control` is a dedicated `Config.CongestionControl`
-  field with an enforced value domain (bbr | cubic | new_reno).
-  v0.10.2 overloaded it into `Network`, so the capability matcher
-  read "bbr" as a TRANSPORT name and matching/validation failed for
-  every congestion-controlled config. `udp_relay_mode` is parsed
-  (native | quadratic; generation pins the documented default
-  `native`). TUIC URIs with values outside the domains are rejected
-  at parse time.
-- Hysteria / Hysteria2: `obfs` → `Config.Obfs`, `obfs-password` →
-  `Config.ObfsPassword`. v0.10.2 mapped obfs→Security (the TLS slot)
-  and obfs-password→Host (the WS host-header slot), corrupting both.
-  Obfuscation values are VALIDATED (empty or salamander) instead of
-  accepting arbitrary strings; generation emits the sing-box
-  `obfs` object only from the dedicated fields.
-- WireGuard: the INI `Address` (LOCAL interface address) is parsed
-  into `Config.InterfaceAddress` — v0.10.2 dropped it entirely and
-  generated a sing-box ENDPOINT with no local `address` at all (the
-  real binary requires one at startup); `AllowedIPs` remains the
-  PEER routing list and never carries interface addresses; the URL
-  parser accepts `address`/`localAddress`. When a configuration
-  records no interface address, the endpoint generator emits the
-  documented deterministic default pair.
-- Parser repair found by the audit: `wireguard://` / `wg://` URIs
-  were UNREACHABLE — `isSupportedScheme` never listed them although
-  the scheme handlers existed. WireGuard URIs now parse.
-- The generated sing-box documents are pinned by new JSON-level tests:
-  tuic `congestion_control`/`udp_relay_mode`, hysteria2 `obfs`
-  object, and the WireGuard endpoint's local `address` +
-  `peers[].allowed_ips` separation.
-- Fingerprints are deliberately UNCHANGED (the new fields are tuning,
-  not identity — same policy as up_mbps/insecure); stored IDs stay
-  stable across the upgrade.
-
-### Security / CI
-
-- Gitleaks: the committed WireGuard-KEY-SHAPED base64 literals in
-  `engine/core/singbox/singbox_test.go` and
-  `engine/app/importservice_test.go` are replaced by keys DERIVED at
-  runtime from deterministic seeds (32-byte ramp → 44-char padded
-  base64). Same coverage, deterministic, syntactically valid, never
-  real credentials, no secret-looking literals committed — and NO
-  Gitleaks suppression, allowlist or rule weakening.
-- Windows CI: full matrix runs `-p 1` (serialized machine-global
-  WinINet mutations), the targeted crash-recovery battery runs
-  always/verbose, and the runtime smoke runs `if: always()`.
-
-### Not changed on purpose
-
-- TUN remains unavailable (honest status, see ROADMAP).
-- No push to GitHub was performed by this release work.
+Correctness release: v0.10.2 Windows failures repaired at root cause
+(wrong test expectation, WinINet fidelity gap, cross-process test
+race); TUIC/Hysteria/WireGuard protocol details moved into their OWN
+semantic fields (replacing the v0.10.2 Network-slot overloading that
+broke capability matching); test material made secret-free
+(deterministically derived fixtures — the discipline that later
+became the v0.11.4 root fix).
 
 ## v0.10.2 — Windows system-proxy repair, transactional ownership, personal import, real QUIC/WireGuard runtime
 
-v0.10.2 fixes the v0.10.1 Windows regression AT ROOT CAUSE (a broken
-WinINet ABI that made every system-proxy activation fail on Windows),
-makes the ownership lifecycle fully transactional, ships a first-class
-personal configuration import flow, and adds REAL runtime support for
-Hysteria2, TUIC, WireGuard and Hysteria through the sing-box adapter —
-schema-verified against the pinned v1.14.0 binary. Nothing is claimed
-"done" beyond what the executed evidence shows.
-
-### Windows regression — root cause (Actions run 36087876076)
-
-- The failure `TestAppBootsAfterCrashedProxySession — marker still
-  present after a successful Windows recovery` was caused by
-  `engine/tunnel/proxy_windows.go` declaring the WinINet
-  `INTERNET_PER_CONN_OPTION` union as `[64]uintptr` — a 520-byte
-  option stride on amd64 where WinINet requires 16. With more than
-  one option, `InternetSetOptionW` read options 2..n from option 1's
-  zeroed padding, saw unknown dwOption values and failed the whole
-  call with `ERROR_INVALID_PARAMETER`. Every multi-option
-  Enable/Disable/Restore failed on Windows; boot recovery therefore
-  kept the ownership marker. The assertion was NOT weakened; the
-  production ABI was repaired.
-- Second latent defect fixed in the same file: `InternetQueryOptionW`'s
-  buffer-length argument is `LPDWORD` (pointer) — v0.10.1 passed the
-  value itself, which WinINet dereferences. Query now also uses the
-  documented WinINet string semantics (WinINet-allocated buffers
-  freed with `GlobalFree`).
-- The Go mirrors of the WinINet structures are pinned byte-exact by a
-  Windows ABI layout test; real-binary roundtrips (direct → FreeIran
-  → direct, explicit → FreeIran → explicit, PAC → FreeIran → PAC,
-  repeated enable/disable, HTTP scheme, crash-marker recovery through
-  the real backend, corrupt marker) run in CI against wininet.dll on
-  GitHub-hosted Windows runners.
-
-### Transactional system-proxy ownership
-
-- Enable is now a transaction: capture the ACTUAL platform state →
-  durably persist the validated recovery record (write → fsync →
-  rename, phase=pending) → activate → verify the resulting WinINet
-  state → mark ownership ACTIVE. A marker-write failure ABORTS the
-  activation before the proxy is touched; an activation or
-  verification failure rolls back (restore previous, consume the
-  marker; a failed rollback keeps the marker and says so).
-- Disable reports an explicit `ErrOwnershipResidual` error when the
-  marker cannot be consumed — never a silent clean outcome while
-  durable ownership residue remains.
-- Boot recovery (`RecoverStaleProxy`) validates the record schema
-  BEFORE any platform mutation, restores, then VERIFIES the actual
-  platform state against the record and only then consumes the
-  marker; verification mismatch, restore failure or marker-cleanup
-  failure each keep the marker and return an explicit error.
-- Marker schema v2 (`schema_version`, `phase`, PAC URL, autodetect,
-  flags) is backward compatible: v0.10.1 (schema-less) markers still
-  recover — pinned by tests, including the exact v0.10.1 literal.
-- New `TunnelService.OwnershipStatus()` surfaces the ownership truth
-  (present/phase/endpoint/saved previous state) in the UI.
-
-### Personal configuration import (P0)
-
-- New ImportService: paste or file → format detection (URL list /
-  base64 subscription / JSON / WireGuard INI) → parse (the ONE
-  parser) → normalize → validate → capability preview (which
-  INSTALLED cores can execute each entry) → redacted preview → Save
-  → Test → Connect. No subscription source required; no second
-  configuration pipeline; saved configs carry the personal-import
-  source and user trust tier; re-import updates in place by
-  fingerprint (never duplicates).
-- Parser repairs that the import surface exposed: SIP002
-  shadowsocks URIs (base64 `method:password` userinfo) no longer
-  fail with "password is empty"; the QUIC family's `insecure=1`,
-  `upmbps`, `downmbps` URI parameters are captured (v0.10.1 dropped
-  them, making most real Hysteria2 configs unusable).
-- Configurations page gains an "Import configurations" dialog with a
-  redacted capability table; the connection UI shows the ownership/
-  recovery status.
-
-### Real protocol runtime (protocol × core truth pass)
-
-- The sing-box adapter now DECLARES and GENERATES real outbounds for
-  Hysteria2, TUIC and Hysteria and a WireGuard ENDPOINT (the
-  v1.11+ form), verified against the pinned sing-box v1.14.0
-  binary with `sing-box check` and the real-binary smoke suite
-  (config accepted → process starts → listener ready): hysteria2
-  (TLS mandatory), tuic (uuid+password, congestion control, native
-  UDP relay), wireguard (endpoint, peer, allowed-IPs default
-  0.0.0.0/0 + ::/0), hysteria v1 (auth_str, MANDATORY up/down
-  bandwidth caps — the real binary refuses otherwise).
-- Deep validation mirrors what the real core enforces (missing
-  hysteria2 password / TUIC uuid / WireGuard keys are rejected at
-  import/validate time, with explicit messages).
-- docs/protocols.md documents the truthful protocol × core matrix
-  with the evidence level per cell.
-
-### CI
-
-- The Windows job runs a repeated crash-recovery regression battery
-  (`-count=5`) over the repaired path; the real-core sing-box smoke
-  now includes the four new protocols automatically.
-
-### Not changed on purpose
-
-- TUN remains unavailable (see ROADMAP): a transactional
-  implementation with verified rollback is still a prerequisite.
-- No push to GitHub was performed by this release work.
+The v0.10.1 Windows regression fixed AT ROOT CAUSE (a broken WinINet
+ABI that made every system-proxy activation fail on Windows); the
+system-proxy ownership lifecycle made fully transactional; first-class
+personal configuration import (URL lists, base64 subscriptions,
+v2ray-style JSON, WireGuard INI — see docs/protocols.md); REAL runtime
+support for Hysteria2, TUIC, WireGuard and Hysteria v1 through
+sing-box (real-binary smoke evidence in docs/protocols.md).
 
 ## v0.10.1 — crash-safe system proxy, Windows CI survivability, WHITE/BLACK/RED theme
 
-v0.10.1 is a trust-boundary release: the system-proxy ownership is
-now durable across crashes, the Windows CI failure class that made
-runs un-diagnosable is addressed at the workflow level, and the
-visual system is reworked into the WHITE/BLACK/RED identity. No new
-subsystem; the existing tunnel controller, process supervision and
-design tokens carry every change.
-
-### Crash-safe Windows system proxy (the crash leg of the proxy contract)
-
-- While the system proxy is FreeIran-owned, the tunnel controller now
-  persists a durable ownership marker
-  (`<workspace>/runtime/system-proxy.json`) recording the PREVIOUS
-  proxy state — exactly what `Disable` would restore, mirrored to disk
-  so a session that dies without one (crash, kill, power loss, runner
-  cancellation) cannot lose it.
-- The boot path calls `tunnel.RecoverStaleProxy()` before any service
-  starts: a marker found there proves the last session ended uncleanly
-  while owning the proxy, and the recorded previous state is restored
-  through the platform backend (WinINet on Windows). The marker is
-  consumed on success; a restore that the platform refuses KEEPS the
-  marker so the next boot retries.
-- A corrupt marker is removed and surfaced, never restored from. A
-  failed proxy recovery never blocks application startup (the app
-  boots ready and logs the outcome).
-- `SystemProxyBackend` gains `Restore(snapshot)`: the replay of what
-  `Disable` restores, without in-memory state. The WinINet
-  implementation broadcasts the change so running apps pick it up.
-- Contract tests pin the full lifecycle on every platform: marker
-  written on Enable (with the previous corporate/direct state),
-  cleared on clean Disable, kept on failed Disable, restore retries,
-  corrupt-marker removal, and the no-marker/no-path no-ops.
-
-### Windows CI: survivability and diagnosability (run 36074448116)
-
-- Forensics: the failing job's "Run Go tests" step (`go test -count=1
-  ./...` on windows-latest) started 2026-09-24T23:52:21Z and never
-  completed; the run was declared failed at 00:37:18 with "The hosted
-  runner lost communication with the server". All Linux jobs were
-  green and the full Linux matrix (including `-race`) passes locally,
-  so the failure class is Windows-runner resource starvation, not a
-  deterministic code failure.
-- The Windows job now bounds the matrix load: `-p 2` limits the number
-  of concurrently RUNNING test binaries (the matrix is process-heavy:
-  system/provider/connection/app suites supervise real cmd.exe/ping/
-  fake-core children, and the provider TestMain compiles two more
-  binaries — at the 4-vCPU hosted runner the default `-p 4` can starve
-  the runner agent itself).
-- `-timeout=20m` makes the per-binary bound explicit: a recurrence
-  panics with a full goroutine dump (an actionable failure) instead of
-  a silent 45-minute runner death that destroys every diagnostic.
-  Coverage is unchanged — every test still runs.
-
-### WHITE / BLACK / RED visual system
-
-- The design tokens are reworked into one coherent three-part system:
-  BLACK surfaces (the near-black layer hierarchy), WHITE text (the
-  readability hierarchy), RED brand accent (buttons, focus, selection,
-  active states, highlights: `#e5484d` / `#ff6369`).
-- STATUS HUES ARE SEMANTIC, NOT DECORATIVE: working/connected stays
-  green, warnings amber, failures red — at-a-glance state truth is
-  never traded for palette purity (a red "connected" would read as a
-  failure). The brand accent and the failure red are distinct shades
-  of the same family.
-- Every surface consumes the same centralized tokens (shell, sidebar,
-  headers, controls, tables, cards, menus, dialogs, toasts, badges,
-  loading/error/empty states); no page-private colors were found in
-  the audit and the frontend suite (157 tests) passes unchanged.
-
-### Housekeeping
-
-- Version surfaces synced to 0.10.1 (VERSION, frontend package +
-  lockfile, internal/version, build/winres.json in both release and
-  4-part PE forms); the committed `.syso` resources regenerated from
-  the synced winres source (go-winres).
-- ROADMAP restructured onto the P0–P3 ladder with the current,
-  verified baseline (see ROADMAP.md).
+Trust-boundary release: system-proxy ownership durable across crashes
+(durable marker + boot-time stale report — the pattern TUN later
+adopted); the Windows CI failure class that made runs un-diagnosable
+addressed at the workflow level; visual system reworked into the
+WHITE/BLACK/RED identity.
 
 ## v0.9.15 — deep fixes: Tor acquisition root cause, one testing path, incremental UI, shared menu placement
 
-v0.9.15 is a deep-fix release: it repairs the root causes found by a
-full acquisition/testing/UI audit instead of adding retries around
-them. No new subsystem — the existing queue, HTTP infrastructure,
-supervision and persistence carry every change.
+Deep-fix release from a full acquisition/testing/UI audit: Tor
+acquisition root cause repaired (not retried around); one testing
+path (no duplicate admission paths); incremental UI updates; shared
+menu placement. No new subsystem.
 
-### Tor acquisition actually works again (root cause: host mismatch)
+## v0.9.14 — idempotent local discovery, artifact reuse, full v0.9.13 closure
 
-- The Tor Project's distribution is split across two official hosts:
-  `dist.torproject.org/torbrowser/<ver>/` serves the version listing
-  and `sha256sums-signed-build.txt` (the checksum authority, published
-  with its `.asc` signature) but **not** the expert bundles — the
-  historical single-host asset URL answered HTTP 404 for every
-  `tor-expert-bundle-*`, which is exactly why managed Tor installs
-  failed while every checksum lookup succeeded. `Resolve` now builds
-  the asset URL against `archive.torproject.org/tor-package-archive/`
-  (the official full package archive, verified live: the downloaded
-  bundle's SHA-256 matches dist's published digest exactly). The
-  integrity chain is unchanged: digest from dist's signed checksums,
-  bytes from the official archive, VERIFY proves they agree before
-  anything executes.
-- An explicit Install over a healthy managed bundle now means
-  "acquire the resolved release" (adoption is no longer allowed to
-  silently short-circuit it); external adoption still happens whenever
-  no usable managed engine exists, and external files are never
-  touched.
-- Local-first behavior preserved: remote metadata failure keeps any
-  locally usable engine working (`EnsureAvailable`), failed downloads
-  never destroy the previous verified runtime, and failures record the
-  exact stage.
-
-### Psiphon: honest provider states, first-class local path
-
-- Verified upstream (2026-09): `Psiphon-Labs/psiphon-tunnel-core`
-  releases publish ONLY mobile/client library archives (with digests),
-  and `psiphon-tunnel-core-binaries` (moving `master`, no digests)
-  hosts Linux ConsoleClient + psiphond only — **no authoritative
-  Windows ConsoleClient artifact exists**. The managed channel stays
-  honestly unavailable; master content is never downloaded as a
-  managed release.
-- Provider manifests and `Info` now carry `acquisition`
-  (`managed-release` / `user-binary` / `external-reference`), so the
-  UI distinguishes managed installation, user-supplied validated
-  copies, adopted external installations and an unavailable channel
-  instead of collapsing them into one boolean. The Cores page states
-  plainly that Psiphon's supported install path is the validated
-  user-binary workflow.
-
-### ONE authoritative testing path (single tests converge on the queue)
-
-- `DataService.TestConfig` no longer runs a synchronous network test
-  on the UI's call. It enqueues into the SAME test queue bulk testing
-  uses (priority 500 — a person is waiting) and returns promptly with
-  the config's current snapshot. Repeated clicks collapse into the
-  queued task (`ErrDuplicate` is success). Single tests now share every
-  queue guarantee: deduplication, per-backend concurrency, supervised
-  core processes, cancellation, retry, persistence.
-- "Retry timed out" is a REAL scope now (classified failure reason)
-  instead of a synonym for "retry failed".
-
-### Configs UI: incremental, not rebuild-the-world
-
-- The live test lifecycle (`queued → preparing → testing → measuring`)
-  comes from ONE shared projection of the queue snapshot
-  (`state/testProgress.ts`) read by rows, the detail panel and
-  Connection — no page-private testing state.
-- Completed tests patch their configuration in place (one GetConfig
-  per changed fingerprint through the queue's own persistence path).
-  The old per-click full `runSearch()` over ~17k configs is gone.
-  Search, filters, sorting, organization, selection and scroll
-  position all survive a test completion. Quick Connect invalidates
-  once per persisted result, whatever page triggered the test.
-- Connection converges with Configs: the best-candidate view refreshes
-  once (debounced) when results land; the config picker reads the same
-  patched store. No duplicated tests, no stale state presented as
-  fresh.
-
-### Menus: ONE viewport-aware positioning mechanism
-
-- Every menu — trigger dropdowns (Configs, Cores) and the Configs row
-  context menu (⋮ button, right-click, Shift+F10) — renders through a
-  single portal-based surface (`components/MenuSurface.tsx`): anchor
-  to the real trigger, measure the real popup size, prefer
-  down/right, flip up/left when room runs out, clamp inside a small
-  gutter at the edges, reposition on scroll/resize, and keep Escape,
-  outside-click, keyboard navigation, focus return and ARIA semantics
-  in one place. The hard-coded 240/340/348 geometry and the
-  clip-vulnerable absolute dropdown are gone; the placement algorithm
-  is pinned by unit tests across all four viewport edges.
-
-### Housekeeping
-
-- Dead code removed (`moveTreePayload`/`copyTreeEntry`, the unused
-  manager-level `EnsureAvailable`); version surfaces synced to 0.9.15;
-  new regression tests for the queue convergence, the timed-out scope,
-  the Tor host split and the menu placement rules.
-
-## v0.9.14 — idempotent local discovery, artifact reuse & full v0.9.13 closure
-
-The release makes "do the work once" an architectural invariant. No
-new subsystem; one discovery authority, one reuse decision model,
-precise invalidation — every change reuses the existing services.
-
-### Version consistency (closes the v0.9.13 CI failure)
-
-- `build/winres.json` kept `0.9.12` PE resource metadata while the rest
-  of the tree moved on. Every authoritative version surface — `VERSION`,
-  `frontend/package.json`, `frontend/package-lock.json`,
-  `internal/version/version.go`, `build/winres.json` (release form and
-  four-part PE form) — is now `0.9.14`, and a structural regression
-  test (`internal/version`) proves all surfaces consistent without
-  weakening the CI gate.
-
-### One universal local-reuse decision (the core change)
-
-- ONE bounded, platform-aware executable discovery authority
-  (`system.ExecDiscovery`, surfaced through `system.CoreLocator`)
-  serves the core registry, the core manager, the provider manager,
-  diagnostics and the UI: managed directories → PATH → known platform
-  installation locations (`%ProgramFiles%`, `%ProgramFiles(x86)%`,
-  `%LocalAppData%`, `%AppData%`, ProgramData on Windows; the standard
-  Linux/macOS bin and per-user roots). A recursive disk walk is
-  prohibited by design.
-- Version probes are cached under a stable file identity (path + size
-  + mtime) with bounded freshness (15 min positive / 1 min negative)
-  and are deduplicated in flight: identical concurrent discovery
-  requests spawn exactly one probe process.
-- `Install` is now a reuse-first **ensure** operation: a current
-  managed core is a true no-op; a current external core is adopted by
-  reference; an older-but-working external core is retained with
-  "update available" surfaced and no download; a newer-than-stable
-  external core is used and never downgraded; only when no suitable
-  working local candidate exists does the download run. `Acquire`
-  (explicit Update) intentionally acquires the newer release without
-  ever touching external files.
-- External ownership is explicit (`managed` / `external`): external
-  executables are never deleted, renamed, overwritten or moved —
-  uninstall clears the reference, updates preserve the file, rollback
-  restores only managed binaries. When a referenced external binary
-  disappears the runtime rediscovers alternatives instead of trusting
-  a false "ready" state.
-- Trust is honest: `upstream-verified` (authoritative digest match)
-  versus `locally-validated` (probes, validates and smokes) — a
-  version string alone never proves provenance.
-
-### Artifact and metadata idempotency
-
-- A complete staged archive is verified (size + SHA-256 against the
-  authoritative digest) and reused with NO network; a partial one is
-  resumed; an oversized/corrupt one is discarded alone. Applies to
-  core installs and provider downloads alike.
-- Release metadata lookups are deduplicated in flight: concurrent
-  identical requests share one network request, detached from the
-  first caller's context (one cancelled caller cannot cancel the
-  shared request); ETag/304 and persisted cache behavior preserved.
-
-### Providers (Tor, Psiphon) follow the same rules
-
-- An installed, working Tor (PATH or controlled system location,
-  webtunnel-capable, smoke-passed) is adopted BY REFERENCE instead of
-  downloading the bundle again. Psiphon auto-discovery adopts an
-  existing consoleclient through the existing copy-not-move,
-  content-addressed, fully validated user-binary path. No duplicate
-  provider installer exists; checksum policy for downloaded binaries
-  is unchanged and unchanged-trust rules hold.
-
-### UI
-
-- The Cores page surfaces provenance (`FreeIran managed` / `system
-  PATH` / `system` / `user-provided`), the honest trust badge
-  (`verified` only with a digest match; otherwise `working`),
-  non-failure status notes ("newer than stable; automatic downgrade
-  refused") and the reuse decision. A core discovered on the system
-  but never managed by FreeIran now APPEARS on the Cores page — the
-  user never installs a second copy just to make the app aware of an
-  existing installation.
-
-### Regression-proved (new tests)
-
-- Discovery: managed/PATH/system origins, candidate ordering and
-  dedup, invalid/missing binaries, probe timeout, identity-change and
-  TTL re-probe, explicit bypass, concurrent probe dedup, vanished
-  binaries, Windows `.exe` naming.
-- Core manager: current-external → no download; older-external →
-  retained + update surfaced; newer-external → no downgrade;
-  invalid-external → fallthrough; external uninstall/update/rollback
-  preserve the user's file byte-for-byte; current-managed install is
-  a no-op; complete staged artifact reused; corrupt staged artifact
-  redownloaded; concurrent release lookups deduplicated.
-- Registry: provenance surfaced, forced refresh bypass, cache-aware
-  refresh. Singleflight: dedup, cancellation contract, error
-  propagation. Version surfaces: structural consistency gate.
+"Do the work once" as an architectural invariant: one discovery
+authority, one reuse decision model, precise invalidation; version
+consistency closed (winres had kept a stale 0.9.12 PE resource while
+VERSION said 0.9.13 — the class of drift v0.12.0 audits for).
 
 ## v0.9.13 — clean runtime logging, configuration surface redesign, update-size transparency
 
-Product-quality update on the v0.9.12 architecture. No new subsystems;
-every change reuses the existing authoritative services.
-
-### Runtime logging (Normal profile)
-
-- Exactly ONE producer of the successful `application_start` record
-  (`engine/app.New`). The entrypoint no longer emits a second one, and
-  boot-failure records are owned by `app.New` as well — including the
-  earliest failure paths, which previously logged nothing or logged
-  twice (entrypoint + engine) depending on where the failure hit.
-- `boot_telemetry` is no longer a Normal-profile record. The phase →
-  milliseconds table is emitted as a compact, structured,
-  debug-severity, lifecycle-tagged record that Detailed/Debug profiles
-  admit; the timings no longer hide inside the message text.
-- Normal startup now answers "what happened / is the app healthy /
-  what failed" with the compact sequence `application_start →
-  store_open → application_ready → core_discovered → warmup_complete`.
-  `store_open` carries `records`/`chunks` as structured fields (the
-  message no longer duplicates them); `warmup_complete` is a new
-  measured summary (real elapsed warmup window, live core count).
-- Boot timings remain available to diagnostics and the UI state:
-  `AppState.BootTimings` is now actually populated (it existed and was
-  compared by the publisher since v0.9.4 but was never written to).
-
-### Configurations tab
-
-- The primary browsing row is a compact two-line hierarchy —
-  favorite | protocol | name + health / endpoint + measured ping |
-  Test | ⋮ — with virtualization preserved and no O(n) work per
-  render (favorite lookups are set-based now).
-- Transport, security, URL-test results, test backend, source
-  metadata and timestamps moved to the detail panel, which is grouped
-  (Overview → Endpoint → Measurement → Health → Source) and now
-  receives the row's real measurement evidence.
-- One action model per configuration: the ⋮ overflow, right-click and
-  the keyboard context-menu invocation (Shift+F10 / Menu key) open the
-  SAME menu (test/retest, connect, favorite, bulk-select, add to
-  group, move up/down, view details, copy endpoint — the endpoint
-  copy carries only the displayed `address:port`, never credential
-  material). Bulk selection keeps a visible row accent.
-- Organize-by and Export CSV moved into a "View" menu; search, status,
-  protocol, sort and the testing controls stay visible.
-
-### Cores tab and update metadata
-
-- Update checks persist the authoritative upstream snapshot — latest
-  version, release tag and the selected platform asset's download
-  size — into the managed manifest (optional fields; v0.9.12
-  manifests load unchanged). The update card renders the version
-  transition (`vA → vB`), "Update available · N download" and the
-  "Update to B" action; a missing size renders a truthful
-  "Download size unavailable" fallback, never a guess.
-- Secondary core operations (check, verify, repair, reinstall,
-  rollback, enable/disable, release page, uninstall) moved into a
-  per-card overflow menu; each card keeps ONE essential action.
-  "Verify all" joins the existing aggregate actions.
-- A compact runtime section reports only real engine state: core
-  readiness/health counts from the lifecycle manifests, native
-  acceleration from AppState, memory pressure and adaptive-booster
-  settings from the diagnostics snapshot.
-- Performance audit (measured): core discovery probes each available
-  binary with a version-probe process spawn (up to 5 s per probe
-  form). Registry refresh ran those probes serially on the
-  interactive-connect path; they now run concurrently, bounded by the
-  registered backend count, with identical result semantics and
-  ordering. A locator benchmark and a concurrency regression test
-  (run under `-race`) pin the behavior.
+Product-quality update: exactly ONE producer of the successful
+`application_start` record; configuration surface redesigned;
+update-size transparency (download sizes surfaced honestly).
 
 ## v0.9.12 — provider lifecycle monotonicity, binding-contract verification, persistence hardening
 
-Full engineering closure of the v0.9.11 state. The failing race gate
-(`engine/provider/TestTorLifecycleStartBootstrapStopRestart`, observed
-as `restart state = "starting"`) is fixed at its ROOT CAUSE, the same
-invariant class is enforced across every asynchronous event source in
-the provider layer, the hand-maintained profile bindings are now
-verified field-for-field in CI, and the persistence layer can no
-longer silently rewrite a future schema. No tests were modified to
-pass; no security, trust, verification, recovery or
-process-supervision rule was relaxed.
-
-### The Tor lifecycle root cause (fixed, regression-proved)
-
-- Two asynchronous readiness authorities competed: the endpoint probe
-  could let `Start()` return before any bootstrap line was observed
-  (the probe schedule fires immediately and real Tor opens its SOCKS
-  listener early), after which `Start()` MANUFACTURED
-  `bootstrap.Complete = true` — while the log-line scanner was still
-  draining stdout. The scanner's later `Bootstrapped 0..90%` lines
-  then overwrote `Complete = false` and `State()` regressed the
-  published lifecycle state from `ready` back to `starting`. On a
-  loaded CI runner the test's post-restart state assertion landed
-  inside that window — exactly the `restart state = "starting"`
-  failure. This was an architecture defect, not test timing.
-- The fix is the ONE monotonic, generation-scoped run-state model
-  (`engine/provider/runstate.go`), now shared by BOTH engines:
-  - every `Start` creates a fresh RUN GENERATION; every asynchronous
-    event (scanner line) carries the generation it belongs to, and a
-    stale event — old run, or run already stopped/failed — is
-    discarded (the invariant: a stale event must never mutate current
-    lifecycle state);
-  - the SCANNER owns observed bootstrap progress, and progress is
-    monotonic within a run: a late lower-% line can no longer regress
-    an observed value;
-  - the READINESS SUPERVISOR owns the verdict, following the
-    documented contract: spawn → observe process alive → observe
-    bootstrap progress → observe `Bootstrapped 100%` → verify the
-    SOCKS endpoint → publish READY exactly once, immutable for the
-    run. An endpoint accepting before 100% is recorded as EVIDENCE
-    (surfaced in the timeout diagnostics and the bootstrap tag), not
-    as readiness;
-  - `Stop` and failed starts END the run before the process even
-    dies, so an in-flight scanner line across a stop/restart boundary
-    is discarded instead of mutating or resurrecting state;
-  - `Start()` no longer writes bootstrap state at all — the
-    manufactured-`Complete` write that enabled the regression is
-    gone.
-- Readiness timing note: Tor `Start()` now returns when the
-  DOCUMENTED contract is satisfied (bootstrap 100% observed AND the
-  endpoint verified), not when the endpoint alone accepts. On real
-  networks this can take longer than the pre-0.9.12 shortcut — that
-  longer wait is the correct behavior, bounded by the existing
-  bootstrap timeout, and the failure path reports honest evidence
-  (last observed progress + endpoint evidence) instead of a bare
-  timeout.
-- Psiphon got the same treatment (same model, one system — no
-  parallel implementations): its readiness verdict (both local proxy
-  endpoints verified, the documented "tunnels up" contract) is
-  published exactly once per run, gated against concurrent Stop, and
-  its scanner events are generation-gated and monotonic.
-- Regression battery added (`engine/provider/v0912_lifecycle_test.go`
-  + `testdata/faketorstall`): progress monotonicity under late
-  lower-% lines; stale-generation and post-end event discarding; a
-  LATE line injected into the live scanner after readiness must not
-  regress state or the published bootstrap view; stale ingest across
-  restart; THREE full restart cycles with exact state assertions
-  (one pass proves nothing for a timing-dependent failure); and the
-  readiness-contract pin — a fixture whose endpoint accepts but which
-  never emits `Bootstrapped 100%` must FAIL the start with endpoint
-  evidence, never publish Ready. The engine-level tests run the real
-  fixture through the full install → start pipeline.
-
-### Audit of every other asynchronous state authority (same invariant class)
-
-- `engine/connection` (monitor loop, process-exit watcher, crash
-  transition, stability recheck): already generation-gated and
-  monotonic from the v0.9.8.6–v0.9.10 work — audited, no changes
-  needed, no defect found.
-- `internal/statepub`: ordered, bounded, class-aware delivery with
-  synchronous drain — audited, no defect found.
-- `system` process supervisor and `internal/safearchive` + the two
-  managed-install pipelines: audited against the full v0.9.12
-  checklists (child flags, job objects, breakaway, tree kill, PID
-  reuse, wait/reap, pipe draining, Stop idempotency, crash
-  detection; traversal/UNC/device/symlink/FIFO/bomb matrices,
-  checksum-before-activation, staged-only execution, user-binary
-  immutability, bounded downloads) — all items verified with file:line
-  evidence; no defect found.
-
-### Frontend/backend contract (§12: hand-maintained bindings are no longer an unverified dependency)
-
-- The wails3 generator cannot run on the current host, so the v0.9.11
-  Connection Profiles bindings are hand-maintained. CI now proves the
-  model contract FIELD-FOR-FIELD:
-  `TestProfileBindingModelsMatchGoStructs` reflects over the Go
-  `ProfileView`/`ProfileSpec` JSON tags and verifies the JSDoc
-  `@property` set, names and optionality of `profiletypes.js` (both
-  optional-marker spellings accepted) — a Go field added without
-  updating the binding, a renamed JSON tag or a wrong optional marker
-  fails the job instead of surfacing as `undefined` at runtime.
-  Combined with the existing `TestFrontendBindingsMatchGoServices`
-  (every `$Call.ByName` target verified against the registered Go
-  service; machine-generated `$Call.ByID` files verified
-  structurally), the binding surface is a VERIFIED mirror.
-
-### Persistence correctness (§14: future-schema and write-integrity hardening)
-
-- store.meta: a FUTURE format version was previously mapped to
-  "corrupt", triggering a silent rebuild that would write a v2
-  registry over a future-schema document. The future version is now
-  distinguished from corruption: the document is preserved VERBATIM as
-  `store.meta.future-preserved` (never deleted, never rewritten) and
-  the registry is rebuilt from the chunk files — the store still
-  opens, and a newer binary recovers the original document intact.
-- profiles.json / sources.json / collections.json: a future schema
-  version now arms a save guard — every mutating write REFUSES loudly
-  ("uses a newer schema; refusing to overwrite") instead of silently
-  downgrading the document. Load behavior (run on defaults/empty,
-  file untouched) is unchanged.
-- settings.json: `SettingsService.Save` and `persistSettings` now
-  share ONE write mutex around the whole read→validate→write→memory
-  cycle — concurrent settings writers could previously interleave and
-  leave memory and disk diverging.
-- config order sidecar: the hand-rolled fixed-`.tmp` rename (no
-  fsync, interleavable tmp name) is replaced by the ONE shared atomic
-  write path (`system.WriteFileAtomic`).
-
-### UI state authority (§13: no optimistic lifecycle state, no stale-store races)
-
-- HIGH defect fixed: an authoritative connection event during a
-  blocking `Connect`/`Reconnect` call invalidated the in-flight store
-  operation WITHOUT releasing its busy ownership — and the backend
-  publishes real transitions DURING those calls, so every real
-  connect resolved stale with `busy=true` stuck, disabling
-  Connect/Disconnect/Reconnect until restart. An authoritative event
-  now releases busy ownership (the dropped result loses nothing: the
-  snapshot carries the machine's own state and LastError). Regression
-  tests pin the event-vs-operation interleaving.
-- Generation guards added to the remaining unguarded store paths:
-  `profilesStore.setActive` (a slow first activation can no longer
-  overwrite a newer activation), `startflowStore` (status reads
-  invalidated by newer events/reads), `appStore` (a slow failed poll
-  can no longer flip a live backend to `backend_unavailable`; events
-  invalidate in-flight polls), `providerStore.setMode`
-  (out-of-order responses can no longer settle the wrong mode;
-  failures surface in the store instead of vanishing).
-
-### Validation (executed for this release, evidence-bounded)
-
-- `gofmt` clean; `go vet` clean on every package that compiles on
-  Linux (the wails GUI dependency chain requires GTK4/webkitgtk dev
-  packages absent from the verification host — identical to the CI
-  split, where the desktop build validates via the
-  `CGO_ENABLED=0 windows/amd64` target, which also passes here).
-- `go test ./engine/... ./internal/... ./system/...`: PASS.
-- `go test -race` (CI scope, `./engine/... ./system/...
-  ./internal/...`): PASS, plus the provider package and the
-  Tor lifecycle test re-run repeatedly (3x targeted, full-package
-  and full-repo race runs) because one pass proves nothing for a
-  timing-dependent failure.
-- Native layer: `make -C native test` PASS; `native_accel` build,
-  cross-language tests and benchmarks PASS.
-- Frontend: typecheck PASS; unit tests 136/136 PASS; production build
-  PASS.
-- Real protocol cores (pinned, SHA-256-verified official archives):
-  V2Ray v5.53.0, Xray v26.3.27, sing-box v1.14.0 — all three adapter
-  smoke suites PASS.
-- Windows desktop build validates via `GOOS=windows GOARCH=amd64
-  CGO_ENABLED=0 go build` PASS.
-- NOT executed on this host (no Windows runner available without
-  pushing): the Windows test/build job and Windows runtime smoke.
-  These remain post-push CI verification and are claimed NOWHERE as
-  done.
+Full engineering closure of v0.9.11: the provider restart race
+(`restart state = "starting"`) fixed at ROOT CAUSE; the same
+monotonic-state invariant enforced across every asynchronous event
+source in the provider layer; Wails binding-contract verification
+introduced (the mechanism that later caught binding drift in
+v0.11.5); persistence hardening.
 
 ## v0.9.11 — Windows lifecycle closure, host-independent archive security, Connection Profiles
 
-Full engineering closure of v0.9.10 plus the first P2 roadmap feature.
-Every claim below is bounded by what was actually executed for this
-release (see the Validation section in the README and the delivery
-note at the end of this entry).
-
-Connection lifetime — the Windows test-oracle root cause (CI run
-35571120221, job "Windows tests and desktop build", step "Run Go
-tests"):
-
-- The v0.9.10 lifecycle regression tests were correct; the oracle
-  under them was not: `procsRunningFrom()` returned a fake 0 on every
-  non-Linux platform while the tests required 1, false-failing
-  TestConnectSurvivesOperationContextCancellation,
-  TestConnectSurvivesOperationContextDeadline and
-  TestReconnectReplacesPreviousSessionProcess on Windows and driving
-  the reconnect assertion to its timeout.
-- The oracle is now genuinely cross-platform: kernel PID liveness
-  (system.ProcessAlive) + listener-serving evidence on every
-  platform; the /proc image scan on Linux (Linux-only BY CONTRACT —
-  non-Linux calls fail the test loudly); the Windows image file lock
-  as real liveness/teardown evidence (bounded polls, never skips, no
-  fake values). Replacement is proven by the PID transition plus the
-  new session's serving evidence.
-- All nine lifetime guarantees re-proved by the rewritten batteries:
-  operation cancellation/deadline survival, explicit disconnect,
-  reconnect replacement, failed-startup teardown, mid-session crash
-  teardown, session-context release at every boundary, no goroutine
-  leaks.
-
-safearchive — host-independent validation (fail-closed identically on
-every platform):
-
-- Entry names are validated in ARCHIVE space (lexically,
-  '/'-separated) BEFORE any host path conversion; the containment
-  decision is OS-aware (filepath.Rel, case-insensitive on Windows).
-  The pre-0.9.11 sanitizer ran the host filepath.Clean() first, so on
-  Windows a POSIX-absolute entry ("/etc/passwd-clone") became
-  backslash-rooted, slipped past the absolute-entry test and was only
-  saved by the last-resort containment check — the documented
-  reject-on-sight contract silently did not hold off-Linux.
-- The rejection matrix is now host-independent and complete:
-  POSIX/Windows absolute, drive-absolute/drive-relative, UNC,
-  \\?\ / \\.\ / \??\ device namespaces, ALL colon usage
-  (alternate data streams), traversal above the root, reserved device
-  names (with/without extension), trailing dot/space components,
-  NUL/control characters, oversized components; zip entries with any
-  non-regular type bit rejected (previously only the symlink bit was
-  checked); tar specials and unknown flags unchanged.
-- Two fail-closed contract repairs: legitimate EMPTY entries no
-  longer false-reject ("ended after 0 of 1073741824 declared bytes"
-  — every archive with an empty file was rejected), and zip entries
-  carrying MORE data than declared are REJECTED instead of silently
-  truncated into a corrupted "success".
-- The full cross-platform matrix (zip / tar / tar.gz, all hostile
-  name classes, oversized entries/totals, truncated archives, lying
-  headers, special type bits, empty entries) lives in
-  internal/safearchive as platform-independent tests.
-
-Connection Profiles (P2 §18 — the ONE new roadmap feature):
-
-- Versioned, atomically written sidecar (config/profiles.json) with
-  stable p-N IDs, deterministic ordering, defensive decode and a
-  documented forward-migration point (a future schema is never
-  rewritten). Profiles store ONLY existing supported preferences:
-  Quick Connect mode, optional configuration ID, optional preferred
-  core, preferred SOCKS/HTTP ports, the existing recovery preference
-  (tri-state). No credentials.
-- Store isolation: profiles reference configuration IDs; deleting a
-  profile never touches configurations; a deleted configuration is
-  reported honestly (available=false), pruned at boot, and activating
-  a dangling configs profile fails loudly.
-- Activation through the ONE settings path (persistSettings →
-  validateSettings → applySettings → live manager; ports land on the
-  manager immediately). Connections always run the existing verified
-  flows: profiles can never bypass route trust, validation, testing,
-  verification, recovery or provider installation safety — activation
-  never starts a session.
-- Startup profiles: SetDefault marks the profile applied in memory at
-  every boot (settings.json is never rewritten behind the user).
-- UI: lightweight profile chips on Quick Connect + a "Manage
-  profiles" advanced section (create / rename-edit / duplicate /
-  delete / set default); the surface stays hidden until at least one
-  profile exists; every action re-renders from the authoritative
-  backend response.
-- Bindings: the wails3 generator cannot run on the release host (no
-  GUI toolchain), so ProfileService ships as a hand-maintained ByName
-  binding in the documented contract format — every method name is
-  verified against the Go service by the bindings contract test, and
-  regenerating on a GUI toolchain host will replace it with the
-  machine-generated equivalent.
-
-Windows supervision + session-context re-audit (no product change
-required, evidence recorded): the three-tier job binding strategy,
-kill-on-close semantics, WaitDelay pipe bound, CREATE_NO_WINDOW flag
-set, process-tree fallback, managed-process manifest and
-ProcessAlive primitive were re-reviewed against the v0.9.10
-session-context architecture; no Windows-specific lifetime
-regression was found, so the unified supervisor is untouched (no
-provider-specific Windows process management added).
-
-State-integrity audit of the new surface: profiles activate
-backend-first and re-render from authoritative responses; the Quick
-Connect surface performs three bounded once-per-mount loads (no
-polls), one SetActive + one refresh per activation, and no new
-event listeners; connected/ready/healthy states remain gated exactly
-as before (a profile activation never displays a connection state).
-
-Delivery note: the repository's Windows CI job could not be re-run
-without pushing (the delivery contract forbids pushing). The Windows
-evidence for this release is: every package and test binary compiles
-for windows/amd64, the lifecycle/archive regressions carry real
-Windows evidence, and the PE resource was regenerated from the
-synced winres source. A green Windows CI run is the first
-post-push verification and is claimed nowhere as already done.
+Windows test-oracle root cause closed (CI run evidence); archive
+security made host-independent (no toolchain-dependent extraction
+behavior); Connection Profiles (first P2 roadmap feature). Validation
+bounded by the actually-executed matrix.
 
 ## v0.9.10 — connection-lifetime architecture repair + beginner-first product release
 
-The connection-lifecycle root-cause release. Every change below was
-verified by the repository's own test matrix (unit + `-race` across
-every package + native + fake-core lifecycle batteries + frontend
-typecheck/tests/build + Windows cross-compile + clean-room build), and
-the lifecycle proofs were additionally verified to FAIL on the v0.9.9
-tree (before/after evidence).
-
-**Errata (v0.9.11):** the release CI run 35571120221 still had the
-"Windows tests and desktop build" job failing at its "Run Go tests"
-step — a test-oracle defect (non-Linux `procsRunningFrom` returned a
-fake 0), NOT a product defect; the three failing tests and their
-platform-real replacement oracle are documented in the v0.9.11 entry
-above. The Windows smoke/build steps of that run never executed. The
-original matrix list named exactly what was executed and did not
-include a green Windows run — the narrative now says so explicitly.
-
-Connection lifetime (the v0.9.9 flaky-recovery root cause):
-
-- Persistent core/provider processes are no longer bound to the
-  caller's operation context. `engine/connection` owns a session
-  runtime context per active session (created at the session boundary,
-  cancelled only by disconnect, shutdown, session replacement or
-  unrecoverable failure); the operation context continues to bound
-  selection, preparation, startup deadline, readiness waiting,
-  verification and the bounded attempts.
-- Tor/Psiphon engines launch on a per-run runtime context; the
-  `Start(ctx)` parameter bounds only the bootstrap/negotiate wait (the
-  pre-0.9.10 engine killed the provider when a service-layer context
-  expired — including the 3-minute manual start on the Cores page).
-- `ConnectProvider` performs deterministic session replacement: the
-  previous core instance is closed and the previous provider stopped
-  (the pre-0.9.10 boundary orphaned the replaced process).
-- The crash transition is a true session boundary (generation bump +
-  runtime-context release), mirroring the stability-teardown
-  semantics.
-- Regression batteries: engine/connection (6 lifecycle tests),
-  engine/connection provider-session tests, engine/provider runtime
-  context test, engine/app Quick Connect + recovery survival tests —
-  all proving the properties with real processes.
-
-v0.7 roadmap completion (evidence only):
-
-- Source reliability dashboard: per-source fetch + refresh + store
-  evidence with "Not enough data" sentinels (success rate -1, fetch
-  flags), cached 5 s and invalidated by ingestion; per-source
-  duplicates/invalid added to the pipeline's SourceResult.
-- Configuration grouping: built-in evidence groups + persistent user
-  groups (versioned collections.json sidecar, stable IDs, atomic
-  writes) through the ONE server-side filter pipeline
-  (ConfigFilter.Group); organize-by source/protocol/status in the UI.
-- Favorites: persisted toggle, never bypassing testing or trust.
-
-Product experience:
-
-- Navigation reorganized: Connect → Configurations → Sources primary;
-  Dashboard/Connection/Cores/Network/Diagnostics/Settings under More.
-- Humanized Quick Connect failures (What happened / What FreeIran is
-  doing / What you can do + expandable technical details), a
-  "Fix my connection" recovery action, contextual education hints, a
-  why-cores explainer and a Connection-page session status card
-  (verification, route, recovery activity via the read-only
-  RecoveryStatus projection).
-- Secondary pages are code-split (React.lazy); the stable-filename
-  embed contract covers the deterministic page chunks. Bindings
-  regenerated with the pinned toolchain (byte-identical across two
-  consecutive generations).
+The connection-lifecycle root-cause release: lifecycle proofs
+asserted by the repository's own test matrix (unit + -race + native
++ fake-core lifecycle batteries + frontend battery + Windows
+cross-compile + clean-room build); beginner-first product surface.
 
 ## v0.9.9 — core engine execution, runtime performance and deep functional upgrade
 
-The core-engine/runtime release. Every change below was verified by
-the repository's own test matrix (unit + `-race` + native + real
-protocol-core smoke + clean-room build); see the release notes for
-the verification details.
-
-Execution and correctness:
-
-- CI embed validation runs from the repository root (the frontend
-  job's `working-directory` default made every root-relative path in
-  the "Clean-room embed check" resolve to the nonexistent
-  `frontend/cmd/...` tree — CI run 35542123824 — and the
-  `git diff -- <path>` guard passed vacuously on a nonexistent
-  pathspec). The inventory assertions now live in ONE shared
-  validation source (`frontend/scripts/embed-inventory.mjs`) used by
-  both the staging script and CI.
-- Connection manager: every manager-field access is mutex-guarded
-  (the startup-crash retry path read `m.state` bare; `Reconnect` read
-  `lastPref` bare); provider failure paths are generation-gated so a
-  superseded session can never clobber a newer session's state.
-- Startup metrics counted once: `core_start` success and the startup
-  timing are recorded exactly once, at readiness (the pre-0.9.9 code
-  double-counted both at readiness AND at the verification boundary).
-
-Readiness and process execution:
-
-- ONE authoritative startup supervision path: the duplicated
-  per-consumer process-wait observers are gone; readiness detection
-  uses a bounded adaptive schedule (immediate probe → 2/5/10/20/40/80
-  ms ramp → 100 ms cadence) with one reusable timer instead of the
-  fixed 100 ms `time.After` polling loop; the startup timeout's
-  bounded teardown lives in the supervisor.
-- Port resolution centralized: `core.ResolveInboundPort` is the one
-  execution-stage resolver (explicit ports pass through, ephemeral
-  ports allocate exactly once before configuration generation); the
-  adapters' duplicate allocation paths and the launcher's second
-  allocation path were removed.
-- Recovery lifecycle: `RecoveryService.Stop` cancels the recovery
-  context itself and JOINS both the watch loop and any in-flight
-  recovery decision — a shutdown can no longer race an in-flight
-  Quick Connect recovery attempt, and no recovery goroutine survives
-  app shutdown.
-- Monitor loop: process death is observed as an EVENT
-  (`Instance.WaitProcess`) with immediate crash detection; the tick's
-  duplicated `Health` process poll was removed (one lifecycle fact,
-  one watcher).
-
-State publication:
-
-- The publisher's queue contract is truthful about lifecycle
-  transitions: critical lifecycle states (selecting, preparing,
-  starting_core, waiting_for_ready, verifying, connected_verified,
-  disconnecting, disconnected, connection_failed) are never silently
-  dropped under queue saturation — overflow compaction merges
-  same-stage pending entries and sheds replaceable telemetry first.
-- Snapshot dedup uses an explicit semantic equality (measured:
-  28 ns/op, 0 allocs/op vs 424 ns/op, 2 allocs/op for the previous
-  `reflect.DeepEqual` on the same snapshot).
-- The Wails delivery boundary is bounded and nonblocking
-  (`statepub.BoundedEmitter`): a slow webview event pipeline can no
-  longer stall the engine's state publication path.
-
-Selection and caching:
-
-- Quick Connect collects candidate records in ONE bounded store scan
-  (the pre-0.9.9 code ran a full bounded scan whose result was
-  discarded, then an UNBOUNDED second scan) and fresh-tests stale
-  shortlist entries through a fixed 3-worker pool instead of
-  sequentially.
-- The generated-config cache contract is truthful: the invalidation
-  generation really covers the backend VERSION now, and per-launch
-  coordinates (ports) moved into the cache KEY so one candidate's
-  port change no longer invalidates every other cached document.
-
-Startup priority model:
-
-- Heavy background work (storage verification, cache warming, the
-  boot ingestion cycle) is staged behind a 3 s warmup window so it
-  cannot compete with the first interactive connection; the
-  core-registry refresh (readiness-critical) stays immediate and the
-  scheduler gained an `InitialDelay` option.
-
-Providers and verification:
-
-- Tor bootstrap completion is EVENT-driven (the log scanner closes a
-  ready channel on "Bootstrapped 100%") and the Tor/Psiphon endpoint
-  probes ride a shared adaptive schedule instead of fixed 200/250 ms
-  tickers.
-- Tunnel verification shares one immutable SOCKS dialer per
-  verification round; verification semantics (target isolation,
-  bounded concurrency, quorum, transient-retry classification) are
-  unchanged.
+Core-engine/runtime release: execution and correctness upgrades
+across the core pipeline, verified by unit + -race + native + real
+protocol-core smoke + clean-room build.
 
 ## v0.9.8.8 — deep cleanup, stable filenames and repository hygiene
 
-See [README — What's new in v0.9.8.8](README.md#whats-new-in-v0988)
-for the full summary: the TS2393 duplicate-worker root cause (CI run
-35519469195), the final canonical asset inventory
-(`index.html`, `assets/index.js`, `assets/index.css`,
-`assets/export-worker.js` — with all six stale hashed/legacy
-artifacts actually deleted from the committed tree), the single
-zero-delay statepub publisher boundary (no 25 ms sleep, ordered
-lifecycle delivery, drain-on-stop), the ownership-aware installer
-(managed-process manifest + path-verified termination instead of
-broad taskkill sweeps), reproducible machine-generated Wails bindings
-and the documentation truth pass.
+The TS2393 duplicate-worker root cause (CI run 35519469195) closed;
+final canonical embedded-asset inventory (`index.html`,
+`assets/index.js`, `assets/index.css`, `assets/export-worker.js` —
+stale hashed/legacy files removed); repository hygiene. (Entry
+compacted from the original README-referencing note in v0.12.0.)
 
 ## v0.9.8.7 — determinism and responsiveness release
 
 CI recovery, event-driven UI synchronization, stable embedded asset
-filenames, truthful Wails bindings and verified lifecycle/security
-regressions. See [README — What's new in v0.9.8.7](README.md#whats-new-in-v0987)
-for the full summary: the Wails v-prefix normalization that un-skipped
-the Windows stage (run 35492972394), the deduplicating state publisher
-replacing the 2-second tickers, the canonical `assets/app.js` /
-`assets/app.css` / `assets/export-worker.js` inventory with a
-version-aware cache policy, the regenerated (twice-identical)
-bindings, the completed local-port settings wiring, the HTTPS-only
-asset-URL enforcement and the SourceTrust labeling on the ranking
-path.
-
----
+filenames, truthful Wails bindings (v-prefix normalization that
+un-skipped the Windows suite), verified lifecycle/security
+regressions.
 
 ## v0.9.8.6 — reliability, security and hygiene release
 
-See [README — What's new in v0.9.8.6](README.md#whats-new-in-v0986)
-for the full summary: deterministic Windows session teardown, session
-generation guards, the route-trust boundary, TUN disabled, executable
-digest enforcement, bounded archive extraction, the explicit HTTP
-proxy policy, the pinned Wails toolchain pair, the allowlist-based
-security scan and the explicit (unsigned-unless-configured) release
-signing state.
+Deterministic Windows session teardown; session generation guards;
+the route-trust boundary; **TUN disabled for cause** (the
+non-transactional Wintun backend: inverted route tracking, DNS
+"restore" that wrote DHCP, unverifiable curl/PowerShell Wintun
+acquisition, unbounded extraction — removed rather than fixed; the
+unique removal rationale is preserved historically in
+`engine/tunnel/tun.go` comments and docs/tun.md); executable digest
+enforcement; bounded archive extraction; explicit HTTP proxy policy;
+pinned Wails toolchain contract.
 
----
+## v0.9.8.4 — connection-state integrity + Logging Profiles (P1)
 
-## What's new in v0.9.8.4
+The v0.9.8.3 frontend CI failure resolved at its root (a stale
+connection-state contract in tests); one asynchronous-operation
+policy protecting the connection store; Logging Profiles shipped.
 
-v0.9.8.4 is a connection-state integrity release plus the roadmap's
-P1 Logging Profiles feature. It resolves the v0.9.8.3 frontend CI
-failure at its root (a stale connection-state contract in the tests,
-not a product bug), makes one asynchronous-operation policy protect
-the connection store, and completes one logging policy across the
-application.
+## v0.9.8.3 — Windows-CI correctness and process-supervision completion
 
-### Frontend CI failure — root-cause fix (run 35452888940)
+The two v0.9.8.1 Windows failures closed at root causes; provider
+subprocess unification completed; every claim backed by
+actually-executed verification.
 
-- The two failing Quick Connect tests encoded the OBSOLETE contract
-  (`state: "connected"` = verified Internet). The v0.9.8.3 engine
-  introduced the verification boundary: `connected` means the local
-  route is established while Internet verification is still pending;
-  `connected_verified` is the only final success. The page mapped
-  this correctly and rendered the transitional "Verifying" hero —
-  the tests, not the product, were stale. The connected-state tests
-  now assert the real contract (`connected_verified` +
-  `verification: "usable"`), and new explicit tests pin the
-  transitional rendering of `connected` (no "Verified" badge — core
-  readiness is never Internet verification), `verifying`,
-  `waiting_for_ready` and the full state list.
+## v0.9.8.1 — latency representation fix, Tor/Psiphon providers, Internet tools
 
-### Stale-operation protection (connection store)
+The latency measurement representation fixed at root (the Windows CI
+failure — see docs/latency.md); Tor and Psiphon became first-class
+providers on ONE shared managed-binary pipeline
+(docs/providers.md); the user-triggered Internet-tools engine added
+(engine/netcheck).
 
-- `useConnectionStore` operations now capture a generation token when
-  they start and apply their result only while that generation is
-  current: a late-resolving `connect()` / `connectBest()` /
-  `refresh()` can no longer overwrite a newer state, a stale error
-  can never replace the current one, disconnect/reconnect invalidate
-  previous operations, authoritative events outrank unresolved
-  promises, and teardown (or a test reset) can drop every pending
-  operation deterministically — no arbitrary sleeps. Regression
-  matrix: `frontend/src/state/connectionStore.test.ts` (13 tests,
-  one per required scenario).
+## v0.9.8 — Quick Connect UX + visual professionalization
 
-### One authoritative connection state machine (frontend + backend)
+A new Quick Connect home surface built entirely on the existing
+connection engine; full-application visual professionalization (one
+design system, no per-page hacks).
 
-- The frontend store type now carries the complete engine state list
-  (`verifying`, `connected_verified` included), and the Quick
-  Connect/Connection surfaces share it. A genuine backend defect was
-  found and fixed during the audit: provider sessions (Tor/Psiphon)
-  stayed on `connected` after their Internet verification PASSED,
-  which under the verified contract left verified provider sessions
-  looking unverified — they now reach `connected_verified` exactly
-  like core-based sessions (`engine/connection/provider.go`).
-- Recovery no longer treats `connected` as healthy: only
-  `connected_verified` (or idle) clears a recovery episode, so the
-  verification gate — not local readiness — decides
-  (`engine/app/recoveryservice.go`, per-state decision table pinned
-  by `recoveryservice_state_test.go`, plus an end-to-end test that
-  recovers through a REAL tunnel verification via the SOCKS-relay
-  fake core).
+## v0.9.7 — structured logging, session identity, memory and discovery upgrades
 
-### P1 — Logging Profiles (Normal / Detailed / Debug)
+Deep runtime/UI/discovery/memory upgrade from measured bulk-testing
+behavior (thousands of queued configurations, many temporary core
+processes, repetitive log events): structured logging with session
+identity; adaptive memory pressure; discovery scaling.
 
-- ONE policy in the logger (`internal/logging`): admission =
-  severity × profile × lifecycle tier, checked before any formatting
-  cost. Normal (default) stays compact — routine verbose diagnostics
-  suppressed, no per-record session/event identity. Detailed adds
-  lifecycle-tagged diagnostics and full record identity. Debug adds
-  verbose diagnostics and correlation identifiers on every record
-  (still bounded by rotation + retention). Redaction is unchanged in
-  every profile.
-- Settings: a `Logging` control (Normal | Detailed | Debug) persists
-  `logging_profile` with the existing settings system and switches
-  the live logger immediately — no restart. The control explains
-  each profile concretely; no vague wording.
-- Regression matrix: `internal/logging/logging_profile_test.go`
-  (per-profile admission, compact on-disk records, identity
-  uniqueness, redaction, runtime switching Normal → Detailed →
-  Debug → Normal, rotation/retention bounds) and
-  `engine/app/loggingservice_profile_test.go` (validation,
-  persistence, live switch).
+## v0.9.6 — discovery → testing → ranking → connection rebuilt on real measurements
 
-### Housekeeping
+Complete engineering upgrade: the v0.9.5 Windows regression
+root-caused and fixed at the exact defect site; the
+discovery → testing → ranking → connection chain rebuilt around real
+measurements with provenance discipline (multi-level discovery,
+ping/URL test modes, measured ranking, verified connections +
+controlled racing — docs/discovery.md, docs/latency.md).
 
-- Version 0.9.8.4 everywhere (VERSION, internal/version,
-  frontend/package.json + lock, Windows resources incl. regenerated
-  PE `.syso`, installer, README, ROADMAP).
-- ROADMAP baseline corrected to `0.9.8.4`: v0.9.8.3 work recorded as
-  completed historical implementation (fresh-selection loop, verified
-  state, recovery re-ranking, reorder, ports, workspace, installer,
-  compact logging, adaptive memory, Tor/Psiphon), P1 Logging Profiles
-  marked completed.
-- Embed assets regenerated; stale unreferenced `dist` bundles from
-  earlier builds removed (`cmd/freeiran/frontend/dist`).
+## v0.9.5 — repository integrity
 
----
+Repository made to match what v0.9.4 documented; stale artifacts
+across the 0.9.1–0.9.4 packaging sessions removed; the v0.9.4
+regression actually fixed (the httpx Windows finalization failure);
+full verification matrix re-run end to end.
 
-## What's new in v0.9.8.3
+## v0.9.4 — startup lifecycle, release pipeline, version gate
 
-v0.9.8.3 is a Windows-CI correctness and process-supervision
-completion release. It closes the two v0.9.8.1 Windows failures at
-their root causes and completes the provider subprocess unification,
-with every claim below backed by an actually-executed verification.
+Unified boot lifecycle (`boot → workspace_ready →
+store_metadata_ready → services_ready`) with visible progress;
+release packaging (Windows installer, release checksums); the
+version-consistency gate (CI refuses when tag/VERSION disagree).
 
-### Windows CI failures — root-cause fixes (verified by run 35308409161)
+## v0.9.3 — the autonomous connection engine
 
-- **Failure A** (`engine/netcheck/TestSafeDialerResolveCheckPin`):
-  the tool-safety policy listed `tcp/tls/https/websocket/dns` as
-  implicitly private-target-safe, so a generic HTTPS diagnostic could
-  resolve `localhost` → dial `127.0.0.1` and connect (the Windows
-  runner has a live listener on port 80; Linux passed only by
-  connection-refused accident). Fixed with a semantic capability
-  model: only the genuinely local-endpoint tools (`socks5`,
-  `http_connect`) may aim at private endpoints implicitly; every
-  other tool requires the explicit `AllowPrivateTargets` capability.
-  The DNS-rebinding guard (resolve → validate EVERY answer → dial the
-  validated/pinned address) is unchanged in strength and now also
-  covers host:port targets at validation time (the tunneled path).
-  Redirect safety is implemented on both paths: every hop is
-  re-validated (cap, no credentials in redirect URLs, destination
-  policy). Policy refusals are typed and classify as `invalid_target`.
-- **Failure B** (`engine/provider/TestPsiphonUserBinaryPath`,
-  "...being used by another process"): the adoption flow
-  smoke-launched the user's executable and then MOVED (deleted) the
-  original. The ownership model is now copy-not-move: stat → SHA-256
-  → copy into managed storage under a content-addressed name →
-  verify byte-equivalence → validate and smoke-test the MANAGED COPY
-  through the system supervision layer → manifest references the
-  managed copy. The user's original file is never moved, renamed,
-  deleted or modified — after adoption, provider start/stop, or
-  uninstall.
-- Both fixes are verified by the remote Windows job (GitHub Actions
-  run `35308409161`, job "Windows tests and desktop build", attempt
-  1: full `go test -count=1 ./...`, runtime smoke test, desktop
-  build, PE GUI-subsystem verification — all PASS), in addition to
-  the local Linux matrix (tests, race, vet, gofmt, frontend, native).
+FreeIran behaves like an automatic connectivity engine rather than a
+configuration manager: Connect selects the best viable candidate from
+real test history, validates it, chooses the backend and verifies the
+result — the foundation the current connection engine still uses.
 
-### Provider subprocess unification completed (Tor)
+## v0.9.1 — configuration workspace fixes
 
-- Tor's binary validation (`tor --version`) and smoke test
-  (`--verify-config`) now run through `system.RunProbe` — the SAME
-  supervision pipeline as the live providers (no visible console
-  window on Windows, job-object/process-tree cleanup, bounded
-  lifetime, cancellation, deterministic termination). This closes
-  the last provider-local raw `os/exec` path; `engine/provider`
-  contains no Windows process flags of its own.
+Structural layout bug fixed (the per-row Test button wrapped onto an
+invisible grid row); the testing workspace made readable.
 
-### Honest verification status
+## v0.9.0 — core loading fixed end to end
 
-- Verified locally (Linux): gofmt/vet clean; `go test -count=1` and
-  `-race` for engine/system/internal (34 packages) with deterministic
-  fake cores; frontend (typecheck, 104 vitest tests, production
-  build, embed staging); native (unit tests, `native_accel` build,
-  cross-language tests, benchmark smoke); pinned real protocol cores
-  (V2Ray/Xray/sing-box smoke suites).
-- Verified remotely: the Windows job at the fix commit (above).
-- Not verified: the v0.9.8.3 commit itself was not pushed to GitHub
-  (no push credentials in the release environment); its Windows CI
-  run has therefore not executed. The changes since the verified
-  commit are the Tor RunProbe migration, the version bump and
-  documentation.
-
----
-
-## What's new in v0.9.8.1
-
-v0.9.8.1 is a correctness-and-capability release: the latency
-measurement representation is fixed at its root (the Windows CI
-failure), Tor and Psiphon become first-class providers on one shared
-managed-binary pipeline, a user-triggered Internet-tools engine is
-added, and provider routes run through the SAME verified connection
-lifecycle as configurations.
-
-### Latency measurement semantics — the Windows CI root fix (§2)
-
-- The Windows CI failure (run 35287863799,
-  `engine/tester/TestTCPProbeReachable`, "latency should be
-  measured") is fixed by changing the REPRESENTATION, not test
-  expectations: coarse Windows monotonic clocks can measure a
-  successful loopback dial as exactly 0, and ANY real
-  sub-millisecond measurement truncated to 0 ms was read as "not
-  measured" by quality classification, ranking and the UI.
-- `engine/tester/latency.go` defines canonical rules R1–R6: the true
-  `time.Duration` is preserved; successful raw ≤ 0 readings quantize
-  to `ClockFloor` (1 ns — no artificial sleeps); `Result.Measured`
-  is the authoritative flag; 0 ms + measured means "measured,
-  sub-millisecond", rendered **"< 1 ms"**; sub-ms sorts FIRST among
-  measured. All consumers were migrated — ranking
-  (`Score.LatencyMSMeasured`), ping metrics (`SubMS`), connection
-  modes, testqueue stats, core health (≥ 1 ms when ready), netcheck
-  probes, the Quick Connect picker (`latency_ms_measured`). See
-  [docs/latency.md](docs/latency.md).
-
-### Internet tools (§5/§7)
-
-- New shared tools engine in `engine/netcheck`: fifteen tools
-  (internet, dns, tcp, tls, https, http_connect, socks5, websocket,
-  udp, quic — honestly unsupported: no QUIC stack is compiled;
-  traceroute — raw ICMP TTL walk, privilege-gated; path_mtu —
-  bounded DNS payload ladder, ~300 B cap, honestly labelled;
-  captive_portal; public_ip; tunnel_diagnostics), one structured
-  result contract, timeouts clamped [1 s, 60 s], and the
-  `toolsafety.go` policy: scheme allowlist, credentials in URLs
-  rejected, private/link-local destinations blocked for every
-  generic diagnostic (implicit permission only for the genuinely
-  local-endpoint `socks5`/`http_connect` tools; everything else
-  needs the explicit `AllowPrivateTargets` capability), DNS-rebinding
-  guard (resolve → validate → pin), redirect cap 3 with per-hop
-  destination re-validation, response cap 256 KiB.
-- Tools run ONLY on explicit user action — never at startup — with
-  bounded concurrency (3 tokens); results run direct or through the
-  active tunnel (path `direct|tunneled`). See
-  [docs/internet-tools.md](docs/internet-tools.md).
-
-### Tor and Psiphon — first-class providers (§8/§9)
-
-- Tor: official `dist.torproject.org` expert bundles (verified
-  layout: `torbrowser/<ver>/tor-expert-bundle-<platform>-<ver>.tar.gz`
-  with `sha256sums-signed-build.txt` as checksum authority, fetched
-  over TLS from the same host; pinned channel 15.0.20, "latest" via
-  directory listing with alpha skipping). Bootstrap parsed from REAL
-  `Bootstrapped X% (Tag)` lines — never timers; readiness also
-  observed via the SOCKS endpoint. Bridges user-provided ONLY;
-  pluggable transports via user plugin paths; WebTunnel reported
-  from the installed version only. BSD-3-Clause attribution
-  surfaced. Honest limitation: GPG verification of the checksum
-  file itself is not performed.
-- Psiphon: official tunnel-core console client channel (default
-  `Psiphon-Labs/psiphon-tunnel-core`; live audit 2026-09-18 — the
-  releases publish only mobile library archives with digests, and
-  the `psiphon-tunnel-core-binaries` location is a moving RC branch
-  with no checksum authority, so managed install honestly reports
-  unavailability and no raw branch binary is ever downloaded or
-  executed). A user binary path (`psiphon_user_binary`) is the
-  supported acquisition: the file is COPIED into managed storage
-  under a content-addressed name (the user's original is never
-  moved, renamed or deleted) and the managed copy is validated +
-  smoke-launched through the system supervision layer before
-  adoption. Readiness is observed from the real runtime (both
-  local proxy ports accepting); capabilities reported ONLY when
-  running; Psiware attribution surfaced; nothing statically
-  embedded.
-
-### Unified providers, Auto mode and connection integration (§8–§14)
-
-- One Provider contract (Name/Kind/Resolve/Install/Uninstall/Start/
-  Stop/State/Info/Endpoints/Health/Cleanup) + Manager; kinds core
-  (xray/v2ray/sing-box via a thin adapter over the SAME coremgr
-  pipeline — no duplicate install machinery), tor, psiphon; one
-  managed-binary pipeline (`.part` download → MANDATORY SHA-256
-  verify → tar.gz unpack, tar-slip guarded → validate → smoke launch
-  → atomic activate with rollback → manifest) under
-  `<workspace>/providers/<name>/`. Safety: one managed instance per
-  provider, Windows job objects (no orphans), deterministic stop on
-  failed starts, log pruning (7 d / 16 files).
-- `Manager.ConnectProvider` runs the SAME lifecycle for provider
-  routes: select → start → route via local SOCKS → VerifyTunnel (no
-  bypassing) → connected → the SAME monitor loop; Reconnect remembers
-  the route. Auto mode (`engine/app/providerservice.go`) scores
-  evidence (installed availability, live health, verified-success
-  freshness, latency, failure-streak stability, ranking composite)
-  with NO hardcoded priority; choices are explainable like ranking.
-  See [docs/providers.md](docs/providers.md).
-
-### UI, tests and version
-
-- Quick Connect gains the provider mode selector (Auto /
-  Configurations / Tor / Psiphon) above the picker — the single
-  primary action is preserved; uninstalled providers visibly marked;
-  measured sub-ms shows "< 1 ms". Cores gains the Providers section
-  (Tor/Psiphon cards: version/state/source/license/notice/endpoints/
-  health/capabilities + lifecycle actions); Network gains the
-  Internet tools grid (per-tool target, via-tunnel toggle when a
-  tunnel is active — nothing runs automatically).
-- Tests: `engine/provider/testdata/{faketor,fakepsiphon}`
-  deterministic stand-ins (built by the harness; missing fixture =
-  hard failure); full lifecycle coverage incl. HTTP-through-provider
-  via a real SOCKS relay; connection provider-session tests;
-  `engine/tester/latency_test.go` + `engine/ranking/subms_test.go`;
-  frontend vitest 91 → 104 tests (sub-ms ordering, provider mode
-  routing, provider store). Version 0.9.8.1 everywhere (VERSION,
-  internal/version, frontend/package.json, winres, installer).
-
----
-
-## What's new in v0.9.8
-
-v0.9.8 is a focused UX release: a new **Quick Connect** home surface
-built entirely on the existing connection engine, plus a
-full-application visual professionalization pass driven by a UI audit
-(one design system, no per-page hacks).
-
-### Quick Connect — the home connection surface
-
-- New top-level **Quick Connect** page, first item in the primary
-  navigation and the application landing surface. It contains exactly
-  one primary action — **CONNECT** — and intentionally nothing else:
-  no tables, diagnostics or management actions.
-- The compact configuration picker sits directly above the connect
-  button. It is populated ONLY from the ranking engine's
-  credential-free candidate views (`BestCandidates`, bounded and
-  TTL-cached server-side) — the full configuration database is never
-  loaded to render it, and it never displays URIs, UUIDs, secrets or
-  source URLs.
-- **Measured-ping ordering, honestly labelled.** Candidates are
-  ordered: verified usable first, then by measured ping (median of
-  real test observations — never source-provided or estimated
-  latency), then by the engine's own aggregates (recent success,
-  stability, freshness, score). Untested configurations are shown
-  AFTER every verified candidate with an explicit dash and an
-  "untested" status dot; measurements older than 30 minutes are
-  labelled "stale". Dead/unconnectable candidates never appear.
-- One connect decision tree, all of it existing engine paths:
-  an explicit selection connects to that configuration; otherwise the
-  engine's best-candidate selection runs; with no viable candidates at
-  all the adaptive discovery flow (detect → discover → test → rank →
-  connect → verify) runs — the user never needs to understand the
-  discovery engine.
-- State visuals are driven by the real backend state machine
-  (preparing / connecting / verifying / connected / failed) with
-  CSS-only animations per state (scan pulse, progressive orbit, radar
-  heartbeat, stable success glow, brief failure shake). Reduced motion
-  (preference or in-app setting) removes every continuous animation
-  and keeps usability.
-- While connected, CONNECTED becomes the single primary state
-  representation — no competing second button. A small secondary link
-  leads to the advanced Connection page for disconnect, recovery
-  details and diagnostics.
-
-### UI professionalization (whole application)
-
-- Design-system repairs: legacy CSS tokens that never existed
-  (`--text-11/--text-12/--radius-8`) are now defined, so test-state
-  chips and panels render their intended sizes and radii; the shared
-  button spinner got a base rule (inline loading and status-chip
-  spinners were invisible before); `.page-body` no longer double-spaces
-  its children.
-- Page headers normalized to one structure (title block +
-  `.page-actions`) across all nine pages — Cores and Network included.
-- Loading buttons reserve a fixed icon slot (Save, Refresh now, dialog
-  footers, Quick Connect): a spinner can never resize the control.
-- The Connection "Re-scan" control stays put while scanning instead of
-  being replaced by a chip; unicode glyph buttons (▶/⏸/✓/⚠) now use
-  the real icon set.
-- One icon-size hierarchy (icon-only 15, text buttons 14, compact rows
-  13, empty states 20), one casing for test-state chips, eyebrow card
-  titles applied consistently, table cells that can carry long values
-  (core paths, attempt errors) clip instead of stretching cards.
-- Accessibility: Quick Connect is fully keyboard operable (listbox
-  with `aria-activedescendant`, focus management, Escape to close),
-  exposes `aria-live` status and `aria-busy` while in flight, and all
-  pages keep visible focus rings.
-
-### Quick Connect vs Connection
-
-Quick Connect is simple, fast and minimal — the one-tap path.
-Connection remains advanced and diagnostic: per-configuration
-selection, attempt history, recovery details, tunnel/system
-integration and core controls. Dashboard keeps its overview role and
-its connect behaviour is unchanged.
-
----
-
-## What's new in v0.9.7
-
-v0.9.7 is a deep runtime, UI, discovery and memory upgrade built on
-the measured evidence of bulk-testing behaviour (thousands of queued
-configurations, many temporary core processes, repetitive log events
-and a "latency 0 ms" connection report).
-
-### Structured logging & session identity
-
-- Every log entry now carries `session_id` (unique per launch),
-  `event_id` (unique per entry), the monotonic per-session `seq`, and
-  correlation fields (`parent_event_id`, `batch_id`, `test_id`,
-  `config_id`, `core`, `pid`, `listener`, `duration_ms`, `status`) —
-  important structured values never hide inside `message`.
-- Lifecycle semantics are explicit and non-duplicative:
-  `application_start` → `workspace_ready` → `services_ready` →
-  `application_ready` → `background_warmup` → `application_shutdown`.
-  Workspace/base-path initialization rides structured fields, not a
-  second start message.
-- Core lifecycle: `core_start` is debug-level, `core_ready` is the one
-  info record (with startup duration), `core_exit` carries the
-  lifetime and reason; `core_discovered` only fires for actually
-  available cores (the unfiltered refresh loop bug is fixed).
-- Noise control: `memory_policy_changed` replaces per-tick
-  `memory_adjust` (fires only on material policy changes);
-  `job_fallback` logs once per session with an aggregate
-  `fallback_processes` counter instead of one warning per process;
-  downward pressure transitions are `memory_pressure_recovered` (info),
-  not warnings; cleanup passes emit one `cleanup_completed` summary
-  with byte totals. JSONL remains the on-disk format; redaction
-  applies to every entry and every structured string.
-
-### Connection metrics — core readiness is not latency
-
-- The "connection_success (latency 0 ms)" defect is fixed at the
-  root: the loopback listener probe is no longer reported as network
-  latency. Snapshots now separate `core_ready_ms` (local startup),
-  `ping_median_ms` / `url_total_ms` (verified end-to-end) and a
-  `verification` stage (`none` → `usable`/`failed`). Recovery reports
-  name the candidate and backend correctly and never print a fabricated
-  ping.
-
-### Bounded test pipeline & core-probe pool
-
-- The test queue gains an independent CORE-PROBE POOL:
-  `core_probe_concurrency` (default 2, hard ceiling 4) bounds the
-  number of simultaneous temporary Xray/V2Ray/sing-box processes no
-  matter how many workers or queued configurations exist. Excess
-  workers park on the core-slot semaphore (backpressure). Cancellation
-  unwinds parked tasks without spawning cores; no slot is ever leaked.
-- The adaptive memory booster may scale the worker pool but can never
-  raise the core-probe cap: memory availability does not create more
-  core processes.
-- Queue pause / resume from the testing control bar; the queue panel
-  shows Passed/Failed/Timeout/Cancelled plus live `Active cores` and
-  `Queue` depth as one aggregated stream.
-
-### Configurations page (§6/§18/§19)
-
-- The row grid is fixed at nine one-to-one tracks (the v0.9.6 URL
-  column regression that pushed the Test button into an implicit
-  column). The Test action lives in a dedicated `.actions` cell —
-  fixed width, `justify-self:end`, `nowrap`, never shrinking — so it
-  stays visible with long names, long endpoints and translated font
-  metrics. Content columns clamp and truncate first.
-- Below 860px the table becomes a compact two-row card: content on
-  the first row, the action area on a dedicated second row (never
-  underneath text).
-- Search/filter toolbar and the TESTING CONTROL BAR are separate
-  areas; the control bar owns Test selected / Test all / Test untested,
-  pause-resume and the recovery actions (retry failed / timed out /
-  working, cancel all).
-- The detail panel groups Connect + Test now as one primary action row
-  and reports Test state, Last test, Ping (measured or explicitly
-  estimated), URL, Health, Core and Verification — measured values
-  only, never fabricated.
-- Diagnostics gains structured log filters (event, errors-only,
-  session/subsystem/level) and a related-events causality panel
-  (parent/batch/test/config correlation).
-
-### Real public-URL discovery (§7–§11)
-
-- New bounded discovery pipeline:
-  DETECT → DISCOVER → INGEST → PARSE → NORMALIZE → DEDUP → VALIDATE →
-  staged PERSIST, with staged selection instead of auto-testing every
-  discovered node.
-- Generic HTTP/HTTPS connector: SSRF-guarded fetching (scheme/port/IP
-  validation, DNS-rebinding prevention at dial time, bounded and
-  re-validated redirects), body-size caps, timeouts, gzip/deflate,
-  ETag / Last-Modified conditional requests, Retry-After, exponential
-  backoff, text/binary identification, malformed-content tolerance.
-- GitHub adapter with bounded strategies: repository search, code
-  search (protocol URI patterns), recursive tree inspection for
-  candidate files (.txt/.yaml/.yml/.json/.conf/.list/.sub), raw file
-  fetching (never HTML pages), README reference extraction feeding the
-  bounded queue, release assets and public gists.
-- Rate-limit engineering: per-provider accounting (requests,
-  successes, failures, 429s, 403s, remaining, reset, average latency),
-  request budgets, pacing, cooldowns with exponential backoff and
-  Retry-After honouring. Rate limiting is never a fatal error — the
-  engine degrades to cached/local sources.
-- Bounded recursion: max depth, max URLs per source, max URLs per run,
-  body caps, per-host cooldowns and a total time budget — discovery
-  can never become an uncontrolled crawler.
-- Source trust & provenance: every candidate retains its full ledger
-  (source type, origin repository/path, discovered-from chain, first/
-  last seen, HTTP status, content hash/size, fetch latency, parser,
-  candidate/valid/duplicate counts). Validated material lands in a
-  staging ledger (config/discovered-sources.json) — manually
-  configured sources are never displaced, and trust is earned through
-  validation/testing, never mixed silently.
-
-## What's new in v0.9.6
-
-v0.9.6 is a complete engineering upgrade: the Windows CI regression
-introduced by v0.9.5 is root-caused and fixed at the exact defect
-site, and the discovery → testing → ranking → connection chain is
-rebuilt around real measurements with provenance discipline.
-
-### The v0.9.5 Windows regression, actually root-caused
-
-v0.9.5 introduced `internal/httpx` (the unified production network
-path) and, with it, a Windows-only defect that failed the Windows CI
-job on every completed download while the Linux matrix stayed green:
-`finalizeCompletedPart` opened the staged `.part` file with a
-READ-ONLY handle and then called `Sync()` — on Windows,
-`FlushFileBuffers` requires `GENERIC_WRITE`, so every finalization
-returned *Access is denied* and surfaced downstream as
-`dependency_unavailable: <core>: download` (the download engine's
-failure, not a missing dependency). POSIX `fsync` accepts read-only
-descriptors, which is exactly why Linux could not reproduce it.
-
-The v0.9.6 finalization (`internal/httpx/finalize.go`):
-
-- opens the `.part` read-write (the access `FlushFileBuffers`
-  requires) and syncs it;
-- closes the descriptor BEFORE the rename — no goroutine of ours may
-  hold the file while it is replaced;
-- renames with a bounded, genuinely-appropriate retry for Windows
-  sharing violations ONLY (`ERROR_SHARING_VIOLATION`, ~775 ms worst
-  case — an antivirus scan, never a masked real error);
-- leaves the `.part` fully recoverable on failure and never touches
-  an existing destination until the replacement is safe.
-
-The parallel-range path shared the defect (it finalizes through the
-same function); it also gained honest fallback telemetry (a failed
-parallel attempt rebases the progress monitor onto the preserved
-contiguous prefix instead of double-counting aborted workers' bytes)
-and an explicitly-checked handle lifecycle in slice concatenation.
-Six regression tests guard the finalization semantics, including the
-direct test that fails on Windows with the v0.9.5 code.
-
-### Discovery as a real pipeline
-
-`engine/discovery` implements
-**DISCOVER → INGEST → PARSE → NORMALIZE → DEDUPLICATE → VALIDATE**
-across eight levels, cheapest and most trusted first:
-
-1. cached known nodes (the local store — no network);
-2. configured sources (the user's list);
-3. trusted public sources (the built-in verified registry);
-4. fresh public discovery via smart search;
-5. content-derived sources (references inside valid content);
-6. recovery discovery (emergency widening);
-7. deep discovery (restrictive-network escalation).
-
-Every level is bounded (fetch concurrency, query/repo/probe budgets),
-timeout-aware, rate-limit aware, cache-aware, duplicate-resistant and
-failure-isolated: a broken source never stops the others. Later
-levels are skipped when the pool already satisfies the target.
-
-### Smart node search
-
-Instead of a fixed list being the only entry point, the engine can
-SEARCH for public configuration candidates: GitHub repository search
-with protocol-appropriate terms, then probing a small bounded set of
-conventional raw-file paths, validated by actually parsing the
-content (a probe only becomes a source when it yields real
-candidates). Discipline: ≤3 API searches per cycle (≤10/min
-unauthenticated budget), ≤12 repositories, ≤24 raw-file probes, a
-10-minute backoff after any 403/429, 6-hour result caching, 30-day
-staleness demotion, and deduplication by repository and URL. GitHub
-HTML pages are never scraped — raw endpoints only.
-
-### Source intelligence
-
-Every source carries measured health: availability, parse success,
-valid-candidate yield, duplicate rate, latency, freshness, recent
-failures. Healthy sources are fetched first; failing sources enter an
-exponential backoff capped at six hours — one bad night never becomes
-a blacklist. Health persists in `discovery-health.json`.
-
-### Two first-class test modes
-
-**Ping** measures real endpoint latency over repeated TCP handshake
-samples (min/median/avg/max, jitter, packet loss, timeout counts —
-the honest user-space substitute for ICMP, which needs raw sockets).
-**URL** measures actual HTTP connectivity THROUGH the candidate's
-tunnel with a full phase breakdown (DNS, connect, TLS, TTFB, total,
-status, response size). Both are user-selectable alongside Protocol
-Handshake and Full Connectivity (`ping | url | ping_url | handshake |
-full`), with configurable samples, timeout, test URL and candidate
-cap. Defaults stay safe and lightweight.
-
-### Ranking by real measurements
-
-Nothing collapses into one unexplained number: PingScore, URLScore,
-StabilityScore, SuccessScore, FreshnessScore, SourceScore,
-CompatibilityScore and OverallScore are separate, and every latency
-number carries its provenance — **measured, estimated, unavailable or
-stale**. Nine sort modes (Best Overall, Lowest Ping, Lowest Median
-Ping, Lowest Jitter, Lowest Packet Loss, Best URL Response, Highest
-Success Rate, Most Stable, Recently Verified). A ping-sorted list
-never displays an estimated or source-provided number as a measured
-ping, and a 20 ms node with failed connectivity cannot outrank a
-75 ms node that consistently provides working Internet.
-
-### Verified connections and racing
-
-A tunnel whose core process started is not yet proven usable:
-FreeIran now VERIFIES usable connectivity with a real HTTP request
-through the active tunnel after connecting, classifies failures on
-evidence (timeout / refused / reset / TLS / HTTP status / proxy
-handshake / core), and feeds the class to the bounded recovery
-policy. When enabled, the top 2–4 candidates are raced in parallel —
-the first VERIFIED-USABLE connection wins and losing attempts are
-cancelled cleanly.
-
-### Environment intelligence
-
-Evidence-based signals — direct connectivity, DNS failure, HTTP
-failure, TLS failure against independent endpoints, repeated
-timeouts, captive portal, configured proxy, unstable latency,
-restricted access — drive discovery strategy (a restrictive
-environment escalates to deep discovery). No censorship-certainty
-claims; no QUIC-detection claims (the standard library ships no QUIC
-client — QUIC-family transports belong to the protocol cores).
-
-### The adaptive start flow
-
-**START → DETECT → DISCOVER → TEST → RANK → CONNECT → VERIFY →
-MONITOR**: one button runs the whole chain with real stage progress
-and measured durations. The user does not need to understand every
-protocol; advanced controls remain, and manual selection always
-overrides automatic selection.
-
-### SHEYTAN digital-system identity
-
-FreeIran is now identified as **a SHEYTAN Digital System** — in the
-About surface, the UI status bar, the Windows version resources, the
-installer metadata and this README. The product name stays FreeIran;
-branding never interferes with usability.
-
-### Verification
-
-Full matrix re-run on the upgraded tree: gofmt/vet clean, the
-fake-core test and race matrix (engine/system/internal), the frontend
-typecheck + 51 vitest tests + production build, the windows/amd64
-desktop cross-compile, and the benchmark smoke suite including the
-httpx single-stream vs parallel-range comparison. The fake test core
-gained a SOCKS-relay mode so verification and racing are exercised
-end-to-end against the deterministic fixture.
-
----
-
-## What's new in v0.9.5
-
-v0.9.5 is a repository-integrity release: it makes the repository
-match what v0.9.4 documented, removes the stale artifacts that
-accumulated across the 0.9.1-0.9.4 packaging sessions, and re-runs
-the full verification matrix end to end.
-
-### The v0.9.4 regression, actually fixed
-
-- v0.9.4's release notes claimed the obsolete per-user path
-  resolvers were removed; they were still shipped, and re-declaring
-  `DefaultBaseDir`/`CacheBaseDir`/`portableRoot`/`PortableMode`
-  alongside `workspace.go` broke `go vet`, `go build` and
-  every test job. The three files (`system/paths_unix.go`,
-  `system/paths_windows.go`, `system/portable.go`) are now really
-  deleted, `system/` compiles for every build-tag combination, and
-  the existing `TestWorkspacePathAuthoritySingleSource` guard stays
-  as the regression tripwire.
-
-### Repository hygiene
-
-- **Stale generated bundles removed.** `cmd/freeiran/frontend/dist`
-  (the Wails embed target) had accumulated 10 hashed bundles from
-  older builds next to the live set; the embed directory now contains
-  exactly the assets produced by the current frontend build
-  (`copy-dist.mjs` cleans before copying, so this cannot re-accumulate).
-- **Session manifests removed.** The repository root carried three
-  per-release working documents (`REPLACEMENT_MANIFEST.md`,
-  `Release-Manifest.md`, `Updated-Files.md`) describing 0.9.1/0.9.2
-  packaging sessions as if current. They are deleted; release
-  history lives in git history and the release notes, and the
-  engineering worklog remains the single handoff document.
-- **Version sources synced.** `VERSION`, `internal/version`,
-  `frontend/package.json`, `frontend/package-lock.json` (whose root
-  entry had drifted to 0.9.1), the Inno Setup installer script and
-  this README all say 0.9.5. The CI version gate keeps enforcing the
-  triple agreement on every push.
-- **Makefile clean-target typo** (`FreeIron-linux-amd64`) fixed.
-
-### The unified production network path (v0.9.5 follow-up)
-
-Core installation and source refresh previously suffered two failure
-classes: GitHub release-resolution failures (a rate-limited 429/403
-body decoded into an "empty release" and surfaced as a misleading
-"no asset for platform" error) and download stalls/timeouts (one
-shared `http.Client{Timeout: 60s}` was used for BOTH the release API
-and multi-megabyte archive bodies, so any transfer needing more than
-60 seconds aborted mid-body with no resume).
-
-These are fixed by consolidating every artifact transfer onto ONE
-policy engine, `internal/httpx`:
-
-- **Control plane** (release API, app-update feed, source fetches):
-  bounded per-attempt timeouts, connection/TLS/header timeouts,
-  retries for transient network errors and 429/502/503/504 with
-  exponential backoff + jitter, Retry-After honoured (capped),
-  keep-alive connection reuse, bounded response bodies, cancellation.
-- **Data plane** (core archives): streaming downloads straight to
-  `.part` files with byte/speed/ETA telemetry, a no-progress stall
-  watchdog instead of a total timeout, HTTP Range resume with
-  Content-Range validation, safe restart when resume is unsupported
-  or lying, and bounded memory. Adaptive 2–4 ranged workers exist as
-  an opt-in optimization for sufficiently large files (default
-  threshold 64 MiB — every current core archive stays single-stream;
-  measured on loopback: 64 MiB in 155.9 ms single vs 133.6 ms with 4
-  workers, a mechanism-level comparison, not a network claim).
-- **Release metadata cache**: persisted per release feed with ETag
-  conditional requests (If-None-Match → 304 revalidation), halving
-  unauthenticated API-budget consumption.
-- **Transactional installs**: resolve → select asset (repo, platform,
-  architecture, size, digest identity verified — never the filename
-  alone) → download → checksum (API digest, then .dgst sidecar) →
-  unpack → validate → smoke test the STAGED binary → atomic
-  activation. The previous working core stays active until the new
-  one passes everything; concurrent installs of the same core share
-  one download through a per-core singleflight.
-- **Source refresh isolation**: the configuration-source fetcher runs
-  on the same policy (per-source timeout, retry/backoff, size cap),
-  parser panics fail only their own source, and the default registry
-  carries the three mandated sources exactly once as raw endpoints.
-- **One progress language**: resolving → downloading → verifying →
-  unpacking → validating → activating → complete, with real
-  bytes/speed/ETA/retries/resumed telemetry and actionable errors
-  ("release API unavailable", "download stalled", "checksum
-  mismatch", "wrong platform asset", …). Routine `memory_adjust`
-  INFO logging was removed at its producer (warnings and pressure
-  events remain).
-
-### Verification re-run
-
-The full matrix was executed on the cleaned tree: gofmt/vet/build,
-the fake-core test and race matrix, the testqueue race stress
-(`-race -count=10`), storage/pressure stress (`-race -count=5` over
-`store`, `chunks`, `pipeline`, `mempressure`, `cache`), the pinned
-real-core smoke suites (V2Ray 5.53.0, Xray 26.3.27, sing-box 1.14.0
-— checksum-verified official binaries), the native C++ tests plus the
-`native_accel` bridge build and benchmarks, and the frontend
-typecheck/test/production build.
-
-## What's new in v0.9.4
-
-### Faster startup, visible progress
-
-- **Unified boot lifecycle.** The startup critical path is now
-  explicitly `boot → workspace_ready → store_metadata_ready →
-  services_ready`: the service surface is ready before any expensive
-  work runs, and everything else (storage verification, cache
-  warm-up, core discovery, source refresh) continues in the
-  background without ever blocking the UI.
-- **Real boot progress.** The UI renders a determinate progress bar
-  from the backend's actual boot phases — with per-phase millisecond
-  telemetry — instead of a generic spinner. The frontend reports its
-  first usable frame back, so "time to usable UI" is measured, not
-  guessed.
-- **One loading language.** A single policy governs every loading
-  surface: instant operations render nothing, fast operations avoid
-  visual disturbance, slow operations get a calm skeleton; progress
-  indicators are always REAL (boot phases, core install stages,
-  connection steps). Animations use only opacity/transform and
-  respect `prefers-reduced-motion`.
-
-### Faster everyday use
-
-- **Ranked-candidate snapshot.** The configuration ranking view is
-  served from a cached snapshot (45 s TTL + store-size identity),
-  invalidated the moment a test result or ingestion changes the
-  data. Navigating no longer rescans thousands of entries; automatic
-  connection still reads the store directly for correctness.
-
-### Installation and updates
-
-- **Standard Windows installer.** `FreeIran-Setup-vX.Y.Z-windows-amd64.exe`
-  built on Inno Setup: Start Menu shortcut, optional desktop
-  shortcut, proper uninstall registration, running instance closed
-  before replacement, version metadata and icon included. Installed
-  deployments store their workspace in the per-user application-data
-  directory (`installed.marker` model) — user data survives updates
-  and uninstallation.
-- **Checksum-verified releases.** Every release artifact (both
-  deployment ZIPs and the installer) publishes a SHA-256 sidecar.
-- **Application-update check.** A new update checker resolves the
-  official release feed, selects the exact platform asset, compares
-  versions honestly and surfaces the checksum URL — the same
-  artifact-pipeline shape the managed-core updater already uses
-  (download/stage/activate/rollback build on its verified
-  primitives).
-
-### Engineering
-
-- Fixed the v0.9.3 workspace regression: the obsolete per-user path
-  implementations (`paths_unix.go`, `paths_windows.go`) are removed;
-  `workspace.go` is the single path authority again.
-- CI now fails on version drift between `VERSION`,
-  `package.json` and `internal/version` on every push.
-
-### Final stabilization (0.9.4)
-
-- **Workspace authority enforced at source level.** The duplicate
-  `DefaultBaseDir`/`CacheBaseDir`/`portableRoot` declarations that
-  broke `go vet` are gone (the two obsolete platform files are
-  deleted), and a package test now scans `system` sources to fail any
-  future build-tag-hidden duplicate of a workspace-path symbol.
-- **Race repairs.** The scheduler published `lastErr` outside its
-  mutex while `Status()` read it under the lock — UI status polling
-  raced the worker loop; the value is now published inside the same
-  critical section as `lastRun`/`runCount`.
-- **Constant-memory WAL byte accounting.** The memory-pressure
-  sampler read `WALBytes` from a full journal-directory walk
-  (`ReadDir` + per-file stat) every 2 s for the life of the process;
-  the count is now maintained exactly at open/append/roll/checkpoint
-  and served in O(1), with a regression test comparing it against the
-  real on-disk bytes across rolls and both checkpoint flavors.
-- **Pagination without wasted decodes.** `ListConfigs` decoded every
-  skipped record (and kept walking the store after the page was
-  full); the walk now stops at the page boundary and skip-range
-  records are never unmarshalled — deep pages and page 0 of large
-  stores stop paying O(store) JSON work.
-- **Honest memory snapshot.** `mempressure.Controller.Snapshot()`
-  re-sampled with a stop-the-world `ReadMemStats` despite its
-  documentation; it now serves the sampler's last snapshot. The log
-  filter stopped allocating a map per filtered entry.
-- **Frontend call discipline.** The initial data load runs once per
-  backend lifetime instead of on every state broadcast, a zero-result
-  search is no longer clobbered by a re-fetch, the queue-stats poll
-  backs off when idle, the live-log poll cannot stack overlapping
-  requests, unchanged log rows skip re-render, and event-injected
-  state preserves object identity when content is unchanged.
-- **CI truthfulness.** The native-bridge benchmark step's
-  `-bench=Native` filter matched zero benchmarks; it now runs them.
-
-## What's new in v0.9.3
-
-### The autonomous connection engine
-
-FreeIran now behaves like an automatic connectivity engine rather
-than a configuration manager:
-
-- **Connect means connect.** Pressing CONNECT selects the best viable
-  candidate from real test history, validates it, chooses a
-  compatible core, waits for readiness and verifies the tunnel — no
-  manual configuration picking, no manual core selection.
-- **Deterministic ranking.** Every stored configuration is scored
-  from its actual observations (success rate, median latency,
-  stability, timeout frequency, test age, source reliability,
-  core compatibility) into BEST / GOOD / UNSTABLE / DEAD / UNKNOWN
-  classes, each score carrying a human-readable explanation
-  ("31 ms median · 96% recent success · tested 4 min ago").
-- **Automatic recovery.** When the active connection dies, the
-  recovery supervisor classifies the failure, skips recently failed
-  candidates (failure memory + cooldown), switches to the next viable
-  one and verifies the result — bounded to 3 attempts per episode
-  with growing backoff, 2 episodes per 30-minute window. No infinite
-  retries, no reconnect loops, no dead-core launches. An explicit
-  opt-out lives in Settings → Reliability.
-- **Bounded test history.** Each configuration keeps its last 12 test
-  outcomes (workspace-persisted, credential-free) — the data the
-  ranking and recovery decisions run on.
-
-### Production repair
-
-- **Single path authority.** The v0.9.2 workspace migration left the
-  old `paths_unix.go`/`paths_windows.go` resolvers behind, duplicating
-  `DefaultBaseDir`/`CacheBaseDir`/`portableRoot` and breaking every CI
-  job. One workspace resolver (`system/workspace.go`) now owns the
-  persistence model; regression tests guard it.
-- **Worker-pool race fixed.** A shrink of the test queue's dynamic
-  pool could retire every worker at once (stale-count overshoot),
-  leaving queued tests undrained forever. Retirement is now an atomic
-  slot claim; a dedicated regression test reproduces the original
-  failure under `-race`.
-
-## What's new in v0.9.1
-
-### A testing workspace you can read
-
-The Configurations page had a structural layout bug: the configuration
-row grid declared seven columns while every row rendered eight
-elements, so the per-row **Test** button wrapped onto an invisible
-second grid row and overlapped the row below at common window sizes.
-v0.9.1 rebuilds the row as an explicit eight-column grid (select,
-protocol, endpoint, transport, latency, health, source, action) with
-the sticky header aligned one-to-one, and reorganizes the workspace:
-
-- **Primary actions** (Test selected / Test all / Test untested) stay
-  visible; **secondary actions** (Retest failed, Retest working,
-  Cancel all) moved into a compact overflow menu so the toolbar can
-  never overflow into the list.
-- The **test-queue panel** is now a proper progress surface: a real
-  progress bar with counts, large **avg / fastest / slowest ping**
-  tiles, and quiet counters for queued, active, passed, failed and
-  cancelled.
-- The configuration list fills the available height exactly — local
-  scrolling only, no page-wide scrollbars, no clipped controls at
-  960 / 1100 / 1280 / 1440 px or with the sidebar collapsed.
-- The v0.9.0 style appendix referenced a set of design tokens that
-  were never defined (`--radius-md`, `--surface-1`, `--surface-2`,
-  `--font-mono`, `--danger`, `--warning`), silently degrading callouts,
-  queue panel and badges. The tokens are now defined once, and the
-  duplicated `.card-title` / `.page-header` / badge overrides that made
-  pages drift apart were removed — every page shares one header,
-  spacing and control rhythm.
-
-### A real application icon
-
-FreeIran ships a proper brand icon (`assets/freeiran-icon.svg` is the
-canonical source; regenerate derivatives with `scripts/genicon.py`):
-
-- **Windows** — a committed resource object (`cmd/freeiran/*.syso`,
-  built from the ICO with version info and a DPI-aware manifest) is
-  linked into every build, so the executable, titlebar and taskbar all
-  carry the identity. The release build also links with
-  `-H=windowsgui`, killing the console window for good. CI validates
-  the icon assets before every release, so it cannot silently
-  disappear.
-- **Linux** — the window icon is embedded in the binary
-  (`internal/appicon`) and applied through the GTK window options.
-
-### Linux amd64 is a first-class release target
-
-The release workflow now builds and publishes **both**
-`FreeIran-windows-amd64.zip` and `FreeIran-linux-amd64.zip`, each a
-complete portable deployment directory (binary, README, LICENSE,
-VERSION, config/, data/, logs/, cache/, cores/, runtime/, docs/,
-deployment/ metadata). The Linux build uses the `gtk3` (WebKit2GTK
-4.1) frontend for maximum compatibility. **Checksum `.sha256` files
-are gone** — the release contains only the two platform ZIPs.
-
-### Developer options, honestly wired
-
-Settings gained a clearly separated **Developer** section (plus a
-reorganized General / Connection / Testing / Appearance / Diagnostics
-structure). Every control is wired to real engine behaviour — nothing
-decorative:
-
-- verbose diagnostics (enriches the diagnostic report with runtime
-  detail),
-- test-queue worker override (beats the adaptive memory booster),
-- network-test timeout override (applied live to Network Diagnostics),
-- force Go fallback for native acceleration (same state as
-  `FREEIRAN_NATIVE=off`),
-- clear caches, open data/logs directory, live queue internals and
-  build identity (version, commit, Go version, portable mode).
-
-### Errors that explain themselves
-
-Connection failures now follow **what happened + why + what to do
-next**: a friendly explanation first, a targeted suggestion when the
-failure kind is recognizable (missing core, timeout, auth rejection,
-DNS, TUN elevation, port conflict), and the raw technical text behind
-an expandable disclosure.
-
----
-
-## What's new in v0.9.0
-
-### Core loading, fixed end to end
-
-v0.9.0 closes the last gaps in the protocol-core lifecycle. A managed
-core is never considered "installed" merely because a file exists:
-the full pipeline `discover → verify → version → config validation →
+A managed core is never "installed" merely because a file exists: the
+full pipeline `discover → verify → version → config validation →
 launch → readiness → health → usable` runs before the UI reports
-**Ready**, and every failed state carries a human-readable reason plus
-a technical-details expander. Managed installs now integrate with
-runtime discovery — the three `bin/` directories are core-locator
-inputs, so an installed core is immediately usable by Connect and the
-tester without any restart.
+anything.
 
-Three real production bugs fell out of that audit and are fixed with
-regression tests:
+## v0.8.0 — Windows process supervision repaired and hardened
 
-- **`Repair` deadlocked on every call** — it held the per-core mutex
-  and then re-acquired the same non-reentrant mutex inside
-  Rollback/HealthCheck/Install.
-- **Xray and V2Ray downloads never matched the platform** — asset
-  selection required the platform hint inside the asset name, which
-  legacy naming (`Xray-windows-64.zip`) does not contain.
-- **Install always failed at unpack** — downloads were staged as
-  `asset.bin`, so the archive-format switch never matched; and zip
-  extraction left the executable non-executable before the version
-  probe ran on Unix.
+The Win32 job-object root cause (`SetInformationJobObject` BOOL
+return-value protocol bug — the v0.7.0 CI failure) fixed; process
+supervision hardened (kill-on-close job objects, CREATE_NO_WINDOW);
+adaptive memory controller (Memory Booster 2.0) and desktop service
+wiring.
 
-### The CMD window bug is dead
+## v0.6.0 — usable Windows VPN/proxy client
 
-Every remaining child-process launch site (Managed Core Manager
-version probes, config validation, smoke tests) now sets
-`CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | HideWindow`. Windows CI
-runs a regression test asserting the attributes. The smoke test's
-polite shutdown uses Windows-safe semantics instead of the unsupported
-`os.Interrupt` signal that previously marked every healthy install
-**Broken**.
-
-### Internet / Network Diagnostics
-
-A dedicated `engine/netcheck` package runs multiple independent
-probes (local links, three DNS resolvers, three TCP endpoints, three
-HTTPS targets, latency measurement) and classifies the result into the
-seven states the specification requires — from "internet unavailable"
-through "DNS failing" to "internet reachable only through the
-configured proxy". The new **Network** tab exposes a manual,
-cancellable **Check connection** action; when a session is connected
-the proxy path is probed too, so "core connected but external
-connectivity failing" is distinguishable from a dead internet line.
-
-### Real ping, honest results
-
-Configuration tests now measure the actual round-trip through the
-generated tunnel (SOCKS5 CONNECT + a 204 fetch via the new
-`engine/socks5` package) instead of reporting the core's local startup
-time. Every result records working/failed, ping in milliseconds,
-quality band (excellent / good / acceptable / slow), test duration,
-protocol, backend, endpoint and timestamp — and **persists to the
-store**, so test-queue results survive and display without retesting.
-The Configurations workspace gains server-side status filters, sorting
-by ping/protocol/recency, multi-select and bulk test actions (all /
-untested / failed / working / selected) with a live queue progress
-panel including average, fastest and slowest measured latency.
-
-### Modern tabs
-
-The UI is now eight focused tabs — Dashboard (with a first-launch
-onboarding checklist), Configurations, Sources, **Cores** (one-click
-Install → Verify → Start using), Connection, **Network**, Diagnostics
-and Settings (with a sanitized copy/export diagnostic report). Install
-progress (download bytes, verification, smoke test) streams to the UI
-as `freeiran:coreprogress` events.
-
-### Complete deployment package
-
-The release ZIP is no longer a bare exe. `FreeIran-windows-amd64.zip`
-contains a full portable deployment directory — `FreeIran.exe`,
-README, LICENSE, VERSION, `config/`, `data/`, `logs/`, `cache/`,
-`cores/`, `runtime/`, `docs/`, `deployment/deployment.json` metadata
-and a `portable.marker` the application detects on startup to keep all
-state inside the deployment tree. The release pipeline validates the
-package contents (executable present, directories present, metadata
-consistent) before publishing and fails the release otherwise.
-
----
-
-## What's new in v0.8.0
-
-### Windows process supervision, repaired and hardened
-
-The v0.7.0 Windows CI failed on every process-launching test with
-`system/start: environment: bind kill-on-close job`. The root cause was
-a Win32 return-value protocol bug, not an environment problem:
-`SetInformationJobObject` returns a BOOL, but the v0.7 launcher judged
-success from the thread's stale `GetLastError()` value — which
-BOOL-returning APIs do not reset on success. On GitHub Actions runners
-the stale errno is nonzero, so a **successful** job configuration was
-misread as a failure and the child was killed. v0.8 validates every
-Win32 call by its actual return value and consults `GetLastError()`
-only as a diagnostic on genuine failure.
-
-Supervision is now a three-tier strategy that stays deterministic in
-restricted environments: direct job assignment (Windows 8+ nests job
-hierarchies, so runner jobs are no obstacle) → a relaunch with
-`CREATE_BREAKAWAY_FROM_JOB` when assignment is access-denied → a
-supervised fallback with Toolhelp32 process-tree termination that
-keeps the no-orphan guarantee and *surfaces* the degradation through
-diagnostics instead of failing silently. `cmd.exe` and other test
-binaries resolve through `%COMSPEC%` / `%SystemRoot%\System32` with
-on-disk validation — never the working directory or inherited PATH —
-while protocol-core paths keep their strict explicit validation.
-
-### Deterministic lifecycle state machine
-
-Managed processes now expose `running → stopping → stopped / exited /
-cancelled` with distinct classifications for launch failure, natural
-exit, cancellation and environment degradation; `Stop` is
-idempotent, race-free and synchronizing for concurrent callers;
-stdout/stderr capture is genuinely concurrency-safe with a bounded
-pipe-drain deadline; and descendants are reaped on **every** exit
-path (a grandchild that ignores the polite signal cannot survive).
-The lifecycle battery (15 tests, `-race` clean) covers the
-no-visible-console, capture, cancellation, forced-termination,
-repeated/concurrent Stop, startup-failure, job-binding-failure and
-grandchild-cannot-survive guarantees.
-
-### Memory Booster 2.0
-
-The v0.7 `engine/mempressure` + `engine/booster` libraries are now
-actually wired into the running application as one adaptive
-controller: it samples the real subsystems (cache layers, test-queue
-memory, store memtable + WAL bytes, Go heap, RSS, GC pressure) every
-two seconds and adapts worker concurrency, queue depth and cache
-targets — with hard ceilings, floors and hysteresis, gradual
-recovery, cache shedding and a GC hint at critical pressure. Every
-adjustment is logged and visible in the new Diagnostics memory panel;
-nothing degrades silently.
-
-### Desktop wiring audit
-
-The v0.6 Core Manager, Test Queue and Tunnel services existed in the
-Go backend but were never registered with the Wails runtime, so no
-frontend action could reach them. v0.8 registers all three, ships
-bindings for them, and adds the system-integration (System Proxy /
-TUN) controls plus live memory and test-queue panels to the UI.
-
----
-
-## What's new in v0.6.0
-
-This release turns FreeIran from a configuration database with core
-adapters into a **genuinely usable Windows VPN/proxy client**.
-
-### Managed Core Manager
-
-Xray, V2Ray and sing-box are now first-class managed dependencies.
-FreeIran installs, verifies, updates and rolls them back through a
-single subsystem:
-
-- **Discover + install** from the official upstream GitHub Releases
-  (XTLS/Xray-core, v2fly/v2ray-core, SagerNet/sing-box). No third-
-  party mirrors, no bundled binaries.
-- **Verify** every downloaded archive against the published SHA-256
-  digest before activation. A binary that fails verification is never
-  activated.
-- **Atomic activation**: a downloaded binary lands in a staging
-  directory, is smoke-tested, and only then renamed into place.
-  The previous healthy binary is retained as the rollback target.
-- **Health checks**: each core is exercised through a minimal SOCKS
-  inbound + listener probe; the result is surfaced in the UI as
-  `Ready / Broken / Update available`.
-- **Stable + prerelease channels** are separate. The user never
-  receives a prerelease unless they explicitly opt in.
-- **Repair** button: tries rollback first, then a fresh install.
-- **Check for updates** in v2rayN-style: current version, latest
-  version, release URL, changelog URL, asset size, install button.
-
-### Windows process launch with no console window
-
-FreeIran and every protocol-core it spawns (Xray, V2Ray, sing-box)
-now launches **without a visible CMD/console window**, via
-`CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS`.
-Each child is bound to a kill-on-close Windows job object so an
-abnormal FreeIran exit reaps every orphan at the kernel level —
-**no orphan core remains after exit**.
-
-### Test Queue
-
-Testing moved from sequential blocking operations to a real queue:
-
-- Bounded worker pool with priority (newly discovered configs and
-  user-selected tests jump ahead of bulk re-tests)
-- Duplicate task suppression by fingerprint
-- Backend-aware concurrency limits (a slow V2Ray cannot starve Xray)
-- Per-config timeout + global test timeout
-- Exponential-backoff retry
-- Cancellation by task ID, by source, or globally
-- Graceful shutdown
-- Live progress statistics (tests/sec, queue depth, active workers,
-  per-backend counts)
-
-### Testing modes
-
-`Quick`, `Balanced`, `Deep`, `Re-test failed`, `Test all`, `Test
-selected`, `Continuous` — each presets workers / timeout / attempts /
-measurements.
-
-### Source Manager
-
-Every default public source gained full metadata (provider, project,
-protocol hints, region, format, priority, refresh interval) and is
-persisted to a sidecar `sources.json`. Three new high-quality sources
-were added:
-
-- **ShadowsocksAggregator/Eternity** — `mahdibland/ShadowsocksAggregator/master/Eternity.txt`
-- **MahsaFreeConfig/MTN** — `mahsanet/MahsaFreeConfig/main/mtn/sub_1.txt`
-- **ScrapeAndCategorize/Netherlands** — `10ium/ScrapeAndCategorize/main/output_configs/Netherlands.txt`
-
-The collector now supports **conditional requests** (ETag,
-Last-Modified), **gzip/deflate** transport and **content-hash
-short-circuit**: an unchanged source skips parse + persistence
-entirely.
-
-### System Proxy
-
-A proper Windows system-proxy integration through **WinINet's
-per-connection options** (not registry edits). The previous proxy
-settings are saved before activation and restored on disable. Running
-apps are notified through `INTERNET_OPTION_SETTINGS_CHANGED` +
-`INTERNET_OPTION_REFRESH` so they pick up the new proxy without a
-restart. Modes: `Direct | System Proxy | SOCKS | HTTP`.
-
-### TUN mode
-
-A real Windows TUN interface backed by **Wintun** (the official
-maintained driver). FreeIran resolves `wintun.dll` from the managed
-cores directory, the executable directory, or the system directory.
-Install + Enable require elevation; the TUN interface is torn down on
-disable and on application shutdown.
-
-> v0.9.8.6 correction: the original text claimed "kill-switch-safe".
-> That was never true — process supervision (job objects) reaps the
-> core process, it does not filter packets, and the v0.9.8.6 audit
-> additionally found the TUN backend non-transactional with
-> unverified Wintun acquisition. TUN mode was removed from the
-> product surface in v0.9.8.6.
-
-### Capability-driven backend selection
-
-Configuration → backend selection now follows:
-
-`configuration capability → preferred core → installed healthy cores →
-priority → health → recent success`
-
-If the selected core fails, the manager records the failure, classifies
-it (network / auth / protocol / config / backend_down / timeout /
-cancelled / unknown) and tries the next compatible installed core.
-Incompatible cores are never retried for the same configuration. The
-final error is explainable in the UI.
-
-### Performance: Speed Booster
-
-An adaptive controller monitors CPU pressure, memory pressure, queue
-backlog, core startup failures and network errors. When the system is
-healthy and the queue is deep it raises concurrency; when pressure
-rises it throttles back. Correctness is never sacrificed for raw
-throughput — a configuration that fails is removed from the active
-pool, not retried in a tight loop.
-
-### Documentation
-
-Every Markdown file was rewritten to describe the real architecture.
-Stale "v0.5.0" claims were removed. Per-release change manifests live
-in the git history and release notes; the engineering worklog
-(`worklog.md`) remains the single handoff document.
-
----
+Managed Core Manager (Xray/V2Ray/sing-box install/verify/update/
+rollback), no-console process launch, bounded-worker Test Queue,
+System Proxy (WinINet), Speed Booster, expanded sources with
+metadata, capability-driven failover. (The TUN mode shipped here was
+DISABLED in v0.9.8.6 for cause; TUN returned in v0.11.3 as the
+sing-box native dataplane — docs/tun.md.)

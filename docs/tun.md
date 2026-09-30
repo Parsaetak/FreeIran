@@ -1,19 +1,23 @@
-# TUN mode (v0.11.4)
+# TUN mode
 
 Windows-first system-wide tunneling through the managed sing-box core's
-native TUN inbound. This document is the design + evidence record; the
-v0.11.3 implementation was hardened in v0.11.4 (address-selection
+native TUN inbound. This document is the design + evidence record;
+the v0.11.3 implementation was hardened in v0.11.4 (address-selection
 fail-closed, exact-adapter activation identity, native route-path
 observation) and the historical removal rationale (v0.9.8.6) is
 preserved in the CHANGELOG and in the code comments of
-`engine/tunnel/tun.go`.
+`engine/tunnel/tun.go`. The implementation and its evidence below are
+current as of v0.12.0; future protection work (IPv6 leak proof, a
+FreeIran-owned DNS engine, the WFP kill switch) is PLANNED and lives
+in [autonomous-connectivity.md](autonomous-connectivity.md) — none
+of it is claimed here.
 
 ## Status — the evidence ladder
 
 Each class below is stated at exactly the level actually proven;
 classes are NOT interchangeable.
 
-| Evidence class | State (v0.11.4) |
+| Evidence class | State (current release) |
 | --- | --- |
 | Generated-config verification | VERIFIED — `TestSingBoxTUNDocumentRealBinary` passes the complete TUN document (dual-stack and IPv4-only shadowsocks, WireGuard endpoint form) through `sing-box check` of the real pinned **1.14.1** binary; unit tests pin every structural invariant |
 | Linux/unit verification | VERIFIED — the full `engine/tunnel` suite (fail-closed selection, exact-adapter identity, route verdicts, pinning verdicts, activation evidence matrix, rollback/residual contracts) runs on Linux against deterministic seams |
@@ -247,3 +251,26 @@ kill switch.
 - The only allowlist entries in the security workflow are the
   documented ones in docs/security.md; none were weakened for this
   release.
+
+## Planned future work (NOT VERIFIED — not part of the current TUN)
+
+The current TUN activation proves its state at activation time
+(transactional, observed). The following are PLANNED future
+protections with contracts in
+[autonomous-connectivity.md](autonomous-connectivity.md):
+
+- **IPv6 leak proof** — today IPv6 is honestly reported as
+  used/unused per session address selection (`IPv6 unavailable` is
+  not `IPv6 protected`); continuous leak detection is future work.
+- **FreeIran-owned central DNS engine** — today DNS is the sing-box
+  TUN document's module (DoH over the proxy + system-resolver
+  bootstrap, hijacked); the central authority is future work.
+- **WFP kill switch** — the current TUN is a traffic-routing feature,
+  NOT a kill switch; the Windows Filtering Platform allow-policy
+  state machine is future work.
+- **Continuous monitoring** — activation-time proofs today;
+  MONITORING/DEGRADED states are future work.
+
+None of the above weakens the evidence ladder in this document; a
+future release may only extend it with newly executed evidence
+classes.

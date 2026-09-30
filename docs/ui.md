@@ -287,7 +287,9 @@ FOUR DISTINCT states, deliberately never merged into one badge:
    (user intent; nothing more).
 2. **Core support** — an installed, available backend that supports
    this exact configuration also declares ECH (today: sing-box,
-   schema-verified against the pinned v1.14.0). Rendered as an
+   schema-verified against the pinned 1.14.x core — originally probed
+   against v1.14.0 in v0.11.0, green against the 1.14.1 pin since
+   v0.11.4). Rendered as an
    explicit failure state when absent.
 3. **Core acceptance** — the last test executed through an
    ECH-declaring backend SUCCEEDED (the real core accepted the
@@ -455,7 +457,42 @@ header's "App started …" line is untouched — it reads the engine's
 timestamp.
 
 **Version display:** the status bar and every user-facing version
-surface render the compact form `v0.11.5` exactly — no commit, no Go
+surface render the compact form `v<VERSION>` (e.g. `v0.12.0`)
+exactly — no commit, no Go
 toolchain tuple. Developer build provenance (commit, Go version)
 remains available on the Developer Info panel in Settings, which is
 its designated surface.
+
+---
+
+## Future UI concepts (PLANNED — v0.12.0 documentation only)
+
+The current UI is NOT redesigned for these; they are the recorded
+surface contracts for future phases
+([autonomous-connectivity.md](autonomous-connectivity.md)). Each mode
+must never imply more protection than its evidence supports:
+
+```text
+Protected              Censorship Adaptive    Tor Circumvention
+Onion Only             I2P                    Multi-Hop
+Low-Metadata
+```
+
+Future evidence surfaces the UI will eventually render:
+
+```text
+ConnectionProof        — the proof fields (core/route/DNS/IPv4/IPv6/
+                        public-IP/traffic/kill-switch, VerifiedAt)
+trust topology         — local observer → hop 1 → hop 2 → exit →
+                        destination (who observes what)
+privacy exposure       — local MAC visibility, public IP, IPv6, DNS,
+                        hardware-ID collection (none), provider
+                        visibility, correlation limits
+IPv4/IPv6 evidence     — protected / leak / unavailable states
+DNS evidence           — resolver in use, leak-test state
+kill-switch state      — DIRECT → ARMING → ... → MONITORING ladder
+```
+
+The evidence-first rule is inherited from the current surfaces: a
+failure state is rendered honestly ("Connected but IPv6 not
+verified"), and no badge may claim more than its evidence class.

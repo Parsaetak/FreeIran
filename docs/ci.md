@@ -456,3 +456,36 @@ FULL matrix in the first place (the v0.9.6 finalization asymmetry):
 the v0.11.0 two-layer proof keeps that principle — every
 Windows-specific behavior still executes on Windows — while retiring
 the duplicated platform-neutral execution.
+
+---
+
+## Future acceptance matrix (PLANNED — v0.12.0 documentation)
+
+The future architecture's verification targets, from
+[autonomous-connectivity.md](autonomous-connectivity.md) (section V).
+Preserved rule: **CI never claims physical-host runtime verification**
+— the existing evidence-class separation (local unit / Windows
+compile / Windows CI / physical elevated host) extends to every new
+feature, and hosted CI remains non-privileged (no TUN operation, no
+WFP policy installation):
+
+```text
+Unit          routing · DNS policy · failure classification ·
+              candidate scoring · proof/state transitions ·
+              WFP policy generation (pure functions)
+
+Integration   core startup · TUN creation · route ownership ·
+              DNS hijack · public-IP verification · IPv6 behavior ·
+              crash · reconnect · rollback
+
+Windows       Wintun · IP Helper · WFP · WinINet · adapter/route
+              lifecycle · restart recovery
+
+Clean-room    install → core acquire → verify → tunnel → DNS → route
+(target)      → IPv4 → IPv6 → Internet → kill switch → crash →
+              recovery → disconnect → no orphan → no proxy leak →
+              no stale firewall → uninstall
+```
+
+All v0.11.5 CI evidence recorded in this document stands unchanged;
+nothing here has been executed for future features.

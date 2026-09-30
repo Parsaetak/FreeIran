@@ -614,3 +614,48 @@ engine already uses and which the scanner already covers (its
 arguments are `run -c <config file>`, never a shell). The Wintun
 dependency ships embedded in the digest-verified sing-box binary, so
 no downloader exists at all (docs/tun.md).
+
+---
+
+## Future privacy-security contract (PLANNED — v0.12.0 documentation)
+
+The long-term security posture
+([autonomous-connectivity.md](autonomous-connectivity.md) sections
+F/Q/W) is recorded here as the contract future releases implement
+against. None of it is a current capability claim:
+
+```text
+minimal metadata        — diagnostics carry privacy-safe fields only
+                          (stage, class, endpoint, transport, SNI,
+                          timing, retries, environment); no payloads,
+                          no credentials
+no unnecessary hardware identifiers
+                        — SMBIOS serial/UUID, motherboard, disk serial
+                          and CPU hardware IDs are neither collected
+                          nor transmitted unless a user-enabled
+                          diagnostic genuinely needs one; data
+                          minimization, never "identifiers changed"
+                          claims
+no telemetry            — the local-first, no-account, no-cloud
+                          property stays architectural
+evidence-first protection
+                        — "Protected" is published only with recorded
+                          proof; Connected never equals Protected
+WFP kill switch target  — a future Windows Filtering Platform
+                          narrow-allow policy (state machine in
+                          autonomous-connectivity.md section F);
+                          today's TUN is NOT a kill switch and is never
+                          labelled one
+privacy-safe diagnostics— public-IP verification supports
+                          project-controlled / self-hosted / multiple
+                          trusted endpoints and honest
+                          Verified / Not verified / Unavailable states;
+                          third-party IP APIs are never mandatory
+```
+
+Banned claims (repository-wide): "completely invisible", "impossible
+to detect", "untraceable", "authorities cannot identify the user",
+"hardware identity changed", "browser fingerprint hidden", "traffic
+correlation impossible". The existing scanner guarantees (gitleaks,
+govulncheck, the fail-closed child-process scanner) are unchanged by
+this contract.

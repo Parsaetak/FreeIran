@@ -280,11 +280,51 @@ Single source of truth: the `VERSION` file at the repository root.
 time with ldflags; CI injects the git commit. Rules:
 
 - Changing the app version changes `VERSION`, `frontend/package.json`
-  and `internal/version/version.go` together, in one commit.
+  (and `package-lock.json`) and `internal/version/version.go`
+  together, in one commit.
 - Release tags are `v<VERSION>` — the release workflow refuses to run
   when they disagree.
 - The fetcher's User-Agent (`internal/version.UserAgent`) always reports
   the built version.
+- The winres manifest (`build/winres.json`) carries the same version;
+  update it with the version bump.
+
+## Documentation maintenance (v0.12.0 rules)
+
+- **Version source of truth** is `VERSION` (injected via ldflags);
+  never hand-maintain version strings elsewhere. Documentation that
+  needs to name the current version refers to it generically
+  ("the current release") or is updated with the bump commit.
+- **Docs authority hierarchy** is indexed in `docs/README.md`:
+  current behavior → the technical docs (`docs/architecture.md`,
+  `docs/tun.md`, `docs/protocols.md`, `docs/providers.md`,
+  `docs/security.md`, `docs/ui.md`, `docs/ci.md`); future behavior →
+  `docs/autonomous-connectivity.md` (the single future-architecture
+  authority); release history → `CHANGELOG.md`; forward phases →
+  `ROADMAP.md`. Never duplicate an explanation across authorities —
+  link to the owning document instead.
+- **No stale current-version claims.** After a version bump, audit
+  repo-wide occurrences of the old version string and classify each:
+  current release metadata (update), current behavior documentation
+  (update), historical evidence (keep, version-labeled),
+  protocol/core version pin (keep), test fixture/schema version
+  (keep).
+- **Current vs historical terminology.** Current behavior gets
+  current wording; historical behavior gets explicitly historical
+  wording (version-labeled, kept only where it explains why code
+  changed); future behavior gets explicitly PLANNED wording that
+  references `docs/autonomous-connectivity.md`. A future feature is
+  never described as implemented, and a removed feature is never
+  described as current.
+- **Generated frontend/embed workflow:** the committed placeholder at
+  `cmd/freeiran/frontend/dist` keeps plain `go build` working; the
+  real UI is staged only by `npm run build:embed` (CI path). Bindings
+  are regenerated with the pinned wails3 CLI (see the Wails toolchain
+  contract below) — never hand-edited.
+- **Core pins** (`engine/core/versions.go`) change only through a
+  deliberate, fully re-verified upgrade (official digest from the
+  upstream release asset, complete smoke suite + TUN document check);
+  documentation freshness alone never triggers a dataplane upgrade.
 
 ## Dependency policy
 

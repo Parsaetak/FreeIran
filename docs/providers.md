@@ -316,3 +316,32 @@ update-available) and installs through the existing pipeline when
 missing. Core provider adapters, Mihomo's integration state and the
 honest capability surface are unchanged — TUN adds a consumer of the
 managed-core surface, not a second manager (docs/tun.md).
+
+---
+
+## Future providers (PLANNED — v0.12.0 documentation, no implementation)
+
+The long-term direction ([autonomous-connectivity.md](autonomous-connectivity.md))
+adds future providers under the SAME one-manager lifecycle — there is
+and will be no second lifecycle system:
+
+```text
+Tor circumvention   — pluggable transports (obfs4, Snowflake,
+                      WebTunnel, meek) + Tor Circumvention / Onion Only
+                      modes; bridge selection stays evidence-driven,
+                      user-provided bridge configuration stays the model
+I2P                 — I2P Provider + I2P-only mode for .i2p
+                      destinations (a private overlay, NOT a generic
+                      Internet VPN; outproxy routing is never the default)
+AmneziaWG           — WireGuard variant under the canonical WireGuard
+                      model; official/verified implementation only;
+                      privileged Windows components require a dedicated
+                      security review before integration
+```
+
+All future providers adopt the extended lifecycle contract
+(`Resolve → Install → Verify → Prepare → Start → Ready → Connect →
+Health → Monitor → Recover → Stop → Cleanup`) and share the existing
+health/evidence surfaces. None of them exists today; none may be
+advertised as a capability until its real-binary evidence lands in
+docs/protocols.md / docs/ci.md at the recorded evidence classes.
