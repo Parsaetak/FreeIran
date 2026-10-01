@@ -405,6 +405,10 @@ fake core's SOCKS-relay mode), so no workflow changes were required.
 
 ## v0.9.8.1 — provider fixtures and the latency representation fix
 
+(HERITAGE, v0.12.2: `engine/provider` and its fixtures were removed
+with the Tor/Psiphon engines; the fixture discipline below lives on
+in the fake-core harnesses that remain.)
+
 - `engine/provider` tests build their own fixtures: `TestMain`
   compiles `testdata/faketor` and `testdata/fakepsiphon` with the
   running toolchain into a temp directory before the package runs.

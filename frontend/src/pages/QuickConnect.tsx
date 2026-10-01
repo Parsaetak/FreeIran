@@ -3,9 +3,10 @@ import { useConnectionStore } from "../state/connectionStore";
 import { useQuickConnectStore } from "../state/quickConnectStore";
 import { useStartFlowStore } from "../state/startflowStore";
 import { useSettingsStore, effectiveReducedMotion } from "../state/settingsStore";
-import { useProviderStore, PROVIDER_MODE_LABELS, type ProviderMode } from "../state/providerStore";
+import { useConnectModeStore, CONNECT_MODE_LABELS, type ConnectMode } from "../state/connectModeStore";
+import { useChainStore } from "../state/chainStore";
 import { useProfilesStore, PROFILE_MODE_LABELS, normalizeProfileMode, type ProfileMode } from "../state/profilesStore";
-import { call, providerService, type ProfileSpec } from "../services";
+import { call, connectionService, type ProfileSpec } from "../services";
 import { ProfileSpec as ProfileSpecModel } from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/models.js";
 import type { Page } from "../types/ui";
 import { formatLatency, truncate } from "../utilities/format";
@@ -13,6 +14,7 @@ import {
   quickPickerRows,
   pickerLatencyText,
   pickerStatusClass,
+  selectionReason,
   type QuickCandidateRow,
 } from "../utilities/quickConnectModel";
 import { humanizeConnectionError, EDUCATION_HINTS } from "../utilities/connectionErrors";
@@ -95,14 +97,34 @@ export function QuickConnectPage({ onNavigate }: { onNavigate: (page: Page) => v
   const select = useQuickConnectStore((state) => state.select);
   const loadCandidates = useQuickConnectStore((state) => state.load);
 
-  // v0.9.8.1 (§12): the provider choice (Auto / Configurations /
-  // Tor / Psiphon) + live availability. Loaded once per mount.
-  const providerMode = useProviderStore((state) => state.mode);
-  const providerProviders = useProviderStore((state) => state.providers);
-  const providerLoaded = useProviderStore((state) => state.loaded);
-  const providerLoading = useProviderStore((state) => state.loading);
-  const setProviderMode = useProviderStore((state) => state.setMode);
-  const loadProviders = useProviderStore((state) => state.load);
+  // v0.12.2: the Quick Connect route choice (Auto / Configurations /
+  // Proxy Chains) — the surviving surface of the removed provider
+  // modes. Loaded once per mount.
+  const connectMode = useConnectModeStore((state) => state.mode);
+  const modeLoaded = useConnectModeStore((state) => state.loaded);
+  const modeLoading = useConnectModeStore((state) => state.loading);
+  const setConnectMode = useConnectModeStore((state) => state.setMode);
+  const loadConnectMode = useConnectModeStore((state) => state.load);
+
+  // Chains load once per mount (list only; details load in the
+  // editor and the chain scope).
+  const chains = useChainStore((state) => state.chains);
+  const chainsLoaded = useChainStore((state) => state.loaded);
+  const chainsLoading = useChainStore((state) => state.loading);
+  const selectedChain = useChainStore((state) => state.selected);
+  const selectChain = useChainStore((state) => state.select);
+  const loadChains = useChainStore((state) => state.load);
+
+  /**
+   * v0.12.2: the compact evidence line for the explicitly selected
+   * candidate. Derived ONLY from recorded observations.
+   */
+  const selectedReason = useMemo(() => {
+    const rows = quickPickerRows(candidates);
+    const chosen = rows.find((row) => row.fingerprint === selected);
+
+    return chosen ? selectionReason(chosen) : null;
+  }, [candidates, selected]);
 
   // Candidates + provider + profiles load once per mount; the backend
   // caches the ranking pass, so these are bounded calls — never
@@ -111,20 +133,19 @@ export function QuickConnectPage({ onNavigate }: { onNavigate: (page: Page) => v
 
   useEffect(() => {
     void loadCandidates();
-    void loadProviders();
+    void loadConnectMode();
+    void loadChains();
     void loadProfiles();
-  }, [loadCandidates, loadProviders, loadProfiles]);
+  }, [loadCandidates, loadConnectMode, loadChains, loadProfiles]);
 
-  /** Installed availability per provider mode (honest: only what the runtime reports). */
-  const providerAvailability = useMemo(() => {
-    const map = new Map<string, boolean>();
-
-    for (const info of providerProviders) {
-      map.set(info.name, info.installed);
+  // v0.12.2: entering Chains mode preselects the FIRST chain
+  // (deterministic — the list is name-ordered). The picker still lets
+  // the user pick another chain explicitly; nothing auto-connects.
+  useEffect(() => {
+    if (connectMode === "chains" && chainsLoaded && !selectedChain && chains.length > 0) {
+      selectChain(chains[0].id);
     }
-
-    return map;
-  }, [providerProviders]);
+  }, [connectMode, chainsLoaded, chains, selectedChain, selectChain]);
 
   /**
    * Hero state: mapped from the real connection state machine first,
@@ -207,18 +228,28 @@ export function QuickConnectPage({ onNavigate }: { onNavigate: (page: Page) => v
   }, [heroState, flowMessage, humanized]);
 
   const onConnect = useCallback(() => {
-    // v0.9.8.1 (§12): provider sessions (Tor / Psiphon) and the Auto
-    // mode run through the SAME high-level lifecycle in the backend
-    // (select → start provider/core → wait ready → verify actual
-    // Internet → connected → monitor → recover).
-    if (providerMode === "tor" || providerMode === "psiphon") {
-      void runProviderRoute(() => providerService.Connect(providerMode));
+    // v0.12.2: every mode runs the SAME high-level lifecycle in the
+    // backend (select → start ONE core → wait ready → verify actual
+    // Internet → connected → monitor → recover). Proxy chains compile
+    // into ONE core process — never one process per hop.
+    if (connectMode === "chains") {
+      if (selectedChain) {
+        void runProviderRoute(() => connectionService.ConnectChain(selectedChain));
+      }
 
       return;
     }
 
-    if (providerMode === "auto") {
-      void runProviderRoute(() => providerService.ConnectAuto());
+    // Auto mode: the existing evidence-based best-candidate engine
+    // (fresh verified successes win; bounded retesting; cooldowns).
+    if (connectMode === "auto") {
+      const qc = useQuickConnectStore.getState();
+
+      if (qc.candidates.length > 0) {
+        void connectBest();
+      } else {
+        void useStartFlowStore.getState().run();
+      }
 
       return;
     }
@@ -244,7 +275,7 @@ export function QuickConnectPage({ onNavigate }: { onNavigate: (page: Page) => v
       // (detect → discover → test → rank → connect → verify).
       void useStartFlowStore.getState().run();
     }
-  }, [providerMode, selected, connect, connectBest]);
+  }, [connectMode, selectedChain, selected, connect, connectBest]);
 
   const extras = (snapshot ?? {}) as SnapshotExtras;
   const connectedName = snapshot?.config_name || snapshot?.config_display || "";
@@ -307,29 +338,42 @@ export function QuickConnectPage({ onNavigate }: { onNavigate: (page: Page) => v
         )}
 
         {heroState !== "connected" && (
-          <ProviderModeSelector
-            mode={providerMode}
-            onModeChange={(mode) => void setProviderMode(mode)}
-            availability={providerAvailability}
+          <ConnectModeSelector
+            mode={connectMode}
+            onModeChange={(mode) => void setConnectMode(mode)}
             disabled={inFlight}
-            loaded={providerLoaded}
-            loading={providerLoading}
+            loaded={modeLoaded}
+            loading={modeLoading}
           />
         )}
 
-        {heroState !== "connected" && providerMode === "configs" && (
-          <QuickPicker
-            rows={quickPickerRows(candidates)}
-            loading={candidatesLoading && !candidatesLoaded}
-            loaded={candidatesLoaded}
-            selected={selected}
-            disabled={inFlight}
-            onSelect={select}
-          />
+        {heroState !== "connected" && connectMode === "configs" && (
+          <>
+            <QuickPicker
+              rows={quickPickerRows(candidates)}
+              loading={candidatesLoading && !candidatesLoaded}
+              loaded={candidatesLoaded}
+              selected={selected}
+              disabled={inFlight}
+              onSelect={select}
+            />
+            {selectedReason && (
+              <p className="qc-selection-reason" role="note" aria-live="polite">
+                {selectedReason}
+              </p>
+            )}
+          </>
         )}
 
-        {heroState !== "connected" && providerMode !== "configs" && (
-          <ProviderModeNote mode={providerMode} availability={providerAvailability} />
+        {heroState !== "connected" && connectMode === "chains" && (
+          <ChainPicker
+            chains={chains}
+            loaded={chainsLoaded}
+            loading={chainsLoading}
+            selected={selectedChain}
+            disabled={inFlight}
+            onSelect={selectChain}
+          />
         )}
 
         {heroState === "connected" ? (
@@ -438,8 +482,8 @@ export function QuickConnectPage({ onNavigate }: { onNavigate: (page: Page) => v
               <dd>{EDUCATION_HINTS.verification}</dd>
             </div>
             <div>
-              <dt>Tor / Psiphon</dt>
-              <dd>Independent networks that bypass restrictions their own way — usually slower, often more resilient.</dd>
+              <dt>Proxy Chains</dt>
+              <dd>{EDUCATION_HINTS.proxyChain}</dd>
             </div>
           </dl>
         </section>
@@ -493,9 +537,9 @@ function ProfileSelector({ disabled }: { disabled: boolean }) {
         await setActiveProfile(profileID);
 
         // The backend applied the profile's preferences: re-read the
-        // provider mode and preselect the profile's configuration so
+        // route mode and preselect the profile's configuration so
         // the whole page reflects the authoritative state immediately.
-        await useProviderStore.getState().load();
+        await useConnectModeStore.getState().load();
 
         if (configID) {
           useQuickConnectStore.getState().select(configID);
@@ -792,34 +836,31 @@ function ProfileManager({
 }
 
 /**
- * v0.9.8.1 provider selector (§12): a compact segmented control above
- * the configuration picker. Auto selection is evidence-based in the
- * backend; uninstalled providers are visibly unavailable but still
- * selectable (installing happens on the Cores page — explicit user
- * action only).
+ * v0.12.2 route selector: a compact segmented control above the
+ * pickers. Auto is evidence-based in the backend; Configurations is
+ * explicit user selection; Proxy Chains connect through user-built
+ * ordered hop lists compiled into ONE core process (the removed
+ * Tor/Psiphon selector is gone).
  */
-function ProviderModeSelector({
+function ConnectModeSelector({
   mode,
   onModeChange,
-  availability,
   disabled,
   loaded,
   loading,
 }: {
-  mode: ProviderMode;
-  onModeChange: (mode: ProviderMode) => void;
-  availability: Map<string, boolean>;
+  mode: ConnectMode;
+  onModeChange: (mode: ConnectMode) => void;
   disabled: boolean;
   loaded: boolean;
   loading: boolean;
 }) {
-  const modes: ProviderMode[] = ["auto", "configs", "tor", "psiphon"];
+  const modes: ConnectMode[] = ["auto", "configs", "chains"];
 
   return (
-    <div className="qc-provider-mode" role="radiogroup" aria-label="Connection provider" data-loading={loading ? "true" : undefined}>
+    <div className="qc-provider-mode" role="radiogroup" aria-label="Connection route" data-loading={loading ? "true" : undefined}>
       {modes.map((candidate) => {
         const active = candidate === mode;
-        const installed = candidate === "auto" || candidate === "configs" || availability.get(candidate) === true;
 
         return (
           <button
@@ -827,37 +868,95 @@ function ProviderModeSelector({
             type="button"
             role="radio"
             aria-checked={active}
-            aria-label={`${PROVIDER_MODE_LABELS[candidate]}${installed ? "" : " (not installed)"}`}
+            aria-label={CONNECT_MODE_LABELS[candidate]}
             className={`qc-mode-chip ${active ? "active" : ""}`}
             disabled={disabled}
             onClick={() => onModeChange(candidate)}
           >
-            {PROVIDER_MODE_LABELS[candidate]}
-            {loaded && !installed && <span className="qc-mode-unavailable" title="Not installed — see Cores page" />}
+            {CONNECT_MODE_LABELS[candidate]}
           </button>
         );
       })}
+      {loaded && null}
     </div>
   );
 }
 
-/** Honest note under the selector when a provider route is chosen. */
-function ProviderModeNote({
-  mode,
-  availability,
+/**
+ * Chain picker (v0.12.2): the Configurations-mode equivalent for
+ * chains — a collapsed control expanding to the chain list with hop
+ * counts. Connecting a chain runs the SAME verified lifecycle; the
+ * chain compiles into ONE core process.
+ */
+function ChainPicker({
+  chains,
+  loaded,
+  loading,
+  selected,
+  disabled,
+  onSelect,
 }: {
-  mode: ProviderMode;
-  availability: Map<string, boolean>;
+  chains: Array<{ id: string; name: string; hops: number }>;
+  loaded: boolean;
+  loading: boolean;
+  selected: string | null;
+  disabled: boolean;
+  onSelect: (chainID: string) => void;
 }) {
-  if (mode !== "tor" && mode !== "psiphon") return null;
+  const [open, setOpen] = useState(false);
 
-  const installed = availability.get(mode) === true;
+  const selectedChain = chains.find((chain) => chain.id === selected) || null;
+
+  if (loaded && chains.length === 0) {
+    return (
+      <p className="qc-picker-note">
+        No proxy chains yet — build one in Configurations from two or more working configurations.
+      </p>
+    );
+  }
 
   return (
-    <div className="qc-picker-note" aria-live="polite">
-      {installed
-        ? `${PROVIDER_MODE_LABELS[mode]} route · connect runs the full verify-Internet lifecycle`
-        : `${PROVIDER_MODE_LABELS[mode]} is not installed yet — install it on the Cores page (explicit action, checksum-verified download).`}
+    <div className="qc-picker">
+      <button
+        type="button"
+        className="qc-picker-toggle"
+        aria-expanded={open}
+        disabled={disabled}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <span className={selectedChain ? "" : "muted"}>
+          {selectedChain
+            ? `${selectedChain.name} · ${selectedChain.hops} hop${selectedChain.hops === 1 ? "" : "s"}`
+            : "Select a proxy chain"}
+        </span>
+        <IconChevronDown size={14} />
+      </button>
+
+      {open && (
+        <ul className="qc-picker-list" role="listbox" aria-label="Proxy chains">
+          {chains.map((chain) => (
+            <li key={chain.id}>
+              <button
+                type="button"
+                role="option"
+                aria-selected={chain.id === selected}
+                disabled={disabled}
+                onClick={() => {
+                  onSelect(chain.id);
+                  setOpen(false);
+                }}
+              >
+                <span>{chain.name}</span>
+                <span className="muted">
+                  {chain.hops} hop{chain.hops === 1 ? "" : "s"}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {loading && !loaded && <p className="qc-picker-note">Loading chains…</p>}
     </div>
   );
 }

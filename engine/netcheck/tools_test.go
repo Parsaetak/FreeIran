@@ -649,14 +649,14 @@ func TestToolTunneledHTTPSThroughSOCKS(t *testing.T) {
 		Target:   "https://www.gstatic.com/generate_204",
 		Path:     PathTunneled,
 		Dial:     localDial(proxy),
-		Provider: "test-tor",
+		Provider: "test-route-label",
 	})
 
 	if result.Path != PathTunneled {
 		t.Fatalf("path = %q, want tunneled", result.Path)
 	}
 
-	if result.Provider != "test-tor" {
+	if result.Provider != "test-route-label" {
 		t.Fatalf("provider = %q, want test-tor", result.Provider)
 	}
 
@@ -715,7 +715,7 @@ func TestToolTunnelDiagnostics(t *testing.T) {
 	emptyEndpoint := runner.Run(context.Background(), ToolRequest{
 		Tool:   ToolTunnelDiagnostics,
 		Path:   PathTunneled,
-		Tunnel: &TunnelSnapshot{Active: true, Provider: "tor", Endpoint: ""},
+		Tunnel: &TunnelSnapshot{Active: true, Provider: "route-label", Endpoint: ""},
 	})
 
 	// v0.12.1: an active tunnel without a local endpoint is a missing
@@ -735,7 +735,7 @@ func TestToolTunnelDiagnostics(t *testing.T) {
 		Path: PathTunneled,
 		Tunnel: &TunnelSnapshot{
 			Active:   true,
-			Provider: "tor",
+			Provider: "route-label",
 			Endpoint: proxy,
 			Healthy:  true,
 		},
@@ -749,7 +749,7 @@ func TestToolTunnelDiagnostics(t *testing.T) {
 		t.Fatal("tunnel diagnostics must carry a real measurement")
 	}
 
-	if result.Measurement.Tunnel == nil || result.Measurement.Tunnel.Provider != "tor" {
+	if result.Measurement.Tunnel == nil || result.Measurement.Tunnel.Provider != "route-label" {
 		t.Fatalf("tunnel snapshot missing: %+v", result.Measurement.Tunnel)
 	}
 
@@ -1412,7 +1412,7 @@ func TestToolHTTPSTunneledPrivateLiteralBlocked(t *testing.T) {
 		Target:   "http://127.0.0.1:1080/check",
 		Path:     PathTunneled,
 		Dial:     localDial(proxy),
-		Provider: "test-tor",
+		Provider: "test-route-label",
 	})
 
 	if result.Status != ToolStatusInvalid {

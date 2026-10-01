@@ -11,7 +11,15 @@ import { call, profileService, type ProfileSpec, type ProfileView } from "../ser
  * runs the existing verified engine flows.
  */
 
-export type ProfileMode = "auto" | "configs" | "tor" | "psiphon";
+export type ProfileMode = "auto" | "configs";
+
+/**
+ * v0.12.2: legacy tor/psiphon profile modes migrate to "auto" — a
+ * removed mode must never brick or drop a persisted profile.
+ */
+export function migrateProfileMode(mode: unknown): ProfileMode {
+  return mode === "configs" ? "configs" : "auto";
+}
 
 /**
  * v0.9.12: operation generation for the activation path. Every
@@ -174,18 +182,9 @@ export const useProfilesStore = create<ProfilesStore>((set, get) => ({
 export const PROFILE_MODE_LABELS: Record<ProfileMode, string> = {
   auto: "Auto",
   configs: "Configurations",
-  tor: "Tor",
-  psiphon: "Psiphon",
 };
 
 export function normalizeProfileMode(mode: unknown): ProfileMode {
-  switch (mode) {
-    case "configs":
-    case "tor":
-    case "psiphon":
-    case "auto":
-      return mode;
-    default:
-      return "auto";
-  }
+  // v0.12.2: legacy tor/psiphon values migrate to "auto".
+  return mode === "configs" ? "configs" : "auto";
 }

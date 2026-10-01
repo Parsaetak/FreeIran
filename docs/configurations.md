@@ -145,3 +145,31 @@ keyboard and pointer flows.
 
 These rules were earned against ~20k-configuration runtimes; changes
 that re-introduce O(store) work per interaction regress them.
+
+## Proxy chains (v0.12.2)
+
+The scope rail gains PROXY CHAIN scopes beside the source scopes and
+user groups — plus "+ New chain". A chain is an ORDERED list of
+existing configurations (2–4 hops, index 0 = first hop, last =
+egress) persisted in the collections sidecar (schema v2, group kind
+`proxy_chain`). Chain records carry configuration IDs only — never
+credentials, never payloads.
+
+- **Chain scope.** Selecting a chain filters the table SERVER-SIDE by
+  the chain's hop IDs (`ConfigFilter.ids`); the scope header shows
+  hop count, completeness, the compiled preview (A → B → C), per-hop
+  working evidence and the actions Check chain / Connect / Edit. A
+  chain scope NEVER offers "Update source" — a chain is not a remote
+  source.
+- **Editor.** The compact editor lists hops in order with move
+  up/down, remove, protocol + endpoint + latest evidence per hop, a
+  live preview and validation before save (min 2 hops, max 4, no
+  duplicates, no missing configurations, no nested chains). Check
+  hops runs through the ONE test queue; Check chain reports per-hop
+  evidence plus a fresh end-to-end measurement; Connect runs the
+  SAME verified state machine (one core process — Xray
+  `sockopt.dialerProxy` / sing-box `detour`; V2Ray refuses chains
+  explicitly).
+- **Row menu.** With a multi-row selection the menu offers "Build
+  proxy chain from selected"; a chain scope's menu adds remove /
+  reorder for its hops. All actions ride the ONE MenuSurface.

@@ -10,7 +10,7 @@ domain has exactly ONE authoritative document.
 | Current architecture (what exists today) | [architecture.md](architecture.md) |
 | **Long-term architecture / future-work contract** | [autonomous-connectivity.md](autonomous-connectivity.md) |
 | Protocol × core capability evidence | [protocols.md](protocols.md) |
-| Provider lifecycle (Tor, Psiphon, managed cores) | [providers.md](providers.md) |
+| Core acquisition & trust (managed cores; v0.12.2 chains) | [providers.md](providers.md) |
 | TUN implementation + evidence ladder | [tun.md](tun.md) |
 | Security contract / scanner evidence | [security.md](security.md) |
 | UI architecture + surface contracts | [ui.md](ui.md) |

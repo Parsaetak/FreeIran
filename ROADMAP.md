@@ -18,11 +18,11 @@ Rules:
 - `Connected` is never `Protected`; no future item may be marketed
   beyond its evidence.
 
-## Current Baseline (v0.12.1)
+## Current Baseline (v0.12.2)
 
 - Multi-core managed runtime (Xray, V2Ray, sing-box — digest-verified
   install/update/rollback; Mihomo core-manager-managed without a
-  connection adapter), one provider manager (Tor, Psiphon), one
+  connection adapter), one managed-binary pipeline, one
   process supervisor, one downloader.
 - Discovery/testing/ranking: multi-level discovery, ping/URL test
   modes, measured ranking, bounded test queue.
@@ -36,6 +36,13 @@ Rules:
   verification with pinned binaries (sing-box 1.14.1 — upstream
   stable is 1.14.2; the verified pin is retained deliberately),
   security battery. GUI launch proof executes in CI.
+- Blank-window root-cause repair + Tor/Psiphon removal + proxy chains
+  (v0.12.2): the App-level hook policy mounted at the top level with a
+  static Rules-of-Hooks guard; the provider layer deleted vertically
+  with legacy-mode migration to the surviving route modes; chains on
+  the collections authority (schema v2) compiled into ONE core
+  process through the existing compilers, state machine and
+  verification gate.
 - Network tools as a truthful diagnostic system (v0.12.1): ten-state
   status semantics with distinct log events, honest endpoint-tool
   target resolution (no blind 127.0.0.1:1080), a real bounded QUIC v1
@@ -79,20 +86,27 @@ REALITY  XHTTP  Hysteria2  TUIC
 Shadowsocks  WireGuard  AmneziaWG       (I/J: as adaptive candidates)
 ```
 
-## Phase 3 — Tor + circumvention
+## Phase 3 — Circumvention transport slot (PLANNED — generic)
 
-```text
-Tor provider transports: obfs4, Snowflake, WebTunnel, meek
-Tor Circumvention mode
-Onion Only mode            (.onion only, no public-Internet fallback)
-```
+The v0.12.2 product deliberately removed Tor (and Psiphon) from the
+active runtime; the historical "Tor circumvention phase" is retired
+rather than promised. What remains PLANNED is a GENERIC
+circumvention-transport slot: IF a future transport earns its way in,
+it must enter through the EXISTING architecture contracts — one core
+manager, one binary trust pipeline, one connection state machine, one
+verification gate, one MenuSurface, one configuration store. Any
+future mechanism plugs in as either (a) a new protocol-core adapter
+with a verified capability matrix or (b) a compile-time topology
+within an existing adapter (the path proxy chains take). No
+provider-per-mechanism architecture will be reintroduced.
 
+Requirements carried forward from the original phase:
 ## Phase 4 — Canonical routing/DNS
 
 ```text
 central routing engine     (N: engine/routing/, compiled per core)
 DNS/routing integration    (route decision carries resolver decision)
-actions: Direct / Proxy / Block / Tor / I2P
+actions: Direct / Proxy / Block (I2P: generic future slot)
 ```
 
 ## Phase 5 — Privacy diagnostics
@@ -109,7 +123,7 @@ low-metadata mode          (S)
 
 ```text
 multi-hop                  (M: trust topology, explicit diagram)
-Tor-over-VPN  VPN-over-Tor
+Multi-hop chains (v0.12.2 ships the single-core compilation model)
 I2P-only                   (L)
 application-specific routing
 ```
@@ -158,6 +172,7 @@ still load-bearing is linked where it matters.
 | v0.11.5 | Windows GUI startup fix (root-caused against pinned Wails beta.19 source), real GUI launch proof (native user32 observation, CI + release wired), metadata-free runtime log, Wails diagnostics bridge |
 | v0.12.0 | Documentation/architecture consolidation: canonical future-architecture contract (docs/autonomous-connectivity.md), docs index, README/ROADMAP/CHANGELOG de-duplication, version bump, stale-wording repair |
 | v0.12.1 | Network-tool truth (ten-state semantics, distinct log events, honest endpoint resolution, real QUIC probe, native Windows traceroute, DNS DoH row, provenance-free core logs) + source/subscription configuration workspace (targeted refresh + check, scope rail, scope header) + app-wide native context-menu suppression and keyboard UX |
+| v0.12.2 | Blank-window root-cause repair (hook mounted at App top level + static hooks guard), Tor/Psiphon removal (vertical, with legacy-mode migration), proxy chains (collections schema v2, ProxyChainService, Xray dialerProxy + sing-box detour compilation into ONE process, chain scope/editor/checks), dense-table Security column, selection evidence line |
 
 ---
 
@@ -198,7 +213,8 @@ the phases above.
 - Quick-Connect reliability: fresh-test before connect, last-working
   evidence persistence, recovery reusing fresh ranking, mandatory
   Internet verification before success (v0.9.6+).
-- Tor/Psiphon provider installation as first-class flows with honest
+- Removed Tor/Psiphon provider installation flows stay removed; any future
+  transport enters through the core-manager trust pipeline with honest
   acquisition states (v0.9.8.1+, repaired v0.9.15).
 - Core manager: catalog, one-click install, update/repair,
   installation diagnostics (v0.6+).

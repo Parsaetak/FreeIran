@@ -113,47 +113,38 @@ usability is never blocked.
 | **Connection** | advanced · diagnostic · controllable. Manual selection, attempt history, recovery details, system-proxy and TUN integration (v0.11.3: TUN runs the active configuration through the managed sing-box dataplane — Direct / System Proxy / TUN with observed status, interface, IPv4/IPv6, DNS, core and configuration surfaced while active), core inventory. |
 | **Dashboard** | overview. Summarized connection state, onboarding, metrics. Its connect action stays functional and shares the visual language. |
 
-## Quick Connect provider modes (v0.9.8.1)
+## Quick Connect route modes (v0.12.2)
 
-- A compact provider-mode selector (a `radiogroup` with `Auto /
-  Configurations / Tor / Psiphon`) sits directly ABOVE the
-  configuration picker (§12). Uninstalled providers remain visible
-  but are honestly marked unavailable — the choice is never silently
-  removed; the backend's evidence-based Auto mode (see
-  docs/providers.md) decides when selection is left to Auto.
+- A compact route selector (a `radiogroup` with `Auto /
+  Configurations / Proxy Chains`) sits directly ABOVE the pickers.
+  The removed Tor/Psiphon selector is gone: every surviving mode is
+  always available, and no unavailability dot is rendered.
+- **Auto** mode delegates to the existing best-candidate engine
+  (`ConnectBest` — fresh verified successes win, bounded retesting,
+  cooldowns, route-trust policy) and, with no candidates, to the
+  adaptive start flow.
 - **Configurations** mode renders the classic picker and the v0.9.8
-  decision tree unchanged. **Tor** / **Psiphon** modes route the
-  single CONNECT action through the provider session lifecycle
-  (`providerService.ConnectProvider`) — the SAME one primary action,
-  the same state visuals, the same verification gate; no second
-  connect-family control is ever added. **Auto** delegates to the
-  backend's explainable evidence scoring.
-- Picker rows now carry the protocol label, and the measured-ping
-  ordering contract gains the v0.9.8.1 sub-millisecond rule: a
-  measured `latency_ms` of 0 with `latency_ms_measured === true`
-  renders **"< 1 ms"** and sorts FIRST among measured candidates
-  (never as "0 ms", never as unmeasured — see docs/latency.md).
-  Unmeasured rows keep the dash and sort last.
-- The picker model and the provider-mode routing are unit-tested
-  (`frontend/src/utilities/quickConnectModel-subms.test.ts`, the
-  Quick Connect page suite).
+  route model: explicit selection connects THAT configuration; the
+  one CONNECT action runs the same verified lifecycle. The selected
+  row shows the v0.12.2 evidence line ("Selected because: verified 2
+  min ago · 126 ms · 8/10 recent successes") — real recorded
+  observations only, never an invented score.
+- **Proxy Chains** mode renders the chain picker (name + hop count);
+  the first chain is preselected deterministically. Connecting a
+  chain runs the SAME one-primary-action contract through
+  `ConnectionService.ConnectChain` — the chain compiles into ONE
+  core process and the same verification gate applies. With no
+  chains the picker says exactly that and points at the
+  Configurations workspace.
+- The picker model, the selection-reason builder and the mode
+  routing are unit-tested (`quickConnectModel` tests, the Quick
+  Connect page suite, the App shell mount test).
 
-## Cores page providers (v0.9.8.1)
+## Cores page (v0.12.2)
 
-- A **Providers** section below the managed-cores grid (§13) renders
-  one card per Tor/Psiphon provider from
-  `frontend/src/state/providerStore.ts` (backend `Info` views — no
-  synthesized state). Each card reports the honest runtime facts:
-  version, lifecycle state, runtime source, license + attribution
-  notice, last check, local endpoints, measured health latency
-  (sub-ms shown "< 1 ms") and capabilities — capabilities are shown
-  only when the provider reports them from its real runtime.
-- Card actions map one-to-one to the provider lifecycle —
-  Install / Verify / Start / Stop / Uninstall — each a real backend
-  call with loading state; nothing runs automatically. Core-kind
-  providers (xray/v2ray/sing-box) keep their existing managed-core
-  cards; the adapter exposes no provider-level Start for cores
-  (they run per node-configuration through the connection engine).
+The former "Providers" section (Tor/Psiphon cards) is removed with
+the provider layer; the managed-cores grid is the whole surface.
+
 
 ## Network tools (v0.9.8.1, extended v0.9.8.5)
 
@@ -483,8 +474,8 @@ surface contracts for future phases
 must never imply more protection than its evidence supports:
 
 ```text
-Protected              Censorship Adaptive    Tor Circumvention
-Onion Only             I2P                    Multi-Hop
+Protected              Censorship Adaptive    Multi-Hop (chains ship)
+Onion Only (slot)      I2P (slot)             Privacy Diagnostics
 Low-Metadata
 ```
 

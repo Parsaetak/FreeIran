@@ -370,46 +370,14 @@ user-triggered diagnostic tool shares one hard safety policy:
   validated host:port / URL forms, fixed error kinds and measurements.
 
 **User-binary adoption ownership (`engine/provider/psiphon.go`).**
-Adopting a user-provided Psiphon binary is copy-not-move: the source
-is SHA-256'd and copied into FreeIran-managed storage under a
-content-addressed name, the managed copy is verified
-byte-equivalent, then validated and smoke-launched through the
-`system` supervision layer (no visible console window, job-object /
-process-tree cleanup, bounded lifetime, cancellation — the same
-guarantees as the live provider). The user's original file is never
-moved, renamed or deleted; it survives adoption, provider
-uninstall, and Windows sharing-violation conditions. `Uninstall`
-removes only FreeIran's managed state.
-
-**Provider install integrity (`engine/provider/binary.go`).** The
-managed-binary pipeline for Tor and Psiphon inherits the
-protocol-core ordering rule — an unverified binary is never started,
-not even once — and makes the checksum MANDATORY:
-
-- SHA-256 verification against the published checksum authority
-  happens after the resumable `.part` download and before unpack;
-  verification failure aborts with rollback — nothing is weakened to
-  make installation easier.
-- Releases without published checksums are REFUSED: when the Psiphon
-  channel exposes no release assets with digests, `Resolve` reports
-  unavailability and `Install` refuses. A user-provided binary
-  (`psiphon_user_binary`) is validated and smoke-launched before
-  adoption.
-- Tor verifies against the Tor Project's own
-  `sha256sums-signed-build.txt`, fetched over TLS from the same
-  official host (`dist.torproject.org`); the archive unpack is
-  tar-slip guarded; activation is atomic with the previous binary
-  retained for rollback. Honest limitation, documented in
-  docs/providers.md: GPG verification of the checksum file itself is
-  not performed (TLS from the official host — the same authority
-  model as the Tor Browser updater's initial bootstrap).
-- Provider processes run under `system.ManagedProcess` supervision
-  (job objects — no orphans); runtime data, caches and logs are
-  confined to `<workspace>/providers/<name>/` and logs are pruned
-  (7 days / 16 files). No secrets are logged: provider settings carry
-  only user-provided, non-secret inputs (bridge lines, plugin paths,
-  extra config JSON), and the existing entry-level redaction applies
-  to every log line.
+v0.12.2 removal note: the Tor/Psiphon provider pipeline entries
+(user-binary adoption, Tor Project digest verification, Psiphon
+release checksums) described here historically were removed with the
+provider layer. The SURVIVING guarantees are unchanged: managed core
+binaries download only over HTTPS from upstream GitHub Releases, a
+release without an authoritative digest is REFUSED, a locally
+computed hash is tamper evidence rather than a trust anchor, and
+every archive extraction is bounded (`internal/safearchive`).
 
 ## v0.9.8.6 — executable trust, bounded extraction, explicit proxies, command-surface audit
 

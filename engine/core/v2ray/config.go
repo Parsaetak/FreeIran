@@ -3,6 +3,7 @@ package v2ray
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/Parsaetak/FreeIran/engine/config"
@@ -55,6 +56,17 @@ type v4Stream struct {
 	GRPCSettings    *v4GRPCTransport `json:"grpcSettings,omitempty"`
 	HTTPSettings    *v4HTTPTransport `json:"httpSettings,omitempty"`
 	QUICSettings    *v4QUICTransport `json:"quicSettings,omitempty"`
+	Sockopt         *v4Sockopt       `json:"sockopt,omitempty"`
+}
+
+// v4Sockopt is the Xray stream socket option block. v0.12.2 proxy
+// chains use ONLY dialerProxy — the documented Xray chaining
+// primitive: the outbound dials its OWN connection THROUGH the
+// outbound named by the tag, so A→B→C compiles as
+// C(sockopt.dialerProxy=B) → B(sockopt.dialerProxy=A) → A(direct)
+// inside ONE core process.
+type v4Sockopt struct {
+	DialerProxy string `json:"dialerProxy,omitempty"`
 }
 
 type v4TLS struct {
@@ -238,6 +250,156 @@ func BuildV4Document(
 		DescribeTransport(cfg))
 
 	return data, summary, nil
+}
+
+// chain hop outbound tags. The FIRST outbound stays "proxy" (the V4
+// implicit default route target — the egress hop); earlier hops get
+// numbered tags referenced by the next hop's sockopt.dialerProxy.
+const (
+	chainTagPrefix = "chain-"
+	chainFinalTag  = "proxy"
+)
+
+// BuildV4ChainDocument renders the V4-format PROXY CHAIN
+// configuration (Xray dialect — requires sockopt.dialerProxy, which
+// the V2Fly core does not provide through this adapter).
+//
+// cfg carries the EXIT (egress) hop; cfg.Chain carries the earlier
+// hops in user order. The document keeps ONE inbound pair, ONE
+// routing table and ONE process: every hop is an additional outbound
+// in the same document, each dialing through its predecessor.
+func BuildV4ChainDocument(
+	cfg config.Config,
+	opts core.RuntimeOptions,
+	v4opts V4Options,
+) ([]byte, string, error) {
+	cfg.Normalize()
+
+	opts = opts.WithDefaults()
+
+	backend := v4opts.BackendName
+	if backend == "" {
+		backend = "xray"
+	}
+
+	hops := cfg.ChainHops()
+
+	if len(hops) < 2 {
+		return nil, "", firerrors.New(firerrors.KindInvalidInput,
+			Subsystem, "build",
+			"proxy chain needs at least two hops (got %d)", len(hops))
+	}
+
+	if len(hops) > chainMaxHops {
+		return nil, "", firerrors.New(firerrors.KindInvalidInput,
+			Subsystem, "build",
+			"proxy chain exceeds %d hops (got %d)", chainMaxHops, len(hops))
+	}
+
+	port := opts.LocalPort
+	if port == 0 {
+		return nil, "", firerrors.New(firerrors.KindConfiguration,
+			Subsystem, "build",
+			"local port must be allocated before generation")
+	}
+
+	// Deterministic tag plan: hops 0..N-2 get chain-1..chain-N-1;
+	// the egress (last hop) is the "proxy" default outbound.
+	tagFor := func(i int) string {
+		if i == len(hops)-1 {
+			return chainFinalTag
+		}
+		return chainTagPrefix + strconv.Itoa(i+1)
+	}
+
+	outbounds := make([]v4Outbound, 0, len(hops)+2)
+
+	// V4 implicit default = FIRST outbound → the egress hop first,
+	// then the earlier hops (referenced by tag, order irrelevant).
+	for i := len(hops) - 1; i >= 0; i-- {
+		hop := hops[i]
+		hop.Normalize()
+
+		outbound, err := buildV4Outbound(hop, v4opts)
+		if err != nil {
+			return nil, "", firerrors.Wrap(err, firerrors.KindInvalidInput,
+				Subsystem, "build", "chain hop %d", i+1)
+		}
+
+		outbound.Tag = tagFor(i)
+
+		// Every hop AFTER the first dials through its predecessor.
+		if i > 0 {
+			if outbound.StreamSettings == nil {
+				outbound.StreamSettings = &v4Stream{Network: v2rayNetworkOf(hop)}
+			}
+
+			outbound.StreamSettings.Sockopt = &v4Sockopt{DialerProxy: tagFor(i - 1)}
+		}
+
+		outbounds = append(outbounds, *outbound)
+	}
+
+	outbounds = append(outbounds,
+		v4Outbound{Tag: "direct", Protocol: "freedom"},
+		v4Outbound{Tag: "block", Protocol: "blackhole"},
+	)
+
+	doc := v4Document{
+		Log: &v4Log{LogLevel: "warning"},
+		Inbounds: []v4Inbound{{
+			Tag:      "socks-in",
+			Listen:   opts.LocalHost,
+			Port:     port,
+			Protocol: "socks",
+			Settings: json.RawMessage(`{"auth":"noauth","udp":true}`),
+		}},
+		Outbounds: outbounds,
+		Routing: &v4Routing{
+			DomainStrategy: "AsIs",
+			Rules: []v4Rule{{
+				Type:        "field",
+				IP:          privateCIDRs,
+				OutboundTag: "direct",
+			}},
+		},
+	}
+
+	if opts.HTTPPort > 0 {
+		doc.Inbounds = append(doc.Inbounds, v4Inbound{
+			Tag:      "http-in",
+			Listen:   opts.LocalHost,
+			Port:     opts.HTTPPort,
+			Protocol: "http",
+			Settings: json.RawMessage(`{}`),
+		})
+	}
+
+	data, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return nil, "", firerrors.Wrap(err, firerrors.KindEnvironment,
+			Subsystem, "build", "encode chain document")
+	}
+
+	names := make([]string, 0, len(hops))
+	for _, hop := range hops {
+		names = append(names, hop.DisplayURL())
+	}
+
+	summary := fmt.Sprintf("%s v4 proxy chain (%d hops): %s, socks %s:%d",
+		backend, len(hops), strings.Join(names, " -> "), opts.LocalHost, port)
+
+	return data, summary, nil
+}
+
+// chainMaxHops is the hard hop ceiling compiled into the document
+// builder (mirrors the collections-side validation: 4 hops).
+const chainMaxHops = 4
+
+// v2rayNetworkOf resolves the normalized transport network for a hop
+// (used only to seed a stream block that will carry a sockopt).
+func v2rayNetworkOf(cfg config.Config) string {
+	return string(NormalizedNetwork(cfg))
 }
 
 // buildV4Outbound converts the normalized configuration into the

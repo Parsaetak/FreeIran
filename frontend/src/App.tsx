@@ -95,23 +95,24 @@ export function App() {
   const bootPhase = useAppStore((state) => state.bootPhase);
   const bootTimings = useAppStore((state) => state.bootTimings);
 
+  // v0.12.2 (root-cause repair): the ONE application-wide right-click
+  // policy is mounted AT THE TOP LEVEL of the App component — a hook
+  // must never be called inside a useEffect callback (Rules of
+  // Hooks). v0.12.1 mounted it inside the effect below, which threw
+  // an invalid-hook error in App's own effect (above every error
+  // boundary) and unmounted the whole tree — the blank-window
+  // regression. The policy itself lives once in
+  // utilities/contextMenuPolicy.ts; rows still open FreeIran's own
+  // MenuSurface, everything non-editable gets no native menu, and
+  // text fields keep native clipboard/IME behaviour.
+  useSuppressNativeContextMenu();
+
   useEffect(() => {
     const disposeAppState = connectAppStore();
     const disposeConnection = connectConnectionStore();
 
     // start-flow broadcasts keep the Smart Start panel live.
     const disposeStartFlow = subscribeStartFlow();
-
-    // v0.12.1 (§25): ONE application-wide policy suppressing the
-    // native browser/WebView context menu — implemented once in
-    // utilities/contextMenuPolicy.ts and mounted by the shell here.
-    // Right-click on configurations opens FreeIran's OWN MenuSurface
-    // (the rows' handlers); right-click anywhere else — table
-    // whitespace, detail panel, tabs, buttons, page background —
-    // simply gets NO menu instead of the foreign browser menu. Text
-    // fields keep their native editing menu so Ctrl+C / Ctrl+V /
-    // Ctrl+A clipboard behaviour and IME editing are never broken.
-    useSuppressNativeContextMenu();
 
     // Initial flow status + environment analysis for display.
     void useStartFlowStore.getState().refresh();

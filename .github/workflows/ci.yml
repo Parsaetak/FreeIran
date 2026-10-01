@@ -390,7 +390,7 @@ jobs:
       # the v0.10.5 full matrix (`go test -count=1 -p 1 ./...`) spent
       # its Windows time on platform-NEUTRAL suites the Linux `go`
       # job already executes — and executes again under -race:
-      # connection 42s, testqueue 31s, provider 31s, app 30s,
+      # connection 42s, testqueue 31s, proxychain 31s, app 30s,
       # coremgr 29s, netcheck 15s on Linux, each multiplied by the
       # Windows runner's process-spawn and I/O overhead and
       # serialized by -p 1. The Windows-ONLY code paths (WinINet ABI
@@ -428,8 +428,8 @@ jobs:
       # Layer A — compile the complete Windows test surface.
       #
       # -run '^$' compiles and links EVERY test binary (and runs each
-      # TestMain — provider's fixture build included, which also
-      # proves the faketor/fakepsiphon fixtures compile for Windows)
+      # TestMain — the fake-core fixture build is included (proves the
+      # fake cores compile for Windows)
       # without executing the platform-neutral test bodies again.
       # A compile error in any //go:build windows test file — files
       # the Linux job never compiles — fails here loudly.
@@ -471,7 +471,7 @@ jobs:
       #
       # Focused -run patterns instead of whole packages: the
       # platform-neutral remainder of these packages (queue logic,
-      # ranking math, provider scripting, URL parsing, publish
+      # ranking math, chain compilation, URL parsing, publish
       # ordering...) is already proven by the Linux job's full suite
       # + race run; re-running it on Windows buys no new evidence.
       # What runs here is the Windows-material surface:
@@ -490,13 +490,13 @@ jobs:
       #                  succeeds after handle release on Windows),
       #                  mid-session crash transitions, cancel/deadline
       #                  survival, reconnect process replacement,
-      #                  goroutine-leak cycles, provider sessions.
+      #                  goroutine-leak cycles, chain sessions.
       - name: Windows behavioral tests (targeted)
         run: |
           go test -count=1 -p 1 -timeout=4m -run 'TestApplyHiddenConsole.*|TestGracefulStopTerminatesChild' ./engine/coremgr/
           go test -count=1 -p 1 -timeout=4m -run 'TestEnvironment|TestStaged|TestFirstFailedStageOrder|TestClassificationLogic|TestRunOfflineClassifiesNoInternet|TestToolTracerouteUnsupported' ./engine/netcheck/
           go test -count=1 -p 1 -timeout=6m -run 'TestAppBoots.*|TestAppShutdown.*|TestBootPhase.*|TestUserGroupLifecycle' ./engine/app/
-          go test -count=1 -p 1 -timeout=8m -run 'TestHungCore|TestMidSessionCrash|TestStabilityTeardown|TestConnectSurvives|TestReconnectReplaces|TestOperationCancelledDuringStartup|TestCrashEndsSession|TestConnectDisconnectCycles|TestProviderSessionSurvives|TestProviderSessionReplaces|TestUserPortOccupied' ./engine/connection/
+          go test -count=1 -p 1 -timeout=8m -run 'TestHungCore|TestMidSessionCrash|TestStabilityTeardown|TestConnectSurvives|TestReconnectReplaces|TestOperationCancelledDuringStartup|TestCrashEndsSession|TestConnectDisconnectCycles|TestChainSession|TestUserPortOccupied' ./engine/connection/
         env:
           CGO_ENABLED: "0"
           FREEIRAN_TEST_CORES: ${{ runner.temp }}\freeiran-test-cores

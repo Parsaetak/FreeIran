@@ -16,7 +16,7 @@ React/Wails (TypeScript UI → generated bindings)
   → discovery / storage / testing / ranking
   → core manager + process supervisor
   → Xray / V2Ray / sing-box (managed, digest-verified cores)
-  → Tor / Psiphon providers (one provider manager)
+  → proxy chains compiled into ONE core process (v0.12.2)
   → system proxy (WinINet) / TUN (sing-box native dataplane)
 ```
 
@@ -57,7 +57,6 @@ Go application orchestration (engine/app)
         ├── engine/coremgr       [v0.6] managed core install/update/rollback
         ├── engine/testqueue     [v0.6] bounded-worker test queue
         ├── engine/tunnel        [v0.6] system proxy (WinINet); TUN via sing-box dataplane (v0.11.3)
-        ├── engine/provider      [v0.9.8.1] Tor/Psiphon/core provider lifecycle
         ├── engine/scheduler     interval scheduling
         ├── engine/native        optional C++ acceleration bridge
         └── system               filesystem, processes, network, platform
@@ -950,34 +949,39 @@ Manual selection always overrides automatic selection. The service
 also exposes `DiscoverNow` (manual discovery pass), `SourceHealthList`
 (source intelligence for the UI) and the environment analysis.
 
-## Providers and Internet tools (v0.9.8.1)
+## Proxy chains and Internet tools (v0.12.2)
 
-### engine/provider — the unified provider architecture
+### Proxy chains — one topology, one process (v0.12.2)
 
-ONE lifecycle contract (`Provider`: Name/Kind/Resolve/Install/
-Uninstall/Start/Stop/State/Info/Endpoints/Health/Cleanup) + a
-`Manager` for every executable that can provide connectivity. Kinds:
-`core` (xray/v2ray/sing-box via a thin `CoreProviderAdapter` over the
-SAME `engine/coremgr` pipeline — no duplicate install machinery;
-provider-level Start is honestly unsupported for cores, which run per
-node-configuration through the connection engine), `tor` and
-`psiphon`. Tor and Psiphon share one managed-binary pipeline
-(`binary.go`: resumable `.part` download via `internal/httpx` →
-MANDATORY SHA-256 verification → tar-slip-guarded unpack → version
-validation → supervised smoke launch → atomic activate with rollback
-→ manifest) under `<workspace>/providers/<name>/`, with runtime
-data/logs confined to the workspace and log pruning by `Cleanup`.
-One managed instance per provider; every process runs under
-`system.ManagedProcess` (job objects — no orphans).
+A proxy chain is an ORDERED list of EXISTING configurations (2–4
+hops; index 0 = first hop, the last is the egress) compiled into ONE
+protocol-core process — never one process per hop:
 
-Provider routes run through the SAME connection lifecycle
-(`engine/connection/provider.go`, `Manager.ConnectProvider`): select →
-start → route via the local SOCKS endpoint → `VerifyTunnel` (no
-bypassing) → connected → the SAME monitor loop. Auto mode
-(`engine/app/providerservice.go`) chooses between configurations and
-providers on measured evidence (installed availability, live health,
-verified-success freshness, latency, failure stability, ranking
-composite) with no hardcoded priority; choices are explainable.
+- **Data model.** The collections sidecar (`collections.json`,
+  schema v2) gained a stable group `kind` — `user` or
+  `proxy_chain` (v1 documents migrate on load). Chain records carry
+  IDs only (never credentials, never configuration payloads);
+  persistence stays atomic and future-schema-refusing.
+- **Service.** `ProxyChainService` (same authority): List / Create /
+  Rename / Delete / AddHop / RemoveHop / ReorderHop / Details /
+  Validate / CheckChain — credential-free projections, actionable
+  errors. A chain is not a remote source.
+- **Compilation.** Xray compiles the chain as
+  `streamSettings.sockopt.dialerProxy` (egress = `proxy`, earlier
+  hops = `chain-N`, each dialing its predecessor); sing-box uses the
+  outbound `detour` field; V2Ray refuses chains explicitly;
+  Mihomo has no connection adapter. Composition fingerprints salt
+  every hop so runtime files and generation-cache keys never
+  collide across chains.
+- **Execution.** `ConnectionService.ConnectChain` rides the EXISTING
+  connection state machine: select → prepare → start ONE core →
+  ready → `VerifyTunnel` (no bypassing) → connected → the SAME
+  monitor loop. Snapshots display the chain identity; the session
+  label ("proxy chain") distinguishes the route kind for network
+  tools.
+- **Checks.** `CheckChain` reports per-hop stored evidence plus a
+  fresh bounded end-to-end measurement through the compiled chain
+  (the existing tester; instance closed afterwards).
 
 ### engine/netcheck — the Internet-tools engine
 

@@ -112,7 +112,7 @@ func TestReadProcessManifestSkipsMalformedLines(t *testing.T) {
 		"garbage\n" +
 		"notapid|/cores/v2ray.exe\n" +
 		"-5|/cores/sing-box.exe\n" +
-		"456|/providers/tor/tor.exe\n"
+		"456|/cores/mihomo.exe\n"
 
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
@@ -124,7 +124,7 @@ func TestReadProcessManifestSkipsMalformedLines(t *testing.T) {
 		t.Fatalf("parsed %d entries, want 2 (malformed lines skipped): %v", len(entries), entries)
 	}
 
-	if entries[123] != "/cores/xray.exe" || entries[456] != "/providers/tor/tor.exe" {
+	if entries[123] != "/cores/xray.exe" || entries[456] != "/cores/mihomo.exe" {
 		t.Fatalf("wrong entries parsed: %v", entries)
 	}
 }

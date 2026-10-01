@@ -236,8 +236,14 @@ func normalizeProfile(profile *persistedProfile) error {
 		return fmt.Errorf("invalid profile name")
 	}
 
+	// v0.12.2 migration: legacy tor/psiphon profile modes migrate to
+	// "auto" instead of dropping the whole record — a removed mode
+	// must never brick startup or lose the user's unrelated profile
+	// preferences.
+	profile.Mode = MigrateLegacyProviderMode(profile.Mode)
+
 	switch profile.Mode {
-	case ProviderModeAuto, ProviderModeConfigs, ProviderModeTor, ProviderModePsiphon:
+	case ConnectModeAuto, ConnectModeConfigs:
 	default:
 		return fmt.Errorf("invalid profile mode %q", profile.Mode)
 	}
@@ -273,9 +279,9 @@ func validateProfileSpec(spec ProfileSpec) (ProfileSpec, error) {
 	}
 
 	switch spec.Mode {
-	case ProviderModeAuto, ProviderModeConfigs, ProviderModeTor, ProviderModePsiphon:
+	case ConnectModeAuto, ConnectModeConfigs:
 	default:
-		return spec, fmt.Errorf("app: unknown profile mode %q (want auto, configs, tor or psiphon)", spec.Mode)
+		return spec, fmt.Errorf("app: unknown profile mode %q (want auto or configs)", spec.Mode)
 	}
 
 	spec.ConfigID = strings.TrimSpace(spec.ConfigID)
@@ -738,7 +744,7 @@ func (s *ProfileService) SetActive(profileID string) (ProfileView, error) {
 	// A configs-mode profile referencing a missing configuration
 	// must fail LOUDLY here instead of silently connecting
 	// elsewhere.
-	if profile.Mode == ProviderModeConfigs && profile.ConfigID != "" {
+	if profile.Mode == ConnectModeConfigs && profile.ConfigID != "" {
 		if _, err := s.app.store.Get(profile.ConfigID); err != nil {
 			return ProfileView{}, fmt.Errorf(
 				"app: profile %q references configuration %s which no longer exists; "+
@@ -752,7 +758,8 @@ func (s *ProfileService) SetActive(profileID string) (ProfileView, error) {
 	// section so activation is atomic against other activations
 	// and against the boot-time default-profile application.
 	if err := s.app.persistSettings(func(settings *Settings) {
-		settings.ProviderMode = profile.Mode
+		// v0.12.2: profiles carry the surviving route modes only.
+		settings.ConnectMode = MigrateLegacyProviderMode(profile.Mode)
 
 		settings.PreferredBackend = profile.PreferredBackend
 
@@ -858,7 +865,7 @@ func (a *App) applyDefaultProfileAtBoot() {
 
 	settings := a.currentSettings()
 
-	settings.ProviderMode = profile.Mode
+	settings.ConnectMode = MigrateLegacyProviderMode(profile.Mode)
 	settings.PreferredBackend = profile.PreferredBackend
 	settings.LocalSocksPort = profile.LocalSocksPort
 	settings.LocalHTTPPort = profile.LocalHTTPPort

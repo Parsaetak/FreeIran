@@ -70,8 +70,20 @@ func (b *Backend) Capabilities() core.Capabilities {
 }
 
 // Supports reports whether Xray can execute the configuration.
+// Proxy-chain configurations require EVERY hop to match the Xray
+// capability set (v0.12.2).
 func (b *Backend) Supports(cfg config.Config) bool {
-	return b.Capabilities().Matches(cfg)
+	if !b.Capabilities().Matches(cfg) {
+		return false
+	}
+
+	for _, hop := range cfg.Chain {
+		if hop == nil || !b.Capabilities().Matches(*hop) {
+			return false
+		}
+	}
+
+	return true
 }
 
 // Validate performs deep validation against Xray capabilities.
@@ -150,6 +162,26 @@ var xrayV4Options = v2ray.V4Options{
 func (b *Backend) BuildConfig(cfg config.Config, opts core.RuntimeOptions) (core.RuntimeConfig, error) {
 	cfg.Normalize()
 
+	// v0.12.2: proxy chains compile through the SAME V4 document
+	// machinery with the Xray chaining primitive
+	// (streamSettings.sockopt.dialerProxy). The composition
+	// fingerprint salts every hop, so distinct chains never share a
+	// cache entry or a runtime file name.
+	if cfg.IsChain() {
+		data, summary, err := v2ray.BuildV4ChainDocument(cfg, opts, xrayV4Options)
+		if err != nil {
+			return core.RuntimeConfig{}, firerrors.Wrap(err, firerrors.KindInvalidInput,
+				Subsystem, "build", "xray chain generation failed")
+		}
+
+		return core.RuntimeConfig{
+			FileName:        fmt.Sprintf("xray-%s.json", shortChainFingerprint(cfg)),
+			Data:            data,
+			RedactedSummary: summary,
+			Format:          "v4",
+		}, nil
+	}
+
 	cacheKey := core.GenCacheKey(cfg.Fingerprint(), "xray", opts.LocalHost, opts.LocalPort, opts.HTTPPort)
 	generation := core.GenerationFor("xray", opts.BinaryPath, opts.BackendVersion)
 
@@ -220,6 +252,18 @@ func xrayArgs(configFile string, _ int) []string {
 // shortFingerprint renders an 8-character fingerprint prefix.
 func shortFingerprint(cfg config.Config) string {
 	fp := cfg.Fingerprint()
+
+	if len(fp) > 8 {
+		return fp[:8]
+	}
+
+	return fp
+}
+
+// shortChainFingerprint renders the chain-composition fingerprint
+// prefix for runtime file names (v0.12.2).
+func shortChainFingerprint(cfg config.Config) string {
+	fp := cfg.ChainFingerprint()
 
 	if len(fp) > 8 {
 		return fp[:8]

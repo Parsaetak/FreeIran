@@ -46,9 +46,6 @@ import (
 	"github.com/Parsaetak/FreeIran/internal/version"
 	"github.com/Parsaetak/FreeIran/system"
 
-	"github.com/Parsaetak/FreeIran/engine/provider"
-
-	"github.com/Parsaetak/FreeIran/internal/httpx"
 	"github.com/Parsaetak/FreeIran/internal/statepub"
 )
 
@@ -159,18 +156,6 @@ type App struct {
 	// Booster 2.0): pressure sampling + adaptive settings for the
 	// queue, caches, store thresholds and ingestion knobs.
 	memory *MemoryService
-
-	// providerMgr is the unified provider manager (v0.9.8.1 §10):
-	// xray/v2ray/sing-box adapters plus the first-class Tor and
-	// Psiphon engines, one managed instance per provider.
-	providerMgr   *provider.Manager
-	torEngine     *provider.TorEngine
-	psiphonEngine *provider.PsiphonEngine
-
-	// providerEvidence tracks real provider session outcomes for the
-	// Auto provider mode (§12): availability, health, verification,
-	// latency, stability, recent success.
-	providerEvidence *ProviderEvidence
 
 	// lastBooster + boosterSettingsMu remember the most recently
 	// applied adaptive settings so memory_policy_changed records
@@ -642,24 +627,10 @@ func New(opts Options) (*App, error) {
 		return fail("register sing-box", err)
 	}
 
-	// v0.9.8.1: the unified provider manager binds the managed cores
-	// (thin adapters over the SAME coremgr pipeline — no duplicate
-	// install machinery) plus the first-class Tor and Psiphon engines.
-	providerMgr := provider.NewManager()
-
-	for _, adapter := range provider.NewCoreAdapters(manager) {
-		providerMgr.Register(adapter)
-	}
-
-	httpClient := httpx.Default()
-
-	torEngine := provider.NewTorEngine(layout.Providers, httpClient, true)
-	torEngine.SetDiscovery(locator)
-	psiphonEngine := provider.NewPsiphonEngine(layout.Providers, httpClient)
-	psiphonEngine.SetDiscovery(locator)
-
-	providerMgr.Register(torEngine)
-	providerMgr.Register(psiphonEngine)
+	// v0.12.2: Tor and Psiphon were removed from the active product.
+	// Core management (xray/v2ray/sing-box/mihomo) lives entirely in
+	// coremgr; the former provider layer was Tor/Psiphon machinery and
+	// was deleted with it.
 
 	// Availability refresh runs in the background: the app must boot
 	// instantly with zero cores installed.
@@ -684,14 +655,10 @@ func New(opts Options) (*App, error) {
 			MaxEntries: 4096,
 			TTL:        30 * time.Minute,
 		}),
-		coreLocator:      locator,
-		coreRegistry:     coreRegistry,
-		coreMgr:          manager,
-		providerMgr:      providerMgr,
-		torEngine:        torEngine,
-		psiphonEngine:    psiphonEngine,
-		providerEvidence: newProviderEvidence(),
-		seenHashes:       make(map[string]string),
+		coreLocator:  locator,
+		coreRegistry: coreRegistry,
+		coreMgr:      manager,
+		seenHashes:   make(map[string]string),
 		state: AppState{
 			Status:        "ready",
 			Version:       version.Version,
@@ -1100,13 +1067,9 @@ func (a *App) Shutdown() {
 		// the subsystem teardown starts.
 		a.publishState()
 
-		// v0.9.8.1: provider engines stop deterministically before the
-		// connection manager (their endpoints feed active sessions).
-		if a.providerMgr != nil {
-			stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			a.providerMgr.StopAll(stopCtx)
-			stopCancel()
-		}
+		// v0.12.2: the former provider engines (Tor/Psiphon) are
+		// removed; connection teardown below owns every session
+		// resource.
 
 		if a.connMgr != nil {
 			a.connMgr.Shutdown()

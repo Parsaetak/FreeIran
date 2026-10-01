@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Parsaetak/FreeIran/engine/config"
@@ -141,6 +142,94 @@ func humanSubject(core string) string {
 // Connect establishes the tunnel for a stored configuration. The
 // configuration is loaded by fingerprint; credentials never cross
 // the service boundary in the response.
+// ConnectChain establishes a proxy-chain session through the EXISTING
+// connection state machine (select → prepare → start ONE core →
+// ready → verify → connected → monitor). The chain compiles into a
+// single core process — Xray sockopt.dialerProxy or sing-box detour;
+// never one process per hop. A chain with missing hops refuses
+// loudly; a core without a chaining primitive (v2ray) is an explicit
+// unsupported error. Multi-hop is always an explicit user action.
+func (s *ConnectionService) ConnectChain(chainID string) (connection.Snapshot, error) {
+	if chainID == "" {
+		return connection.Snapshot{}, fmt.Errorf("app: chain id is required")
+	}
+
+	cfg, err := s.app.buildChainConfig(chainID)
+	if err != nil {
+		return connection.Snapshot{}, err
+	}
+
+	ctx, cancel := context.WithTimeout(s.app.ctx, 120*time.Second)
+	defer cancel()
+
+	s.app.logger.Log(logging.Record{
+		Level:     logging.LevelInfo,
+		Subsystem: "proxychain",
+		Event:     "chain_connect_start",
+		Correlate: true,
+		ConfigID:  cfg.ID,
+		Message:   fmt.Sprintf("connecting proxy chain %s: %s", cfg.Name, chainPreviewOf(&cfg)),
+	})
+
+	preference := s.app.currentSettings().PreferredBackend
+
+	snapshot, err := s.app.connMgr.Connect(ctx, cfg, core.Preferences{
+		AllowFallback:    true,
+		PreferredBackend: preference,
+	})
+	if err != nil {
+		s.app.logger.Log(logging.Record{
+			Level:     logging.LevelError,
+			Subsystem: "proxychain",
+			Event:     "chain_connect_failure",
+			Operation: "connect_chain",
+			Correlate: true,
+			ConfigID:  snapshot.ConfigID,
+			Core:      snapshot.Core,
+			Status:    string(snapshot.State),
+			Message:   fmt.Sprintf("proxy chain connection failed (state %s): %v", snapshot.State, err),
+		})
+
+		return snapshot, humanizeWithDetails(err, humanSubject("proxy chain"))
+	}
+
+	s.app.metricsR.AddCoreSelection()
+
+	if snapshot.State == connection.StateConnectedVerified {
+		s.logChainSuccess(snapshot)
+	}
+
+	return snapshot, nil
+}
+
+// chainPreviewOf renders the credential-free hop preview (A → B → C).
+func chainPreviewOf(cfg *config.Config) string {
+	hops := cfg.ChainHops()
+
+	names := make([]string, 0, len(hops))
+
+	for _, hop := range hops {
+		names = append(names, hop.DisplayURL())
+	}
+
+	return strings.Join(names, " -> ")
+}
+
+// logChainSuccess records the verified chain session.
+func (s *ConnectionService) logChainSuccess(snapshot connection.Snapshot) {
+	s.app.logger.Log(logging.Record{
+		Level:      logging.LevelInfo,
+		Subsystem:  "proxychain",
+		Event:      "chain_connect_success",
+		Correlate:  true,
+		ConfigID:   snapshot.ConfigID,
+		Core:       snapshot.Core,
+		Status:     string(snapshot.State),
+		DurationMS: snapshot.CoreReadyMS,
+		Message:    fmt.Sprintf("proxy chain verified usable via %s (%s)", snapshot.Core, snapshot.ConfigDisplay),
+	})
+}
+
 func (s *ConnectionService) Connect(configID string) (connection.Snapshot, error) {
 	if configID == "" {
 		return connection.Snapshot{}, fmt.Errorf("app: configuration id is required")

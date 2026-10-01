@@ -22,8 +22,6 @@ import (
 	"github.com/Parsaetak/FreeIran/engine/native"
 	"github.com/Parsaetak/FreeIran/internal/logging"
 	"github.com/Parsaetak/FreeIran/system"
-
-	"github.com/Parsaetak/FreeIran/engine/provider"
 )
 
 // Settings is the persisted user preference set.
@@ -33,27 +31,19 @@ type Settings struct {
 	// selection when the backend is compatible and available.
 	PreferredBackend string `json:"preferred_backend,omitempty"`
 
-	// --- v0.9.8.1 provider settings (§8/§9/§12) ---------------------
+	// --- v0.12.2 provider settings removal --------------------------
+	// Tor/Psiphon settings (provider_mode, tor_bridge_lines,
+	// tor_transport_plugins, psiphon_extra_config,
+	// psiphon_user_binary) were removed with the provider layer.
+	// Legacy settings.json values for those keys are ignored on load
+	// (unknown fields) and disappear on the next settings write.
+	// The legacy provider_mode CHOICE itself migrates into
+	// ConnectMode (see loadSettings).
 
-	// ProviderMode is the Quick Connect provider choice:
-	// "" / "auto" (evidence-based) / "configs" / "tor" / "psiphon".
-	ProviderMode string `json:"provider_mode,omitempty"`
-
-	// TorBridgeLines are user-provided bridge lines (validated before
-	// launch; never logged — bridge material is private).
-	TorBridgeLines []string `json:"tor_bridge_lines,omitempty"`
-
-	// TorTransportPlugins maps transport names (obfs4, snowflake) to
-	// user-provided client plugin executables.
-	TorTransportPlugins map[string]string `json:"tor_transport_plugins,omitempty"`
-
-	// PsiphonExtraConfig is advanced user-provided JSON merged into
-	// the generated Psiphon client config (validated as JSON).
-	PsiphonExtraConfig string `json:"psiphon_extra_config,omitempty"`
-
-	// PsiphonUserBinary is an optional user-provided console-client
-	// path adopted after validation.
-	PsiphonUserBinary string `json:"psiphon_user_binary,omitempty"`
+	// ConnectMode is the Quick Connect route choice:
+	// "" / "auto" / "configs" / "chains". It replaces the removed
+	// provider_mode field (legacy values migrate safely).
+	ConnectMode string `json:"connect_mode,omitempty"`
 
 	// RefreshIntervalMinutes is the source refresh cadence
 	// (0 = engine default).
@@ -208,6 +198,10 @@ func (a *App) settingsPath() string {
 
 // loadSettings reads the persisted settings (missing or unreadable
 // settings fall back to defaults — never brick the app).
+//
+// v0.12.2 migration: a legacy provider_mode choice is mapped onto
+// the surviving ConnectMode (tor/psiphon → auto) and the removed
+// tor/psiphon settings keys are ignored by the JSON decoder.
 func (a *App) loadSettings() Settings {
 	settings := Settings{}
 
@@ -218,6 +212,19 @@ func (a *App) loadSettings() Settings {
 
 	if err := json.Unmarshal(raw, &settings); err != nil {
 		return settings
+	}
+
+	// Legacy provider_mode → connect_mode (removed modes → auto).
+	var legacy struct {
+		ProviderMode string `json:"provider_mode"`
+	}
+
+	if json.Unmarshal(raw, &legacy) == nil && legacy.ProviderMode != "" {
+		settings.ConnectMode = MigrateLegacyProviderMode(legacy.ProviderMode)
+	}
+
+	if settings.ConnectMode != "" {
+		settings.ConnectMode = MigrateLegacyProviderMode(settings.ConnectMode)
 	}
 
 	return settings
@@ -259,22 +266,6 @@ func (a *App) applySettings(settings Settings) {
 	// overrides the logger default; 0 keeps the default (7 days).
 	if settings.LogRetentionDays > 0 && a.logger != nil {
 		a.logger.SetMaxAgeDays(settings.LogRetentionDays)
-	}
-
-	// v0.9.8.1: apply the user's provider configuration (validated;
-	// invalid bridge lines are skipped with the error surfaced
-	// through the settings event, never silently accepted).
-	if a.torEngine != nil {
-		_ = a.torEngine.SetOptions(provider.TorOptions{
-			BridgeLines:      settings.TorBridgeLines,
-			TransportPlugins: settings.TorTransportPlugins,
-		})
-	}
-
-	if a.psiphonEngine != nil {
-		_ = a.psiphonEngine.SetOptions(provider.PsiphonOptions{
-			ExtraConfig: settings.PsiphonExtraConfig,
-		})
 	}
 
 	// Developer: fixed test-queue worker override (v0.9.1). The
@@ -409,6 +400,12 @@ func validateSettings(settings Settings) error {
 	case "", "xray", "v2ray", "sing-box":
 	default:
 		return fmt.Errorf("app: unknown preferred backend %q", settings.PreferredBackend)
+	}
+
+	// v0.12.2: the Quick Connect route mode is validated (legacy
+	// provider modes were migrated on load).
+	if err := ValidateConnectMode(settings.ConnectMode); err != nil {
+		return err
 	}
 
 	switch settings.TestingPolicy {

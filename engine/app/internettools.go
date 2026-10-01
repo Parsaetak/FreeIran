@@ -105,13 +105,13 @@ func (s *InternetToolsService) RunTool(view ToolRequestView) (netcheck.ToolResul
 	}
 
 	// Tunnel state comes from the LIVE session only — never fabricated.
-	endpoint, providerName, active := s.app.liveTunnelEndpoint()
+	endpoint, routeLabel, active := s.app.liveTunnelEndpoint()
 
 	if view.Tunneled {
 		request.Path = netcheck.PathTunneled
 
 		if active {
-			request.Provider = providerName
+			request.Provider = routeLabel
 			request.Dial = tunnelDial(endpoint)
 		}
 		// No live tunnel: the runner reports the honest "not
@@ -140,7 +140,7 @@ func (s *InternetToolsService) RunTool(view ToolRequestView) (netcheck.ToolResul
 	}
 
 	if tool == netcheck.ToolTunnelDiagnostics && active {
-		request.Tunnel = s.app.liveTunnelSnapshot(providerName, endpoint)
+		request.Tunnel = s.app.liveTunnelSnapshot(routeLabel, endpoint)
 	}
 
 	ctx, cancel := context.WithTimeout(s.app.ctx, 70*time.Second)
@@ -152,12 +152,12 @@ func (s *InternetToolsService) RunTool(view ToolRequestView) (netcheck.ToolResul
 // LiveTunnel renders the current tunnel truth for the UI (the tools
 // panel header): measured, live, never fabricated.
 func (s *InternetToolsService) LiveTunnel() *netcheck.TunnelSnapshot {
-	endpoint, providerName, active := s.app.liveTunnelEndpoint()
+	endpoint, routeLabel, active := s.app.liveTunnelEndpoint()
 	if !active {
 		return &netcheck.TunnelSnapshot{Active: false}
 	}
 
-	return s.app.liveTunnelSnapshot(providerName, endpoint)
+	return s.app.liveTunnelSnapshot(routeLabel, endpoint)
 }
 
 // NetworkIdentityRequest is the UI-facing identity request (§6.4:
@@ -206,9 +206,9 @@ func (s *InternetToolsService) NetworkIdentity(req NetworkIdentityRequest) (*net
 	opts := netcheck.IdentityOptions{Timeout: netcheck.IdentityTimeout}
 
 	if req.Tunneled {
-		if endpoint, providerName, active := s.app.liveTunnelEndpoint(); active {
+		if endpoint, routeLabel, active := s.app.liveTunnelEndpoint(); active {
 			opts.Dial = tunnelDial(endpoint)
-			opts.Provider = providerName
+			opts.Provider = routeLabel
 		}
 	}
 
@@ -226,8 +226,8 @@ func (s *InternetToolsService) NetworkIdentity(req NetworkIdentityRequest) (*net
 }
 
 // liveTunnelEndpoint resolves the active session's local SOCKS
-// endpoint and its provider label ("" for core-based sessions).
-func (a *App) liveTunnelEndpoint() (endpoint, providerName string, active bool) {
+// endpoint and its route label ("" for plain configuration sessions).
+func (a *App) liveTunnelEndpoint() (endpoint, routeLabel string, active bool) {
 	if a.connMgr == nil {
 		return "", "", false
 	}
@@ -237,18 +237,18 @@ func (a *App) liveTunnelEndpoint() (endpoint, providerName string, active bool) 
 		return "", "", false
 	}
 
-	return endpoint, a.connMgr.ProviderName(), true
+	return endpoint, a.connMgr.SessionLabel(), true
 }
 
 // liveTunnelSnapshot renders the measured live tunnel truth.
-func (a *App) liveTunnelSnapshot(providerName, endpoint string) *netcheck.TunnelSnapshot {
+func (a *App) liveTunnelSnapshot(routeLabel, endpoint string) *netcheck.TunnelSnapshot {
 	snapshot := &netcheck.TunnelSnapshot{
 		Active:   true,
-		Provider: providerName,
+		Provider: routeLabel,
 		Endpoint: endpoint,
 	}
 
-	if providerName == "" {
+	if routeLabel == "" {
 		// Core-based session: label it as the configuration route.
 		snapshot.Provider = "configuration"
 	}

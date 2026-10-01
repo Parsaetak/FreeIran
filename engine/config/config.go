@@ -340,6 +340,41 @@ type Config struct {
 	// pipeline can reason over ("after two handshake-class
 	// failures prefer a different transport"). Runtime-only.
 	LastFailureClass string `json:"last_failure_class,omitempty"`
+
+	// Chain holds the EARLIER hops of a proxy chain when this config
+	// is the synthetic EXIT configuration of a chain session
+	// (v0.12.2): Chain = [hop1, ..., hopN-1] in user order and THIS
+	// config is hopN (the egress). The chain compiles into ONE core
+	// process (Xray sockopt.dialerProxy / sing-box detour) — never
+	// one process per hop. The field is deliberately NOT serialized
+	// (json:"-"): chains are in-memory runtime compositions built
+	// from the collections authority at connect time; the store
+	// never persists a chain as a configuration and chain records
+	// never copy configuration payloads.
+	Chain []*Config `json:"-"`
+}
+
+// IsChain reports whether the configuration is a synthetic proxy
+// chain exit (carrying earlier hops for chain-aware compilers).
+func (c Config) IsChain() bool {
+	return len(c.Chain) > 0
+}
+
+// ChainHops renders the full user-ordered hop list for a chain
+// configuration: the earlier hops plus this config (the egress) last.
+// For a plain configuration the slice contains only the config.
+func (c Config) ChainHops() []Config {
+	hops := make([]Config, 0, len(c.Chain)+1)
+
+	for _, hop := range c.Chain {
+		if hop != nil {
+			hops = append(hops, *hop)
+		}
+	}
+
+	hops = append(hops, c)
+
+	return hops
 }
 
 // Failure-class vocabulary (v0.11.0). The classes are derived from
@@ -762,4 +797,30 @@ func (c *Config) Fingerprint() string {
 // SetID calculates and stores the deterministic configuration ID.
 func (c *Config) SetID() {
 	c.ID = c.Fingerprint()
+}
+
+// ChainFingerprint returns a deterministic identifier for a chain
+// composition: the exit fingerprint salted with every hop fingerprint
+// in user order. A plain configuration fingerprints as itself; two
+// chains sharing an exit but differing in any hop fingerprint
+// differently. Runtime files and generation-cache keys derive from
+// this value, so distinct chains never collide (v0.12.2).
+func (c *Config) ChainFingerprint() string {
+	if len(c.Chain) == 0 {
+		return c.Fingerprint()
+	}
+
+	data := "proxy-chain\x00" + c.Fingerprint()
+
+	for _, hop := range c.Chain {
+		if hop == nil {
+			continue
+		}
+
+		data += "\x00" + hop.Fingerprint()
+	}
+
+	sum := sha256.Sum256([]byte(data))
+
+	return hex.EncodeToString(sum[:])
 }

@@ -71,6 +71,12 @@ func (b *Backend) Capabilities() core.Capabilities {
 
 // Supports reports whether V2Ray can execute the configuration.
 func (b *Backend) Supports(cfg config.Config) bool {
+	// v0.12.2: chains are explicitly out of this adapter's capability
+	// set — selection must never hand a chain to v2ray.
+	if cfg.IsChain() {
+		return false
+	}
+
 	return b.Capabilities().Matches(cfg)
 }
 
@@ -131,6 +137,17 @@ func capabilityError(backend string, cfg config.Config, caps core.Capabilities) 
 // V2Ray runtime document. Generation is deterministic: identical
 // inputs produce byte-identical documents (pinned by tests).
 func (b *Backend) BuildConfig(cfg config.Config, opts core.RuntimeOptions) (core.RuntimeConfig, error) {
+	// v0.12.2: proxy chains compile through the Xray
+	// (sockopt.dialerProxy) and sing-box (detour) adapters only. The
+	// V2Fly core in use has no chaining primitive wired into this
+	// adapter — the refusal is explicit, never an emulated
+	// multi-process chain.
+	if cfg.IsChain() {
+		return core.RuntimeConfig{}, firerrors.New(firerrors.KindInvalidInput,
+			Subsystem, "build",
+			"v2ray does not support proxy chains (use the xray or sing-box backend)")
+	}
+
 	return b.buildDocument(cfg, opts)
 }
 

@@ -11,7 +11,7 @@
 //     configuration has its profile references pruned safely;
 //   - activation: runs through the ONE settings path (the live
 //     connection manager observes ports immediately), supports Auto,
-//     Configurations and provider (Tor/Psiphon) modes and the
+//     Configurations route modes (v0.12.2: Tor/Psiphon modes were
 //     recovery preference, and NEVER bypasses trust/verification —
 //     activation is a preference change, not a connection;
 //   - schema: the versioned sidecar refuses a future schema without
@@ -51,7 +51,7 @@ func TestProfileLifecycleAndPersistence(t *testing.T) {
 	// --- create -----------------------------------------------------
 	created, err := svc.Create(ProfileSpec{
 		Name:             "Home",
-		Mode:             ProviderModeConfigs,
+		Mode:             ConnectModeConfigs,
 		ConfigID:         configID,
 		PreferredBackend: "xray",
 		LocalSocksPort:   10808,
@@ -71,7 +71,7 @@ func TestProfileLifecycleAndPersistence(t *testing.T) {
 	}
 
 	// Duplicate names are rejected (case-insensitive).
-	if _, err := svc.Create(ProfileSpec{Name: "home", Mode: ProviderModeAuto}); err == nil {
+	if _, err := svc.Create(ProfileSpec{Name: "home", Mode: ConnectModeAuto}); err == nil {
 		t.Fatal("duplicate profile name accepted")
 	}
 
@@ -80,29 +80,29 @@ func TestProfileLifecycleAndPersistence(t *testing.T) {
 		t.Fatal("invalid mode accepted")
 	}
 
-	if _, err := svc.Create(ProfileSpec{Name: "Bad", Mode: ProviderModeAuto, PreferredBackend: "zapret"}); err == nil {
+	if _, err := svc.Create(ProfileSpec{Name: "Bad", Mode: ConnectModeAuto, PreferredBackend: "zapret"}); err == nil {
 		t.Fatal("invalid preferred backend accepted")
 	}
 
-	if _, err := svc.Create(ProfileSpec{Name: "Bad", Mode: ProviderModeAuto, LocalSocksPort: 80}); err == nil {
+	if _, err := svc.Create(ProfileSpec{Name: "Bad", Mode: ConnectModeAuto, LocalSocksPort: 80}); err == nil {
 		t.Fatal("privileged port accepted")
 	}
 
-	if _, err := svc.Create(ProfileSpec{Name: "", Mode: ProviderModeAuto}); err == nil {
+	if _, err := svc.Create(ProfileSpec{Name: "", Mode: ConnectModeAuto}); err == nil {
 		t.Fatal("empty name accepted")
 	}
 
 	// --- edit -------------------------------------------------------
 	updated, err := svc.Update(created.ID, ProfileSpec{
 		Name:           "Home (edited)",
-		Mode:           ProviderModeAuto,
+		Mode:           ConnectModeAuto,
 		LocalSocksPort: 10810,
 	})
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
 
-	if updated.Mode != ProviderModeAuto || updated.ConfigID != "" || updated.LocalSocksPort != 10810 {
+	if updated.Mode != ConnectModeAuto || updated.ConfigID != "" || updated.LocalSocksPort != 10810 {
 		t.Fatalf("update did not replace the editable fields: %+v", updated)
 	}
 
@@ -206,7 +206,7 @@ func TestProfileLifecycleAndPersistence(t *testing.T) {
 		t.Fatalf("restarted profile count = %d, want 1", len(views))
 	}
 
-	if views[0].ID != dup2.ID || views[0].Name != "Home (edited) (copy 2)" || views[0].Mode != ProviderModeAuto {
+	if views[0].ID != dup2.ID || views[0].Name != "Home (edited) (copy 2)" || views[0].Mode != ConnectModeAuto {
 		t.Fatalf("restarted profile drifted: %+v", views[0])
 	}
 
@@ -229,7 +229,7 @@ func TestProfileActivationAppliesPreferencesThroughOnePath(t *testing.T) {
 
 	auto, err := svc.Create(ProfileSpec{
 		Name:           "Privacy",
-		Mode:           ProviderModeAuto,
+		Mode:           ConnectModeAuto,
 		LocalSocksPort: 10808,
 		LocalHTTPPort:  10809,
 		AutoRecovery:   ptrBool(true), // recovery explicitly enabled
@@ -240,20 +240,12 @@ func TestProfileActivationAppliesPreferencesThroughOnePath(t *testing.T) {
 
 	configs, err := svc.Create(ProfileSpec{
 		Name:             "Work",
-		Mode:             ProviderModeConfigs,
+		Mode:             ConnectModeConfigs,
 		ConfigID:         configID,
 		PreferredBackend: "sing-box",
 	})
 	if err != nil {
 		t.Fatalf("create configs profile: %v", err)
-	}
-
-	tor, err := svc.Create(ProfileSpec{
-		Name: "Onion",
-		Mode: ProviderModeTor,
-	})
-	if err != nil {
-		t.Fatalf("create provider profile: %v", err)
 	}
 
 	// Baseline: no profile active, defaults in place.
@@ -273,7 +265,7 @@ func TestProfileActivationAppliesPreferencesThroughOnePath(t *testing.T) {
 
 	settings := a.currentSettings()
 
-	if settings.ProviderMode != ProviderModeAuto ||
+	if settings.ConnectMode != ConnectModeAuto ||
 		settings.LocalSocksPort != 10808 || settings.LocalHTTPPort != 10809 {
 		t.Fatalf("auto profile preferences not applied: %+v", settings)
 	}
@@ -304,38 +296,23 @@ func TestProfileActivationAppliesPreferencesThroughOnePath(t *testing.T) {
 
 	settings = a.currentSettings()
 
-	if settings.ProviderMode != ProviderModeConfigs ||
+	if settings.ConnectMode != ConnectModeConfigs ||
 		settings.PreferredBackend != "sing-box" ||
 		settings.LocalSocksPort != 0 || settings.LocalHTTPPort != 0 {
 		t.Fatalf("configs profile preferences not applied: %+v", settings)
 	}
 
-	// --- Provider profile -------------------------------------------
-	if _, err := svc.SetActive(tor.ID); err != nil {
-		t.Fatalf("activate provider: %v", err)
+	// v0.12.2: legacy tor/psiphon profile MODES migrate to "auto"
+	// instead of dropping the record (startup never bricks on a
+	// removed mode).
+	for _, legacyMode := range []string{"tor", "psiphon"} {
+		if migrated := MigrateLegacyProviderMode(legacyMode); migrated != ConnectModeAuto {
+			t.Fatalf("legacy mode %q migrated to %q, want auto", legacyMode, migrated)
+		}
 	}
 
-	if got := a.currentSettings().ProviderMode; got != ProviderModeTor {
-		t.Fatalf("provider mode = %q, want tor", got)
-	}
-
-	// The provider MODE is a preference; the provider session itself
-	// still goes through providerService.Connect with its install
-	// safety and verification gate. Activation must not start one.
-	if a.connMgr.State().Active() {
-		t.Fatal("provider profile activation started a session")
-	}
-
-	// Active marker survives a restart.
-	restarted := restartApp(t, a)
-
-	active, ok, err := profilesService(restarted).Active()
-	if err != nil || !ok {
-		t.Fatalf("active marker lost after restart (ok=%v, err=%v)", ok, err)
-	}
-
-	if active.ID != tor.ID {
-		t.Fatalf("active profile after restart = %s, want %s", active.ID, tor.ID)
+	if MigrateLegacyProviderMode("auto") != ConnectModeAuto {
+		t.Fatal("auto mode must survive migration unchanged")
 	}
 }
 
@@ -349,7 +326,7 @@ func TestProfileDefaultAppliedAtBoot(t *testing.T) {
 
 	travel, err := svc.Create(ProfileSpec{
 		Name:           "Travel",
-		Mode:           ProviderModeConfigs,
+		Mode:           ConnectModeConfigs,
 		LocalSocksPort: 10810,
 		AutoRecovery:   ptrBool(true),
 	})
@@ -365,7 +342,7 @@ func TestProfileDefaultAppliedAtBoot(t *testing.T) {
 
 	settings := restarted.currentSettings()
 
-	if settings.ProviderMode != ProviderModeConfigs || settings.LocalSocksPort != 10810 {
+	if settings.ConnectMode != ConnectModeConfigs || settings.LocalSocksPort != 10810 {
 		t.Fatalf("default profile not applied at boot: %+v", settings)
 	}
 
@@ -400,7 +377,7 @@ func TestProfileInvalidConfigReferenceCoversPruneAndRefusal(t *testing.T) {
 
 	profile, err := svc.Create(ProfileSpec{
 		Name:     "Work",
-		Mode:     ProviderModeConfigs,
+		Mode:     ConnectModeConfigs,
 		ConfigID: configID,
 	})
 	if err != nil {
@@ -450,7 +427,7 @@ func TestProfileInvalidConfigReferenceCoversPruneAndRefusal(t *testing.T) {
 		t.Fatalf("activate after prune: %v", err)
 	}
 
-	if got := restarted.currentSettings().ProviderMode; got != ProviderModeConfigs {
+	if got := restarted.currentSettings().ConnectMode; got != ConnectModeConfigs {
 		t.Fatalf("mode after pruned activation = %q, want configs", got)
 	}
 }
@@ -510,12 +487,12 @@ func TestProfileConcurrentListAndActivation(t *testing.T) {
 
 	svc := profilesService(a)
 
-	first, err := svc.Create(ProfileSpec{Name: "First", Mode: ProviderModeAuto, LocalSocksPort: 10811})
+	first, err := svc.Create(ProfileSpec{Name: "First", Mode: ConnectModeAuto, LocalSocksPort: 10811})
 	if err != nil {
 		t.Fatalf("create first: %v", err)
 	}
 
-	second, err := svc.Create(ProfileSpec{Name: "Second", Mode: ProviderModeTor, LocalSocksPort: 10812})
+	second, err := svc.Create(ProfileSpec{Name: "Second", Mode: ConnectModeConfigs, LocalSocksPort: 10812})
 	if err != nil {
 		t.Fatalf("create second: %v", err)
 	}
@@ -563,11 +540,11 @@ func TestProfileConcurrentListAndActivation(t *testing.T) {
 
 	switch active.ID {
 	case first.ID:
-		if settings.LocalSocksPort != 10811 || settings.ProviderMode != ProviderModeAuto {
+		if settings.LocalSocksPort != 10811 || settings.ConnectMode != ConnectModeAuto {
 			t.Fatalf("settings drifted from the active profile: %+v / %+v", active, settings)
 		}
 	case second.ID:
-		if settings.LocalSocksPort != 10812 || settings.ProviderMode != ProviderModeTor {
+		if settings.LocalSocksPort != 10812 || settings.ConnectMode != ConnectModeConfigs {
 			t.Fatalf("settings drifted from the active profile: %+v / %+v", active, settings)
 		}
 	default:
@@ -588,7 +565,7 @@ func TestProfileDuplicateConfigReferencesNeverDuplicated(t *testing.T) {
 
 	for _, name := range []string{"Home", "Work"} {
 		if _, err := svc.Create(ProfileSpec{
-			Name: name, Mode: ProviderModeConfigs, ConfigID: configID,
+			Name: name, Mode: ConnectModeConfigs, ConfigID: configID,
 		}); err != nil {
 			t.Fatalf("create %s: %v", name, err)
 		}
@@ -612,34 +589,42 @@ func TestProfileDuplicateConfigReferencesNeverDuplicated(t *testing.T) {
 	}
 }
 
-// TestProviderModeConstantsAgree keeps the profile modes and the
-// provider service modes a single vocabulary (the same constants the
-// Quick Connect provider selector uses — no second mode system).
-func TestProviderModeConstantsAgree(t *testing.T) {
-	if len(AllProviderModes) != 4 {
-		t.Fatalf("provider modes = %v", AllProviderModes)
+// TestConnectModeConstantsAgree keeps the profile modes and the
+// Quick Connect route modes a single vocabulary (the same constants
+// the Quick Connect mode selector uses — no second mode system).
+func TestConnectModeConstantsAgree(t *testing.T) {
+	if len(AllConnectModes) != 3 {
+		t.Fatalf("connect modes = %v", AllConnectModes)
 	}
 
 	known := map[string]bool{
-		ProviderModeAuto:    true,
-		ProviderModeConfigs: true,
-		ProviderModeTor:     true,
-		ProviderModePsiphon: true,
+		ConnectModeAuto:    true,
+		ConnectModeConfigs: true,
+		ConnectModeChains:  true,
 	}
 
-	for _, mode := range AllProviderModes {
+	for _, mode := range AllConnectModes {
 		if !known[mode] {
-			t.Fatalf("AllProviderModes carries %q which is not a known mode", mode)
+			t.Fatalf("AllConnectModes carries %q which is not a known mode", mode)
 		}
 	}
 
-	// Every profile mode is one of the provider modes (and renders).
-	for _, mode := range []string{
-		ProviderModeAuto, ProviderModeConfigs, ProviderModeTor, ProviderModePsiphon,
-	} {
-		if ProviderModeLabel(mode) == "" {
+	// Every surviving mode renders; every legacy provider mode
+	// migrates instead of surviving.
+	for _, mode := range AllConnectModes {
+		if ConnectModeLabel(mode) == "" {
 			t.Fatalf("mode %q renders empty", mode)
 		}
+	}
+
+	for _, legacy := range []string{"tor", "psiphon"} {
+		if MigrateLegacyProviderMode(legacy) != ConnectModeAuto {
+			t.Fatalf("legacy mode %q must migrate to auto", legacy)
+		}
+	}
+
+	if err := ValidateConnectMode("warp"); err == nil {
+		t.Fatal("unknown connect mode accepted")
 	}
 }
 

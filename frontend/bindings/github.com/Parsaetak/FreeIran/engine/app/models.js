@@ -891,6 +891,15 @@ export class ConfigFilter {
         }
         if (/** @type {any} */(false)) {
             /**
+             * IDs is an explicit allow-list of configuration ids
+             * (v0.12.2 proxy-chain scope). Empty = no restriction.
+             * @member
+             * @type {string[] | undefined}
+             */
+            this["ids"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
              * Query is a case-insensitive substring over address/name.
              * @member
              * @type {string | undefined}
@@ -2828,48 +2837,13 @@ export class Settings {
         }
         if (/** @type {any} */(false)) {
             /**
-             * ProviderMode is the Quick Connect provider choice:
-             * "" / "auto" (evidence-based) / "configs" / "tor" / "psiphon".
+             * ConnectMode is the Quick Connect route choice:
+             * "" / "auto" / "configs" / "chains". Replaces the removed
+             * provider_mode (legacy values migrate safely).
              * @member
              * @type {string | undefined}
              */
-            this["provider_mode"] = undefined;
-        }
-        if (/** @type {any} */(false)) {
-            /**
-             * TorBridgeLines are user-provided bridge lines (validated before
-             * launch; never logged — bridge material is private).
-             * @member
-             * @type {string[] | undefined}
-             */
-            this["tor_bridge_lines"] = undefined;
-        }
-        if (/** @type {any} */(false)) {
-            /**
-             * TorTransportPlugins maps transport names (obfs4, snowflake) to
-             * user-provided client plugin executables.
-             * @member
-             * @type {{ [_ in string]?: string } | undefined}
-             */
-            this["tor_transport_plugins"] = undefined;
-        }
-        if (/** @type {any} */(false)) {
-            /**
-             * PsiphonExtraConfig is advanced user-provided JSON merged into
-             * the generated Psiphon client config (validated as JSON).
-             * @member
-             * @type {string | undefined}
-             */
-            this["psiphon_extra_config"] = undefined;
-        }
-        if (/** @type {any} */(false)) {
-            /**
-             * PsiphonUserBinary is an optional user-provided console-client
-             * path adopted after validation.
-             * @member
-             * @type {string | undefined}
-             */
-            this["psiphon_user_binary"] = undefined;
+            this["connect_mode"] = undefined;
         }
         if (/** @type {any} */(false)) {
             /**
@@ -3132,15 +3106,7 @@ export class Settings {
      * @returns {Settings}
      */
     static createFrom($$source = {}) {
-        const $$createField2_0 = $$createType4;
-        const $$createField3_0 = $$createType26;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        if ("tor_bridge_lines" in $$parsedSource) {
-            $$parsedSource["tor_bridge_lines"] = $$createField2_0($$parsedSource["tor_bridge_lines"]);
-        }
-        if ("tor_transport_plugins" in $$parsedSource) {
-            $$parsedSource["tor_transport_plugins"] = $$createField3_0($$parsedSource["tor_transport_plugins"]);
-        }
         return new Settings(/** @type {Partial<Settings>} */($$parsedSource));
     }
 }
@@ -4246,52 +4212,6 @@ export class ToolRequestView {
 }
 
 /**
- * TorOptionsView carries the user's Tor bridge configuration.
- */
-export class TorOptionsView {
-    /**
-     * Creates a new TorOptionsView instance.
-     * @param {Partial<TorOptionsView>} [$$source = {}] - The source object to create the TorOptionsView.
-     */
-    constructor($$source = {}) {
-        if (/** @type {any} */(false)) {
-            /**
-             * @member
-             * @type {string[] | undefined}
-             */
-            this["bridge_lines"] = undefined;
-        }
-        if (/** @type {any} */(false)) {
-            /**
-             * @member
-             * @type {{ [_ in string]?: string } | undefined}
-             */
-            this["transport_plugins"] = undefined;
-        }
-
-        Object.assign(this, $$source);
-    }
-
-    /**
-     * Creates a new TorOptionsView instance from a string or object.
-     * @param {any} [$$source = {}]
-     * @returns {TorOptionsView}
-     */
-    static createFrom($$source = {}) {
-        const $$createField0_0 = $$createType4;
-        const $$createField1_0 = $$createType26;
-        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        if ("bridge_lines" in $$parsedSource) {
-            $$parsedSource["bridge_lines"] = $$createField0_0($$parsedSource["bridge_lines"]);
-        }
-        if ("transport_plugins" in $$parsedSource) {
-            $$parsedSource["transport_plugins"] = $$createField1_0($$parsedSource["transport_plugins"]);
-        }
-        return new TorOptionsView(/** @type {Partial<TorOptionsView>} */($$parsedSource));
-    }
-}
-
-/**
  * UserGroupView is the credential-free UI projection of one
  * user-defined group.
  */
@@ -4516,7 +4436,6 @@ const $$createType22 = logging$0.Entry.createFrom;
 const $$createType23 = $Create.Array($$createType22);
 const $$createType24 = mempressure$0.Snapshot.createFrom;
 const $$createType25 = booster$0.Settings.createFrom;
-const $$createType26 = $Create.Map($Create.Any, $Create.Any);
 const $$createType27 = OverallSourceHealth.createFrom;
 const $$createType28 = SourceHealthEntry.createFrom;
 const $$createType29 = $Create.Array($$createType28);

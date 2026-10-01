@@ -532,6 +532,12 @@ type ConfigFilter struct {
 	// and groups never bypass testing or trust.
 	Group string `json:"group,omitempty"`
 
+	// IDs is an explicit allow-list of configuration ids (v0.12.2
+	// proxy-chain scope: the table shows exactly the chain's hops,
+	// server-side filtered like every other scope — no full
+	// database download). Empty = no id restriction.
+	IDs []string `json:"ids,omitempty"`
+
 	// SortBy is one of: "fingerprint", "latency", "tested_at",
 	// "protocol", "source", "address" (default "fingerprint").
 	SortBy string `json:"sort_by,omitempty"`
@@ -577,6 +583,18 @@ func (s *DataService) ListConfigsFiltered(filter ConfigFilter, offset, limit int
 		return nil, err
 	}
 
+	// v0.12.2: the explicit id allow-list (proxy-chain scope)
+	// compiles to a set ONCE per call, like the group membership.
+	var idSet map[string]bool
+
+	if len(filter.IDs) > 0 {
+		idSet = make(map[string]bool, len(filter.IDs))
+
+		for _, id := range filter.IDs {
+			idSet[id] = true
+		}
+	}
+
 	matches := make([]config.Config, 0, 256)
 
 	if err := s.app.store.Iterate(ctx, func(key string, value []byte) error {
@@ -587,6 +605,10 @@ func (s *DataService) ListConfigsFiltered(filter ConfigFilter, offset, limit int
 		var cfg config.Config
 		if err := json.Unmarshal(value, &cfg); err != nil {
 			return nil // skip undecodable record; never crash the UI
+		}
+
+		if idSet != nil && !idSet[cfg.ID] {
+			return nil
 		}
 
 		if !s.filterMatchesWithGroup(filter, cfg, query, groupMemberSet) {
@@ -1107,6 +1129,42 @@ func (s *AppService) CacheStats() CacheStats {
 func (s *AppService) ClearCaches() {
 	s.app.hotCache.Clear()
 	s.app.sourceCache.Clear()
+}
+
+// ConnectMode returns the persisted Quick Connect route choice
+// ("" / "auto" / "configs" / "chains"). v0.12.2: this replaces the
+// removed provider mode; legacy persisted values were migrated on
+// load.
+func (s *AppService) ConnectMode() string {
+	mode := s.app.currentSettings().ConnectMode
+
+	if err := ValidateConnectMode(mode); err != nil {
+		return ConnectModeAuto
+	}
+
+	if mode == "" {
+		return ConnectModeAuto
+	}
+
+	return mode
+}
+
+// SetConnectMode persists the Quick Connect route choice through the
+// ONE settings path.
+func (s *AppService) SetConnectMode(mode string) (string, error) {
+	mode = MigrateLegacyProviderMode(mode)
+
+	if err := ValidateConnectMode(mode); err != nil {
+		return s.ConnectMode(), err
+	}
+
+	if err := s.app.persistSettings(func(settings *Settings) {
+		settings.ConnectMode = mode
+	}); err != nil {
+		return s.ConnectMode(), err
+	}
+
+	return s.ConnectMode(), nil
 }
 
 func errString(err error) string {

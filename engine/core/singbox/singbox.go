@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/Parsaetak/FreeIran/engine/config"
@@ -91,8 +92,20 @@ func (b *Backend) Capabilities() core.Capabilities {
 }
 
 // Supports reports whether sing-box can execute the configuration.
+// Proxy-chain configurations require EVERY hop to match the sing-box
+// capability set (v0.12.2).
 func (b *Backend) Supports(cfg config.Config) bool {
-	return b.Capabilities().Matches(cfg)
+	if !b.Capabilities().Matches(cfg) {
+		return false
+	}
+
+	for _, hop := range cfg.Chain {
+		if hop == nil || !b.Capabilities().Matches(*hop) {
+			return false
+		}
+	}
+
+	return true
 }
 
 // Validate performs deep validation against sing-box capabilities.
@@ -196,6 +209,24 @@ func capabilityError(cfg config.Config, caps core.Capabilities) error {
 func (b *Backend) BuildConfig(cfg config.Config, opts core.RuntimeOptions) (core.RuntimeConfig, error) {
 	cfg.Normalize()
 
+	// v0.12.2: proxy chains compile through the SAME document
+	// machinery with the sing-box detour chaining primitive. The
+	// composition fingerprint salts every hop, so distinct chains
+	// never share a cache entry or a runtime file name.
+	if cfg.IsChain() {
+		data, summary, err := BuildSingBoxChainDocument(cfg, opts)
+		if err != nil {
+			return core.RuntimeConfig{}, err
+		}
+
+		return core.RuntimeConfig{
+			FileName:        fmt.Sprintf("singbox-%s.json", shortChainFingerprint(cfg)),
+			Data:            data,
+			RedactedSummary: summary,
+			Format:          "sing-box",
+		}, nil
+	}
+
 	cacheKey := core.GenCacheKey(cfg.Fingerprint(), "sing-box", opts.LocalHost, opts.LocalPort, opts.HTTPPort)
 	generation := core.GenerationFor("sing-box", opts.BinaryPath, opts.BackendVersion)
 
@@ -257,6 +288,17 @@ func (b *Backend) Start(
 	return core.Launch(ctx, b, cfg, opts, doc, singBoxArgs)
 }
 
+// Chain tag plan (v0.12.2): hops 0..N-2 get chain-1..chain-N-1; the
+// egress hop is the "proxy" route final.
+const (
+	chainTagPrefix = "chain-"
+	chainFinalTag  = "proxy"
+)
+
+// chainMaxHops is the hard hop ceiling compiled into the document
+// builder (mirrors the collections-side validation: 4 hops).
+const chainMaxHops = 4
+
 // singBoxArgs renders the sing-box command line: `run -c <file>`.
 func singBoxArgs(configFile string, _ int) []string {
 	return []string{"run", "-c", configFile}
@@ -265,6 +307,18 @@ func singBoxArgs(configFile string, _ int) []string {
 // shortFingerprint renders an 8-character fingerprint prefix.
 func shortFingerprint(cfg config.Config) string {
 	fp := cfg.Fingerprint()
+
+	if len(fp) > 8 {
+		return fp[:8]
+	}
+
+	return fp
+}
+
+// shortChainFingerprint renders the chain-composition fingerprint
+// prefix for runtime file names (v0.12.2).
+func shortChainFingerprint(cfg config.Config) string {
+	fp := cfg.ChainFingerprint()
 
 	if len(fp) > 8 {
 		return fp[:8]
@@ -295,20 +349,26 @@ type sbInbound struct {
 }
 
 type sbOutbound struct {
-	Type       string       `json:"type"`
-	Tag        string       `json:"tag,omitempty"`
-	Server     string       `json:"server,omitempty"`
-	ServerPort int          `json:"server_port,omitempty"`
-	UUID       string       `json:"uuid,omitempty"`
-	Password   string       `json:"password,omitempty"`
-	Method     string       `json:"method,omitempty"`
-	Username   string       `json:"username,omitempty"`
-	Flow       string       `json:"flow,omitempty"`
-	TLS        *sbTLS       `json:"tls,omitempty"`
-	Transport  *sbTransport `json:"transport,omitempty"`
-	Version    string       `json:"version,omitempty"`  // socks outbound
-	Security   string       `json:"security,omitempty"` // vmess cipher
-	AlterID    int          `json:"alter_id,omitempty"`
+	Type       string `json:"type"`
+	Tag        string `json:"tag,omitempty"`
+	Server     string `json:"server,omitempty"`
+	ServerPort int    `json:"server_port,omitempty"`
+
+	// Detour is the sing-box chaining primitive (v0.12.2 proxy
+	// chains): the outbound's OWN connection dials THROUGH the
+	// outbound carrying this tag — A→B→C compiles as
+	// C(detour=B) → B(detour=A) → A(direct) inside ONE process.
+	Detour    string       `json:"detour,omitempty"`
+	UUID      string       `json:"uuid,omitempty"`
+	Password  string       `json:"password,omitempty"`
+	Method    string       `json:"method,omitempty"`
+	Username  string       `json:"username,omitempty"`
+	Flow      string       `json:"flow,omitempty"`
+	TLS       *sbTLS       `json:"tls,omitempty"`
+	Transport *sbTransport `json:"transport,omitempty"`
+	Version   string       `json:"version,omitempty"`  // socks outbound
+	Security  string       `json:"security,omitempty"` // vmess cipher
+	AlterID   int          `json:"alter_id,omitempty"`
 
 	// QUIC family (v0.10.2, verified against sing-box v1.14.0).
 	UpMbps            int    `json:"up_mbps,omitempty"`            // hysteria/hysteria2
@@ -496,6 +556,131 @@ func BuildSingBoxDocument(cfg config.Config, opts core.RuntimeOptions) ([]byte, 
 
 	summary := fmt.Sprintf("sing-box config: %s, mixed %s:%d",
 		cfg.DisplayURL(), opts.LocalHost, port)
+
+	return data, summary, nil
+}
+
+// BuildSingBoxChainDocument renders the sing-box runtime
+// configuration for a PROXY CHAIN (v0.12.2): cfg carries the EXIT
+// (egress) hop and cfg.Chain the earlier hops in user order. Every
+// hop is an outbound in the SAME document (one process, one inbound,
+// one route table); each hop after the first dials through its
+// predecessor via the detour field.
+func BuildSingBoxChainDocument(cfg config.Config, opts core.RuntimeOptions) ([]byte, string, error) {
+	cfg.Normalize()
+
+	opts = opts.WithDefaults()
+
+	hops := cfg.ChainHops()
+
+	if len(hops) < 2 {
+		return nil, "", firerrors.New(firerrors.KindInvalidInput,
+			Subsystem, "build",
+			"proxy chain needs at least two hops (got %d)", len(hops))
+	}
+
+	if len(hops) > chainMaxHops {
+		return nil, "", firerrors.New(firerrors.KindInvalidInput,
+			Subsystem, "build",
+			"proxy chain exceeds %d hops (got %d)", chainMaxHops, len(hops))
+	}
+
+	port := opts.LocalPort
+
+	if port == 0 {
+		return nil, "", firerrors.New(firerrors.KindConfiguration,
+			Subsystem, "build",
+			"local port must be allocated before generation")
+	}
+
+	// Deterministic tag plan: hops 0..N-2 get chain-1..chain-N-1; the
+	// egress (last hop) is the "proxy" route final.
+	tagFor := func(i int) string {
+		if i == len(hops)-1 {
+			return chainFinalTag
+		}
+
+		return chainTagPrefix + strconv.Itoa(i+1)
+	}
+
+	outbounds := make([]sbOutbound, 0, len(hops)+2)
+	endpoints := []sbEndpoint{}
+
+	// Egress hop first (route Final references the tag), then the
+	// earlier hops; direct/block close the list.
+	for i := len(hops) - 1; i >= 0; i-- {
+		hop := hops[i]
+
+		hop.Normalize()
+
+		if hop.Type == config.TypeWireGuard {
+			return nil, "", firerrors.New(firerrors.KindInvalidInput,
+				Subsystem, "build",
+				"wireguard endpoints cannot be chained (hop %d)", i+1)
+		}
+
+		security := v2raySecurity(hop)
+
+		if security == config.SecurityReality && hop.PublicKey == "" {
+			return nil, "", firerrors.New(firerrors.KindInvalidInput,
+				Subsystem, "build",
+				"chain hop %d: REALITY configuration requires a public key", i+1)
+		}
+
+		built, err := buildSBOutbound(hop, security)
+		if err != nil {
+			return nil, "", firerrors.Wrap(err, firerrors.KindInvalidInput,
+				Subsystem, "build", "chain hop %d", i+1)
+		}
+
+		built.Tag = tagFor(i)
+
+		// Every hop AFTER the first dials through its predecessor.
+		if i > 0 {
+			built.Detour = tagFor(i - 1)
+		}
+
+		outbounds = append(outbounds, *built)
+	}
+
+	outbounds = append(outbounds,
+		sbOutbound{Type: "direct", Tag: "direct"},
+		sbOutbound{Type: "block", Tag: "block"},
+	)
+
+	doc := sbDocument{
+		Log: &sbLog{Level: "warn"},
+		Inbounds: []sbInbound{
+			{
+				Type:       "mixed",
+				Tag:        "mixed-in",
+				Listen:     opts.LocalHost,
+				ListenPort: port,
+			},
+		},
+		Outbounds: outbounds,
+		Endpoints: endpoints,
+		Route: &sbRoute{
+			Rules: []sbRule{
+				{IPIsPrivate: true, Outbound: "direct"},
+			},
+			Final: "proxy",
+		},
+	}
+
+	data, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return nil, "", firerrors.Wrap(err, firerrors.KindEnvironment,
+			Subsystem, "build", "encode chain document")
+	}
+
+	names := make([]string, 0, len(hops))
+	for _, hop := range hops {
+		names = append(names, hop.DisplayURL())
+	}
+
+	summary := fmt.Sprintf("sing-box proxy chain (%d hops): %s, mixed %s:%d",
+		len(hops), strings.Join(names, " -> "), opts.LocalHost, port)
 
 	return data, summary, nil
 }

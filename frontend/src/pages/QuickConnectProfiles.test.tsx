@@ -18,18 +18,17 @@ import { useConnectionStore } from "../state/connectionStore";
 import { useQuickConnectStore } from "../state/quickConnectStore";
 import { useStartFlowStore } from "../state/startflowStore";
 import { useSettingsStore } from "../state/settingsStore";
-import { useProviderStore } from "../state/providerStore";
+import { useConnectModeStore } from "../state/connectModeStore";
+import { useChainStore } from "../state/chainStore";
 
 const mocks = vi.hoisted(() => ({
   BestCandidates: vi.fn(),
   Connect: vi.fn(),
   ConnectBest: vi.fn(),
   RunStartFlow: vi.fn(),
-  ProviderMode: vi.fn(),
-  ProviderList: vi.fn(),
-  ProviderSetMode: vi.fn(),
-  ProviderConnect: vi.fn(),
-  ProviderConnectAuto: vi.fn(),
+  ConnectMode: vi.fn(),
+  SetConnectMode: vi.fn(),
+  ListProxyChains: vi.fn(),
   ProfileList: vi.fn(),
   ProfileActive: vi.fn(),
   ProfileSetActive: vi.fn(),
@@ -69,12 +68,12 @@ vi.mock("../services", () => ({
     Get: vi.fn(async () => ({ reduced_motion: false })),
     Save: vi.fn(),
   },
-  providerService: {
-    Mode: mocks.ProviderMode,
-    List: mocks.ProviderList,
-    SetMode: mocks.ProviderSetMode,
-    Connect: mocks.ProviderConnect,
-    ConnectAuto: mocks.ProviderConnectAuto,
+  appService: {
+    ConnectMode: mocks.ConnectMode,
+    SetConnectMode: mocks.SetConnectMode,
+  },
+  proxyChainService: {
+    ListProxyChains: mocks.ListProxyChains,
   },
   profileService: {
     List: mocks.ProfileList,
@@ -125,7 +124,8 @@ function resetStores() {
     useQuickConnectStore.setState({ candidates: [], loading: false, loaded: false, error: null, selected: null });
     useStartFlowStore.setState({ status: null, environment: null, busy: false, error: null, lastResult: null });
     useSettingsStore.setState({ settings: null, loading: false, saving: false, lastError: null, motionOverride: null });
-    useProviderStore.setState({ mode: "auto", providers: [], loaded: false, loading: false, error: null });
+    useConnectModeStore.setState({ mode: "auto", loaded: false, loading: false, error: null });
+    useChainStore.setState({ chains: [], loaded: false, loading: false, error: null, selected: null });
     useProfilesStore.setState({ profiles: [], active: null, loaded: false, loading: false, error: null });
   });
 }
@@ -136,9 +136,9 @@ beforeEach(() => {
 
   mocks.BestCandidates.mockResolvedValue([]);
   mocks.RunStartFlow.mockResolvedValue({ discovered: 0, valid: 0, duplicates: 0, tested: 0, verified: false, duration_ms: 0 });
-  mocks.ProviderMode.mockResolvedValue("auto");
-  mocks.ProviderList.mockResolvedValue([]);
-  mocks.ProviderSetMode.mockImplementation(async (mode: string) => mode);
+  mocks.ConnectMode.mockResolvedValue("auto");
+  mocks.SetConnectMode.mockImplementation(async (mode: string) => mode);
+  mocks.ListProxyChains.mockResolvedValue([]);
   mocks.ProfileList.mockResolvedValue([]);
   mocks.ProfileActive.mockResolvedValue([null, false]);
   mocks.ProfileSetActive.mockImplementation(async (id: string) => profileView(id, { active: true }));
@@ -179,7 +179,7 @@ describe("Quick Connect profiles", () => {
     ]);
     mocks.ProfileActive.mockResolvedValue([profileView("p-1", { active: true }), true]);
     mocks.ProfileSetActive.mockResolvedValue(profileView("p-1", { name: "Work", active: true }));
-    mocks.ProviderMode.mockResolvedValue("configs");
+    mocks.ConnectMode.mockResolvedValue("configs");
     mocks.BestCandidates.mockResolvedValue([
       {
         fingerprint: "cfg-123",
@@ -204,9 +204,9 @@ describe("Quick Connect profiles", () => {
 
     await waitFor(() => expect(mocks.ProfileSetActive).toHaveBeenCalledWith("p-1"));
 
-    // The page re-read the provider mode the backend applied (configs)
+    // The page re-read the route mode the backend applied (configs)
     // and preselected the profile's configuration.
-    await waitFor(() => expect(useProviderStore.getState().mode).toBe("configs"));
+    await waitFor(() => expect(useConnectModeStore.getState().mode).toBe("configs"));
     await waitFor(() => expect(useQuickConnectStore.getState().selected).toBe("cfg-123"));
 
     // The activated chip reflects the authoritative active marker.

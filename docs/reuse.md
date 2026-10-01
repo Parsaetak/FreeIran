@@ -35,7 +35,7 @@ a lossy `installed=true` boolean. The recorded decisions
   smoke test, but no authoritative digest match was available. It is
   *working*, never *verified*.
 - A matching version string alone is NEVER proof of provenance.
-- Psiphon's official channel publishes no digests: downloaded Psiphon
+- Some upstreams publish no digests: binaries downloaded without one
   binaries stay visibly unavailable rather than faking a verified
   install; user-supplied/adopted binaries are used only under the
   honest locally-validated semantics.

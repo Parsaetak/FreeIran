@@ -18,7 +18,8 @@ import { useConnectionStore } from "../state/connectionStore";
 import { useQuickConnectStore } from "../state/quickConnectStore";
 import { useStartFlowStore } from "../state/startflowStore";
 import { useSettingsStore } from "../state/settingsStore";
-import { useProviderStore, type ProviderMode } from "../state/providerStore";
+import { useConnectModeStore, type ConnectMode } from "../state/connectModeStore";
+import { useChainStore } from "../state/chainStore";
 import { useProfilesStore } from "../state/profilesStore";
 import type { CandidateView } from "../services";
 
@@ -27,11 +28,10 @@ const mocks = vi.hoisted(() => ({
   Connect: vi.fn(),
   ConnectBest: vi.fn(),
   RunStartFlow: vi.fn(),
-  ProviderMode: vi.fn(),
-  ProviderList: vi.fn(),
-  ProviderSetMode: vi.fn(),
-  ProviderConnect: vi.fn(),
-  ProviderConnectAuto: vi.fn(),
+  ConnectMode: vi.fn(),
+  SetConnectMode: vi.fn(),
+  ListProxyChains: vi.fn(),
+  ConnectChain: vi.fn(),
   ProfileList: vi.fn(),
   ProfileActive: vi.fn(),
   ProfileSetActive: vi.fn(),
@@ -49,15 +49,6 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../services", () => ({
   call: async (operation: () => Promise<unknown>) => operation(),
-  connectionService: {
-    BestCandidates: mocks.BestCandidates,
-    Connect: mocks.Connect,
-    ConnectBest: mocks.ConnectBest,
-    ConnectionState: vi.fn(),
-    RefreshBackends: vi.fn(),
-    Disconnect: vi.fn(),
-    Reconnect: vi.fn(),
-  },
   discoveryService: {
     StartFlowStatus: vi.fn(async () => ({ stage: "idle", running: false })),
     Environment: vi.fn(async () => ({
@@ -75,15 +66,35 @@ vi.mock("../services", () => ({
     Get: vi.fn(async () => ({ reduced_motion: false })),
     Save: vi.fn(),
   },
-  // v0.9.8.1 (§12/§6): provider surface (mode / list / sessions) and
-  // the Internet-Tools engine, consumed by the page and the REAL
-  // provider store (which runs through this same mocked module).
-  providerService: {
-    Mode: mocks.ProviderMode,
-    List: mocks.ProviderList,
-    SetMode: mocks.ProviderSetMode,
-    Connect: mocks.ProviderConnect,
-    ConnectAuto: mocks.ProviderConnectAuto,
+  // v0.12.2: the surviving Quick Connect surface (route mode +
+  // proxy chains), consumed by the page and the REAL connect-mode /
+  // chain stores (which run through this same mocked module).
+  appService: {
+    State: vi.fn(async () => ({ status: "ready", version: "0.12.2" })),
+    ConnectMode: mocks.ConnectMode,
+    SetConnectMode: mocks.SetConnectMode,
+  },
+  connectionService: {
+    BestCandidates: mocks.BestCandidates,
+    Connect: mocks.Connect,
+    ConnectBest: mocks.ConnectBest,
+    ConnectChain: mocks.ConnectChain,
+    ConnectionState: vi.fn(),
+    RefreshBackends: vi.fn(),
+    Disconnect: vi.fn(),
+    Reconnect: vi.fn(),
+  },
+  proxyChainService: {
+    ListProxyChains: mocks.ListProxyChains,
+    CreateProxyChain: vi.fn(),
+    RenameProxyChain: vi.fn(),
+    DeleteProxyChain: vi.fn(),
+    AddHop: vi.fn(),
+    RemoveHop: vi.fn(),
+    ReorderHop: vi.fn(),
+    ProxyChainDetails: vi.fn(),
+    ValidateProxyChain: vi.fn(),
+    CheckChain: vi.fn(),
   },
   // v0.9.11: Connection Profiles surface (consumed by the REAL
   // profiles store through this same mocked module).
@@ -150,23 +161,24 @@ function snap(partial: Record<string, unknown>) {
 }
 
 /**
- * v0.9.8.1 provider-mode plumbing: the REAL useProviderStore is used
- * (the same real-store-through-mocked-services pattern the quick-connect
- * store already follows above) — it loads via the mocked providerService,
- * so no store-module mock is needed and store transitions stay observable
- * through useProviderStore.setState/getState. SetMode echoes its argument
- * back by default: the real backend normalizes, persists and returns the
- * effective mode, which keeps radio → store → action transitions
- * deterministic for every mode-switching test below.
+ * v0.12.2 route-mode plumbing: the REAL useConnectModeStore is used
+ * (the same real-store-through-mocked-services pattern the
+ * quick-connect store already follows above) — it loads via the
+ * mocked appService, so no store-module mock is needed and store
+ * transitions stay observable through useConnectModeStore.setState/
+ * getState. SetConnectMode echoes its argument back by default: the
+ * real backend normalizes, persists and returns the effective mode,
+ * which keeps radio → store → action transitions deterministic for
+ * every mode-switching test below.
  */
 type User = ReturnType<typeof userEvent.setup>;
 
-async function selectProviderMode(user: User, mode: ProviderMode, radio: RegExp): Promise<void> {
-  await waitFor(() => expect(useProviderStore.getState().loaded).toBe(true));
+async function selectConnectMode(user: User, mode: ConnectMode, radio: RegExp): Promise<void> {
+  await waitFor(() => expect(useConnectModeStore.getState().loaded).toBe(true));
 
   await user.click(screen.getByRole("radio", { name: radio }));
 
-  await waitFor(() => expect(useProviderStore.getState().mode).toBe(mode));
+  await waitFor(() => expect(useConnectModeStore.getState().mode).toBe(mode));
 }
 
 function resetStores() {
@@ -202,12 +214,18 @@ function resetStores() {
       lastError: null,
       motionOverride: null,
     });
-    useProviderStore.setState({
+    useConnectModeStore.setState({
       mode: "auto",
-      providers: [],
       loaded: false,
       loading: false,
       error: null,
+    });
+    useChainStore.setState({
+      chains: [],
+      loaded: false,
+      loading: false,
+      error: null,
+      selected: null,
     });
     useProfilesStore.setState({
       profiles: [],
@@ -222,6 +240,10 @@ function resetStores() {
 beforeEach(() => {
   vi.clearAllMocks();
   resetStores();
+  // v0.12.2: the route-mode + chain store defaults.
+  mocks.ConnectMode.mockResolvedValue("auto");
+  mocks.SetConnectMode.mockImplementation(async (mode: string) => mode);
+  mocks.ListProxyChains.mockResolvedValue([]);
   mocks.RunStartFlow.mockResolvedValue({
     discovered: 0,
     valid: 0,
@@ -230,9 +252,7 @@ beforeEach(() => {
     verified: false,
     duration_ms: 0,
   });
-  mocks.ProviderMode.mockResolvedValue("auto");
-  mocks.ProviderList.mockResolvedValue([]);
-  mocks.ProviderSetMode.mockImplementation(async (mode: string) => mode);
+
   // v0.9.11: no profiles by default — the profile surface stays
   // hidden until the backend reports at least one profile.
   mocks.ProfileList.mockResolvedValue([]);
@@ -290,7 +310,7 @@ describe("Quick Connect page", () => {
     await waitFor(() => expect(useQuickConnectStore.getState().loaded).toBe(true));
 
     // v0.9.8.1: the classic picker lives in Configurations mode.
-    await selectProviderMode(user, "configs", /^Configurations/);
+    await selectConnectMode(user, "configs", /^Configurations$/);
 
     const trigger = screen.getByRole("button", { name: /automatic best selection/i });
 
@@ -324,7 +344,7 @@ describe("Quick Connect page", () => {
 
     // The picker's "Auto — fastest measured" option (no explicit
     // selection) in Configurations mode → engine best-candidate flow.
-    await selectProviderMode(user, "configs", /^Configurations/);
+    await selectConnectMode(user, "configs", /^Configurations$/);
 
     await user.click(screen.getByRole("button", { name: /CONNECT/ }));
 
@@ -341,7 +361,7 @@ describe("Quick Connect page", () => {
     await waitFor(() => expect(useQuickConnectStore.getState().loaded).toBe(true));
 
     // The classic empty-state note only renders in Configurations mode.
-    await selectProviderMode(user, "configs", /^Configurations/);
+    await selectConnectMode(user, "configs", /^Configurations$/);
 
     expect(screen.getByText(/No tested connections available/i)).toBeTruthy();
 
@@ -500,7 +520,7 @@ describe("Quick Connect page", () => {
     await waitFor(() => expect(useQuickConnectStore.getState().loaded).toBe(true));
 
     // The keyboard-driven listbox lives in Configurations mode.
-    await selectProviderMode(user, "configs", /^Configurations/);
+    await selectConnectMode(user, "configs", /^Configurations$/);
 
     await user.click(screen.getByRole("button", { name: /automatic best selection/i }));
 
@@ -564,45 +584,67 @@ describe("Quick Connect page", () => {
     expect(onNavigate).toHaveBeenCalledWith("connection");
   });
 
-  // ---- v0.9.8.1 provider mode selector (§12) --------------------------
+  // ---- v0.12.2 route-mode selector (Auto / Configurations / Chains) ----
 
-  it("renders the provider mode selector with all four modes", async () => {
+  it("renders the route selector with the three surviving modes", async () => {
     render(<QuickConnectPage onNavigate={vi.fn()} />);
 
-    await waitFor(() => expect(useProviderStore.getState().loaded).toBe(true));
+    await waitFor(() => expect(useConnectModeStore.getState().loaded).toBe(true));
 
-    expect(screen.getByRole("radiogroup", { name: "Connection provider" })).toBeTruthy();
-    expect(screen.getByRole("radio", { name: /^Auto/ })).toBeTruthy();
-    expect(screen.getByRole("radio", { name: /^Configurations/ })).toBeTruthy();
-    expect(screen.getByRole("radio", { name: /^Tor/ })).toBeTruthy();
-    expect(screen.getByRole("radio", { name: /^Psiphon/ })).toBeTruthy();
+    expect(screen.getByRole("radiogroup", { name: "Connection route" })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: /^Auto$/ })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: /^Configurations$/ })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: /^Proxy Chains$/ })).toBeTruthy();
   });
 
-  it("auto mode routes the primary action through ConnectAuto", async () => {
+  it("auto mode routes the primary action through the best-candidate engine", async () => {
     const user = userEvent.setup();
     mocks.BestCandidates.mockResolvedValue([candidate("pl", 82)]);
 
     render(<QuickConnectPage onNavigate={vi.fn()} />);
 
-    await waitFor(() => expect(useProviderStore.getState().loaded).toBe(true));
+    await waitFor(() => expect(useConnectModeStore.getState().loaded).toBe(true));
 
     await user.click(screen.getByRole("button", { name: /CONNECT/ }));
 
-    await waitFor(() => expect(mocks.ProviderConnectAuto).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mocks.ConnectBest).toHaveBeenCalledTimes(1));
+  });
+
+  it("chains mode connects through ConnectChain", async () => {
+    const user = userEvent.setup();
+    mocks.ListProxyChains.mockResolvedValue([
+      { id: "pc-1", name: "Berlin route", hops: 2 },
+    ]);
+
+    render(<QuickConnectPage onNavigate={vi.fn()} />);
+
+    await selectConnectMode(user, "chains", /^Proxy Chains$/);
+
+    await waitFor(() => expect(useChainStore.getState().loaded).toBe(true));
+
+    // The first chain is preselected deterministically; the picker
+    // allows an explicit choice.
+    await waitFor(() => expect(useChainStore.getState().selected).toBe("pc-1"));
+
+    await user.click(screen.getByRole("button", { name: /CONNECT/ }));
+
+    await waitFor(() => expect(mocks.ConnectChain).toHaveBeenCalledWith("pc-1"));
     expect(mocks.ConnectBest).not.toHaveBeenCalled();
   });
 
-  it("tor mode routes through provider Connect", async () => {
+  it("chains mode with no chain selected does not fabricate a connect", async () => {
     const user = userEvent.setup();
 
     render(<QuickConnectPage onNavigate={vi.fn()} />);
 
-    await selectProviderMode(user, "tor", /^Tor/);
+    await selectConnectMode(user, "chains", /^Proxy Chains$/);
+
+    await waitFor(() => expect(useChainStore.getState().loaded).toBe(true));
 
     await user.click(screen.getByRole("button", { name: /CONNECT/ }));
 
-    await waitFor(() => expect(mocks.ProviderConnect).toHaveBeenCalledWith("tor"));
-    expect(mocks.ProviderConnectAuto).not.toHaveBeenCalled();
+    await waitFor(() => expect(mocks.ConnectChain).not.toHaveBeenCalled());
+    expect(mocks.ConnectBest).not.toHaveBeenCalled();
   });
 
   it("configurations mode keeps the classic engine flow", async () => {
@@ -616,12 +658,11 @@ describe("Quick Connect page", () => {
 
     render(<QuickConnectPage onNavigate={vi.fn()} />);
 
-    await selectProviderMode(user, "configs", /^Configurations/);
+    await selectConnectMode(user, "configs", /^Configurations$/);
 
     await user.click(screen.getByRole("button", { name: /CONNECT/ }));
 
     await waitFor(() => expect(mocks.ConnectBest).toHaveBeenCalledWith([]));
-    expect(mocks.ProviderConnect).not.toHaveBeenCalled();
-    expect(mocks.ProviderConnectAuto).not.toHaveBeenCalled();
+    expect(mocks.ConnectChain).not.toHaveBeenCalled();
   });
 });

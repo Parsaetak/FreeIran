@@ -88,7 +88,7 @@ ISP / access provider
         ↓
 Censorship / DPI infrastructure
         ↓
-Entry / relay (VPN, proxy, Tor guard)
+Entry / relay (VPN, proxy, future circumvention transport)
         ↓
 Exit / destination
         ↓
@@ -121,7 +121,7 @@ categories FreeIran must keep explicitly distinct:
 - **traffic correlation** — timing/volume analysis across observers;
   NOT defeated by any single hop.
 
-Different modes (VPN, Tor, I2P, multi-hop) change WHICH parties see
+Different modes (VPN, I2P, multi-hop chains) change WHICH parties see
 WHICH side of the connection. That is the honest framing for every
 trust claim in the UI (see M).
 
@@ -475,26 +475,33 @@ Hard rules:
 
 ---
 
-## K. Tor / censorship circumvention
+## K. Circumvention transports (generic future slot)
 
-Target provider architecture (PLANNED — Tor provider lifecycle
-CURRENT as a provider abstraction; the transports below are future
-work), using the EXISTING provider architecture
-(engine/provider — one manager, one lifecycle):
+v0.12.2 note: the active product deliberately REMOVED the Tor and
+Psiphon providers, so no "Tor phase" is planned as such. What remains
+planned is a GENERIC circumvention-transport slot. Any future
+transport must enter through the EXISTING contracts — one core
+manager, one binary trust pipeline, one connection state machine, one
+verification gate, one configuration store — either as a new
+protocol-core adapter with a verified capability matrix or as a
+compile-time topology within an existing adapter (the path proxy
+chains take). Candidate transports (for study only, no commitment):
 
 ```text
-Tor
-obfs4
-Snowflake
-WebTunnel
-meek
+obfs4-style pluggable transports
+Snowflake-style broker transports
+WebTunnel-style HTTPS tunneling
+meek-style domain-fronting (legal/ToS analysis required)
 ```
 
 Modes:
 
 ```text
-Tor Circumvention:   FreeIran → Tor → pluggable transport → Internet
-Onion Only:          FreeIran → Tor → .onion
+(v0.12.2: the multi-hop topology this section once mapped onto Tor
+is shipped as proxy chains — user-built, compiled into one core
+process; any future transport enters the same slot.)
+Circumvention mode:  FreeIran → <future transport> → Internet
+Onion-style mode:    FreeIran → <future transport> → onion service
 ```
 
 `Onion Only` must mean, as a genuine security mode:
@@ -507,12 +514,11 @@ dedicated DNS behavior
 independent proof
 ```
 
-Bridge-selection logic must be evidence-driven. Hard-coded bridge
-lists are not permanent truth; where bridge configuration is
-user-provided today, that model is preserved. Tor's trust topology
-(guard/middle/exit, rendezvous for onion services) is different from
-a VPN's — UI language must reflect that, never market Tor as "a more
-anonymous VPN".
+Bridge/transport-selection logic must be evidence-driven. Hard-coded
+bridge lists are not permanent truth; user-provided configuration
+remains the trusted model. Any future transport's trust topology must
+be explained on its own terms — UI language must never market any
+mechanism as "a more anonymous VPN".
 
 ---
 
@@ -527,7 +533,7 @@ I2P-only mode
 ```
 
 I2P is a private overlay network, NOT a generic Internet VPN and NOT
-a Tor replacement. Arbitrary public-Internet outproxy routing must
+an anonymity guarantee. Arbitrary public-Internet outproxy routing must
 NOT be the default. The I2P project itself scopes outproxy use as
 limited and differently-trusted; FreeIran represents I2P as what it
 is — an additional network topology for `.i2p` services under the
@@ -541,8 +547,8 @@ PLANNED explicit topologies:
 
 ```text
 VPN → VPN        (two independent proxy hops)
-VPN → Tor
-Tor → VPN
+VPN → chain
+chain → VPN
 ```
 
 plus future combinations. Each topology changes WHO can observe
@@ -584,13 +590,13 @@ Action  Outbound  DNSPolicy
 Target actions:
 
 ```text
-Direct  Proxy  Reject  Block  Tor  I2P
+Direct  Proxy  Reject  Block  I2P
 ```
 
 Core adapters (Xray, sing-box, future backends) COMPILE the
 canonical policy into core-specific runtime configurations. **No
 independent routing authority per core.** Routing profiles (Global
-Proxy / Iran-Direct + Global-Proxy / Global Direct / Block / Tor /
+Proxy / Iran-Direct + Global-Proxy / Global Direct / Block /
 I2P / Custom) are policy presets, not promises — community geo-rule
 sources, if ever consumed, are untrusted versioned inputs
 (hash-pinned), never embedded security truth.
@@ -721,7 +727,7 @@ never imply more protection than its evidence supports):
 ```text
 Protected Mode          full TUN + DNS + IPv4/IPv6 proof + kill switch + monitoring
 Censorship Adaptive     evidence-driven transport probing/selection
-Tor Circumvention       Tor + pluggable transports
+Circumvention slot      future transports (generic slot)
 Onion Only              .onion only, no public exit fallback
 I2P                     .i2p destinations
 Multi-Hop               explicit trust topology
@@ -756,24 +762,27 @@ network anonymity  !=  browser anonymity
 Cookies, account logins, local storage, screen characteristics,
 fonts, APIs, browser configuration, behavioral patterns and
 application-specific identifiers remain OUTSIDE the network engine's
-guaranteed control — even with a VPN IP, Tor, TUN and DNS
+guaranteed control — even with a VPN IP, TUN and DNS
 protection. FreeIran exposes this limitation directly instead of
 implying otherwise. A future privacy-browser layer may exist as a
 separate project layer; it is NOT part of current FreeIran claims.
 
 ---
 
-## U. Provider lifecycle
+## U. Managed-executable lifecycle
 
-The future provider contract standardizes around the EXISTING
-manager (engine/provider — one manager, no second lifecycle system):
+v0.12.2 note: the provider abstraction this section once described
+(engine/provider) was REMOVED with the Tor/Psiphon engines; managed
+executables are the protocol cores through engine/coremgr. The
+future contract standardizes around the EXISTING core-manager
+lifecycle (one manager, no second lifecycle system):
 
 ```text
 Resolve → Install → Verify → Prepare → Start → Ready
 → Connect → Health → Monitor → Recover → Stop → Cleanup
 ```
 
-Core providers (Xray, V2Ray, sing-box, Mihomo), Tor, Psiphon,
+Core managers (Xray, V2Ray, sing-box, Mihomo; v0.12.2 removed the Tor/Psiphon providers),
 future I2P and future AmneziaWG stay conceptually under ONE
 lifecycle boundary so the Connection Engine remains independent of
 the underlying implementation.
@@ -848,7 +857,7 @@ VPN trust is shifted, not eliminated.
 VPN does not hide the local MAC from the access network.
 VPN does not rewrite SMBIOS/device identifiers.
 Browser fingerprinting is separate from network anonymity.
-Tor has a different trust topology — not "more anonymous VPN".
+Circumvention transports have different trust topologies — never marketed as "more anonymous VPN".
 I2P is a private overlay, not a normal VPN.
 Multi-hop changes trust relationships; it is not automatically "more anonymous".
 No censorship technique is permanent.

@@ -426,10 +426,10 @@ pinned wails3 CLI like every other service); their wire shapes live
 in `frontend/src/types/discovery.ts`, and the start-flow store tests
 mock only `Events.On` via a partial module mock.
 
-## v0.9.8.1 — provider test fixtures
+## v0.9.8.1 — provider test fixtures (HERITAGE — package removed in v0.12.2)
 
-The provider suite (`engine/provider`) is hermetic: no test touches
-the live Tor network or Psiphon servers. Everything runs against
+The provider suite (`engine/provider`) was hermetic: no test touches
+any live circumvention network. Everything runs against
 deterministic stand-ins built by the test harness itself:
 
 ```text
@@ -453,11 +453,12 @@ engine/provider/testdata/fakepsiphon  (Go source, single binary)
   configured `SocksPort` that actually relays CONNECT traffic —
   proving bootstrap observation, health probing and
   HTTP-through-provider end-to-end (via a real SOCKS relay) without
-  any live Tor dependency.
+  any live circumvention-network dependency.
 - **fakepsiphon** parses the generated config JSON (`-config`), opens
   the configured local SOCKS and HTTP proxy ports, emits tunnel-up
   style output and relays traffic — proving negotiation observation,
-  proxy readiness, health and HTTP-through-Psiphon.
+  proxy readiness, health and HTTP-through-tunnel checks (generic
+  harness).
 - Download/install stages run against local `httptest` servers
   serving packed `tar.gz` archives with computed SHA-256 checksums,
   so digest verification (and refusal on mismatch / missing digest)

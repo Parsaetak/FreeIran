@@ -29,6 +29,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -36,10 +37,18 @@ import (
 	"github.com/Parsaetak/FreeIran/system"
 )
 
-// collectionsFormatVersion is the sidecar schema version. A mismatch
-// on load falls back to empty collections (favorites are a convenience
-// layer; a schema change must never brick the store or the app).
-const collectionsFormatVersion = 1
+// collectionsFormatVersion is the sidecar schema version. A HIGHER
+// version on load arms the future-schema refusal (an older binary
+// never rewrites a newer document); a LOWER version migrates forward
+// on load (v1 user groups become kind="user"; v2 adds proxy chains).
+// A schema change must never brick the store or the app.
+//
+// v0.12.2 schema v2: groups carry a stable kind — "user" (unordered
+// membership) or "proxy_chain" (ordered hop list). v1 documents
+// migrate on load: every existing group is kind "user". Proxy-chain
+// records reference configuration IDs ONLY — credentials and
+// configuration payloads are never copied into the sidecar.
+const collectionsFormatVersion = 2
 
 // fastGroupThresholdMS is the measured-latency bar for the built-in
 // "Fast" group. Only WORKING configurations with a real measurement
@@ -53,19 +62,43 @@ const recentlyTestedWindow = 24 * time.Hour
 // userGroupIDPrefix keeps generated group ids stable and recognizable.
 const userGroupIDPrefix = "g-"
 
-// persistedUserGroup is one user-defined group in the sidecar.
-type persistedUserGroup struct {
+// Group kinds (v0.12.2). A group record is exactly ONE of these.
+const (
+	GroupKindUser       = "user"
+	GroupKindProxyChain = "proxy_chain"
+)
+
+// proxyChainIDPrefix keeps generated proxy-chain ids stable and
+// recognizable (and permanently disjoint from user group ids).
+const proxyChainIDPrefix = "pc-"
+
+// proxyChainMaxHops is the chain hop ceiling (v0.12.2): four hops is
+// the defensible maximum for a desktop client — beyond it latency
+// compounds and failure attribution becomes guesswork.
+const proxyChainMaxHops = 4
+
+// proxyChainMinHops is the smallest USEFUL chain: one hop is a plain
+// configuration connection, not a chain.
+const proxyChainMinHops = 2
+
+// persistedGroup is one group record in the sidecar. Kind selects the
+// semantics: "user" groups are UNORDERED membership sets; proxy-chain
+// groups are ORDERED hop lists (index 0 = first hop, last = egress).
+// Both reference stable configuration IDs — never payloads.
+type persistedGroup struct {
 	ID        string   `json:"id"`
+	Kind      string   `json:"kind,omitempty"`
 	Name      string   `json:"name"`
 	ConfigIDs []string `json:"config_ids,omitempty"`
 	CreatedAt int64    `json:"created_at,omitempty"`
+	UpdatedAt int64    `json:"updated_at,omitempty"`
 }
 
 // persistedCollections is the collections.json document.
 type persistedCollections struct {
-	Version   int                  `json:"version"`
-	Favorites []string             `json:"favorites,omitempty"`
-	Groups    []persistedUserGroup `json:"groups,omitempty"`
+	Version   int              `json:"version"`
+	Favorites []string         `json:"favorites,omitempty"`
+	Groups    []persistedGroup `json:"groups,omitempty"`
 }
 
 // UserGroupView is the credential-free UI projection of one
@@ -101,8 +134,9 @@ type collectionsState struct {
 	mu          sync.Mutex
 	loaded      bool
 	favorites   []string
-	groups      []persistedUserGroup
+	groups      []persistedGroup
 	nextGroupID int
+	nextChainID int
 
 	// futureSchema (v0.9.12): the on-disk sidecar was written by a
 	// NEWER binary — every mutating save REFUSES (§14: an older
@@ -129,6 +163,7 @@ func (a *App) loadCollections() {
 	a.collections.favorites = nil
 	a.collections.groups = nil
 	a.collections.nextGroupID = 1
+	a.collections.nextChainID = 1
 
 	raw, err := os.ReadFile(a.collectionsPath())
 	if err != nil || len(raw) == 0 {
@@ -150,8 +185,11 @@ func (a *App) loadCollections() {
 		return
 	}
 
-	if doc.Version != collectionsFormatVersion {
-		return // unknown schema: start empty (versioned migration point)
+	// v0.12.2: versions 1 AND 2 load. Version 1 records migrate on
+	// load (kind defaults to "user"); the next save rewrites the
+	// document as version 2. Unknown older schemas start empty.
+	if doc.Version < 1 {
+		return
 	}
 
 	// Stable favorites: deduplicate, preserve order.
@@ -166,11 +204,30 @@ func (a *App) loadCollections() {
 		a.collections.favorites = append(a.collections.favorites, id)
 	}
 
-	// Stable groups: deduplicate ids AND members.
+	// Stable groups: deduplicate ids AND members. v1 documents carry
+	// no kind — every record is a user group (the only kind that
+	// existed). Chains validate their kind + id prefix agreement.
 	groupIDs := make(map[string]bool, len(doc.Groups))
 
 	for _, grp := range doc.Groups {
 		if grp.ID == "" || grp.Name == "" || groupIDs[grp.ID] {
+			continue
+		}
+
+		if grp.Kind == "" {
+			grp.Kind = GroupKindUser // v1 migration
+		}
+
+		if grp.Kind != GroupKindUser && grp.Kind != GroupKindProxyChain {
+			continue // unknown kind: skip the record, keep the rest
+		}
+
+		// Kind/prefix agreement: a user group id is g-N, a chain id
+		// is pc-N. A mismatched record is skipped (defensive).
+		switch {
+		case grp.Kind == GroupKindUser && !strings.HasPrefix(grp.ID, userGroupIDPrefix):
+			continue
+		case grp.Kind == GroupKindProxyChain && !strings.HasPrefix(grp.ID, proxyChainIDPrefix):
 			continue
 		}
 
@@ -196,7 +253,28 @@ func (a *App) loadCollections() {
 		return a.collections.groups[i].Name < a.collections.groups[j].Name
 	})
 
-	a.collections.nextGroupID = len(a.collections.groups) + 1
+	// Counters derive from the highest existing suffix per prefix so
+	// ids stay stable across mixed kinds and deletions.
+	a.collections.nextGroupID = nextIDFor(a.collections.groups, userGroupIDPrefix)
+	a.collections.nextChainID = nextIDFor(a.collections.groups, proxyChainIDPrefix)
+}
+
+// nextIDFor returns (highest numeric suffix after prefix) + 1.
+func nextIDFor(groups []persistedGroup, prefix string) int {
+	highest := 0
+
+	for _, grp := range groups {
+		if !strings.HasPrefix(grp.ID, prefix) {
+			continue
+		}
+
+		n, err := strconv.Atoi(strings.TrimPrefix(grp.ID, prefix))
+		if err == nil && n > highest {
+			highest = n
+		}
+	}
+
+	return highest + 1
 }
 
 // saveCollectionsLocked persists the sidecar atomically (caller holds
@@ -312,6 +390,10 @@ func (s *CollectionService) UserGroups() []UserGroupView {
 	out := make([]UserGroupView, 0, len(s.app.collections.groups))
 
 	for _, grp := range s.app.collections.groups {
+		if grp.Kind != GroupKindUser {
+			continue
+		}
+
 		out = append(out, UserGroupView{
 			ID:        grp.ID,
 			Name:      grp.Name,
@@ -341,7 +423,7 @@ func (s *CollectionService) CreateUserGroup(name string) (UserGroupView, error) 
 	defer s.app.collections.mu.Unlock()
 
 	for _, grp := range s.app.collections.groups {
-		if strings.EqualFold(grp.Name, name) {
+		if grp.Kind == GroupKindUser && strings.EqualFold(grp.Name, name) {
 			return UserGroupView{}, fmt.Errorf("app: a group named %q already exists", name)
 		}
 	}
@@ -349,8 +431,9 @@ func (s *CollectionService) CreateUserGroup(name string) (UserGroupView, error) 
 	id := fmt.Sprintf("%s%d", userGroupIDPrefix, s.app.collections.nextGroupID)
 	s.app.collections.nextGroupID++
 
-	grp := persistedUserGroup{
+	grp := persistedGroup{
 		ID:        id,
+		Kind:      GroupKindUser,
 		Name:      name,
 		CreatedAt: time.Now().UTC().UnixMilli(),
 	}
@@ -377,7 +460,7 @@ func (s *CollectionService) DeleteUserGroup(groupID string) error {
 	defer s.app.collections.mu.Unlock()
 
 	for i, grp := range s.app.collections.groups {
-		if grp.ID == groupID {
+		if grp.ID == groupID && grp.Kind == GroupKindUser {
 			s.app.collections.groups = append(
 				s.app.collections.groups[:i],
 				s.app.collections.groups[i+1:]...)
@@ -403,7 +486,7 @@ func (s *CollectionService) RenameUserGroup(groupID, name string) error {
 	defer s.app.collections.mu.Unlock()
 
 	for i, grp := range s.app.collections.groups {
-		if grp.ID == groupID {
+		if grp.ID == groupID && grp.Kind == GroupKindUser {
 			s.app.collections.groups[i].Name = name
 
 			return s.app.saveCollectionsLocked()
@@ -425,7 +508,7 @@ func (s *CollectionService) AddToUserGroup(groupID, configID string) error {
 	defer s.app.collections.mu.Unlock()
 
 	for i, grp := range s.app.collections.groups {
-		if grp.ID != groupID {
+		if grp.ID != groupID || grp.Kind != GroupKindUser {
 			continue
 		}
 
@@ -452,7 +535,7 @@ func (s *CollectionService) RemoveFromUserGroup(groupID, configID string) error 
 	defer s.app.collections.mu.Unlock()
 
 	for i, grp := range s.app.collections.groups {
-		if grp.ID != groupID {
+		if grp.ID != groupID || grp.Kind != GroupKindUser {
 			continue
 		}
 
@@ -479,7 +562,7 @@ func (s *CollectionService) GroupMembers(groupID string) ([]string, error) {
 	defer s.app.collections.mu.Unlock()
 
 	for _, grp := range s.app.collections.groups {
-		if grp.ID == groupID {
+		if grp.ID == groupID && grp.Kind == GroupKindUser {
 			return append([]string(nil), grp.ConfigIDs...), nil
 		}
 	}

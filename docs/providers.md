@@ -1,347 +1,91 @@
-# Provider Architecture (v0.9.8.1)
+# Core Acquisition & Trust (v0.12.2)
 
-This document describes the unified provider architecture (§8–§14 of
-the upgrade specification): ONE lifecycle contract for every
-executable that can provide connectivity — the protocol cores (Xray,
-V2Ray, sing-box) and the first-class engines Tor and Psiphon. The
-implementation is `engine/provider`; the connection integration is
-`engine/connection/provider.go`; the Auto mode and settings surface is
-`engine/app/providerservice.go`.
+This document describes how FreeIran acquires, validates and manages
+the protocol cores that provide connectivity (Xray, V2Ray, sing-box —
+Mihomo is core-manager-managed without a connection adapter).
 
-Design rules:
+**v0.12.2 removal note:** the former provider architecture — the
+first-class Tor and Psiphon engines in `engine/provider`, the provider
+session layer (`engine/connection/provider.go`), the provider service
+surface, the Tor/Psiphon settings and their discovery specs — was
+REMOVED from the active product. Historical design rationale lives in
+CHANGELOG.md (the v0.9.8.x era) and in git history; this document
+describes the current product only.
 
-- Providers and node CONFIGURATIONS are distinct concepts: node
-  ranking stays in `engine/ranking`; provider lifecycle lives in
-  `engine/provider`. Tor is never represented as a VLESS/VMess/Trojan
-  node, and Psiphon is never an ordinary node protocol.
-- No provider is forced into a single configuration format: each
-  engine owns its own runtime configuration (torrc, tunnel-core JSON,
-  core run-configs).
-- ONE managed process supervisor (`system.ManagedProcess` — Windows
-  job objects, no orphan processes) and ONE managed-binary pipeline
-  shared by Tor and Psiphon, reusing `internal/httpx` exactly like
-  `engine/coremgr`. No duplicate install machinery.
-- Honest capability reporting: nothing is claimed that was not
-  discovered from the real runtime (installed version, exposed proxy
-  endpoints, bootstrap state).
+## Design rules
 
-## The Provider contract (`engine/provider/provider.go`)
+- Executables that provide connectivity are managed through the ONE
+  core-manager pipeline (`engine/coremgr`) — one download path, one
+  checksum gate, one health model, one supervisor. No second binary
+  manager exists anywhere.
+- Managed binaries come ONLY from the upstream GitHub Releases of the
+  pinned cores (XTLS/Xray-core, v2fly/v2ray-core, SagerNet/sing-box),
+  over HTTPS, with a mandatory digest gate: an install is REJECTED
+  when a release publishes no authoritative digest (release-API
+  digest or `.dgst` sidecar). A locally computed hash is tamper
+  evidence, never a trust anchor.
+- Every archive extraction is bounded (`internal/safearchive`):
+  entry-count, total-size and path-escape limits apply to every
+  managed download.
+- No arbitrary scripts run; no certificates install; core binaries
+  are validated (version probe + optional smoke test) before they are
+  activated for connections.
+- Each core owns its runtime document (`engine/core/*` compilers).
+  Documents are generated deterministically, keyed by the
+  configuration fingerprint and cached per backend generation.
 
-| Method | Meaning |
-|--------|---------|
-| `Name()` / `Kind()` | identity and kind (`core` / `tor` / `psiphon`) |
-| `Resolve(ctx)` | resolve the release to install/update towards |
-| `Install(ctx)` / `Uninstall(ctx)` | managed binary lifecycle |
-| `Start(ctx)` / `Stop(ctx)` | process lifecycle (serialised per provider by the `Manager`) |
-| `State()` | `LifecycleState` (not_installed → installing → installed → … → running/stopped/failed) |
-| `Info()` | version, source, license, notice, capabilities, last check |
-| `Endpoints()` | local proxy endpoints (e.g. `socks5 127.0.0.1:<port>`) |
-| `Health(ctx)` | measured health: process alive + a real handshake latency (never a process-alive claim alone) |
-| `Cleanup(ctx)` | bounded log pruning; user data is never deleted |
+## Discovery & adoption
 
-The `Manager` registers providers, serialises Start/Stop per provider
-(one managed instance each — §14), lists `Info` views for the UI and
-exposes `Health`. Structured events (`provider_start`, `provider_exit`,
-…) flow through `internal/logging` with error kinds.
+`system.CoreLocator` + `system/execdiscovery.go` probe the platform
+search roots (program directories, PATH, the workspace `cores/` tree)
+for each core's known binary names and installation subdirectories.
+Discovered binaries are version-probed; the registry exposes
+availability, version, origin and ownership to the UI (`Cores` page)
+and to the tester. Workspace migrations carry the `cores/` tree
+forward (v0.11 workspace layout).
 
-### Kinds
+## Lifecycle
 
-| Kind | Providers | Notes |
-|------|-----------|-------|
-| `core` | xray, v2ray, sing-box | thin `CoreProviderAdapter` over the SAME `engine/coremgr` pipeline — installs/uninstalls delegate to the Managed Core Manager; no duplicate install machinery. Provider-level `Start` is honestly unsupported for cores: they run per node-configuration through the connection engine, not as long-lived standalone processes. |
-| `tor` | tor | `engine/provider/tor.go` (below) |
-| `psiphon` | psiphon | `engine/provider/psiphon.go` (below) |
+- Install / update / reinstall / disable flow through the CoreService
+  and the core manager; progress is event-driven
+  (`freeiran:coreprogress`) with per-stage failure reasons.
+- Connection-time supervision is the ONE process supervisor
+  (`system.ManagedProcess` + `engine/core.Launch`): startup deadline,
+  readiness probe (listener), process-exit watching, graceful stop,
+  Windows file-lock discipline. There is no second supervisor.
+- Mihomo remains download-managed and health-checked; it has NO
+  connection adapter (it is not a runnable protocol-core for
+  FreeIran sessions).
 
-## The shared managed-binary pipeline (`engine/provider/binary.go`)
+## Proxy chains (v0.12.2)
 
-```text
-RESOLVE (metadata, official source, checksum authority)
-   → DOWNLOAD  .part file via internal/httpx (resumable, stall-watched)
-   → VERIFY    SHA-256 against the published checksum — MANDATORY:
-               a release without a published checksum is REFUSED
-   → UNPACK    tar.gz (tar-slip guarded)
-   → VALIDATE  version probe against the release tag
-   → SMOKE     one supervised launch that must start and stop cleanly
-   → ACTIVATE  atomic rename staged → bin/; previous binary retained
-               for rollback on failure
-   → MANIFEST  manifest.json (version, source, checksum, dates, state)
-```
+A proxy chain is an ordered list of EXISTING configurations (2–4
+hops, index 0 = first hop, last = egress) compiled into ONE core
+process:
 
-Workspace layout:
+- Xray: `streamSettings.sockopt.dialerProxy` — the egress outbound is
+  tagged `proxy`, earlier hops are `chain-N`, each dialing its
+  predecessor; the first hop dials directly.
+- sing-box: the outbound `detour` field with the same tag plan.
+- V2Ray: refuses chains explicitly (no chaining primitive wired into
+  the adapter) — never an emulated multi-process chain.
+- Mihomo: not a connection adapter; chains never target it.
 
-```text
-<workspace>/providers/<name>/
-├── bin/            active executable
-├── staging/        download + unpack area (transient)
-├── manifest.json   install record
-├── data/           runtime data (tor DataDirectory, psiphon DataRootDirectory)
-├── cache/          runtime cache (tor CacheDirectory)
-└── logs/           pruned (7 days / 16 files) by Cleanup
-```
+Chain sessions run the existing connection state machine and
+verification gate; chain records live in the collections sidecar and
+reference configuration IDs only. See
+[configurations.md](configurations.md) for the workspace surface and
+[architecture.md](architecture.md) for the topology model.
 
-## Tor (`engine/provider/tor.go`, §8)
+## Testing strategy
 
-- **Source contract (verified live).** Official Tor Project
-  distribution only:
-  `https://dist.torproject.org/torbrowser/<ver>/tor-expert-bundle-<platform>-<ver>.tar.gz`
-  with `sha256sums-signed-build.txt` as the checksum authority,
-  fetched over TLS from the same host. No third-party mirrors, no
-  scripts. The default channel is pinned to **15.0.20**; the
-  "latest" channel resolves through the directory listing with alpha
-  builds skipped.
-- **Runtime configuration.** A torrc is generated per run:
-  `SocksPort` on a reserved ephemeral port,
-  `DataDirectory`/`CacheDirectory` inside the provider workspace,
-  `Log notice stdout`. Nothing is written outside the workspace.
-- **Bootstrap truth.** Progress is parsed from the REAL
-  `Bootstrapped X% (Tag)` notice log lines Tor itself emits — never
-  from timers. Readiness is also observed via the local SOCKS
-  endpoint.
-- **Bridges: user-provided ONLY.** Bridge lines are validated
-  (transport + host:port + optional 40-hex fingerprint) and never
-  hardcoded. Pluggable transports (obfs4, snowflake) run through
-  user-configured plugin executable paths. WebTunnel is built into
-  tor ≥ 0.4.8 and its availability is reported from the INSTALLED
-  version only — never assumed.
-- **Health.** Process alive AND a measured SOCKS handshake.
-- **Licensing.** BSD-3-Clause (Tor Project); the attribution notice
-  ("produced independently from the Tor® software…") is surfaced in
-  the UI.
-- **Honest limitation.** GPG verification of the checksum file itself
-  is not performed. Checksums are fetched over TLS from the official
-  host — the same authority model as the Tor Browser updater's
-  initial bootstrap.
-
-## Psiphon (`engine/provider/psiphon.go`, §9)
-
-- **Channel policy.** The official tunnel-core console client channel
-  (GitHub releases with published asset digests; default repository
-  `Psiphon-Labs/psiphon-tunnel-core`). Channel status — live audit,
-  2026-09-18: upstream documentation identifies
-  `psiphon-tunnel-core` as the source/ConsoleClient repository and
-  `psiphon-tunnel-core-binaries` as the official binary location.
-  The `psiphon-tunnel-core` releases (v2.0.39–v2.0.41 at audit time)
-  publish ONLY mobile client-library archives
-  (Android/Client/iOS) with SHA-256 digests — no console-client
-  binary. The `-binaries` repository commits "release candidate"
-  binaries directly to its moving `master` branch and provides NO
-  releases, tags, digests or signatures — no checksum authority at
-  all (and no Windows x86_64 build at audit time). The engine
-  therefore reports honest unavailability for managed installation
-  and never downloads raw binaries from a moving branch; should the
-  project publish a digest-bearing console-client release asset,
-  managed installation starts working with no code change.
-- **Refusal semantics (honest).** When the channel exposes no release
-  assets with digests, `Resolve` reports unavailability and `Install`
-  REFUSES — binaries are never executed unverified. No digest, no
-  install; verification is never weakened to make installation
-  easier.
-- **User-provided binary (the supported path).** The user can point
-  FreeIran at a console client binary (`psiphon_user_binary`).
-  Adoption is copy-not-move: the file is SHA-256'd, copied into
-  FreeIran-managed provider storage under a content-addressed name
-  (same bytes → same path, so repeated adoption is idempotent and
-  never renames over an in-use Windows image), the managed copy is
-  verified byte-equivalent, then validated and smoke-launched —
-  both through the `system` supervision layer (no visible console
-  window, job-object/process-tree cleanup, bounded lifetime,
-  cancellation). The user's original file is NEVER moved, renamed or
-  deleted; it survives adoption, the provider lifecycle and even
-  Windows sharing-violation conditions intact, and `Uninstall`
-  removes only FreeIran's managed state.
-- **Runtime configuration.** A config JSON is generated per run:
-  `LocalSocksProxyPort` + `LocalHttpProxyPort` on reserved ephemeral
-  ports, `DataRootDirectory` inside the provider workspace. The
-  user's extra config (`psiphon_extra_config`) is merged only after
-  JSON validation, and engine-owned fields are never overridable.
-- **Readiness truth.** Observed from the real runtime: both local
-  proxy ports actually accepting connections; the client's tunnel
-  output is reflected in bootstrap tags. Capabilities are reported
-  ONLY when running.
-- **Licensing.** Psiware license (Psiphon tunnel-core); attribution is
-  surfaced in the UI and nothing is statically embedded into
-  FreeIran's binary.
-
-## Connection integration (`engine/connection/provider.go`, §11)
-
-`Manager.ConnectProvider` runs provider routes through the SAME
-lifecycle as configuration routes:
-
-```text
-select → start provider (waits for ready/bootstrap)
-       → route via the provider's local SOCKS endpoint
-       → VerifyTunnel (the SAME verification gate — never bypassed)
-       → connected
-       → the SAME monitor loop (provider health drives crash transitions)
-       → disconnect stops the provider deterministically
-```
-
-`Reconnect` remembers the provider route and re-establishes it. The
-session snapshot names the active provider and endpoint; exactly one
-of configuration/provider route is active. `engine/connection/provider_test.go`
-verifies the session contract end-to-end (§11), including
-HTTP-through-provider via a real SOCKS relay.
-
-## Auto mode (`engine/app/providerservice.go`, §12)
-
-Auto mode selects between configurations and providers on EVIDENCE —
-no hardcoded priority:
-
-- installed availability gate (an uninstalled provider can never be
-  chosen over an installed one),
-- live health (measured handshake latency),
-- last verified success freshness,
-- measured latency,
-- failure-streak stability,
-- the config-side ranking composite for the Configurations route.
-
-Choices are explainable like ranking: the selection returns the
-ordered evidence and a human-readable reason. Mode values:
-`auto | configs | tor | psiphon` (`provider_mode`).
-
-## Process and memory safety (§14)
-
-- One managed instance per provider: the `Manager` and the engines
-  serialize Start/Stop; a second Start while running is rejected.
-- Every provider process runs under `system.ManagedProcess` (Windows
-  job objects with kill-on-close — no orphans on any exit path).
-- A failed start stops the provider deterministically; no half-started
-  process survives.
-- `Cleanup` prunes provider logs (7 days / 16 files); user data is
-  never deleted.
-- The Internet-tools service bounds tool concurrency (3 tokens) —
-  see docs/internet-tools.md.
-
-## Settings reference
-
-| Key | Meaning |
-|-----|---------|
-| `provider_mode` | `auto` / `configs` / `tor` / `psiphon` (Quick Connect selector) |
-| `tor_bridge_lines` | user-provided bridge lines (validated: transport + host:port + optional 40-hex fingerprint) |
-| `tor_transport_plugins` | transport name → user-provided client plugin executable (obfs4, snowflake) |
-| `psiphon_extra_config` | advanced user JSON merged into the generated config (engine-owned fields not overridable) |
-| `psiphon_user_binary` | optional user-provided console-client binary path |
-
-All are non-sensitive preferences persisted under the workspace
-config directory with 0600 permissions; bridge lines and plugin paths
-are values the user themselves provided and are never logged.
-
-## Testing strategy (`engine/provider/provider_test.go`)
-
-- Deterministic stand-ins: `engine/provider/testdata/{faketor,fakepsiphon}`
-  are built by the test harness in `TestMain` with the running Go
-  toolchain — a missing fixture is a hard failure, never a silent
-  skip (the fakecore discipline of docs/development.md).
-- The full provider matrix — resolve, download (local httptest
-  server), checksum verification (including refusal on digest
-  mismatch), unpack, validate, install, start, bootstrap parsing,
-  readiness, health, stop, uninstall — runs against the fakes; no
-  test touches the live Tor network or Psiphon servers.
-- HTTP-through-provider is exercised via a real SOCKS relay (the same
-  approach as the v0.9.6 tunnel-verification tests), and the
-  connection provider-session tests drive `ConnectProvider`
-  end-to-end.
-- Frontend: the provider store and provider-mode routing are covered
-  by vitest (`frontend/src/state/providerStore.test.ts`,
-  Quick Connect page tests).
-
-
-## v0.9.8.3 acquisition notes
-
-**Tor** — the resolver re-queries the current official distribution
-listing (`https://dist.torproject.org/torbrowser/`, stable channel) at
-install time and falls back to the deterministic pinned release when
-the listing is unreachable. The expert-bundle asset is verified
-against the official `sha256sums-signed-build.txt` (SHA-256; the
-parser tolerates the GNU binary-mode marker). Activation moves the
-WHOLE bundle payload (DLLs, geoip data, plugins) into the managed
-directory so the validated copy is the activated copy. Idempotency
-compares the installed manifest checksum with the freshly resolved
-official checksum — no redundant re-downloads.
-
-**Psiphon** — the audit of the official channels still finds no
-deterministic, trusted Windows x64 automatic acquisition route for
-tunnel-core (no releases with published digests on the official
-repositories). The managed auto-install therefore fails honestly at
-the trust boundary instead of executing unverified moving-branch
-binaries. The supported path is the user-binary flow: select →
-SHA-256 → validate → supervised smoke test → managed copy verified
-byte-identical → activate. The UI distinguishes auto-available,
-manual-required, installed, failed and unavailable states.
-
-## v0.9.8.6 — bounded extraction
-
-Provider archive extraction runs through `internal/safearchive`
-(same as core installs): archive/total/per-file/file-count bounds,
-path-traversal and absolute-path rejection, symlink/hardlink
-rejection and fail-closed handling of malformed archives. The
-mandatory published-checksum gate is unchanged — it was already
-correct for providers.
-
----
-
-## v0.11.2 addendum — Mihomo as a managed core
-
-Mihomo (the MetaCubeX Clash.Meta successor) is now a first-class
-managed core through `engine/coremgr`. It rides the EXACT same pipeline
-as Xray/V2Ray/sing-box (download → verify → unpack → validate →
-smoke → atomic activate → version probe → manifest → health), with
-one extension: `internal/safearchive` now also handles single-file
-`.gz` (the Mihomo Linux release shape — a gzipped executable, not a
-`.tar.gz`). The connection-engine adapter (Clash-YAML config builder +
-selection + Register call) is intentionally out of scope per "No
-large unrelated refactor"; Mihomo is coremgr-managed only.
-`engine/app/core_integration_test.go` now asserts Mihomo is
-discoverable on disk AND not advertised as a runnable backend until
-that adapter ships.
-
-Tor and Psiphon providers are unchanged from v0.11.0 — the baseline
-already implemented the spec's required real lifecycle (Tor: official
-dist.torproject.org + archive.torproject.org split, sha256sums-signed
--build.txt verification, real bootstrap readiness from Tor's notice
-log; Psiphon: copy-not-move user-binary path with content-addressed
-managed storage, byte-equivalent verification, smoke launch of the
-MANAGED COPY). The v0.11.0 provider tests pass against the v0.11.2
-tree without modification.
-
----
-
-## v0.11.3 addendum — TUN uses the same managed-core surface
-
-The TUN dataplane reuses the provider/core architecture rather than
-adding a parallel one: `TunnelService` resolves the managed sing-box
-core through a `TUNCoreResolver` implemented over the EXISTING
-coremgr manifest (digest-verified install, states installed/ready/
-update-available) and installs through the existing pipeline when
-missing. Core provider adapters, Mihomo's integration state and the
-honest capability surface are unchanged — TUN adds a consumer of the
-managed-core surface, not a second manager (docs/tun.md).
-
----
-
-## Future providers (PLANNED — v0.12.0 documentation, no implementation)
-
-The long-term direction ([autonomous-connectivity.md](autonomous-connectivity.md))
-adds future providers under the SAME one-manager lifecycle — there is
-and will be no second lifecycle system:
-
-```text
-Tor circumvention   — pluggable transports (obfs4, Snowflake,
-                      WebTunnel, meek) + Tor Circumvention / Onion Only
-                      modes; bridge selection stays evidence-driven,
-                      user-provided bridge configuration stays the model
-I2P                 — I2P Provider + I2P-only mode for .i2p
-                      destinations (a private overlay, NOT a generic
-                      Internet VPN; outproxy routing is never the default)
-AmneziaWG           — WireGuard variant under the canonical WireGuard
-                      model; official/verified implementation only;
-                      privileged Windows components require a dedicated
-                      security review before integration
-```
-
-All future providers adopt the extended lifecycle contract
-(`Resolve → Install → Verify → Prepare → Start → Ready → Connect →
-Health → Monitor → Recover → Stop → Cleanup`) and share the existing
-health/evidence surfaces. None of them exists today; none may be
-advertised as a capability until its real-binary evidence lands in
-docs/protocols.md / docs/ci.md at the recorded evidence classes.
+- Core manager: download/verify/activate against controlled local
+  release servers (`engine/coremgr` tests).
+- Compilers: generated documents are schema-asserted per backend
+  (`engine/core/{v2ray,xray,singbox}` tests), including the chain
+  tag plans (`TestXrayChainCompilesHopsInOrder`,
+  `TestSingBoxChainCompilesDetourOrder`) and the explicit
+  unsupported-core behaviour (`TestV2RayChainExplicitlyUnsupported`).
+- Sessions: deterministic fake-core lifecycle tests
+  (`engine/connection`) prove state-machine behaviour — including
+  chain sessions — without live protocol runtimes.

@@ -205,7 +205,7 @@ planned                 = REALITY/XHTTP as adaptive candidates, Hysteria2/TUIC/
                           Shadowsocks/WireGuard under the adaptive engine,
                           AmneziaWG (WireGuard variant, security-reviewed
                           privileged components required),
-                          Tor transports (obfs4/Snowflake/WebTunnel/meek), I2P
+                          generic circumvention slot (planned), I2P
 not verified            = anything an upstream core supports but FreeIran has
                           no real-binary evidence for — upstream support NEVER
                           promotes a row to implemented

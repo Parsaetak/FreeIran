@@ -63,11 +63,12 @@ func registeredServices(t *testing.T) map[string]any {
 		"github.com/Parsaetak/FreeIran/engine/app.TunnelService":        NewTunnelService(a),
 		"github.com/Parsaetak/FreeIran/engine/app.NetworkService":       NewNetworkService(a),
 		"github.com/Parsaetak/FreeIran/engine/app.DiscoveryService":     NewDiscoveryService(a),
-		"github.com/Parsaetak/FreeIran/engine/app.ProviderService":      NewProviderService(a),
 		"github.com/Parsaetak/FreeIran/engine/app.InternetToolsService": NewInternetToolsService(a),
 		// v0.9.10: favorites, user groups and the source
 		// reliability dashboard.
 		"github.com/Parsaetak/FreeIran/engine/app.CollectionService": NewCollectionService(a),
+		// v0.12.2: proxy chains over the SAME collections authority.
+		"github.com/Parsaetak/FreeIran/engine/app.ProxyChainService": NewProxyChainService(a),
 		// v0.9.11: Connection Profiles (P2 §18).
 		"github.com/Parsaetak/FreeIran/engine/app.ProfileService": NewProfileService(a),
 		// v0.10.2: personal configuration import.

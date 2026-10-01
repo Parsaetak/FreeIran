@@ -147,12 +147,12 @@ func main() {
 			application.NewService(app.NewDiscoveryService(applicationInstance)),
 			// v0.9.8.1: first-class provider surface (§12/§13) and the
 			// shared Internet-Tools engine (§6).
-			application.NewService(app.NewProviderService(applicationInstance)),
 			application.NewService(app.NewInternetToolsService(applicationInstance)),
 			// v0.9.10: persistent favorites, user groups and the
 			// evidence-based source reliability dashboard (v0.7
 			// roadmap work completed on the existing architecture).
 			application.NewService(app.NewCollectionService(applicationInstance)),
+			application.NewService(app.NewProxyChainService(applicationInstance)),
 			// v0.9.11: Connection Profiles (P2 §18) — named connection
 			// preference sets over the EXISTING settings + connection
 			// engine; activation runs through the one settings path.

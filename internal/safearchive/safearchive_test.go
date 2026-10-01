@@ -114,7 +114,7 @@ func TestUnpackTarGzExtractsEntries(t *testing.T) {
 	tw := tar.NewWriter(gz)
 
 	files := map[string]string{
-		"tor":          "tor-binary",
+		"leaf":         "leaf-file",
 		"data/geo.txt": "geo",
 	}
 
@@ -147,9 +147,9 @@ func TestUnpackTarGzExtractsEntries(t *testing.T) {
 		t.Fatalf("Unpack: %v", err)
 	}
 
-	got, err := os.ReadFile(filepath.Join(dst, "tor"))
-	if err != nil || string(got) != "tor-binary" {
-		t.Fatalf("tor entry = %q, %v", got, err)
+	got, err := os.ReadFile(filepath.Join(dst, "leaf"))
+	if err != nil || string(got) != "leaf-file" {
+		t.Fatalf("leaf entry = %q, %v", got, err)
 	}
 }
 

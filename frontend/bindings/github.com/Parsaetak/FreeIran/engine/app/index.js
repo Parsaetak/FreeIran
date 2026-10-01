@@ -14,7 +14,6 @@ import * as InternetToolsService from "./internettoolsservice.js";
 import * as LogService from "./logservice.js";
 import * as NetworkService from "./networkservice.js";
 import * as ProfileService from "./profileservice.js";
-import * as ProviderService from "./providerservice.js";
 import * as SettingsService from "./settingsservice.js";
 import * as SourceService from "./sourceservice.js";
 import * as StorageService from "./storageservice.js";
@@ -33,7 +32,6 @@ export {
     LogService,
     NetworkService,
     ProfileService,
-    ProviderService,
     SettingsService,
     SourceService,
     StorageService,
@@ -86,7 +84,6 @@ export {
     TestBatchResult,
     TestFilter,
     ToolRequestView,
-    TorOptionsView,
     UserGroupView,
     VerifyResult
 } from "./models.js";

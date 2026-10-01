@@ -94,7 +94,7 @@ export function humanizeConnectionError(message: string, technical = ""): Humani
         "All failed candidates are on cooldown so they will not be retried immediately.",
       canDo: [
         "Open Sources and press Refresh now, then connect again",
-        "Try the Tor or Psiphon route on the Connect screen",
+        "Build a proxy chain of two known-good configurations on the Connect screen",
         "Open Configurations and test connections to refresh the rankings",
       ],
       technical: raw,
@@ -176,6 +176,10 @@ export const EDUCATION_HINTS = {
   verification:
     "Verified means real Internet traffic passed through the route — " +
     "not just that the connection started.",
+  proxyChain:
+    "A proxy chain routes your traffic through two or more of your own " +
+    "configurations in order, running as one connection. Build one in " +
+    "Configurations from working configurations.",
   core:
     "A core is the engine that runs a configuration. Different protocols " +
     "need different cores (Xray, V2Ray, sing-box).",

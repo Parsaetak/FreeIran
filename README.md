@@ -9,7 +9,7 @@ configurations.
 **Project:** FreeIran — A SHEYTAN Digital System
 **Architect:** Parsa Tak / SHEYTAN
 **Repository:** https://github.com/Parsaetak/FreeIran
-**Current version:** 0.12.1 (see `VERSION`)
+**Current version:** 0.12.2 (see `VERSION`)
 **Status:** production architecture — multi-core protocol runtime with
 managed installation, multi-level node discovery, Ping/URL test modes
 with measured ranking, verified-connection engine with racing,
@@ -17,75 +17,10 @@ environment intelligence, system proxy mode (WinINet), functional
 Windows TUN mode through the managed sing-box core's native TUN
 dataplane, unified adaptive memory control and kernel-level process
 supervision, evidence-based failure classification with
-transport-agile route selection, and schema-verified ECH support
-through sing-box.
-
-## What's new in v0.12.1
-
-v0.12.1 is a **network-tool truth + configuration-workspace release** —
-three goals, no architecture replaced:
-
-- **Network tools report truthfully.** Every diagnostic state carries
-  its own meaning and its own log event: `ok`, `partial`, `failed`,
-  `timeout`, `cancelled`, `invalid_target`, `unsupported`,
-  `not_configured`, `not_applicable`, `unreachable`. A missing local
-  proxy is "Not configured" (never a red failure); tunnel diagnostics
-  on the direct path is "Not applicable"; a silent QUIC path is
-  "unreachable" evidence; a half-answering DNS run is "partial" with
-  its successful measurements retained.
-- **HTTP CONNECT and SOCKS5 lost their fake default.** Neither tool
-  blindly probes `127.0.0.1:1080` anymore. Targets resolve through
-  explicit user target → protocol-compatible local/session endpoint →
-  an honest `not_configured`.
-- **QUIC became a real diagnostic.** A bounded QUIC v1 handshake probe
-  (HTTP/3 ALPN) built on `quic-go` — the minimal dedicated diagnostic
-  dependency, used for measurement only and never as a dataplane.
-- **WebSocket stopped blaming the network for one endpoint's outage.**
-  The default run probes a small bounded curated set and aggregates
-  honestly (one up one down → `partial`); an explicit target still
-  answers exactly that target.
-- **Traceroute grew a native Windows walker.** The IP Helper ICMP API
-  (IcmpSendEcho with per-probe TTL) walks the path in user mode — no
-  elevation, no tracert.exe, no shell — and the classification
-  distinguishes privilege-gap `unsupported` from measured
-  `unreachable` with hop evidence retained.
-- **DNS gained a bounded DoH comparison row** inside the existing
-  diagnostic (RFC 8484 JSON, one endpoint): a hijacked plaintext path
-  beside a working encrypted path is real censorship evidence.
-- **The runtime log stays clean.** `core_discovered` is compact and
-  provenance-free ("xray 26.3.27 available") — the v0.12.0 regression
-  that leaked commit hashes and Go build tuples into the normal log is
-  fixed and pinned by tests. Every tool status has its own event
-  (`network_tool_not_configured`, `network_tool_unreachable`, ...).
-- **Configurations became a source-aware workspace.** The scope rail
-  adds per-source/subscription scopes with authoritative counts from
-  `SourceStatsList`; a source scope header shows the backend's
-  measured evidence (counts, freshness, trust band) with per-source
-  **Update** (targeted single-source refresh through the ONE ingestion
-  pipeline) and **Check** actions (through the ONE shared test
-  queue). User groups keep test-only actions — a group is not a remote
-  source. The dense virtualized table, server-side filtering, detail
-  tabs and per-config test affordances are all preserved.
-- **The native browser context menu is gone.** One application-wide
-  policy suppresses it; right-click on configurations opens FreeIran's
-  own MenuSurface, and text fields keep native editing/clipboard
-  behaviour. Keyboard UX grows the desktop-client basics (Ctrl+A
-  select visible scope, Shift+F10/Menu-key context menus, Delete =
-  leave the current user group).
-- Sources page rows gained targeted actions (update this source, view
-  its configurations, check them) that land in the matching
-  configuration scope through the existing navigation event model.
-
-> **Honesty boundary (unchanged):** the Network tools are measurement
-> tools. Nothing in v0.12.1 claims QUIC protection, WebSocket
-> censorship resistance, DNS-leak prevention, IPv6 protection or a WFP
-> kill switch. The future-architecture contract in
-> docs/autonomous-connectivity.md remains PLANNED, not implemented.
-
-Release history (v0.11.5 GUI launch fix and earlier): see
-[CHANGELOG.md](CHANGELOG.md).
-
----
+transport-agile route selection, proxy chains compiled into a single
+core process, and schema-verified ECH support through sing-box.
+v0.12.2 removed Tor and Psiphon from the active product (history
+lives in CHANGELOG.md).
 
 ## What FreeIran is
 
@@ -122,8 +57,17 @@ as a future-work contract (PLANNED; not implemented).
 - System Proxy mode (WinINet) and Windows TUN mode through the
   managed sing-box core's native TUN dataplane (transactional,
   observed activation; see [docs/tun.md](docs/tun.md)).
-- Tor and Psiphon providers under one provider lifecycle
-  ([docs/providers.md](docs/providers.md)).
+- Proxy Chains (v0.12.2): an ordered hop list over EXISTING
+  configurations (2–4 hops), built and validated in the
+  Configurations workspace, persisted in the collections sidecar and
+  compiled into ONE protocol-core process (Xray
+  `streamSettings.sockopt.dialerProxy` / sing-box `detour`) — never
+  one process per hop. Chain sessions run the SAME verified
+  connection state machine (readiness is never success; the same
+  multi-target Internet verification gate applies), and the chain
+  check reports per-hop evidence plus a fresh end-to-end
+  measurement. Cores without a chaining primitive (V2Ray) refuse
+  chains explicitly.
 - Windows CI with real-core verification, GUI launch proof, security
   scanning ([docs/ci.md](docs/ci.md), [docs/security.md](docs/security.md)).
 
@@ -217,8 +161,8 @@ Details: [docs/README.md](docs/README.md) (documentation index),
   SagerNet/sing-box, over HTTPS. An install is REJECTED when a
   release publishes no authoritative digest (release-API digest or
   .dgst sidecar) — a locally computed hash is tamper evidence, never
-  a trust anchor. Provider binaries (Tor, Psiphon) carry the same
-  mandatory checksum gate, and every archive extraction is bounded
+  a trust anchor. Every managed binary passes the mandatory checksum
+  gate, and every archive extraction is bounded
   (`internal/safearchive`).
 - No arbitrary scripts are executed; no certificates are installed; no
   credentials are written to logs (log paths pass through redaction).
@@ -318,7 +262,6 @@ FreeIran/
 │   ├── netcheck/          Connectivity diagnostics + Internet tools engine
 │   ├── parser/            Multi-format configuration parser
 │   ├── pipeline/          Streaming ingestion pipeline (worker pools)
-│   ├── provider/          Provider architecture: Tor, Psiphon, cores
 │   ├── scheduler/         Interval scheduler (skip-if-busy, jitter)
 │   ├── source/            Source model + HTTP fetcher + collector
 │   ├── store/             Chunked persistence: WAL, memtables, compaction
@@ -339,11 +282,13 @@ FreeIran/
 ## Roadmap
 
 The forward roadmap is maintained in [ROADMAP.md](ROADMAP.md) —
-six phases (full-device protection, adaptive censorship engine, Tor
-+ circumvention, canonical routing/DNS, privacy diagnostics,
-advanced topologies) with the future architecture contracts in
+future phases (full-device protection, adaptive censorship engine,
+canonical routing/DNS, privacy diagnostics, advanced topologies) with
+the future architecture contracts in
 [docs/autonomous-connectivity.md](docs/autonomous-connectivity.md).
-Nothing beyond the current baseline is complete.
+Nothing beyond the current baseline is complete. Release history
+lives in [CHANGELOG.md](CHANGELOG.md) — this README describes the
+current product only.
 
 ## Attribution & License
 

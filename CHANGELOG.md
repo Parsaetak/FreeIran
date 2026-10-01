@@ -11,6 +11,128 @@ are historical: version numbers, core pins and verification claims
 inside them describe the state of that release, not the current
 state.
 
+## v0.12.2 — blank-window root-cause repair, Tor/Psiphon removal, proxy chains, route evidence
+
+v0.12.2 repairs the v0.12.1 blank-window regression at its root,
+removes Tor and Psiphon from the active product (vertical removal —
+implementation, lifecycle, UI, bindings, settings and discovery —
+never only buttons), introduces real proxy chains compiled into ONE
+core process, and polishes verified-route selection with an honest
+evidence line.
+
+### Blank-window root cause (frontend)
+
+- **Root cause.** `App.tsx` called `useSuppressNativeContextMenu()`
+  INSIDE a `useEffect` callback while the helper itself calls
+  `useEffect` — a Rules of Hooks violation. The invalid-hook error
+  threw inside App's own effect, above every error boundary, and
+  React unmounted the whole tree: the backend reached
+  `application_ready` / `window_show` / `warmup_complete` and the
+  window appeared, but the visible UI was blank.
+- **Fix.** The policy hook is mounted at the TOP LEVEL of the App
+  component (the smallest correct architecture); the app-wide
+  right-click policy itself is unchanged — rows still open FreeIran's
+  own MenuSurface, text fields keep native clipboard/IME behaviour.
+- **Regression guards.** A shell test renders the REAL `<App/>` and
+  must paint the FreeIran navigation (the exact failure class the
+  v0.12.1 tests could not see), plus a static Rules-of-Hooks check
+  that walks every production source file's AST and rejects any hook
+  called inside a nested callback (no ESLint exists in this repo;
+  the checker also proves itself against the historical defect).
+
+### Tor / Psiphon removal (vertical)
+
+- `engine/provider` (Tor engine, Psiphon engine, managed-binary
+  pipeline, adoption/discovery, fake binaries, all provider tests)
+  deleted; `engine/connection/provider.go` provider sessions deleted;
+  the `ProviderService` surface and its bindings deleted.
+- Provider settings (`provider_mode`, `tor_bridge_lines`,
+  `tor_transport_plugins`, `psiphon_extra_config`,
+  `psiphon_user_binary`) removed; a persisted legacy
+  `provider_mode` MIGRATES to the surviving Quick Connect route mode
+  (`tor`/`psiphon` -> `auto`) — startup never bricks on a removed
+  mode. Legacy tor/psiphon PROFILE modes migrate to `auto` instead
+  of dropping the record.
+- Core discovery specs for tor/psiphon removed from
+  `system/execdiscovery`; the Cores page "Providers" section is gone
+  (protocol-core management is the whole surface); Quick Connect lost
+  the Tor/Psiphon modes and their education copy.
+- Preserved: the core managers (xray/v2ray/sing-box/mihomo), core
+  discovery/reuse, the checksum/trust pipeline, process supervision,
+  and the connection lifecycle — untouched.
+
+### Proxy Chains (one topology, one process)
+
+- **Data model on the EXISTING collections authority.**
+  `collections.json` moves to schema v2: groups carry a stable
+  `kind` — `user` or `proxy_chain`; v1 documents migrate on load
+  (every existing group becomes `user`). Chain records reference
+  configuration IDs only (2-4 ordered hops) — credentials and
+  configuration payloads are never copied; atomic persistence and
+  the future-schema refusal are unchanged.
+- **Service.** `ProxyChainService` (same authority): List / Create /
+  Rename / Delete / AddHop / RemoveHop / ReorderHop / Details /
+  Validate / CheckChain, with credential-free projections and
+  actionable errors. A chain is not a remote source — no update
+  semantics anywhere.
+- **Compilation.** Chains compile into ONE core process through the
+  existing per-core compiler boundaries: Xray via
+  `streamSettings.sockopt.dialerProxy` (egress = `proxy`, earlier
+  hops = `chain-N` tags, each dialing its predecessor), sing-box via
+  the outbound `detour` field. V2Ray refuses chains explicitly
+  ("does not support proxy chains"); Mihomo has no connection
+  adapter (unchanged). Chain compositions fingerprint over every
+  hop (`ChainFingerprint`), so runtime files and generation-cache
+  keys never collide across chains.
+- **Execution.** `ConnectionService.ConnectChain` rides the EXISTING
+  connection state machine (select -> prepare -> start ONE core ->
+  ready -> verify -> connected -> monitor -> recover). Chain
+  readiness alone is never success; the same multi-target
+  verification gate applies. Snapshots display the chain identity
+  ("(proxy chain)") and the session label distinguishes the route
+  kind for network tools.
+- **Checks.** `CheckChain` = per-hop stored evidence PLUS a fresh
+  end-to-end measurement through the compiled chain (existing
+  tester, bounded, instance closed afterwards). "Check hops" runs
+  through the ONE test queue.
+
+### Configurations UX (v2rayN interaction concepts, FreeIran design)
+
+- Scope rail gains PROXY CHAIN scopes (name + hop count) beside the
+  source scopes and user groups, plus "+ New chain".
+- The chain scope header shows hop count, completeness, the compiled
+  preview (A -> B -> C), per-hop working evidence, and Check chain /
+  Connect / Edit — never "Update source".
+- The dense table gains a dedicated SECURITY column (transport and
+  security are separate facts now) and an explicit Address : Port
+  column; virtualization and server-side filtering are unchanged.
+- Row context menu (the ONE MenuSurface) gains real chain actions:
+  build a chain from the selected rows, add the selection to an
+  existing chain, and remove/reorder hops inside a chain scope. No
+  fake edit actions.
+- The chain editor: ordered hop list with move up/down and remove,
+  protocol + endpoint + latest evidence per hop, a live preview,
+  validation before save, and Check hops / Check chain / Connect.
+  Hops are referenced, never copied or edited through the chain.
+
+### Verified-route selection evidence
+
+- The Quick Connect picker shows the compact evidence line for the
+  selected route — "Selected because: verified 2 min ago · 126 ms ·
+  8/10 recent successes" — derived only from recorded observations
+  (measurement freshness, real latency, the success rate over the
+  recorded samples). No invented confidence percentages, no opaque
+  score; with no verified candidate the line says exactly that.
+
+### Packaging, version, docs
+
+- VERSION, `internal/version`, `build/winres.json`, the frontend
+  package version and all active version strings are 0.12.2;
+  historical v0.12.1 entries remain historical only.
+- README is current-product-only (no release-history duplication);
+  CHANGELOG owns the release narrative; docs updated for the
+  provider removal and the chain architecture.
+
 ## v0.12.1 — network-tool truth, per-source configuration workspace, desktop-class context UX
 
 v0.12.1 fixes what the v0.12.0 runtime log exposed (six mislabeled

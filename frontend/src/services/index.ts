@@ -6,7 +6,7 @@
  * rest of the UI insulated from binding paths and provides one place
  * to normalize backend errors.
  */
-import * as appService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/appservice.js";
+import * as appServiceBinding from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/appservice.js";
 import * as sourceServiceBinding from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/sourceservice.js";
 // v0.12.1: targeted source refresh (§18) — hand-maintained ByName
 // binding (the Go contract test verifies every ByName method against
@@ -15,7 +15,7 @@ import * as sourceServiceV12 from "../../bindings/github.com/Parsaetak/FreeIran/
 import * as dataService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/dataservice.js";
 import * as storageService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/storageservice.js";
 import * as diagnosticsService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/diagnosticsservice.js";
-import * as connectionService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/connectionservice.js";
+import * as connectionServiceBinding from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/connectionservice.js";
 import * as logService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/logservice.js";
 import * as settingsService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/settingsservice.js";
 import * as coreService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/coreservice.js";
@@ -23,11 +23,16 @@ import * as testQueueService from "../../bindings/github.com/Parsaetak/FreeIran/
 import * as tunnelService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/tunnelservice.js";
 import * as networkService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/networkservice.js";
 import * as discoveryService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/discoveryservice.js";
-// v0.9.8.1: first-class provider surface (§12/§13) + Internet-Tools
-// engine (§6). Hand-maintained ByName bindings (same pattern the
-// v0.9.3 methods used until the next generator run).
-import * as providerService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/providerservice.js";
+// Internet-Tools engine (§6). Hand-maintained ByName bindings (same
+// pattern the v0.9.3 methods used until the next generator run).
 import * as toolsService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/internettoolsservice.js";
+// v0.12.2: Quick Connect route-mode methods (the provider surface was
+// removed with Tor/Psiphon).
+import * as appServiceV12 from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/appservice_v0122.js";
+// v0.12.2: proxy chains (hand-maintained ByName binding).
+import * as proxyChainService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/proxychainservice.js";
+import * as proxyChainModels from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/proxychainmodels.js";
+import * as connectionServiceV12 from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/connectionservice_v0122.js";
 // v0.9.10: favorites, user groups and the evidence-based source
 // reliability dashboard (machine-generated bindings).
 import * as collectionService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/collectionservice.js";
@@ -40,12 +45,26 @@ import * as profileService from "../../bindings/github.com/Parsaetak/FreeIran/en
 import * as importService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/importservice.js";
 import * as loggingModels from "../../bindings/github.com/Parsaetak/FreeIran/internal/logging/models.js";
 
+// v0.12.2: appService merges the generated binding with the
+// hand-maintained Quick Connect route-mode methods.
+export const appService = {
+  ...appServiceBinding,
+  ConnectMode: appServiceV12.ConnectMode,
+  SetConnectMode: appServiceV12.SetConnectMode,
+};
+
+
+// v0.12.2: connectionService merges ConnectChain (chains compile into
+// ONE core process through the same state machine).
+export const connectionService = {
+  ...connectionServiceBinding,
+  ConnectChain: connectionServiceV12.ConnectChain,
+};
+
 export {
-  appService,
   dataService,
   storageService,
   diagnosticsService,
-  connectionService,
   logService,
   settingsService,
   coreService,
@@ -53,9 +72,10 @@ export {
   tunnelService,
   networkService,
   discoveryService,
-  providerService,
   toolsService,
   collectionService,
+  proxyChainService,
+  proxyChainModels,
   profileService,
   importService,
   loggingModels,
@@ -478,71 +498,66 @@ export interface CandidateView {
   explanation?: string[];
 }
 
-// ---- v0.9.8.1 provider surface (§12/§13) ----------------------------
+// ---- v0.12.2 proxy-chain view models --------------------------------
 
-/** One provider choice row (auto mode). */
-export interface ProviderChoiceView {
-  kind: string;
+/** One chain (list surface). Mirrors engine/app/proxychain.go. */
+export type ProxyChainView = {
+  id: string;
   name: string;
-  score: number;
-  reasons?: string[];
-}
+  hops: number;
+  created_at?: number;
+  updated_at?: number;
+};
 
-/** One provider mode option. */
-export interface ProviderModeView {
-  mode: string;
-  label: string;
-}
-
-/** Local proxy endpoint discovered from the real runtime. */
-export interface ProviderEndpointView {
-  network: string;
-  host: string;
-  port: number;
-  verified?: boolean;
-}
-
-/** Live bootstrap progress from the provider's ACTUAL state. */
-export interface ProviderBootstrapView {
-  active?: boolean;
-  progress?: number;
-  tag?: string;
-  complete?: boolean;
-  updated_at?: string;
-}
-
-/** Provider Info (credential-free, §13). */
-export interface ProviderInfoView {
-  name: string;
-  kind: string;
-  installed: boolean;
-  version?: string;
-  state: string;
-  runtime_state?: string;
-  source?: string;
-  /** managed-release | user-binary | external-reference (v0.9.15 honest acquisition states). */
-  acquisition?: string;
-  license?: string;
-  notice?: string;
-  last_check?: string;
-  endpoints?: ProviderEndpointView[];
-  capabilities?: string[];
-  failure_reason?: string;
-  bootstrap?: ProviderBootstrapView;
-}
-
-/** Measured provider health. */
-export interface ProviderHealthView {
-  ok: boolean;
-  process_alive: boolean;
-  listener_ready: boolean;
+/** One hop with its REAL stored evidence. */
+export type ProxyChainHopView = {
+  position: number;
+  config_id: string;
+  name?: string;
+  protocol?: string;
+  address?: string;
+  port?: number;
+  transport?: string;
+  security?: string;
+  working: boolean;
   latency_ms?: number;
-  measured?: boolean;
-  details?: string;
-  checked_at: string;
-}
+  tested_at?: number;
+  test_backend?: string;
+  available: boolean;
+};
 
-// ---- v0.9.8.1 Internet-Tools surface (§6) ---------------------------
+/** Full editor/connect projection. */
+export type ProxyChainDetails = {
+  id: string;
+  name: string;
+  config_ids: string[];
+  hops: ProxyChainHopView[];
+  preview?: string;
+  created_at?: number;
+  updated_at?: number;
+  usable: boolean;
+};
+
+/** Fresh end-to-end probe verdict. */
+export type ChainE2EView = {
+  ok: boolean;
+  ping_ms?: number;
+  measured: boolean;
+  backend?: string;
+  quality?: string;
+  last_error?: string;
+  at: number;
+};
+
+/** Honest chain check: per-hop evidence + fresh end-to-end result. */
+export type ChainCheckResult = {
+  chain_id: string;
+  hops: ProxyChainHopView[];
+  end_to_end: ChainE2EView;
+  duration_ms: number;
+};
+
+// ---- Internet-Tools surface (§6) ------------------------------------
 
 /** One catalogue entry. */
 export interface ToolInfoView {

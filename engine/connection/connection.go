@@ -34,7 +34,6 @@ import (
 	"github.com/Parsaetak/FreeIran/engine/core"
 	firerrors "github.com/Parsaetak/FreeIran/engine/errors"
 	"github.com/Parsaetak/FreeIran/engine/metrics"
-	"github.com/Parsaetak/FreeIran/engine/provider"
 	"github.com/Parsaetak/FreeIran/internal/statepub"
 )
 
@@ -260,23 +259,20 @@ type Manager struct {
 	// so Reconnect keeps the user's preferred backend (v0.9.8.3 fix).
 	lastPref core.Preferences
 
-	// provider holds the first-class provider session (Tor/Psiphon)
-	// when the active route is provider-based (§11). Exactly one of
-	// instance/provider is non-nil while connected.
-	provider *providerSession
+	// sessionLabel is an optional credential-free route label for the
+	// active session (v0.12.2: "proxy chain" sessions label themselves
+	// so diagnostics can distinguish them; plain configuration sessions
+	// leave it empty).
+	sessionLabel string
 
-	// lastProvider remembers the provider of the last provider-based
-	// session so Reconnect can re-establish it (mirrors m.cfg, which
-	// persists across Disconnect for the same purpose).
-	lastProvider provider.Provider
-	cfg          *config.Config
-	coreName     string
-	coreVersion  string
-	lastError    string
-	attempts     []Attempt
-	startedAt    time.Time
-	latencyMS    int64
-	port         int
+	cfg         *config.Config
+	coreName    string
+	coreVersion string
+	lastError   string
+	attempts    []Attempt
+	startedAt   time.Time
+	latencyMS   int64
+	port        int
 
 	// corePID is the process id of the active core session (0 when
 	// none); mirrored into Snapshot so teardown can be PROVEN from
@@ -300,8 +296,7 @@ type Manager struct {
 
 	// generation is the session epoch (v0.9.8.6): it increments on
 	// every session boundary — Connect accepting a new session,
-	// Disconnect, Shutdown, a provider session starting and the
-	// stability-teardown ending one. Every ASYNCHRONOUS verification
+	// Disconnect, Shutdown and the stability-teardown ending one. Every ASYNCHRONOUS verification
 	// (monitor recheck, connect-time probe, VerifyConnected) captures
 	// the generation when it starts and may apply its result only
 	// while that generation is still current. A stale result is
@@ -310,8 +305,8 @@ type Manager struct {
 
 	// sessionCtx / sessionCancel are the RUNTIME context of the active
 	// session (v0.9.10): they own the LIFETIME of the persistent core
-	// process and every persistent provider process. The operation
-	// context a caller hands to Connect/ConnectProvider bounds only
+	// process it owns. The operation context a caller hands to Connect
+	// bounds only
 	// selection, preparation, the startup deadline, readiness waiting,
 	// verification and the bounded attempts — NEVER the process
 	// lifetime. A successful connection therefore SURVIVES the
@@ -323,7 +318,7 @@ type Manager struct {
 	//
 	// The runtime context is cancelled ONLY at session boundaries:
 	// explicit Disconnect, Shutdown, session replacement (a new session
-	// beginning, including provider takeover), and unrecoverable
+	// beginning), and unrecoverable
 	// runtime failure (stability teardown, observed process crash, the
 	// session's terminal connection_failed).
 	sessionCtx    context.Context
@@ -470,6 +465,15 @@ func (m *Manager) Connect(
 	m.beginSessionLocked()
 
 	m.cfg = &cfg
+
+	// v0.12.2: proxy-chain sessions label themselves so network
+	// tools and snapshots can distinguish the route kind.
+	if cfg.IsChain() {
+		m.sessionLabel = "proxy chain"
+	} else {
+		m.sessionLabel = ""
+	}
+
 	m.state = StateSelecting
 	m.attempts = nil
 	m.lastError = ""
@@ -578,7 +582,7 @@ func (m *Manager) currentGeneration() uint64 {
 // any previous one first (caller holds m.mu). The returned context
 // owns the persistent processes of the session that is beginning:
 // cancelling it is the belt-and-braces lifetime bound behind the
-// deterministic instance/provider teardown paths — the pre-0.9.10
+// deterministic instance teardown paths — the pre-0.9.10
 // architecture bound every core to the caller's operation context
 // instead, so a successful connection died with the operation.
 func (m *Manager) beginSessionLocked() context.Context {
@@ -993,10 +997,43 @@ func (m *Manager) checkPortBindability(socks, http int) error {
 	return nil
 }
 
+// SessionLabel returns the credential-free route label of the active
+// session ("" for plain configuration sessions; v0.12.2 proxy-chain
+// sessions label themselves so network tools can distinguish the
+// route kind).
+func (m *Manager) SessionLabel() string {
+	if m == nil {
+		return ""
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.sessionLabel
+}
+
+// ActiveEndpoint returns the local SOCKS endpoint of the active
+// session (empty when no session is running).
+func (m *Manager) ActiveEndpoint() string {
+	if m == nil {
+		return ""
+	}
+
+	m.mu.Lock()
+
+	instance := m.instance
+
+	m.mu.Unlock()
+
+	if instance != nil {
+		return instance.Endpoint()
+	}
+
+	return ""
+}
+
 // Disconnect tears the session down: stop the core first (Windows
 // file-lock discipline), then release resources, then clear state.
-// Provider sessions (§11) stop through their own deterministic
-// lifecycle — no orphan processes either way.
 //
 // v0.9.8.6 determinism contract: returning from Disconnect means the
 // session epoch has ended (generation bumped BEFORE any teardown),
@@ -1018,8 +1055,8 @@ func (m *Manager) Disconnect() Snapshot {
 	m.generation++
 
 	// v0.9.10: the session's runtime context dies with the session —
-	// the persistent core/provider processes it owns are torn down by
-	// the deterministic paths below (and by this cancellation as the
+	// the persistent core process it owns is torn down by the
+	// deterministic paths below (and by this cancellation as the
 	// belt-and-braces lifetime bound).
 	m.endSessionLocked()
 	m.mu.Unlock()
@@ -1036,6 +1073,7 @@ func (m *Manager) Disconnect() Snapshot {
 	m.instance = nil
 	m.state = StateDisconnecting
 	m.corePID = 0
+	m.sessionLabel = ""
 
 	// v0.9.8.5: clear the stability evidence with the session.
 	// v0.9.8.6: the verification verdicts are session evidence too —
@@ -1050,9 +1088,6 @@ func (m *Manager) Disconnect() Snapshot {
 	m.stateChanged()
 
 	m.mu.Unlock()
-
-	// Provider sessions stop through the provider lifecycle.
-	m.stopProviderSession()
 
 	if instance != nil {
 		if err := instance.Close(); err != nil {
@@ -1071,8 +1106,7 @@ func (m *Manager) Disconnect() Snapshot {
 	return m.Snapshot()
 }
 
-// Reconnect re-establishes the last configuration — or the last
-// provider session when the previous route was provider-based (§11).
+// Reconnect re-establishes the last configuration.
 func (m *Manager) Reconnect(ctx context.Context) (Snapshot, error) {
 	if m == nil {
 		return Snapshot{}, firerrors.New(firerrors.KindFatal,
@@ -1081,34 +1115,11 @@ func (m *Manager) Reconnect(ctx context.Context) (Snapshot, error) {
 
 	m.mu.Lock()
 	cfg := m.cfg
-	provSession := m.provider
 	m.mu.Unlock()
 
-	if provSession != nil && cfg == nil {
-		// Provider session: reconnect through the same provider.
-		prov := provSession.prov
-
-		m.Disconnect()
-
-		return m.ConnectProvider(ctx, prov, VerifyOptions{})
-	}
-
-	if provSession == nil && cfg == nil {
-		// After a Disconnect the active-session fields are cleared;
-		// the last ROUTE is remembered for reconnect (config or
-		// provider).
-		m.mu.Lock()
-		lastProv := m.lastProvider
-		m.mu.Unlock()
-
-		if lastProv != nil {
-			m.Disconnect()
-
-			return m.ConnectProvider(ctx, lastProv, VerifyOptions{})
-		}
-	}
-
 	if cfg == nil {
+		// After a Disconnect the active-session fields are cleared;
+		// the last configuration is remembered for reconnect.
 		return m.Snapshot(), firerrors.New(firerrors.KindConfiguration,
 			Subsystem, "reconnect", "no previous configuration to reconnect")
 	}
@@ -1153,22 +1164,13 @@ func (m *Manager) snapshotLocked() Snapshot {
 	if m.cfg != nil {
 		snapshot.ConfigID = m.cfg.ID
 		snapshot.ConfigName = m.cfg.Name
-		snapshot.ConfigDisplay = m.cfg.DisplayURL()
-	}
 
-	if m.provider != nil {
-		// Provider-backed session (§11): the same verification
-		// semantics, reported through the same Snapshot surface.
-		snapshot.Endpoint = m.provider.endpoint
-		snapshot.CoreReadyMS = m.coreReadyMS
-		snapshot.applyVerification(m)
-
-		if !m.startedAt.IsZero() {
-			snapshot.StartedAt = m.startedAt.UnixMilli()
-		}
-
-		if m.cfg == nil {
-			snapshot.ConfigDisplay = m.coreName + " (provider session)"
+		// v0.12.2: chain sessions display the chain identity —
+		// never one hop's URL masquerading as the route.
+		if m.cfg.IsChain() {
+			snapshot.ConfigDisplay = m.cfg.Name + " (proxy chain)"
+		} else {
+			snapshot.ConfigDisplay = m.cfg.DisplayURL()
 		}
 	}
 
@@ -1233,26 +1235,19 @@ func (m *Manager) VerifyConnected(ctx context.Context, opts VerifyOptions) (Veri
 
 	m.mu.Lock()
 	instance := m.instance
-	providerSession := m.provider
 	state := m.state
 	gen := m.generation
 	m.mu.Unlock()
 
-	if (instance == nil && providerSession == nil) || !state.ConnectedLike() {
+	if instance == nil || !state.ConnectedLike() {
 		return VerifyResult{}, firerrors.New(firerrors.KindConfiguration,
 			Subsystem, "verify",
 			"no active session to verify (state %s)", state)
 	}
 
-	// One endpoint, one verification model: core sessions and provider
-	// sessions share the same multi-target gate (v0.9.8.5 §2.3).
-	endpoint := ""
-
-	if instance != nil {
-		endpoint = instance.Endpoint()
-	} else if providerSession != nil {
-		endpoint = providerSession.endpoint
-	}
+	// One endpoint, one verification model: every session shares the
+	// same multi-target gate (v0.9.8.5 §2.3).
+	endpoint := instance.Endpoint()
 
 	result := VerifyTunnel(ctx, endpoint, opts)
 
@@ -1364,7 +1359,7 @@ func (m *Manager) Shutdown() {
 //
 // v0.9.8.5 (§2.3): the loop carries TWO evidence axes —
 //
-//	process health    (core/provider alive — failures are immediate)
+//	process health    (core process alive — failures are immediate)
 //	stability health  (periodic multi-target re-verification through
 //	                   the active session — failures are cumulative)
 //
@@ -1411,9 +1406,7 @@ func (m *Manager) startMonitor() {
 		// Instance.WaitProcess instead of being polled by the tick's
 		// Health probe (one lifecycle fact, one watcher, immediate
 		// detection). The tick keeps only the stability-verification
-		// axis. Provider sessions keep their tick health check
-		// (provider engines own their processes and expose no wait
-		// handle).
+		// axis.
 		if monitorInstance != nil {
 			go func() {
 				defer close(watchDone)
@@ -1454,12 +1447,11 @@ func (m *Manager) startMonitor() {
 			case <-ticker.C:
 				m.mu.Lock()
 				instance := m.instance
-				provSession := m.provider
 				state := m.state
 				tickGen := m.generation
 				m.mu.Unlock()
 
-				if (instance == nil && provSession == nil) || !state.ConnectedLike() {
+				if instance == nil || !state.ConnectedLike() {
 					return
 				}
 
@@ -1469,45 +1461,6 @@ func (m *Manager) startMonitor() {
 				// manager entirely.
 				if tickGen != gen {
 					return
-				}
-
-				// Provider sessions (§11): the provider's own health
-				// (process alive + measured endpoint) drives the crash
-				// transition — same failure semantics as cores.
-				if provSession != nil {
-					health := provSession.prov.Health(ctx)
-					if !health.ProcessAlive {
-						if m.opts.Metrics != nil {
-							m.opts.Metrics.AddCoreCrash()
-						}
-
-						m.mu.Lock()
-
-						if m.generation == tickGen && m.state.ConnectedLike() {
-							m.state = StateConnectionFailed
-							m.lastError = "provider process exited unexpectedly"
-							m.provider = nil
-							m.stateChanged()
-						}
-
-						m.mu.Unlock()
-
-						// Deterministic cleanup of the dead
-						// provider's resources (bounded; the
-						// process is already gone).
-						stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
-						_ = provSession.prov.Stop(stopCtx)
-						stopCancel()
-
-						return
-					}
-
-					// Stability re-verification for provider
-					// sessions: the same multi-target gate,
-					// the same thresholds (§2.3).
-					m.runStabilityRecheck(ctx, provSession.endpoint, tickGen)
-
-					continue
 				}
 
 				// v0.9.9 §13: the tick no longer polls
@@ -1674,10 +1627,8 @@ func (m *Manager) runStabilityRecheck(ctx context.Context, endpoint string, gen 
 		m.verifyFailures, result.Describe())
 
 	instance := m.instance
-	provSession := m.provider
 
 	m.instance = nil
-	m.provider = nil
 	m.corePID = 0
 	m.verifyFailures = 0
 	m.state = StateDisconnecting
@@ -1701,16 +1652,6 @@ func (m *Manager) runStabilityRecheck(ctx context.Context, endpoint string, gen 
 
 	if instance != nil {
 		teardownErr = instance.Close()
-	}
-
-	if provSession != nil {
-		stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
-
-		if err := provSession.prov.Stop(stopCtx); err != nil && teardownErr == nil {
-			teardownErr = err
-		}
-
-		stopCancel()
 	}
 
 	m.mu.Lock()

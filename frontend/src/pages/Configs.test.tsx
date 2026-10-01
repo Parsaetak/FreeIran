@@ -301,7 +301,8 @@ describe("Configs dense table row (v0.11.0)", () => {
     // ping, truthful test status and source are all on the row.
     expect(screen.getByText("Berlin edge")).toBeTruthy();
     expect(screen.getByText((_, el) => el?.textContent === "berlin.example.com:443")).toBeTruthy();
-    expect(screen.getByText("ws/tls")).toBeTruthy(); // transport/security column
+    expect(screen.getByText("ws")).toBeTruthy(); // transport cell
+    expect(screen.getByText("tls")).toBeTruthy(); // security cell
     expect(screen.getByText("42 ms")).toBeTruthy(); // measured ping
     expect(screen.getByText("Passed")).toBeTruthy(); // terminal status from evidence
     expect(screen.getByText("seed-source")).toBeTruthy(); // source column

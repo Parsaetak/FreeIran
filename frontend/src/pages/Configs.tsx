@@ -8,6 +8,7 @@ import {
   connectionService,
   testQueueService,
   sourceService,
+  proxyChainService,
   call,
   type Config,
   type ConfigDetail,
@@ -15,6 +16,7 @@ import {
   type QueueLiveStateView,
   type SourceStatsView,
 } from "../services";
+import { useChainStore } from "../state/chainStore";
 import {
   formatLatency,
   formatNumber,
@@ -50,6 +52,7 @@ import {
 import { EmptyState, Menu, ResultBadge, SegmentedControl } from "../components/common";
 // v0.10.2: personal configuration import (paste / file → preview → save).
 import { ImportDialog } from "../components/ImportDialog";
+import { ChainEditor } from "../components/ChainEditor";
 import type { MenuItem } from "../components/common";
 import {
   IconChevronDown,
@@ -59,6 +62,7 @@ import {
   IconRefresh,
   IconSearch,
   IconX,
+  IconZap,
 } from "../components/Icons";
 
 const searchRunner = makeSearchRunner(250);
@@ -247,6 +251,17 @@ export function ConfigsPage() {
   const [sourceFilter, setSourceFilter] = useState<string>("");
   const [updatingSource, setUpdatingSource] = useState(false);
 
+  // v0.12.2: PROXY CHAIN scopes. The rail lists the user's chains;
+  // an active chain scope filters the table server-side by the
+  // chain's hop IDs (ConfigFilter.ids — no full-database download)
+  // and shows a chain scope header with Check/Connect/Edit.
+  const chains = useChainStore((state) => state.chains);
+  const loadChains = useChainStore((state) => state.load);
+  const [chainFilter, setChainFilter] = useState<string>("");
+  const [chainDetails, setChainDetails] = useState<Awaited<ReturnType<typeof proxyChainService.ProxyChainDetails>> | null>(null);
+  const [chainEditor, setChainEditor] = useState<{ open: boolean; id: string | null }>({ open: false, id: null });
+  const [chainBusy, setChainBusy] = useState(false);
+
   // v0.11.2: `All` is a first-class scope. The default value is the
   // stable id "all" so the All chip renders active on first load and
   // the backend's groupMatches returns true for "all" + "" — both
@@ -265,8 +280,9 @@ export function ConfigsPage() {
   const [viewVersion, setViewVersion] = useState(0);
 
   useEffect(() => {
+    void loadChains();
     void loadCollections();
-  }, [loadCollections]);
+  }, [loadChains, loadCollections]);
 
   // v0.12.1: source scopes with authoritative counts. Reloaded after
   // targeted updates (the update path refreshes this explicitly); the
@@ -356,6 +372,9 @@ export function ConfigsPage() {
   // contract: outside-pointer dismissal ignores it so the trigger's own
   // click toggles).
   const contextMenuTriggerRef = useRef<HTMLElement | null>(null);
+  // v0.12.2: hops pre-seeded into the chain editor from a multi-row
+  // selection ("Build proxy chain from selected").
+  const pendingChainHops = useRef<string[]>([]);
   // v0.9.7: compact two-row card layout below 860px (actions get a
   // dedicated row) — the virtualizer sizes rows accordingly.
   const [narrow, setNarrow] = useState(
@@ -490,6 +509,35 @@ export function ConfigsPage() {
   // matches every record on the server side (groupMatchesCompiled
   // returns true for both "" and "all"), so we skip the filtered
   // round trip when the user explicitly picked All + no other filter.
+  // v0.12.2: when a chain scope is active, load its authoritative
+  // details (hop ids, preview, usable state) from the backend.
+  useEffect(() => {
+    if (!chainFilter) {
+      setChainDetails(null);
+
+      return;
+    }
+
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const details = await call(() => proxyChainService.ProxyChainDetails(chainFilter));
+
+        if (!cancelled) setChainDetails(details);
+      } catch (error) {
+        if (!cancelled) {
+          setChainDetails(null);
+          toast("error", "Chain unavailable", describeError(error));
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [chainFilter]);
+
   const loadFiltered = useCallback(async (limit: number) => {
     // v0.12.1: a source scope is a server-side filter
     // (cfg.Source == sourceID) — the database is never downloaded to
@@ -498,7 +546,8 @@ export function ConfigsPage() {
       statusFilter === "" &&
       sortBy === "" &&
       (groupFilter === "" || groupFilter === "all") &&
-      sourceFilter === ""
+      sourceFilter === "" &&
+      !chainFilter
     ) {
       setFiltered(null);
 
@@ -521,6 +570,8 @@ export function ConfigsPage() {
             source: sourceFilter || undefined,
             backend: undefined,
             group: groupFilter || undefined,
+            // v0.12.2: a chain scope is an explicit id allow-list.
+            ids: chainDetails?.config_ids ?? (chainFilter ? [] : undefined),
           },
           0,
           limit,
@@ -534,7 +585,7 @@ export function ConfigsPage() {
     } finally {
       setFilteredLoading(false);
     }
-  }, [protocol, statusFilter, sortBy, sortDesc, searchQuery, groupFilter, sourceFilter]);
+  }, [protocol, statusFilter, sortBy, sortDesc, searchQuery, groupFilter, sourceFilter, chainFilter, chainDetails]);
 
   useEffect(() => {
     void loadFiltered(1000);
@@ -840,9 +891,51 @@ export function ConfigsPage() {
 
   // v0.12.1 (§17/§18): the active source scope's OWN evidence view.
   const activeSourceScope = useMemo(
+
     () => sourceStats.find((source) => source.id === sourceFilter) ?? null,
     [sourceStats, sourceFilter],
   );
+
+  // v0.12.2: the active chain scope's authoritative details.
+  const activeChainScope = chainFilter ? chainDetails : null;
+
+  /** Check chain — per-hop evidence + fresh end-to-end, honestly reported. */
+  const checkActiveChain = async () => {
+    if (!activeChainScope) return;
+
+    setChainBusy(true);
+
+    try {
+      const result = await call(() => proxyChainService.CheckChain(activeChainScope.id));
+
+      if (result.end_to_end.ok) {
+        toast("success", "Chain verified", `End-to-end ${result.end_to_end.ping_ms ?? 0} ms through ${result.end_to_end.backend}.`);
+      } else {
+        toast("error", "Chain check failed", result.end_to_end.last_error || "No usable end-to-end connection was verified.");
+      }
+    } catch (error) {
+      toast("error", "Chain check failed", describeError(error));
+    } finally {
+      setChainBusy(false);
+    }
+  };
+
+  /** Connect chain — the SAME verified state machine, one core process. */
+  const connectActiveChain = async () => {
+    if (!activeChainScope) return;
+
+    setChainBusy(true);
+
+    try {
+      await call(() => connectionService.ConnectChain(activeChainScope.id));
+
+      toast("success", "Chain connected", `${activeChainScope.name} verified and connected.`);
+    } catch (error) {
+      toast("error", "Chain connection failed", describeError(error));
+    } finally {
+      setChainBusy(false);
+    }
+  };
 
   // v0.12.1 (§18): update ONE source through the targeted refresh —
   // the same ingestion architecture, never a second pipeline.
@@ -1151,6 +1244,114 @@ export function ConfigsPage() {
     }
 
     items.push(
+      ...(() => {
+        const selectedIds = Array.from(selected);
+        const inChainScope = Boolean(chainFilter);
+
+        const items: MenuItem[] = [];
+
+        if (inChainScope && chainDetails) {
+          const hopPosition = chainDetails.config_ids.indexOf(config.id);
+
+          if (hopPosition >= 0) {
+            items.push({
+              id: "chain-remove",
+              label: "Remove from chain",
+              disabled: chainDetails.config_ids.length <= 2,
+              onSelect: () => {
+                void (async () => {
+                  try {
+                    await call(() => proxyChainService.RemoveHop(chainFilter, config.id));
+                    toast("success", "Hop removed", "The chain was updated.");
+                  } catch (error) {
+                    toast("error", "Could not remove hop", describeError(error));
+                  }
+                })();
+              },
+            });
+
+            if (hopPosition > 0) {
+              items.push({
+                id: "chain-earlier",
+                label: "Move earlier in chain",
+                onSelect: () => {
+                  void (async () => {
+                    try {
+                      await call(() => proxyChainService.ReorderHop(chainFilter, config.id, hopPosition - 1));
+                    } catch (error) {
+                      toast("error", "Could not reorder chain", describeError(error));
+                    }
+                  })();
+                },
+              });
+            }
+
+            if (hopPosition < chainDetails.config_ids.length - 1) {
+              items.push({
+                id: "chain-later",
+                label: "Move later in chain",
+                onSelect: () => {
+                  void (async () => {
+                    try {
+                      await call(() => proxyChainService.ReorderHop(chainFilter, config.id, hopPosition + 1));
+                    } catch (error) {
+                      toast("error", "Could not reorder chain", describeError(error));
+                    }
+                  })();
+                },
+              });
+            }
+          }
+        }
+
+        if (selectedIds.length >= 2) {
+          items.push({
+            id: "chain-from-selected",
+            label: `Build proxy chain from selected (${selectedIds.length})`,
+            onSelect: () => {
+              setChainEditor({ open: true, id: null });
+              pendingChainHops.current = selectedIds;
+            },
+          });
+        }
+
+        if (selectedIds.length >= 1) {
+          items.push({
+            id: "chain-add-selected",
+            label: "Add selected to a chain",
+            disabled: chains.length === 0,
+            onSelect: () => {
+              void (async () => {
+                if (chains.length === 1) {
+                  try {
+                    for (const id of selectedIds) {
+                      await call(() => proxyChainService.AddHop(chains[0].id, id, -1));
+                    }
+
+                    toast("success", "Added to chain", chains[0].name);
+                    void loadChains();
+                  } catch (error) {
+                    toast("error", "Could not add to chain", describeError(error));
+                  }
+
+                  return;
+                }
+
+                toast(
+                  "info",
+                  "Pick a chain",
+                  chains.length === 0
+                    ? "Create a chain first (+ New chain)."
+                    : "Open the chain's Edit view to place these hops in order.",
+                );
+              })();
+            },
+          });
+        }
+
+        return items;
+      })(),
+
       {
         id: "move-up",
         label: "Move up",
@@ -1444,6 +1645,42 @@ export function ConfigsPage() {
         </div>
       )}
 
+        {/* v0.12.2: PROXY CHAIN scopes — ordered hop lists over existing
+            configurations. A chain scope is NOT a remote source: it
+            offers Check / Connect / Edit, never Update. */}
+        {chains.length > 0 && <span className="toolbar-divider" aria-hidden />}
+        {chains.map((chain) => {
+          const active = chainFilter === chain.id;
+
+          return (
+            <button
+              key={chain.id}
+              type="button"
+              className={`group-chip group-chip-chain ${active ? "active" : ""}`}
+              aria-pressed={active}
+              title={`${chain.name} — ${chain.hops} hop${chain.hops === 1 ? "" : "s"}`}
+              onClick={() => {
+                setChainFilter(active ? "" : chain.id);
+                setSourceFilter("");
+                setGroupFilter("all");
+                setStatusFilter("");
+              }}
+            >
+              {chain.name}
+              <span className="group-count">{chain.hops}</span>
+            </button>
+          );
+        })}
+
+        <button
+          type="button"
+          className="group-chip group-chip-new"
+          title="Build a proxy chain from two or more configurations"
+          onClick={() => setChainEditor({ open: true, id: null })}
+        >
+          + New chain
+        </button>
+
       {/*
        * v0.12.1 (§17) SOURCE SCOPE HEADER: when a real source/
        * subscription group is selected, a compact header shows the
@@ -1538,6 +1775,63 @@ export function ConfigsPage() {
               ]}
             />
             <button type="button" className="btn sm ghost" onClick={() => setSourceFilter("")}>
+              <IconX size={13} /> Exit scope
+            </button>
+          </div>
+        </section>
+      )}
+
+      {activeChainScope && (
+        <section className="source-scope-header" aria-label="Proxy chain scope">
+          <div className="source-scope-main">
+            <span className="source-scope-name" title={activeChainScope.id}>
+              {activeChainScope.name}
+            </span>
+            <span className="badge neutral">
+              {activeChainScope.hops.length} hop{activeChainScope.hops.length === 1 ? "" : "s"}
+            </span>
+            <span className={`badge ${activeChainScope.usable ? "success" : "error"}`}>
+              {activeChainScope.usable ? "Complete" : "Missing hops"}
+            </span>
+            <span className="chain-scope-preview mono" title={activeChainScope.preview}>
+              {activeChainScope.preview}
+            </span>
+          </div>
+
+          <div className="source-scope-evidence">
+            <span>
+              {activeChainScope.hops.filter((hop) => hop.working).length}/{activeChainScope.hops.length} hops working
+            </span>
+            <span>
+              {activeChainScope.hops.every((hop) => hop.tested_at) ? "all hops tested" : "some hops untested"}
+            </span>
+          </div>
+
+          <div className="source-scope-actions">
+            <button
+              type="button"
+              className="btn sm"
+              disabled={chainBusy}
+              onClick={() => void checkActiveChain()}
+            >
+              <IconPlay size={13} /> {chainBusy ? "Checking…" : "Check chain"}
+            </button>
+            <button
+              type="button"
+              className="btn sm primary"
+              disabled={!activeChainScope.usable}
+              onClick={() => void connectActiveChain()}
+            >
+              <IconZap size={13} /> Connect
+            </button>
+            <button
+              type="button"
+              className="btn sm"
+              onClick={() => setChainEditor({ open: true, id: activeChainScope.id })}
+            >
+              Edit
+            </button>
+            <button type="button" className="btn sm ghost" onClick={() => setChainFilter("")}>
               <IconX size={13} /> Exit scope
             </button>
           </div>
@@ -1872,9 +2166,10 @@ export function ConfigsPage() {
                 Protocol {sortBy === "protocol" ? (sortDesc ? "▾" : "▴") : ""}
               </button>
               <button type="button" className="th sortable" onClick={() => sortColumn("address")}>
-                Name / Endpoint {sortBy === "address" ? (sortDesc ? "▾" : "▴") : ""}
+                Address : Port {sortBy === "address" ? (sortDesc ? "▾" : "▴") : ""}
               </button>
               <span className="th th-transport">Transport</span>
+              <span className="th th-security">Security</span>
               <button type="button" className="th sortable" onClick={() => sortColumn("latency")}>
                 Latency {sortBy === "latency" ? (sortDesc ? "▾" : "▴") : ""}
               </button>
@@ -2079,7 +2374,10 @@ export function ConfigsPage() {
                             {truncate(String(config["address"]), 34)}:{String(config["port"])}
                           </span>
                           <span className="cell-transport mono">
-                            {[String(config["network"] || "tcp"), String(config["security"] || "none")].join("/")}
+                            {String(config["network"] || "tcp")}
+                          </span>
+                          <span className="cell-security mono">
+                            {String(config["security"] || "none")}
                           </span>
                           <span className="cell-ping">
                             <PingCell config={config} />
@@ -2264,6 +2562,35 @@ export function ConfigsPage() {
             void useConfigsStore.getState().loadPage(0);
           }}
         />
+
+      {/*
+       * v0.12.2: the PROXY CHAIN editor — create/update ordered hop
+       * lists over EXISTING configurations; validate before save;
+       * Check hops / Check chain / Connect ride the existing queue
+       * and the verified state machine.
+       */}
+      <ChainEditor
+        open={chainEditor.open}
+        chain={chainEditor.id ? chainDetails : null}
+        initialHops={chainEditor.id ? [] : pendingChainHops.current}
+        onClose={() => setChainEditor({ open: false, id: null })}
+        onSaved={(chainID) => {
+          pendingChainHops.current = [];
+          setChainEditor({ open: false, id: null });
+
+          void (async () => {
+            try {
+              const details = await call(() => proxyChainService.ProxyChainDetails(chainID));
+
+              setChainDetails(details);
+              setChainFilter(chainID);
+              void loadChains();
+            } catch (error) {
+              toast("error", "Chain unavailable", describeError(error));
+            }
+          })();
+        }}
+      />
       </div>
 
       {/*

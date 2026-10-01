@@ -8,6 +8,7 @@ import {
   pickerStatusClass,
   qualityLabel,
   quickPickerRows,
+  selectionReason,
 } from "./quickConnectModel";
 
 /**
@@ -201,5 +202,45 @@ describe("picker cell helpers", () => {
     expect(qualityLabel("best")).toBe("Excellent");
     expect(qualityLabel("dead")).toBe("Down");
     expect(qualityLabel("anything")).toBe("Untested");
+  });
+});
+
+// v0.12.2: the selection evidence line — real fields only, no invented
+// confidence, honest "no verified candidate" fallback.
+describe("selectionReason (v0.12.2)", () => {
+  it("joins freshness, latency and recent-success clauses", () => {
+    const now = 1_700_000_000_000;
+
+    const reason = selectionReason(
+      {
+        status: "verified",
+        latencyMS: 126,
+        measured: true,
+        successRate: 0.8,
+        samples: 10,
+        testedAt: now - 2 * 60 * 1000,
+      },
+      now,
+    );
+
+    expect(reason).toBe("Selected because: verified 2 min ago · 126 ms · 8/10 recent successes");
+  });
+
+  it("reports sub-millisecond measurements honestly", () => {
+    const reason = selectionReason(
+      { status: "verified", latencyMS: 0, measured: true, successRate: 1, samples: 4, testedAt: Date.now() },
+      Date.now(),
+    );
+
+    expect(reason).toContain("< 1 ms");
+  });
+
+  it("never fabricates a winner without evidence", () => {
+    const reason = selectionReason(
+      { status: "untested", latencyMS: 0, measured: false, successRate: 0, samples: 0 },
+      Date.now(),
+    );
+
+    expect(reason).toContain("no verified candidate");
   });
 });

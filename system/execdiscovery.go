@@ -164,8 +164,8 @@ type EngineSpec struct {
 }
 
 // DefaultEngineSpecs returns the discovery specifications for every
-// engine FreeIran supports: the protocol cores and the first-class
-// providers.
+// protocol core FreeIran supports (v0.12.2: the Tor/Psiphon provider
+// discovery specs were removed with the provider layer).
 func DefaultEngineSpecs() map[string]EngineSpec {
 	return map[string]EngineSpec{
 		"xray": {
@@ -182,21 +182,6 @@ func DefaultEngineSpecs() map[string]EngineSpec {
 			Name:        "sing-box",
 			BinaryNames: []string{"sing-box"},
 			Subdirs:     []string{"sing-box", "SagerNet", "SagerNet/sing-box"},
-		},
-		"tor": {
-			Name:        "tor",
-			BinaryNames: []string{"tor"},
-			Subdirs: []string{
-				"tor", "Tor",
-				// Tor Browser's fixed inner layout
-				// (Browser/TorBrowser/Tor/tor.exe).
-				"Tor Browser/Browser/TorBrowser/Tor",
-			},
-		},
-		"psiphon": {
-			Name:        "psiphon",
-			BinaryNames: []string{"consoleclient", "psiphon-tunnel-core"},
-			Subdirs:     []string{"psiphon", "Psiphon", "Psiphon3", "PsiphonLabs"},
 		},
 	}
 }

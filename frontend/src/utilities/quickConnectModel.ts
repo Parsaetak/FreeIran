@@ -134,10 +134,54 @@ export interface QuickCandidateRow {
   status: CandidateStatus;
   /** Ranking-engine class ("best" | "good" | "unstable" | "unknown"). */
   quality: string;
+  /** v0.12.2: recent success rate (0-1) from REAL test history. */
+  successRate: number;
+  /** v0.12.2: number of recorded observations backing the aggregates. */
+  samples: number;
+  /** v0.12.2: freshness anchor of the last observation (Unix ms). */
+  testedAt?: number;
 }
 
 /** Maximum candidates surfaced in the compact picker (§9: 5–8 visible, scroll for more). */
 export const QUICK_PICKER_LIMIT = 25;
+
+/**
+ * v0.12.2: the compact SELECTION EXPLANATION for the chosen route —
+ * "Selected because: verified 2 min ago · 126 ms · 8/10 recent successes".
+ * Every clause is derived from REAL recorded evidence (measured
+ * latency, observation freshness, the success rate over the recorded
+ * samples). No invented confidence percentages, no opaque score.
+ */
+export function selectionReason(
+  row: Pick<QuickCandidateRow, "status" | "latencyMS" | "measured" | "successRate" | "samples" | "testedAt">,
+  now: number = Date.now(),
+): string {
+  const clauses: string[] = [];
+
+  if (row.status === "verified" && row.testedAt) {
+    const minutes = Math.max(0, Math.round((now - row.testedAt) / 60000));
+
+    clauses.push(minutes <= 0 ? "verified just now" : `verified ${minutes} min ago`);
+  } else if (row.status === "stale") {
+    clauses.push("last verified earlier today");
+  }
+
+  if (row.measured) {
+    clauses.push(row.latencyMS > 0 ? `${row.latencyMS} ms` : "< 1 ms");
+  }
+
+  if (row.samples > 0) {
+    const successes = Math.round(row.successRate * row.samples);
+
+    clauses.push(`${successes}/${row.samples} recent successes`);
+  }
+
+  if (clauses.length === 0) {
+    return "Selected because: no verified candidate — test configurations to build evidence";
+  }
+
+  return `Selected because: ${clauses.join(" · ")}`;
+}
 
 /** Builds the picker rows from ordered candidates. */
 export function quickPickerRows(
@@ -147,6 +191,9 @@ export function quickPickerRows(
   return ordered.slice(0, QUICK_PICKER_LIMIT).map((view) => ({
     fingerprint: view.fingerprint,
     name: view.name || view.endpoint || "Unnamed configuration",
+    successRate: view.success_rate ?? 0,
+    samples: view.samples ?? 0,
+    testedAt: view.tested_at,
     protocol: (view.protocol || "unknown").toLowerCase(),
     latencyMS: view.latency_ms > 0 ? view.latency_ms : 0,
     measured: isMeasured(view),
