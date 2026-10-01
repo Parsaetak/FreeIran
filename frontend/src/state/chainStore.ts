@@ -110,11 +110,12 @@ export const useChainStore = create<ChainStore>((set, get) => ({
   },
 }));
 
-/** Loads one chain's full editor projection. */
+/** Loads one chain's full editor projection (null when the chain no
+ * longer exists — the binding is truthful about the absence). */
 export async function loadChainDetails(
   chainID: string,
-): Promise<ProxyChainDetails> {
-  return call<ProxyChainDetails>(() => proxyChainService.ProxyChainDetails(chainID));
+): Promise<ProxyChainDetails | null> {
+  return call<ProxyChainDetails | null>(() => proxyChainService.ProxyChainDetails(chainID));
 }
 
 /** Validates a candidate hop list (editor preview). */
@@ -124,9 +125,10 @@ export async function validateChainHops(
   await call<void>(() => proxyChainService.ValidateProxyChain(configIDs));
 }
 
-/** Runs the honest chain check (per-hop evidence + fresh e2e). */
+/** Runs the honest chain check (per-hop evidence + fresh e2e); null
+ * when the chain vanished before the check ran. */
 export async function checkChain(
   chainID: string,
-): Promise<ChainCheckResult> {
-  return call<ChainCheckResult>(() => proxyChainService.CheckChain(chainID));
+): Promise<ChainCheckResult | null> {
+  return call<ChainCheckResult | null>(() => proxyChainService.CheckChain(chainID));
 }

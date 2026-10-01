@@ -1,24 +1,22 @@
 {
   "RT_GROUP_ICON": {
     "APP": {
-      "0000": [
-        "../assets/freeiran-icon.png"
-      ]
+      "0000": "../assets/freeiran-icon.ico"
     }
   },
   "RT_VERSION": {
     "1": {
       "0000": {
         "fixed": {
-          "file_version": "0.12.2.0",
-          "product_version": "0.12.2.0"
+          "file_version": "0.13.0.0",
+          "product_version": "0.13.0.0"
         },
         "info": {
           "0409": {
             "ProductName": "FreeIran",
             "FileDescription": "FreeIran \u2014 A SHEYTAN Digital System",
-            "ProductVersion": "0.12.2",
-            "FileVersion": "0.12.2",
+            "ProductVersion": "0.13.0",
+            "FileVersion": "0.13.0",
             "OriginalFilename": "FreeIran.exe",
             "InternalName": "FreeIran",
             "CompanyName": "SHEYTAN Digital System",
@@ -33,7 +31,7 @@
       "0409": {
         "identity": {
           "name": "FreeIran",
-          "version": "0.12.2"
+          "version": "0.13.0"
         },
         "description": "Free, open-source VPN configuration manager",
         "minimum-os": "win10",

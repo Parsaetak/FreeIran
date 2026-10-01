@@ -56,8 +56,18 @@ export function ListConfigs(offset, limit) {
 
 /**
  * ListConfigsFiltered returns a sorted, filtered page of
- * configurations. Filtering happens engine-side; only the requested
- * window crosses the service boundary.
+ * configurations. Filtering happens engine-side over the WHOLE store;
+ * only the requested window crosses the service boundary.
+ * 
+ * v0.13.0 contract (replaces the 20,000-materialised-match cap that
+ * truncated totals on a 23,871-record store):
+ * 
+ *   - Total is the TRUE global match count, never a bounded prefix;
+ *   - ordering is GLOBAL and deterministic with a config-ID
+ *     tie-breaker, so every (filter, sort, offset) maps to exactly one
+ *     page — no duplicates, no gaps, across page boundaries;
+ *   - memory stays bounded: one filteredKey per match (no config
+ *     bodies retained), and only the page window is decoded.
  * @param {$models.ConfigFilter} filter
  * @param {number} offset
  * @param {number} limit

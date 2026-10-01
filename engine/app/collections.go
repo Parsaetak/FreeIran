@@ -24,7 +24,6 @@ package app
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -137,6 +136,12 @@ type collectionsState struct {
 	groups      []persistedGroup
 	nextGroupID int
 	nextChainID int
+
+	// rev increments on every PERSISTED collections mutation (favorite
+	// toggles, group create/delete/rename/membership, chain edits).
+	// It is the identity input of the builtin-group count snapshot:
+	// favorites feed the "favorites" count, so a mutation must drop it.
+	rev uint64
 
 	// futureSchema (v0.9.12): the on-disk sidecar was written by a
 	// NEWER binary — every mutating save REFUSES (§14: an older
@@ -301,6 +306,11 @@ func (a *App) saveCollectionsLocked() error {
 	if err := system.WriteFileAtomic(a.collectionsPath(), raw, 0o600); err != nil {
 		return fmt.Errorf("app: write collections: %w", err)
 	}
+
+	// The membership identity changed: the cached builtin-group counts
+	// (favorites at minimum) are no longer authoritative.
+	a.collections.rev++
+	a.InvalidateCountsSnapshot()
 
 	return nil
 }
@@ -570,10 +580,37 @@ func (s *CollectionService) GroupMembers(groupID string) ([]string, error) {
 	return nil, fmt.Errorf("app: group %q not found", groupID)
 }
 
+// builtinCountsSnapshotTTL bounds how long a cached count snapshot is
+// served without a rescan. It exists for the ONE count that drifts
+// with wall-clock time alone ("recently_tested" counts records inside
+// a 24 h window — a record silently leaves the group as it ages).
+// Store changes, test results and collection mutations invalidate the
+// snapshot eagerly through InvalidateCountsSnapshot; the store count
+// and the collections revision guard identity, so the TTL is a pure
+// freshness backstop.
+const builtinCountsSnapshotTTL = 15 * time.Second
+
+// builtinCountsSnapshot is the cached authoritative count set: the
+// built-in group counts plus the identity it was computed against
+// (store size, collections revision). v0.13.0 replaces the previous
+// candidateScanLimit-capped scan — the All badge showed 4000 on a
+// 23,871-record store — with an UNBOUNDED count: the scan decodes a
+// four-field projection per record (no credential material retained),
+// so counting the whole store is cheap and the counts are the real
+// dataset, never a bounded prefix.
+type builtinCountsSnapshot struct {
+	builtAt        time.Time
+	storeCount     int
+	collectionsRev uint64
+	counts         map[string]int
+}
+
 // GroupsOverview returns the built-in evidence groups with live
 // counts plus the user groups. Built-in counts are computed from the
-// store's real records in ONE bounded scan (the same bound the
-// ranking engine uses) — never from invented scores.
+// store's real records in ONE uncapped scan and served from an
+// authoritative snapshot invalidated by store/test/collection changes
+// — never from invented scores and never a bounded prefix of the
+// dataset.
 func (s *CollectionService) GroupsOverview() (*GroupsOverview, error) {
 	s.app.loadCollections()
 
@@ -598,16 +635,81 @@ func (s *CollectionService) GroupsOverview() (*GroupsOverview, error) {
 	return overview, nil
 }
 
-// builtinGroupCounts computes the live counts of every built-in group
-// from ONE bounded store scan of real records. Evidence only: "fast"
-// counts working configurations with a measured latency at or below
-// the threshold (a 0 ms reading is a measured sub-millisecond round
-// trip), "recently_tested" counts configurations tested inside the
-// window, "untested" counts configurations with no measurement at
-// all. Nothing is extrapolated.
+// builtinGroupCounts returns the live counts of every built-in group,
+// serving the cached snapshot when its identity still matches
+// (store size, collections revision, TTL) and rescanning the whole
+// store otherwise. Evidence only: "fast" counts working
+// configurations with a measured latency at or below the threshold (a
+// 0 ms reading is a measured sub-millisecond round trip),
+// "recently_tested" counts configurations tested inside the window,
+// "untested" counts configurations with no measurement at all.
+// Nothing is extrapolated; "all" equals the authoritative store count.
 func (a *App) builtinGroupCounts() (map[string]int, error) {
 	a.loadCollections()
 
+	storeCount := a.store.Count()
+
+	a.collections.mu.Lock()
+	rev := a.collections.rev
+	a.collections.mu.Unlock()
+
+	a.countsMu.Lock()
+	snap := a.countsSnap
+	if snap != nil &&
+		snap.storeCount == storeCount &&
+		snap.collectionsRev == rev &&
+		time.Since(snap.builtAt) < builtinCountsSnapshotTTL {
+		counts := snap.counts
+		a.countsMu.Unlock()
+
+		return counts, nil
+	}
+	a.countsMu.Unlock()
+
+	counts, err := a.scanBuiltinGroupCounts()
+	if err != nil {
+		return counts, nil // best-effort: honest partial counts, logged below
+	}
+
+	// Re-read identity for the snapshot: the store may have changed
+	// while the scan ran; a mismatched snapshot would never be served.
+	snapCount := a.store.Count()
+
+	a.collections.mu.Lock()
+	revNow := a.collections.rev
+	a.collections.mu.Unlock()
+
+	a.countsMu.Lock()
+	if a.countsSnap == nil || a.countsSnap.builtAt.Before(time.Now().UTC().Add(-builtinCountsSnapshotTTL)) {
+		a.countsSnap = &builtinCountsSnapshot{
+			builtAt:        time.Now().UTC(),
+			storeCount:     snapCount,
+			collectionsRev: revNow,
+			counts:         counts,
+		}
+	}
+	a.countsMu.Unlock()
+
+	return counts, nil
+}
+
+// InvalidateCountsSnapshot drops the cached builtin-group counts so
+// the next overview rebuilds from current data. Called when a test
+// result persists, when an ingestion cycle finishes and when the
+// collections sidecar mutates — exactly the meaningful count inputs.
+func (a *App) InvalidateCountsSnapshot() {
+	a.countsMu.Lock()
+	a.countsSnap = nil
+	a.countsMu.Unlock()
+}
+
+// scanBuiltinGroupCounts walks the ENTIRE store once, decoding a
+// minimal projection of each record. No record cap: the counts must
+// describe the real dataset (v0.13.0: the previous candidateScanLimit
+// cap made the All badge read 4000 on larger stores). Resource safety
+// comes from the projection — four small fields per record, nothing
+// retained beyond the integer counters.
+func (a *App) scanBuiltinGroupCounts() (map[string]int, error) {
 	a.collections.mu.Lock()
 	favorites := a.collections.favoriteSetLocked()
 	a.collections.mu.Unlock()
@@ -623,10 +725,6 @@ func (a *App) builtinGroupCounts() (map[string]int, error) {
 	now := time.Now().UnixMilli()
 
 	err := a.store.Iterate(ctx, func(key string, value []byte) error {
-		if counts["all"] >= candidateScanLimit {
-			return errCandidateLimit
-		}
-
 		var cfg struct {
 			ID        string `json:"id"`
 			Working   bool   `json:"working"`
@@ -669,10 +767,9 @@ func (a *App) builtinGroupCounts() (map[string]int, error) {
 		return nil
 	})
 
-	if err != nil && !errors.Is(err, errCandidateLimit) && ctx.Err() == nil {
-		// The scan is best-effort for counts; a store hiccup logs
-		// through the normal channels and yields honest partial counts.
-		return counts, nil
+	if err != nil && ctx.Err() == nil {
+		a.logger.Warn("collections", "group_counts_scan",
+			"group count scan ended early: %v", err)
 	}
 
 	return counts, nil

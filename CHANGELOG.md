@@ -11,6 +11,152 @@ are historical: version numbers, core pins and verification claims
 inside them describe the state of that release, not the current
 state.
 
+## v0.13.0 — dataset truth (counts/pagination/sorting), source freshness, Main-page system integration, tray controls, Windows icon root-fix
+
+v0.13.0 makes the configuration workspace honest at the real dataset
+size, moves system integration to the Main page as a first-class
+block, extends the native tray with real proxy/TUN toggles, and
+root-fixes the Windows executable icon chain. Interaction reference
+for the workspace work: current upstream v2rayN (dense grid, stable
+global sort, factual status text) — adopted as interaction semantics
+only; FreeIran's single-store/single-supervisor/single-connection
+architecture remains authoritative and no visuals were cloned.
+
+### Configuration dataset truth (backend)
+
+- **All badge equals the real store count.**
+  `builtinGroupCounts()` stopped at `candidateScanLimit` (4000) — the
+  All badge capped at 4000 on a 23,871-record store. The count scan is
+  now UNBOUNDED and counts the whole store through a four-field
+  projection per record (no credential material retained); the result
+  is served from one authoritative cached count snapshot invalidated
+  by real store/test/collection changes (store count + collections
+  revision identity, 15 s freshness backstop for the
+  `recently_tested` window drift). The store is never duplicated.
+- **No 20,000-match truncation in filtered listings.**
+  `ListConfigsFiltered` materialised at most `maxFilteredMatches`
+  (20,000) full configurations and reported the bound as Total. The
+  listing now materialises ONE lightweight sort key per match
+  (id/latency/tested/working/protocol/source/address/manual-order
+  position), computes the TRUE global total, orders globally and
+  decodes only the requested page window back through the store + hot
+  cache. Memory stays bounded; the dataset does not.
+- **Global deterministic sort with a config-ID tie-breaker.** Every
+  explicit sort (latency/tested_at/protocol/source/address) is a
+  total order: the primary field (with direction), then ascending
+  config ID in BOTH directions — paging cannot duplicate or skip
+  records when values tie (equal latencies are the common case).
+  Manual ordering (no explicit sort) keeps the v0.9.8.3 semantics
+  (positioned first in stored order, then store order). The old
+  `sortConfigs`/`applyConfigOrder` full-materialisation paths are
+  replaced by the key-based comparator.
+
+### Configuration workspace (frontend)
+
+- **Filtered scopes paginate for real.** The filtered view was a
+  one-shot `loadFiltered(1000)` — a 23,871-record store showed 1000
+  rows, period. Filtered scopes now load 200-row pages with real
+  infinite scroll in EVERY scope (status/protocol/sort/source/group/
+  chain/search), driven by the same scroll handler as the unfiltered
+  list; a request sequence guards stale async responses and page
+  state resets on every query/filter/sort/scope change. The protocol
+  filter and bare search go through the ONE server-side pipeline
+  (they previously ran client-side over a bounded loaded window).
+- **Sort click cycle fixed.** `sortColumn()` cleared the active sort
+  on the second click (a v0.12.2 state bug). First click ASC, second
+  click DESC, and the sort never silently clears.
+- **Source rail hygiene.** With more than five subscriptions the
+  remaining source chips collapse behind one compact "More sources"
+  disclosure — the top of the page stays scannable; no behavior
+  change, same chips and counts.
+
+### Source freshness contract
+
+- **Root cause of the "739889d ago" age.** `source.Stats` serialised
+  `LastSuccessfulFetch`/`LastFailure` as Go `time.Time` — a zero time
+  marshals as `0001-01-01T00:00:00Z` (encoding/json never omits a
+  struct), which the UI converted into an impossible age. The UI
+  projection now carries `*time.Time` with `omitempty`: never-fetched
+  sources serialise WITHOUT the timestamp and render "Never fetched";
+  valid times stay exact. `sourceFreshness()` renders the factual
+  labels ("Updated just now", "Updated 12m ago", "Updated Oct 1,
+  13:05" / exact time in the title) and treats impossible ages as
+  never-fetched (defense in depth).
+- **Hashes are internal again.** The Sources page shows freshness,
+  not `synced · <hash8>` — content hashes are provenance/dedupe
+  evidence, never ordinary UI.
+
+### System integration on the Main page (honest prerequisites)
+
+- System Proxy ON/OFF and TUN/VPN ON/OFF are first-class toggles on
+  Quick Connect, bound to the ONE TunnelService (no second
+  integration manager). Local inbound port settings (SOCKS5 / HTTP)
+  ride the ONE settings path. Prerequisites are stated and enforced:
+  the system proxy needs a connected session (it points WinINet at
+  the live local inbound); TUN needs a selected/connected
+  configuration (it compiles through the managed sing-box dataplane).
+  Disconnected state stays meaningful: the real backend mode is
+  shown, OFF really turns integration off, and stale app-owned proxy
+  residue from a crashed session is removable without a connection
+  (`TunnelService.CleanupStaleOwnership` replays the recorded
+  previous state through the ONE WinINet authority).
+- Connection keeps the detailed lifecycle evidence (mode, live TUN
+  snapshot, durable ownership) and drops the duplicate control
+  buttons — two controls for one dataplane was two truths.
+- `SetTunnelStateListener` (App) publishes the post-call tunnel state
+  after every TunnelService mutation — enables, disables, failed
+  enables and cleanup — so tray and UI always observe the
+  authoritative dataplane state.
+
+### System tray (real toggles, no drift)
+
+- The native tray menu gains System Proxy and TUN (VPN) checkboxes
+  bound to the same TunnelService path as the UI. The checkbox
+  visuals are owned by a sync from the authoritative services, never
+  by the click itself: the menu re-reads the real state after every
+  tray action, after every TunnelService transition and on every
+  connection snapshot — failed enables, disconnects, restarts and
+  rebuilds cannot leave the menu lying. Honest refusals are logged
+  when a prerequisite (live inbound, selected configuration) is
+  missing. `tray_enabled` and graceful shutdown behavior unchanged.
+
+### Windows icon root-fix
+
+- **Root cause.** `build/winres.json` fed `assets/freeiran-icon.png`
+  (a single 256 px image) to `RT_GROUP_ICON` — go-winres resizes one
+  image into the icon group, which is exactly why small surfaces
+  (titlebar/taskbar) looked poor. The canonical multi-size family
+  (`assets/freeiran-icon.ico`, 16–256 px, seven images — the ONE icon
+  asset authority produced by `scripts/genicon.py`) exists for this.
+  Additionally, in go-winres's array form every entry goes through
+  `image.Decode` (PNG-only); an `.ico` must be referenced with the
+  single-string form. The committed `.syso` was also STALE (built
+  from a 0.11.0-era winres.json).
+- **Fix.** `winres.json` references `../assets/freeiran-icon.ico`
+  (string form) and the committed
+  `cmd/freeiran/rsrc_windows_amd64.syso` is rebuilt reproducibly from
+  it at the release version (manifest identity now 0.13.0.0).
+- **Regression check.** `TestWindowsGUIIcon` (Windows, wired like the
+  PE subsystem check) verifies the BUILT executable: exactly one
+  `RT_GROUP_ICON`, a multi-size `RT_ICON` family, and every icon
+  image byte-identical to `assets/freeiran-icon.ico` — a stale
+  `.syso` or a foreign icon fails the build. Tray and Linux window
+  icon keep using the same canonical icon family.
+
+### Verification
+
+- New Go tests: uncapped group counts vs. store count (4,250 records
+  > old 4,000 cap), count-snapshot invalidation on membership change,
+  filtered global sort/paging determinism (600 records with heavy
+  ties; no duplicates/gaps across pages; deterministic DESC with the
+  ascending ID tie-break), filtered Total beyond the removed 20,000
+  cap (20,500 records, tail page present), zero-time source-stats
+  serialization. Proxy-chain suite unchanged and green.
+- Frontend: updated pagination/sort-cycle expectations; shell test
+  still proves primary navigation. `v2rayN`-derived changes are the
+  interaction semantics above — each change has a concrete
+  implementation justification, nothing is a visual clone.
+
 ## v0.12.2 — blank-window root-cause repair, Tor/Psiphon removal, proxy chains, route evidence
 
 v0.12.2 repairs the v0.12.1 blank-window regression at its root,

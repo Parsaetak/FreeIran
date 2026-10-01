@@ -19,11 +19,9 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"sort"
 	"sync"
 	"time"
 
-	"github.com/Parsaetak/FreeIran/engine/config"
 	firerrors "github.com/Parsaetak/FreeIran/engine/errors"
 	"github.com/Parsaetak/FreeIran/system"
 )
@@ -232,49 +230,6 @@ func pruneOrder(order []string, existing []string) []string {
 	}
 
 	return out
-}
-
-// applyConfigOrder reorders loaded configurations according to the
-// stored order (stable IDs; unknown IDs keep relative order after the
-// ordered ones). Filtering and sorting in the UI never corrupt the
-// underlying order because this runs on view data only.
-func (a *App) applyConfigOrder(configs []config.Config) []config.Config {
-	order := a.loadConfigOrder()
-	if len(order) == 0 {
-		return configs
-	}
-
-	pos := make(map[string]int, len(order))
-	for i, id := range order {
-		if _, dup := pos[id]; !dup {
-			pos[id] = i
-		}
-	}
-
-	ordered := make([]config.Config, 0, len(configs))
-	unordered := make([]config.Config, 0, len(configs))
-
-	for _, cfg := range configs {
-		if _, ok := pos[cfg.ID]; ok {
-			ordered = append(ordered, cfg)
-		} else {
-			unordered = append(unordered, cfg)
-		}
-	}
-
-	// Stable sort of the ordered subset by stored position.
-	byPos := func(i, j int) bool {
-		return pos[ordered[i].ID] < pos[ordered[j].ID]
-	}
-
-	sortConfigsStable(ordered, byPos)
-
-	return append(ordered, unordered...)
-}
-
-// sortConfigsStable sorts in place with the provided less function.
-func sortConfigsStable(configs []config.Config, less func(i, j int) bool) {
-	sort.SliceStable(configs, less)
 }
 
 // ListAllConfigIDs returns every stored configuration ID (bounded by

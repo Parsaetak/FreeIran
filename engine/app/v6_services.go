@@ -478,6 +478,7 @@ func (a *testerAdapter) Test(ctx context.Context, fingerprint string, backends [
 	// A persisted test result changed the ranking inputs: drop the
 	// candidate snapshot so the UI observes fresh data immediately.
 	a.app.InvalidateRankingSnapshot()
+	a.app.InvalidateCountsSnapshot()
 
 	a.app.metricsR.AddTestExecuted(result.Working)
 
@@ -961,6 +962,27 @@ func (s *TunnelService) State() tunnel.State {
 	return s.ensureController().State()
 }
 
+// CleanupStaleOwnership removes system-proxy ownership residue without
+// a live connection (v0.13.0): when a previous session crashed, the
+// durable marker recorded the user's proxy state but the restore never
+// ran (or failed). This applies EXACTLY the recorded previous state —
+// the same transactional restore Disable would have performed —
+// through the ONE WinINet authority, then consumes the marker.
+//
+// The call is honest about every outcome: (false, nil) when there is
+// nothing to clean, (true, nil) after a verified restore, and the
+// error verbatim when the platform refused or residue remains. It is
+// safe to call at any time and never touches unrelated network state.
+func (s *TunnelService) CleanupStaleOwnership() (bool, error) {
+	cleaned, err := tunnel.RecoverStaleProxy()
+
+	if cleaned {
+		s.app.publishTunnelState()
+	}
+
+	return cleaned, err
+}
+
 // OwnershipStatus exposes the durable system-proxy ownership marker
 // (v0.10.2 § Windows system-proxy UX): whether FreeIran owns the
 // system proxy, the ownership phase, the recorded endpoint and the
@@ -972,10 +994,16 @@ func (s *TunnelService) OwnershipStatus() tunnel.OwnershipStatus {
 
 // EnableSystemProxy sets the Windows system proxy.
 func (s *TunnelService) EnableSystemProxy(host string, port int, asHTTP bool, bypass []string) error {
-	return s.ensureController().Enable(s.app.ctx, tunnel.ModeSystemProxy, host, port, tunnel.Options{
+	err := s.ensureController().Enable(s.app.ctx, tunnel.ModeSystemProxy, host, port, tunnel.Options{
 		AsHTTP: asHTTP,
 		Bypass: bypass,
 	})
+
+	// Publish regardless of outcome: a failed enable must move the
+	// tray/UI off a stale "on" belief just like a real transition.
+	s.app.publishTunnelState()
+
+	return err
 }
 
 // EnableTUN activates TUN mode for the given stored configuration
@@ -1003,9 +1031,15 @@ func (s *TunnelService) EnableTUN(configID string) error {
 		return fmt.Errorf("tunnel: enable tun: configuration is not sing-box compatible: %w", err)
 	}
 
-	return s.ensureController().EnableTUN(s.app.ctx, tunnel.TUNEnableOptions{
+	err = s.ensureController().EnableTUN(s.app.ctx, tunnel.TUNEnableOptions{
 		Config: *cfg,
 	})
+
+	// Publish regardless of outcome (same reasoning as the proxy
+	// path): failed activations must be observable.
+	s.app.publishTunnelState()
+
+	return err
 }
 
 // loadTUNConfig loads a stored configuration for a TUN activation
@@ -1031,7 +1065,11 @@ func (s *TunnelService) loadTUNConfig(configID string) (*config.Config, error) {
 
 // Disable deactivates the active tunnel mode and restores previous settings.
 func (s *TunnelService) Disable() error {
-	return s.ensureController().Disable(s.app.ctx)
+	err := s.ensureController().Disable(s.app.ctx)
+
+	s.app.publishTunnelState()
+
+	return err
 }
 
 // --- Source Manager (v0.6 extension) ---

@@ -342,7 +342,7 @@ describe("Proxy chain scopes (v0.12.2)", () => {
       expect(serviceMocks.ListConfigsFiltered).toHaveBeenCalledWith(
         expect.objectContaining({ ids: ["hop-1", "hop-2"] }),
         0,
-        1000,
+        200,
       );
     });
   });

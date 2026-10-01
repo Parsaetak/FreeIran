@@ -9,7 +9,7 @@ configurations.
 **Project:** FreeIran — A SHEYTAN Digital System
 **Architect:** Parsa Tak / SHEYTAN
 **Repository:** https://github.com/Parsaetak/FreeIran
-**Current version:** 0.12.2 (see `VERSION`)
+**Current version:** 0.13.0 (see `VERSION`)
 **Status:** production architecture — multi-core protocol runtime with
 managed installation, multi-level node discovery, Ping/URL test modes
 with measured ranking, verified-connection engine with racing,
@@ -19,8 +19,11 @@ dataplane, unified adaptive memory control and kernel-level process
 supervision, evidence-based failure classification with
 transport-agile route selection, proxy chains compiled into a single
 core process, and schema-verified ECH support through sing-box.
-v0.12.2 removed Tor and Psiphon from the active product (history
-lives in CHANGELOG.md).
+v0.13.0 makes the workspace honest at the real dataset size (true
+counts, global sort with a config-ID tie-breaker, paginated filtered
+scopes), moves system integration to the Main page with real tray
+toggles, and root-fixes the Windows icon chain (history lives in
+CHANGELOG.md).
 
 ## What FreeIran is
 
@@ -68,8 +71,20 @@ as a future-work contract (PLANNED; not implemented).
   check reports per-hop evidence plus a fresh end-to-end
   measurement. Cores without a chaining primitive (V2Ray) refuse
   chains explicitly.
-- Windows CI with real-core verification, GUI launch proof, security
-  scanning ([docs/ci.md](docs/ci.md), [docs/security.md](docs/security.md)).
+- Configuration workspace over the REAL dataset: one server-side
+  filter/sort/pagination pipeline with the true global total and a
+  global config-ID tie-breaker, authoritative uncapped group counts,
+  source scopes with factual freshness ("Updated 12m ago" /
+  "Never fetched"; content hashes stay internal evidence), and
+  paginated infinite scroll in every scope.
+- System integration as a first-class Main-page block: System Proxy
+  and TUN toggles plus local inbound ports through the ONE
+  TunnelService and settings paths, mirrored by the native tray
+  (state synced from the authoritative backend, never from the
+  click), with honest prerequisites and disconnected-state cleanup.
+- Windows CI with real-core verification, GUI launch proof, PE
+  resource-icon regression check, security scanning
+  ([docs/ci.md](docs/ci.md), [docs/security.md](docs/security.md)).
 
 ## Current limitations (honest)
 

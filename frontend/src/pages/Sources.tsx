@@ -7,8 +7,8 @@ import { describeError, toast } from "../state/toastStore";
 import { ConfirmDialog, FormDialog } from "../components/Dialog";
 import { EmptyState } from "../components/common";
 import { IconConfigs, IconPlay, IconPlus, IconRefresh, IconSources, IconTrash } from "../components/Icons";
-import { formatLatency } from "../utilities/format";
-import { call, sourceService, testQueueService } from "../services";
+import { formatLatency, sourceFreshness } from "../utilities/format";
+import { call, sourceService, testQueueService, type SourceStatsView } from "../services";
 
 /** Sources page: managed subscription lists with refresh flow. */
 export function SourcesPage() {
@@ -27,6 +27,36 @@ export function SourcesPage() {
   const [removeTarget, setRemoveTarget] = useState<{ id: string; label: string } | null>(null);
   const [removing, setRemoving] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
+
+  // v0.13.0: per-source freshness from the ONE authoritative source
+  // stats surface (SourceStatsList). The row badge shows a factual
+  // "Updated …" / "Never fetched" label — content hashes are internal
+  // provenance/dedupe evidence and never ordinary UI.
+  const [statsByID, setStatsByID] = useState<Map<string, SourceStatsView>>(new Map());
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void call(() => sourceService.SourceStatsList())
+      .then((stats) => {
+        if (cancelled) return;
+
+        const map = new Map<string, SourceStatsView>();
+
+        for (const s of stats ?? []) {
+          map.set(s.id, s);
+        }
+
+        setStatsByID(map);
+      })
+      .catch(() => {
+        /* the freshness badge simply stays absent — never invented */
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshing, lastIngestion]);
 
   // v0.9.10: the evidence-based reliability dashboard — loaded per
   // mount (the backend serves it cached) and reloaded after each
@@ -67,8 +97,10 @@ export function SourcesPage() {
 
       await useSourcesStore.getState().load();
 
-      if (stats) {
-        toast("success", "Source updated", `${stats.name}: ${stats.config_count} configurations.`);
+      if (stats && "config_count" in stats) {
+        const s = stats as { name?: string; config_count?: number };
+
+        toast("success", "Source updated", `${s.name}: ${s.config_count} configurations.`);
       } else {
         toast("success", "Source updated");
       }
@@ -207,6 +239,10 @@ export function SourcesPage() {
         ) : (
           sources.map((source) => {
             const pending = pendingIds.includes(source.id);
+            const stats = statsByID.get(source.id);
+            const freshness = sourceFreshness(
+              stats?.last_successful_fetch ?? null,
+            );
 
             return (
               <div className="row source-row" key={source.id}>
@@ -243,10 +279,15 @@ export function SourcesPage() {
                   </span>
                 )}
 
-                {source.last_hash ? (
-                  <span className="badge success hide-sm">synced · {source.last_hash.slice(0, 8)}</span>
+                {stats?.last_successful_fetch ? (
+                  <span
+                    className="badge success hide-sm"
+                    title={new Date(stats.last_successful_fetch).toLocaleString()}
+                  >
+                    {freshness}
+                  </span>
                 ) : (
-                  <span className="badge neutral hide-sm">not fetched</span>
+                  <span className="badge neutral hide-sm">Never fetched</span>
                 )}
 
                 {/*

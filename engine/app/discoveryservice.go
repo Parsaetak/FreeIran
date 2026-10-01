@@ -301,6 +301,7 @@ func (s *DiscoveryService) persistDiscovered(nodes []discovery.Node) {
 	_ = sink.Flush()
 
 	s.app.InvalidateRankingSnapshot()
+	s.app.InvalidateCountsSnapshot()
 
 	s.app.logger.Info("discovery", "nodes_persisted",
 		"persisted %d newly discovered candidates", len(fresh))
@@ -607,6 +608,7 @@ func (s *DiscoveryService) testTopCandidates(ctx context.Context, nodes []discov
 
 	if tested > 0 {
 		s.app.InvalidateRankingSnapshot()
+		s.app.InvalidateCountsSnapshot()
 	}
 
 	return tested

@@ -516,6 +516,142 @@ export class CandidateView {
 }
 
 /**
+ * ChainCheckResult is the honest outcome of one "Check chain"
+ * operation: per-hop stored evidence PLUS a fresh end-to-end
+ * measurement through the compiled chain. Chain readiness alone is
+ * never success — the EndToEnd result is the authority.
+ */
+export class ChainCheckResult {
+    /**
+     * Creates a new ChainCheckResult instance.
+     * @param {Partial<ChainCheckResult>} [$$source = {}] - The source object to create the ChainCheckResult.
+     */
+    constructor($$source = {}) {
+        if (!("chain_id" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["chain_id"] = "";
+        }
+        if (!("hops" in $$source)) {
+            /**
+             * @member
+             * @type {ProxyChainHopView[]}
+             */
+            this["hops"] = [];
+        }
+        if (!("end_to_end" in $$source)) {
+            /**
+             * @member
+             * @type {ChainE2EView}
+             */
+            this["end_to_end"] = (new ChainE2EView());
+        }
+        if (!("duration_ms" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["duration_ms"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ChainCheckResult instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {ChainCheckResult}
+     */
+    static createFrom($$source = {}) {
+        const $$createField1_0 = $$createType6;
+        const $$createField2_0 = $$createType7;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("hops" in $$parsedSource) {
+            $$parsedSource["hops"] = $$createField1_0($$parsedSource["hops"]);
+        }
+        if ("end_to_end" in $$parsedSource) {
+            $$parsedSource["end_to_end"] = $$createField2_0($$parsedSource["end_to_end"]);
+        }
+        return new ChainCheckResult(/** @type {Partial<ChainCheckResult>} */($$parsedSource));
+    }
+}
+
+/**
+ * ChainE2EView projects the end-to-end probe result.
+ */
+export class ChainE2EView {
+    /**
+     * Creates a new ChainE2EView instance.
+     * @param {Partial<ChainE2EView>} [$$source = {}] - The source object to create the ChainE2EView.
+     */
+    constructor($$source = {}) {
+        if (!("ok" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["ok"] = false;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {number | undefined}
+             */
+            this["ping_ms"] = undefined;
+        }
+        if (!("measured" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["measured"] = false;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["backend"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["quality"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["last_error"] = undefined;
+        }
+        if (!("at" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["at"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ChainE2EView instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {ChainE2EView}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ChainE2EView(/** @type {Partial<ChainE2EView>} */($$parsedSource));
+    }
+}
+
+/**
  * CleanupResult is the user-facing cleanup outcome.
  */
 export class CleanupResult {
@@ -569,7 +705,7 @@ export class CleanupResult {
      * @returns {CleanupResult}
      */
     static createFrom($$source = {}) {
-        const $$createField4_0 = $$createType6;
+        const $$createField4_0 = $$createType9;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("tasks" in $$parsedSource) {
             $$parsedSource["tasks"] = $$createField4_0($$parsedSource["tasks"]);
@@ -891,15 +1027,6 @@ export class ConfigFilter {
         }
         if (/** @type {any} */(false)) {
             /**
-             * IDs is an explicit allow-list of configuration ids
-             * (v0.12.2 proxy-chain scope). Empty = no restriction.
-             * @member
-             * @type {string[] | undefined}
-             */
-            this["ids"] = undefined;
-        }
-        if (/** @type {any} */(false)) {
-            /**
              * Query is a case-insensitive substring over address/name.
              * @member
              * @type {string | undefined}
@@ -917,6 +1044,17 @@ export class ConfigFilter {
              * @type {string | undefined}
              */
             this["group"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * IDs is an explicit allow-list of configuration ids (v0.12.2
+             * proxy-chain scope: the table shows exactly the chain's hops,
+             * server-side filtered like every other scope — no full
+             * database download). Empty = no id restriction.
+             * @member
+             * @type {string[] | undefined}
+             */
+            this["ids"] = undefined;
         }
         if (/** @type {any} */(false)) {
             /**
@@ -945,7 +1083,11 @@ export class ConfigFilter {
      * @returns {ConfigFilter}
      */
     static createFrom($$source = {}) {
+        const $$createField6_0 = $$createType4;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("ids" in $$parsedSource) {
+            $$parsedSource["ids"] = $$createField6_0($$parsedSource["ids"]);
+        }
         return new ConfigFilter(/** @type {Partial<ConfigFilter>} */($$parsedSource));
     }
 }
@@ -997,7 +1139,7 @@ export class ConfigPage {
      * @returns {ConfigPage}
      */
     static createFrom($$source = {}) {
-        const $$createField0_0 = $$createType8;
+        const $$createField0_0 = $$createType11;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("items" in $$parsedSource) {
             $$parsedSource["items"] = $$createField0_0($$parsedSource["items"]);
@@ -1046,8 +1188,8 @@ export class ConnectBestResult {
      * @returns {ConnectBestResult}
      */
     static createFrom($$source = {}) {
-        const $$createField0_0 = $$createType9;
-        const $$createField1_0 = $$createType10;
+        const $$createField0_0 = $$createType12;
+        const $$createField1_0 = $$createType13;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("snapshot" in $$parsedSource) {
             $$parsedSource["snapshot"] = $$createField0_0($$parsedSource["snapshot"]);
@@ -1155,7 +1297,7 @@ export class CoreLifecycleView {
      * @returns {CoreLifecycleView}
      */
     static createFrom($$source = {}) {
-        const $$createField0_0 = $$createType11;
+        const $$createField0_0 = $$createType14;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("manifest" in $$parsedSource) {
             $$parsedSource["manifest"] = $$createField0_0($$parsedSource["manifest"]);
@@ -1344,8 +1486,8 @@ export class DeveloperInfoView {
      * @returns {DeveloperInfoView}
      */
     static createFrom($$source = {}) {
-        const $$createField12_0 = $$createType12;
-        const $$createField21_0 = $$createType13;
+        const $$createField12_0 = $$createType15;
+        const $$createField21_0 = $$createType16;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("migration" in $$parsedSource) {
             $$parsedSource["migration"] = $$createField12_0($$parsedSource["migration"]);
@@ -1581,8 +1723,8 @@ export class GroupsOverview {
      * @returns {GroupsOverview}
      */
     static createFrom($$source = {}) {
-        const $$createField0_0 = $$createType15;
-        const $$createField1_0 = $$createType17;
+        const $$createField0_0 = $$createType18;
+        const $$createField1_0 = $$createType20;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("builtin" in $$parsedSource) {
             $$parsedSource["builtin"] = $$createField0_0($$parsedSource["builtin"]);
@@ -1641,8 +1783,8 @@ export class ImportPreview {
      * @returns {ImportPreview}
      */
     static createFrom($$source = {}) {
-        const $$createField2_0 = $$createType19;
-        const $$createField3_0 = $$createType21;
+        const $$createField2_0 = $$createType22;
+        const $$createField3_0 = $$createType24;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("imported" in $$parsedSource) {
             $$parsedSource["imported"] = $$createField2_0($$parsedSource["imported"]);
@@ -2093,7 +2235,7 @@ export class LogPage {
      * @returns {LogPage}
      */
     static createFrom($$source = {}) {
-        const $$createField0_0 = $$createType23;
+        const $$createField0_0 = $$createType26;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("entries" in $$parsedSource) {
             $$parsedSource["entries"] = $$createField0_0($$parsedSource["entries"]);
@@ -2166,8 +2308,8 @@ export class MemorySnapshot {
      * @returns {MemorySnapshot}
      */
     static createFrom($$source = {}) {
-        const $$createField0_0 = $$createType24;
-        const $$createField1_0 = $$createType25;
+        const $$createField0_0 = $$createType27;
+        const $$createField1_0 = $$createType28;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pressure" in $$parsedSource) {
             $$parsedSource["pressure"] = $$createField0_0($$parsedSource["pressure"]);
@@ -2544,99 +2686,273 @@ export class ProfileView {
 }
 
 /**
- * ProviderChoice is one scored option for Auto selection.
+ * ProxyChainDetails is the full editor/connect projection of one
+ * chain: identity, ordered hops with evidence, and the compiled
+ * preview ("A → B → C").
  */
-export class ProviderChoice {
+export class ProxyChainDetails {
     /**
-     * Creates a new ProviderChoice instance.
-     * @param {Partial<ProviderChoice>} [$$source = {}] - The source object to create the ProviderChoice.
+     * Creates a new ProxyChainDetails instance.
+     * @param {Partial<ProxyChainDetails>} [$$source = {}] - The source object to create the ProxyChainDetails.
      */
     constructor($$source = {}) {
-        if (!("kind" in $$source)) {
+        if (!("id" in $$source)) {
             /**
-             * "configs" | "tor" | "psiphon"
              * @member
              * @type {string}
              */
-            this["kind"] = "";
+            this["id"] = "";
         }
         if (!("name" in $$source)) {
             /**
-             * display name
              * @member
              * @type {string}
              */
             this["name"] = "";
         }
-        if (!("score" in $$source)) {
+        if (!("config_ids" in $$source)) {
             /**
              * @member
-             * @type {number}
+             * @type {string[]}
              */
-            this["score"] = 0;
+            this["config_ids"] = [];
+        }
+        if (!("hops" in $$source)) {
+            /**
+             * @member
+             * @type {ProxyChainHopView[]}
+             */
+            this["hops"] = [];
         }
         if (/** @type {any} */(false)) {
             /**
-             * explainable, like ranking
              * @member
-             * @type {string[] | undefined}
+             * @type {string | undefined}
              */
-            this["reasons"] = undefined;
+            this["preview"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {number | undefined}
+             */
+            this["created_at"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {number | undefined}
+             */
+            this["updated_at"] = undefined;
+        }
+        if (!("usable" in $$source)) {
+            /**
+             * Usable reports whether every hop currently resolves in the
+             * store (a chain with missing hops refuses to connect).
+             * @member
+             * @type {boolean}
+             */
+            this["usable"] = false;
         }
 
         Object.assign(this, $$source);
     }
 
     /**
-     * Creates a new ProviderChoice instance from a string or object.
+     * Creates a new ProxyChainDetails instance from a string or object.
      * @param {any} [$$source = {}]
-     * @returns {ProviderChoice}
+     * @returns {ProxyChainDetails}
      */
     static createFrom($$source = {}) {
-        const $$createField3_0 = $$createType4;
+        const $$createField2_0 = $$createType4;
+        const $$createField3_0 = $$createType6;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        if ("reasons" in $$parsedSource) {
-            $$parsedSource["reasons"] = $$createField3_0($$parsedSource["reasons"]);
+        if ("config_ids" in $$parsedSource) {
+            $$parsedSource["config_ids"] = $$createField2_0($$parsedSource["config_ids"]);
         }
-        return new ProviderChoice(/** @type {Partial<ProviderChoice>} */($$parsedSource));
+        if ("hops" in $$parsedSource) {
+            $$parsedSource["hops"] = $$createField3_0($$parsedSource["hops"]);
+        }
+        return new ProxyChainDetails(/** @type {Partial<ProxyChainDetails>} */($$parsedSource));
     }
 }
 
 /**
- * ProviderModeView is one UI choice.
+ * ProxyChainHopView is the credential-free projection of one hop:
+ * table-grade endpoint facts (protocol/name/host/port/transport/
+ * security) plus the hop's REAL measured evidence from the store.
  */
-export class ProviderModeView {
+export class ProxyChainHopView {
     /**
-     * Creates a new ProviderModeView instance.
-     * @param {Partial<ProviderModeView>} [$$source = {}] - The source object to create the ProviderModeView.
+     * Creates a new ProxyChainHopView instance.
+     * @param {Partial<ProxyChainHopView>} [$$source = {}] - The source object to create the ProxyChainHopView.
      */
     constructor($$source = {}) {
-        if (!("mode" in $$source)) {
+        if (!("position" in $$source)) {
             /**
              * @member
-             * @type {string}
+             * @type {number}
              */
-            this["mode"] = "";
+            this["position"] = 0;
         }
-        if (!("label" in $$source)) {
+        if (!("config_id" in $$source)) {
             /**
              * @member
              * @type {string}
              */
-            this["label"] = "";
+            this["config_id"] = "";
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["name"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["protocol"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["address"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {number | undefined}
+             */
+            this["port"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["transport"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["security"] = undefined;
+        }
+        if (!("working" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["working"] = false;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {number | undefined}
+             */
+            this["latency_ms"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {number | undefined}
+             */
+            this["tested_at"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {string | undefined}
+             */
+            this["test_backend"] = undefined;
+        }
+        if (!("available" in $$source)) {
+            /**
+             * Available reports whether the configuration still resolves in
+             * the store (false = the chain needs editing before connecting).
+             * @member
+             * @type {boolean}
+             */
+            this["available"] = false;
         }
 
         Object.assign(this, $$source);
     }
 
     /**
-     * Creates a new ProviderModeView instance from a string or object.
+     * Creates a new ProxyChainHopView instance from a string or object.
      * @param {any} [$$source = {}]
-     * @returns {ProviderModeView}
+     * @returns {ProxyChainHopView}
      */
     static createFrom($$source = {}) {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
-        return new ProviderModeView(/** @type {Partial<ProviderModeView>} */($$parsedSource));
+        return new ProxyChainHopView(/** @type {Partial<ProxyChainHopView>} */($$parsedSource));
+    }
+}
+
+/**
+ * ProxyChainView is the credential-free UI projection of one chain
+ * (list surface).
+ */
+export class ProxyChainView {
+    /**
+     * Creates a new ProxyChainView instance.
+     * @param {Partial<ProxyChainView>} [$$source = {}] - The source object to create the ProxyChainView.
+     */
+    constructor($$source = {}) {
+        if (!("id" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["id"] = "";
+        }
+        if (!("name" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["name"] = "";
+        }
+        if (!("hops" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["hops"] = 0;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {number | undefined}
+             */
+            this["created_at"] = undefined;
+        }
+        if (/** @type {any} */(false)) {
+            /**
+             * @member
+             * @type {number | undefined}
+             */
+            this["updated_at"] = undefined;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ProxyChainView instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {ProxyChainView}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ProxyChainView(/** @type {Partial<ProxyChainView>} */($$parsedSource));
     }
 }
 
@@ -2838,8 +3154,8 @@ export class Settings {
         if (/** @type {any} */(false)) {
             /**
              * ConnectMode is the Quick Connect route choice:
-             * "" / "auto" / "configs" / "chains". Replaces the removed
-             * provider_mode (legacy values migrate safely).
+             * "" / "auto" / "configs" / "chains". It replaces the removed
+             * provider_mode field (legacy values migrate safely).
              * @member
              * @type {string | undefined}
              */
@@ -3456,8 +3772,8 @@ export class SourceReliabilityReport {
      * @returns {SourceReliabilityReport}
      */
     static createFrom($$source = {}) {
-        const $$createField1_0 = $$createType27;
-        const $$createField2_0 = $$createType29;
+        const $$createField1_0 = $$createType29;
+        const $$createField2_0 = $$createType31;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("overall" in $$parsedSource) {
             $$parsedSource["overall"] = $$createField1_0($$parsedSource["overall"]);
@@ -3731,8 +4047,8 @@ export class StartFlowStatus {
      * @returns {StartFlowStatus}
      */
     static createFrom($$source = {}) {
-        const $$createField6_0 = $$createType30;
-        const $$createField7_0 = $$createType32;
+        const $$createField6_0 = $$createType32;
+        const $$createField7_0 = $$createType34;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("environment" in $$parsedSource) {
             $$parsedSource["environment"] = $$createField6_0($$parsedSource["environment"]);
@@ -3973,8 +4289,8 @@ export class StorageOverview {
      * @returns {StorageOverview}
      */
     static createFrom($$source = {}) {
-        const $$createField27_0 = $$createType6;
-        const $$createField28_0 = $$createType12;
+        const $$createField27_0 = $$createType9;
+        const $$createField28_0 = $$createType15;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("last_cleanup_tasks" in $$parsedSource) {
             $$parsedSource["last_cleanup_tasks"] = $$createField27_0($$parsedSource["last_cleanup_tasks"]);
@@ -4400,7 +4716,7 @@ export class stagingEntry {
      * @returns {stagingEntry}
      */
     static createFrom($$source = {}) {
-        const $$createField3_0 = $$createType33;
+        const $$createField3_0 = $$createType35;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("provenance" in $$parsedSource) {
             $$parsedSource["provenance"] = $$createField3_0($$parsedSource["provenance"]);
@@ -4415,31 +4731,34 @@ const $$createType1 = pipeline$0.Stats.createFrom;
 const $$createType2 = $Create.Nullable($$createType1);
 const $$createType3 = $Create.Map($Create.Any, $Create.Any);
 const $$createType4 = $Create.Array($Create.Any);
-const $$createType5 = LastCleanupTask.createFrom;
+const $$createType5 = ProxyChainHopView.createFrom;
 const $$createType6 = $Create.Array($$createType5);
-const $$createType7 = config$0.Config.createFrom;
-const $$createType8 = $Create.Array($$createType7);
-const $$createType9 = connection$0.Snapshot.createFrom;
-const $$createType10 = CandidateView.createFrom;
-const $$createType11 = coremgr$0.Manifest.createFrom;
-const $$createType12 = system$0.WorkspaceStatus.createFrom;
-const $$createType13 = RecoveryStatus.createFrom;
-const $$createType14 = BuiltinGroupView.createFrom;
-const $$createType15 = $Create.Array($$createType14);
-const $$createType16 = UserGroupView.createFrom;
-const $$createType17 = $Create.Array($$createType16);
-const $$createType18 = ImportedConfigView.createFrom;
-const $$createType19 = $Create.Array($$createType18);
-const $$createType20 = ImportRejected.createFrom;
-const $$createType21 = $Create.Array($$createType20);
-const $$createType22 = logging$0.Entry.createFrom;
-const $$createType23 = $Create.Array($$createType22);
-const $$createType24 = mempressure$0.Snapshot.createFrom;
-const $$createType25 = booster$0.Settings.createFrom;
-const $$createType27 = OverallSourceHealth.createFrom;
-const $$createType28 = SourceHealthEntry.createFrom;
-const $$createType29 = $Create.Array($$createType28);
-const $$createType30 = $Create.Array($Create.Any);
-const $$createType31 = StartFlowResult.createFrom;
-const $$createType32 = $Create.Nullable($$createType31);
-const $$createType33 = discovery$0.Provenance.createFrom;
+const $$createType7 = ChainE2EView.createFrom;
+const $$createType8 = LastCleanupTask.createFrom;
+const $$createType9 = $Create.Array($$createType8);
+const $$createType10 = config$0.Config.createFrom;
+const $$createType11 = $Create.Array($$createType10);
+const $$createType12 = connection$0.Snapshot.createFrom;
+const $$createType13 = CandidateView.createFrom;
+const $$createType14 = coremgr$0.Manifest.createFrom;
+const $$createType15 = system$0.WorkspaceStatus.createFrom;
+const $$createType16 = RecoveryStatus.createFrom;
+const $$createType17 = BuiltinGroupView.createFrom;
+const $$createType18 = $Create.Array($$createType17);
+const $$createType19 = UserGroupView.createFrom;
+const $$createType20 = $Create.Array($$createType19);
+const $$createType21 = ImportedConfigView.createFrom;
+const $$createType22 = $Create.Array($$createType21);
+const $$createType23 = ImportRejected.createFrom;
+const $$createType24 = $Create.Array($$createType23);
+const $$createType25 = logging$0.Entry.createFrom;
+const $$createType26 = $Create.Array($$createType25);
+const $$createType27 = mempressure$0.Snapshot.createFrom;
+const $$createType28 = booster$0.Settings.createFrom;
+const $$createType29 = OverallSourceHealth.createFrom;
+const $$createType30 = SourceHealthEntry.createFrom;
+const $$createType31 = $Create.Array($$createType30);
+const $$createType32 = $Create.Array($Create.Any);
+const $$createType33 = StartFlowResult.createFrom;
+const $$createType34 = $Create.Nullable($$createType33);
+const $$createType35 = discovery$0.Provenance.createFrom;

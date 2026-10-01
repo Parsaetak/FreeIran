@@ -34,6 +34,27 @@ export function ClearCaches() {
 }
 
 /**
+ * ConnectMode returns the persisted Quick Connect route choice
+ * ("" / "auto" / "configs" / "chains"). v0.12.2: this replaces the
+ * removed provider mode; legacy persisted values were migrated on
+ * load.
+ * @returns {$CancellablePromise<string>}
+ */
+export function ConnectMode() {
+    return $Call.ByID(4007574253);
+}
+
+/**
+ * SetConnectMode persists the Quick Connect route choice through the
+ * ONE settings path.
+ * @param {string} mode
+ * @returns {$CancellablePromise<string>}
+ */
+export function SetConnectMode(mode) {
+    return $Call.ByID(4293258749, mode);
+}
+
+/**
  * State returns the application state snapshot.
  * @returns {$CancellablePromise<$models.AppState>}
  */

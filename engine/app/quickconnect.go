@@ -263,6 +263,7 @@ func (a *App) quickConnectLoop(
 
 	if tested > 0 {
 		a.InvalidateRankingSnapshot()
+		a.InvalidateCountsSnapshot()
 
 		// Reload the tested records with their fresh evidence.
 		records = a.collectCandidateRecords(ctx)

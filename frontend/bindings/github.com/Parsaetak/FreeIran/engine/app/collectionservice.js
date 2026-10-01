@@ -70,8 +70,10 @@ export function GroupMembers(groupID) {
 /**
  * GroupsOverview returns the built-in evidence groups with live
  * counts plus the user groups. Built-in counts are computed from the
- * store's real records in ONE bounded scan (the same bound the
- * ranking engine uses) — never from invented scores.
+ * store's real records in ONE uncapped scan and served from an
+ * authoritative snapshot invalidated by store/test/collection changes
+ * — never from invented scores and never a bounded prefix of the
+ * dataset.
  * @returns {$CancellablePromise<$models.GroupsOverview | null>}
  */
 export function GroupsOverview() {

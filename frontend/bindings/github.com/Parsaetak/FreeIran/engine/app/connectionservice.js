@@ -61,9 +61,6 @@ export function ConfigDetails(configID) {
 }
 
 /**
- * Connect establishes the tunnel for a stored configuration. The
- * configuration is loaded by fingerprint; credentials never cross
- * the service boundary in the response.
  * @param {string} configID
  * @returns {$CancellablePromise<connection$0.Snapshot>}
  */
@@ -88,6 +85,26 @@ export function Connect(configID) {
 export function ConnectBest(exclude) {
     return $Call.ByID(4048060805, exclude).then(/** @type {($result: any) => any} */(($result) => {
         return $$createType7($result);
+    }));
+}
+
+/**
+ * Connect establishes the tunnel for a stored configuration. The
+ * configuration is loaded by fingerprint; credentials never cross
+ * the service boundary in the response.
+ * ConnectChain establishes a proxy-chain session through the EXISTING
+ * connection state machine (select → prepare → start ONE core →
+ * ready → verify → connected → monitor). The chain compiles into a
+ * single core process — Xray sockopt.dialerProxy or sing-box detour;
+ * never one process per hop. A chain with missing hops refuses
+ * loudly; a core without a chaining primitive (v2ray) is an explicit
+ * unsupported error. Multi-hop is always an explicit user action.
+ * @param {string} chainID
+ * @returns {$CancellablePromise<connection$0.Snapshot>}
+ */
+export function ConnectChain(chainID) {
+    return $Call.ByID(3819077816, chainID).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType6($result);
     }));
 }
 

@@ -33,6 +33,7 @@ import (
 	"github.com/Parsaetak/FreeIran/engine/connection"
 	"github.com/Parsaetak/FreeIran/engine/coremgr"
 	"github.com/Parsaetak/FreeIran/engine/testqueue"
+	"github.com/Parsaetak/FreeIran/engine/tunnel"
 	"github.com/Parsaetak/FreeIran/internal/appicon"
 	"github.com/Parsaetak/FreeIran/internal/logging"
 	"github.com/Parsaetak/FreeIran/internal/statepub"
@@ -184,9 +185,23 @@ func main() {
 	stateEmitter := statepub.NewBoundedEmitter("ui-state",
 		func(state app.AppState) { wailsApp.Event.Emit("freeiran:state", state) })
 
+	// v0.13.0: the tray manager holder is declared BEFORE the state
+	// emitters so the connection stream can keep the tray's System
+	// Proxy / TUN checkboxes synchronized with the REAL dataplane
+	// state (disconnects, recoveries and external changes can never
+	// leave the menu lying).
+	var trayHolder atomic.Pointer[trayManager]
+
+	syncTray := func() {
+		if tm := trayHolder.Load(); tm != nil {
+			tm.SyncFromServices()
+		}
+	}
+
 	connEmitter := statepub.NewBoundedEmitter("ui-connection",
 		func(snapshot connection.Snapshot) {
 			wailsApp.Event.Emit("freeiran:connection", snapshot)
+			syncTray()
 		})
 
 	// The emitters stop when main returns (after wailsApp.Run() has
@@ -290,8 +305,6 @@ func main() {
 	// the holder so the settings listener and the shutdown hook can
 	// reach it. A nil holder means the startup show never ran; both
 	// consumers are nil-safe.
-	var trayHolder atomic.Pointer[trayManager]
-
 	settingsService := app.NewSettingsService(applicationInstance)
 
 	// React to settings mutations (Settings UI + tray checkbox —
@@ -303,6 +316,14 @@ func main() {
 		if tm := trayHolder.Load(); tm != nil {
 			tm.Reconcile(s.TrayEnabledOrDefault())
 		}
+	})
+
+	// v0.13.0: tunnel-mode changes (UI toggles, tray toggles, failed
+	// enables, cleanup) all flow through the ONE TunnelService, which
+	// publishes its post-call State here — the tray re-reads the
+	// authoritative state and its checkboxes cannot drift.
+	applicationInstance.SetTunnelStateListener(func(tunnel.State) {
+		syncTray()
 	})
 
 	// v0.11.5 — THE GUI LAUNCH FIX (root-caused against the pinned
@@ -451,12 +472,21 @@ type trayManagerOptions struct {
 // trayManager owns the native tray lifecycle under tray_enabled.
 // All fields are guarded by mu; Wails menu item state is read/written
 // on the reconcile path only.
+//
+// v0.13.0: the menu carries System Proxy and TUN (VPN) checkboxes
+// bound to the ONE TunnelService. Their visual state is OWNED by
+// SyncFromServices (the authoritative post-call tunnel state), never
+// by the click itself: a failed enable, a disconnect, an external
+// change or a rebuild always re-reads the real dataplane state, so
+// the menu cannot drift.
 type trayManager struct {
-	mu           sync.Mutex
-	opts         trayManagerOptions
-	tray         *application.SystemTray
-	trayMenu     *application.Menu
-	trayCheckbox *application.MenuItem
+	mu            sync.Mutex
+	opts          trayManagerOptions
+	tray          *application.SystemTray
+	trayMenu      *application.Menu
+	trayCheckbox  *application.MenuItem
+	proxyCheckbox *application.MenuItem
+	tunCheckbox   *application.MenuItem
 }
 
 func newTrayManager(opts trayManagerOptions) *trayManager {
@@ -527,12 +557,71 @@ func (t *trayManager) buildLocked() {
 	})
 	trayMenu.AddSeparator()
 
+	// v0.13.0: System Proxy ON/OFF and TUN (VPN) ON/OFF — the same
+	// controls the Main page owns, bound to the SAME TunnelService.
+	// The handler reads the REAL backend state (never the checkbox's
+	// pre-click value), performs the honest toggle and re-syncs from
+	// the authoritative post-call state; the checkbox visuals are set
+	// by SyncFromServices so failed enables never leave a lie behind.
+	proxyCheckbox := trayMenu.AddCheckbox("System Proxy", false)
+	proxyCheckbox.OnClick(func(*application.Context) {
+		ts := app.NewTunnelService(t.opts.applicationInstance)
+		st := ts.State()
+
+		if st.Mode == tunnel.ModeSystemProxy && st.Active {
+			_ = ts.Disable()
+		} else {
+			snap := app.NewConnectionService(t.opts.applicationInstance).ConnectionState()
+			host, port, ok := splitEndpoint(snap.Endpoint)
+
+			if ok {
+				if err := ts.EnableSystemProxy(host, port, false, []string{}); err != nil {
+					slog.Warn("tray system proxy enable failed", "error", err)
+				}
+			} else {
+				// Honest prerequisite: no live local inbound exists —
+				// connect first (the Main page shows the same state).
+				slog.Info("tray system proxy enable refused: no connected session endpoint")
+			}
+		}
+
+		t.SyncFromServices()
+	})
+
+	tunCheckbox := trayMenu.AddCheckbox("TUN (VPN)", false)
+	tunCheckbox.OnClick(func(*application.Context) {
+		ts := app.NewTunnelService(t.opts.applicationInstance)
+		st := ts.State()
+
+		if st.Mode == tunnel.ModeTUN {
+			_ = ts.Disable()
+		} else {
+			snap := app.NewConnectionService(t.opts.applicationInstance).ConnectionState()
+
+			if configID := snap.ConfigID; configID != "" {
+				if err := ts.EnableTUN(configID); err != nil {
+					slog.Warn("tray tun enable failed", "error", err)
+				}
+			} else {
+				// Honest prerequisite: TUN needs a selected or
+				// connected configuration to run through sing-box.
+				slog.Info("tray tun enable refused: no selected configuration")
+			}
+		}
+
+		t.SyncFromServices()
+	})
+
+	trayMenu.AddSeparator()
+
 	// Disconnect when connected: stops the active core session and
 	// any active tunnel through the SAME services the UI buttons
 	// use (no parallel control path).
 	trayMenu.Add("Disconnect when connected").OnClick(func(*application.Context) {
 		_ = app.NewTunnelService(t.opts.applicationInstance).Disable()
 		_ = app.NewConnectionService(t.opts.applicationInstance).Disconnect()
+
+		t.SyncFromServices()
 	})
 	trayMenu.AddSeparator()
 
@@ -567,6 +656,74 @@ func (t *trayManager) buildLocked() {
 	t.tray = tray
 	t.trayMenu = trayMenu
 	t.trayCheckbox = checkbox
+	t.proxyCheckbox = proxyCheckbox
+	t.tunCheckbox = tunCheckbox
+}
+
+// SyncFromServices re-reads the ONE authoritative tunnel state and
+// connection snapshot and makes the tray checkboxes match. Safe from
+// any goroutine: the state reads happen on the calling goroutine
+// (cheap, mutex-guarded copies) and the menu mutation is posted to
+// the UI thread. Called after every tray action, after every
+// TunnelService transition and on every connection snapshot — the
+// drift paths (failed enables, disconnects, external changes,
+// rebuilds) all land on one of those hooks.
+func (t *trayManager) SyncFromServices() {
+	if t.opts.applicationInstance == nil {
+		return
+	}
+
+	ts := app.NewTunnelService(t.opts.applicationInstance)
+	st := ts.State()
+
+	application.InvokeAsync(func() {
+		t.mu.Lock()
+		defer t.mu.Unlock()
+
+		if t.proxyCheckbox == nil || t.tunCheckbox == nil {
+			return // tray not built (or destroyed): nothing to sync
+		}
+
+		t.proxyCheckbox.SetChecked(st.Mode == tunnel.ModeSystemProxy && st.Active)
+		t.tunCheckbox.SetChecked(st.Mode == tunnel.ModeTUN && st.TUN != nil && st.TUN.Active)
+	})
+}
+
+// splitEndpoint splits "host:port" (the connection snapshot's local
+// inbound endpoint) into its parts for the system-proxy call.
+func splitEndpoint(endpoint string) (string, int, bool) {
+	if endpoint == "" {
+		return "", 0, false
+	}
+
+	idx := -1
+	for i := len(endpoint) - 1; i >= 0; i-- {
+		if endpoint[i] == ':' {
+			idx = i
+
+			break
+		}
+	}
+
+	if idx <= 0 || idx == len(endpoint)-1 {
+		return "", 0, false
+	}
+
+	port := 0
+
+	for _, c := range endpoint[idx+1:] {
+		if c < '0' || c > '9' {
+			return "", 0, false
+		}
+
+		port = port*10 + int(c-'0')
+
+		if port > 65535 {
+			return "", 0, false
+		}
+	}
+
+	return endpoint[:idx], port, true
 }
 
 // destroyLocked removes the tray icon and invalidates the menu
@@ -578,6 +735,8 @@ func (t *trayManager) destroyLocked() {
 	t.tray = nil
 	t.trayMenu = nil
 	t.trayCheckbox = nil
+	t.proxyCheckbox = nil
+	t.tunCheckbox = nil
 }
 
 // versionedAssetCache wraps the bundled asset server with the cache

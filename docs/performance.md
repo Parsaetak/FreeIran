@@ -561,3 +561,45 @@ probe and snapshot reads. The bounded-admission, memory-backpressure
 and adaptive-worker architecture from v0.11.0 is untouched — the TUN
 session is one managed process, not a new load class
 (docs/tun.md).
+
+
+---
+
+## 17. v0.13.0 — bulk-test process churn: investigation record
+
+**The observation.** A manual bulk test planned 2,497 configurations;
+the queue initially admitted 200 (the `DefaultAdmissionBatch`), then
+kept feeding batches under the admission floor (1,000) while adaptive
+workers ramped to 8, and the log showed a very large number of short
+Xray process launches.
+
+**The trace (source-inspected, not assumed).**
+
+- A bulk plan never materializes more than `AdmissionBatch` (200) +
+  the floor headroom at once (`engine/testqueue/backlog.go`): the
+  wall of launches is the queue WORKING THROUGH the plan, not a
+  burst.
+- Every task runs through `tester.CoreProbe` (`engine/tester/
+  core_probe.go`), which starts ONE dedicated protocol-core process
+  per candidate (`backend.Start`), probes it, and tears it down
+  inside the bounded window. Per-test processes are the SUPERVISION
+  CONTRACT: no candidate ever shares a running core with a user
+  session, and the supervisor observes every process it spawns.
+- Concurrency is triple-bounded: adaptive workers (booster ceiling 8)
+  > `PerBackendConcurrency` (default 2) > `coreSlots` (the hard cap on
+  simultaneously LIVE probe processes). The ramp can increase worker
+  goroutines but NOT live core processes beyond the probe pool.
+
+**Verdict.** The churn is the bounded admission + per-test-core
+architecture doing its job on a large dataset — not a defect. The
+response in v0.13.0 is therefore NOT to change constants without
+measured CPU/RAM/queue/core-start evidence, and NOT to reuse core
+processes across candidates (that would bypass supervision and share
+state between untrusted routes). What the release changed is the
+LOGGING surface (already bounded since v0.11.0: probe launches are
+lifecycle-tier records summarized in the Normal profile) and the
+ADMISSION UX (the visible-results caps in the configuration listings,
+which made it LOOK like only part of the plan was running). Any future
+throughput work (core-process reuse pools, faster spawn paths) must
+land through the existing core manager/supervisor and behind measured
+evidence; constants stay as they are until then.

@@ -16,6 +16,24 @@ import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Cr
 import * as tunnel$0 from "../tunnel/models.js";
 
 /**
+ * CleanupStaleOwnership removes system-proxy ownership residue without
+ * a live connection (v0.13.0): when a previous session crashed, the
+ * durable marker recorded the user's proxy state but the restore never
+ * ran (or failed). This applies EXACTLY the recorded previous state —
+ * the same transactional restore Disable would have performed —
+ * through the ONE WinINet authority, then consumes the marker.
+ * 
+ * The call is honest about every outcome: (false, nil) when there is
+ * nothing to clean, (true, nil) after a verified restore, and the
+ * error verbatim when the platform refused or residue remains. It is
+ * safe to call at any time and never touches unrelated network state.
+ * @returns {$CancellablePromise<boolean>}
+ */
+export function CleanupStaleOwnership() {
+    return $Call.ByID(1523581065);
+}
+
+/**
  * Disable deactivates the active tunnel mode and restores previous settings.
  * @returns {$CancellablePromise<void>}
  */
@@ -39,11 +57,11 @@ export function EnableSystemProxy(host, port, asHTTP, bypass) {
  * EnableTUN activates TUN mode for the given stored configuration
  * (v0.11.3). The flow is the documented one:
  * 
- * 	active/selected configuration → sing-box compatibility check
- * 	→ managed sing-box core verified → elevation checked
- * 	→ TUN document generated → sing-box started through the
- * 	existing supervisor → TUN interface OBSERVED → real tunneled
- * 	request VERIFIED → TUN Active published.
+ *      active/selected configuration → sing-box compatibility check
+ *      → managed sing-box core verified → elevation checked
+ *      → TUN document generated → sing-box started through the
+ *      existing supervisor → TUN interface OBSERVED → real tunneled
+ *      request VERIFIED → TUN Active published.
  * 
  * If the configuration cannot run through sing-box the call fails
  * with the compatibility error — compatibility is never faked.

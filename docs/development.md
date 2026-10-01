@@ -28,10 +28,21 @@ rm cmd/freeiran/rsrc_windows_386.syso   # only the amd64 resource is built
 
 The chain is one-way: the SVG is the canonical asset, the raster
 derivatives and the committed `.syso` are generated artifacts and must
-be regenerated together. `build/winres.json` references the PNG, the
-Inno Setup installer (scripts/freeiran.iss) references the ICO, and
-cmd/freeiran/main.go uses the embedded appicon PNG — no other icon
-system exists and none may be created in parallel.
+be regenerated together. `build/winres.json` references the ICO (the
+multi-size 16-256 px Windows icon family; the single-string form is
+REQUIRED — go-winres's array form pushes every entry through
+image.Decode, which cannot read an .ico), the Inno Setup installer
+(scripts/freeiran.iss) references the ICO, and
+cmd/freeiran/main.go uses the embedded appicon PNG for the Linux
+window icon and the tray — no other icon system exists and none may
+be created in parallel.
+
+Windows icon regression (v0.13.0): `cmd/freeiran/gui_icon_windows_test.go`
+(TestWindowsGUIIcon, wired like the PE subsystem check through
+FREEIRAN_GUI_EXE) verifies the BUILT executable carries exactly one
+RT_GROUP_ICON whose RT_ICON images are byte-identical to
+assets/freeiran-icon.ico — a stale `.syso` or a foreign icon fails
+the build.
 
 Regenerating the Windows executable resource (icon + PE version
 metadata + DPI manifest) after a version bump:

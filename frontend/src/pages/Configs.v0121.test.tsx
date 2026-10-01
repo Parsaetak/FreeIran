@@ -320,7 +320,7 @@ describe("Configuration scope rail (v0.12.1)", () => {
       expect(serviceMocks.ListConfigsFiltered).toHaveBeenCalledWith(
         expect.objectContaining({ source: "src-a" }),
         0,
-        1000,
+        200,
       );
     });
   });
@@ -388,7 +388,7 @@ describe("Configuration scope rail (v0.12.1)", () => {
       expect(serviceMocks.ListConfigsFiltered).toHaveBeenCalledWith(
         expect.objectContaining({ group: "g1" }),
         0,
-        1000,
+        200,
       );
     });
 

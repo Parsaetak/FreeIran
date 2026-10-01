@@ -80,8 +80,7 @@ nanosecond elapsed, so the value remains a truthful lower bound.
 | testqueue running stats | 1 ms-quantized (sentinel-safe, `MSOfQuantized`) | `engine/testqueue` |
 | `core.Instance.Health` latency | ≥ 1 ms when the listener is ready | `engine/core` |
 | netcheck probe RTT | measured flag preserved | `engine/netcheck` probes |
-| provider health latency | measured flag preserved | `engine/provider` health |
-| configuration sorting | measured-first partition; sub-ms first within measured (R6) | `engine/ranking` (`cmpPing`), `engine/app` (`sortConfigs`), frontend picker model |
+| configuration sorting | measured-first partition; sub-ms first within measured (R6) | `engine/ranking` (`cmpPing`), `engine/app` (`sortFilteredKeys`), frontend picker model |
 
 ## Display contract
 
@@ -98,7 +97,7 @@ frontend Quick Connect model applies the same contract to
 
 1. Measured candidates partition BEFORE unmeasured ones (the
    measured-first partition in `engine/ranking`'s ping sorts,
-   `cmpPing`, applied by `engine/app`'s `sortConfigs`).
+   `cmpPing`, applied by `engine/app`'s `sortFilteredKeys` (v0.13.0 global key-based ordering with the config-ID tie-breaker)).
 2. Within the measured partition, sub-millisecond (0 ms projected)
    candidates sort FIRST (R6) — they are the fastest outcomes.
 3. Unmeasured candidates sort last and display a dash.

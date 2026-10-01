@@ -199,6 +199,12 @@ type App struct {
 	rankMu   sync.Mutex
 	rankSnap *rankSnapshot
 
+	// countsMu guards the builtin-group count snapshot (collections.go,
+	// v0.13.0): one authoritative cached count set invalidated by real
+	// store/test/collection changes — never duplicated store truth.
+	countsMu   sync.Mutex
+	countsSnap *builtinCountsSnapshot
+
 	// v0.9.8.3: Quick Connect failure memory — recently failed
 	// candidates cool down (decayed lazily) so one Quick Connect or
 	// recovery loop never restarts the same dead candidate.
@@ -260,6 +266,14 @@ type App struct {
 	// thread, it never runs engine work).
 	settingsListenerMu sync.Mutex
 	settingsListener   func(Settings)
+
+	// tunnelStateListener is the v0.13.0 composition-root callback
+	// for tunnel-mode changes (the native tray reacts to system
+	// proxy / TUN toggles). TunnelService — the ONE tunnel
+	// authority — publishes after every state-changing call; the
+	// callback must be fast and non-blocking.
+	tunnelListenerMu sync.Mutex
+	tunnelListener   func(tunnel.State)
 
 	ingesting atomic.Bool
 	started   atomic.Bool
@@ -1202,6 +1216,7 @@ func (a *App) runIngestionCycle(ctx context.Context) error {
 	// ranking snapshot (also covers the failed-cycle case: any
 	// persisted subset still changed the inputs).
 	a.InvalidateRankingSnapshot()
+	a.InvalidateCountsSnapshot()
 
 	// Merge: unchanged sources keep their previous hashes.
 	a.mu.Lock()

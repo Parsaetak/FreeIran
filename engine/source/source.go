@@ -193,32 +193,42 @@ type Source struct {
 // the UI in the source registry snapshot. It is derived from the
 // Source metadata fields above; keeping it as a separate struct lets
 // the UI bind a stable shape even when Source grows.
+//
+// v0.13.0 freshness contract: LastSuccessfulFetch / LastFailure are
+// POINTERS. A Go zero time.Time serialises as "0001-01-01T00:00:00Z"
+// (encoding/json never omits a struct), which the UI converted into
+// an absurd "739889d ago" age. A nil pointer OMITS the JSON field, so
+// a never-fetched source reaches the UI as an absent timestamp — the
+// UI renders "Never fetched" — while valid times stay exact.
 type Stats struct {
-	ID                  string    `json:"id"`
-	Name                string    `json:"name"`
-	URL                 string    `json:"url"`
-	Provider            string    `json:"provider"`
-	Region              string    `json:"region"`
-	Enabled             bool      `json:"enabled"`
-	Priority            int       `json:"priority"`
-	Trust               string    `json:"trust"`
-	LastSuccessfulFetch time.Time `json:"last_successful_fetch"`
-	LastFailure         time.Time `json:"last_failure,omitempty"`
-	LastFailureReason   string    `json:"last_failure_reason,omitempty"`
-	ConfigCount         int       `json:"config_count"`
-	WorkingCount        int       `json:"working_count"`
-	AverageLatencyMS    int64     `json:"average_latency_ms"`
-	ReliabilityScore    int       `json:"reliability_score"`
-	FetchCount          int       `json:"fetch_count"`
-	SuccessCount        int       `json:"success_count"`
+	ID                  string     `json:"id"`
+	Name                string     `json:"name"`
+	URL                 string     `json:"url"`
+	Provider            string     `json:"provider"`
+	Region              string     `json:"region"`
+	Enabled             bool       `json:"enabled"`
+	Priority            int        `json:"priority"`
+	Trust               string     `json:"trust"`
+	LastSuccessfulFetch *time.Time `json:"last_successful_fetch,omitempty"`
+	LastFailure         *time.Time `json:"last_failure,omitempty"`
+	LastFailureReason   string     `json:"last_failure_reason,omitempty"`
+	ConfigCount         int        `json:"config_count"`
+	WorkingCount        int        `json:"working_count"`
+	AverageLatencyMS    int64      `json:"average_latency_ms"`
+	ReliabilityScore    int        `json:"reliability_score"`
+	FetchCount          int        `json:"fetch_count"`
+	SuccessCount        int        `json:"success_count"`
 }
 
-// Stats returns the public statistics view of a source.
+// Stats returns the public statistics view of a source. Zero times
+// become nil pointers so a never-fetched source serialises WITHOUT a
+// timestamp (the UI renders "Never fetched") instead of year 1.
 func (s Source) Stats() Stats {
 	priority := s.Priority
 	if priority == 0 {
 		priority = 100
 	}
+
 	return Stats{
 		ID:                  s.ID,
 		Name:                s.Name,
@@ -228,8 +238,8 @@ func (s Source) Stats() Stats {
 		Enabled:             s.Enabled,
 		Priority:            priority,
 		Trust:               string(s.RouteTrust()),
-		LastSuccessfulFetch: s.LastSuccessfulFetch,
-		LastFailure:         s.LastFailure,
+		LastSuccessfulFetch: timePtrUTC(s.LastSuccessfulFetch),
+		LastFailure:         timePtrUTC(s.LastFailure),
 		LastFailureReason:   s.LastFailureReason,
 		ConfigCount:         s.ConfigCount,
 		WorkingCount:        s.WorkingCount,
@@ -238,6 +248,17 @@ func (s Source) Stats() Stats {
 		FetchCount:          s.FetchCount,
 		SuccessCount:        s.SuccessCount,
 	}
+}
+
+// timePtrUTC renders a time as a UTC pointer, nil when zero.
+func timePtrUTC(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+
+	utc := t.UTC()
+
+	return &utc
 }
 
 // Result contains the downloaded source content and metadata.

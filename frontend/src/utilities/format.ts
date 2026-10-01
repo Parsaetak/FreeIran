@@ -58,6 +58,54 @@ export function relativeTime(unixMS: number): string {
   return `${Math.floor(delta / 86_400_000)}d ago`;
 }
 
+/** Age sanity bound: anything "older" than 10 years is a broken
+ * timestamp (e.g. a year-1 zero time that leaked through a contract),
+ * never a real observation. v0.13.0 defense in depth for the source
+ * freshness contract. */
+const MAX_SANE_AGE_MS = 10 * 365.25 * 86_400_000;
+
+/**
+ * v0.13.0 source freshness label (v2rayN-style factual status):
+ *
+ *   null / undefined / ""  → "Never fetched"
+ *   age < 1 min            → "Updated just now"
+ *   age < 1 h              → "Updated 12m ago"
+ *   same calendar day      → "Updated 13:05"
+ *   otherwise              → "Updated Oct 1, 13:05"
+ *
+ * The exact timestamp belongs in the row's title/detail attribute, not
+ * the label. Broken (absurd) timestamps render as "Never fetched" —
+ * an impossible age is never shown as if it were real.
+ */
+export function sourceFreshness(iso: string | null | undefined, now = new Date()): string {
+  if (!iso) return "Never fetched";
+
+  const then = new Date(iso).getTime();
+
+  if (!Number.isFinite(then)) return "Never fetched";
+
+  const age = now.getTime() - then;
+
+  if (age < 0 || age > MAX_SANE_AGE_MS) return "Never fetched";
+
+  if (age < 60_000) return "Updated just now";
+  if (age < 3_600_000) return `Updated ${Math.floor(age / 60_000)}m ago`;
+
+  const sameDay =
+    then >= new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+
+  const clock = `${String(new Date(then).getHours()).padStart(2, "0")}:${String(
+    new Date(then).getMinutes(),
+  ).padStart(2, "0")}`;
+
+  if (sameDay) return `Updated ${clock}`;
+
+  const month = new Date(then).toLocaleString(undefined, { month: "short" });
+  const day = new Date(then).getDate();
+
+  return `Updated ${month} ${day}, ${clock}`;
+}
+
 /** Monospace-friendly latency label; "—" for untested/invalid values. */
 export function formatLatency(ms: number | undefined | null): string {
   if (ms === undefined || ms === null || !Number.isFinite(ms) || ms <= 0) {

@@ -532,3 +532,36 @@ verified"), and no badge may claim more than its evidence class.
   filter; a single test result patches one record; a source refresh
   reconciles its scope — virtualization, bounded page sizes and the
   hot cache are untouched (see docs/configurations.md).
+
+
+---
+
+## v0.13.0 addendum — Main-page system integration, tray toggles, compact settings
+
+**Connection page (SystemIntegrationStatusCard):** the v0.11.3
+TunnelModeCard controls moved to the Main (Quick Connect) page as a
+first-class block. Connection keeps the DETAILED lifecycle evidence —
+active mode, live TUN snapshot (interface, addresses, DNS, routes,
+core, failure detail) and the durable ownership state — read from the
+ONE TunnelService; it renders no duplicate toggle buttons (two
+controls for one dataplane was two truths).
+
+**Main page (SystemIntegrationCard):** System Proxy and TUN/VPN
+ON/OFF toggles plus compact local inbound port inputs (SOCKS5 / HTTP,
+persisted through the ONE settings path). Prerequisites are stated
+and enforced honestly: the system proxy needs a connected session
+(it points WinINet at the live local inbound); TUN needs a selected
+or connected configuration (it compiles through the managed sing-box
+dataplane). Disconnected state stays meaningful: the real backend
+mode is shown, and stale app-owned proxy residue from a crashed
+session is removable without a connection.
+
+**Tray:** System Proxy and TUN (VPN) checkboxes bound to the same
+TunnelService path. Their visual state is owned by a sync from the
+authoritative services (after every tray action, every TunnelService
+transition and every connection snapshot) — the menu cannot drift
+after external changes, failed enables, disconnects or rebuilds.
+
+**Settings:** compact numeric inputs (~110 px, paired in two-column
+rows) and a collapsed-by-default Developer section — common settings
+stay near the top and the page reads at 100/125/150/175% DPI.

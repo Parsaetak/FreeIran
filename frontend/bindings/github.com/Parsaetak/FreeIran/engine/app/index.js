@@ -14,6 +14,7 @@ import * as InternetToolsService from "./internettoolsservice.js";
 import * as LogService from "./logservice.js";
 import * as NetworkService from "./networkservice.js";
 import * as ProfileService from "./profileservice.js";
+import * as ProxyChainService from "./proxychainservice.js";
 import * as SettingsService from "./settingsservice.js";
 import * as SourceService from "./sourceservice.js";
 import * as StorageService from "./storageservice.js";
@@ -32,6 +33,7 @@ export {
     LogService,
     NetworkService,
     ProfileService,
+    ProxyChainService,
     SettingsService,
     SourceService,
     StorageService,
@@ -45,6 +47,8 @@ export {
     BuiltinGroupView,
     CacheStats,
     CandidateView,
+    ChainCheckResult,
+    ChainE2EView,
     CleanupResult,
     ConfigDetail,
     ConfigFilter,
@@ -67,8 +71,9 @@ export {
     OverallSourceHealth,
     ProfileSpec,
     ProfileView,
-    ProviderChoice,
-    ProviderModeView,
+    ProxyChainDetails,
+    ProxyChainHopView,
+    ProxyChainView,
     RecoveryStatus,
     RecoveryStatusView,
     Settings,

@@ -1337,6 +1337,15 @@ export class ToolInfo {
              */
             this["group"] = "";
         }
+        if (!("what" in $$source)) {
+            /**
+             * What (v0.12.1) is the one-line "what this tool measures"
+             * description surfaced on the tool card.
+             * @member
+             * @type {string}
+             */
+            this["what"] = "";
+        }
         if (!("takes_target" in $$source)) {
             /**
              * user may supply a custom target
@@ -1723,6 +1732,15 @@ export const ToolStatus = {
     ToolStatusOK: "ok",
 
     /**
+     * ToolStatusPartial (v0.12.1): the tool produced meaningful
+     * successful evidence while one or more subchecks failed —
+     * e.g. the DNS diagnostic where two curated resolvers answered
+     * and the system resolver did not. Partial is neither OK nor a
+     * generic failure: the measurement keeps the successful rows.
+     */
+    ToolStatusPartial: "partial",
+
+    /**
      * ToolStatusFailed: the tool ran and failed (refused, reset,
      * protocol error, HTTP >= 400 ...).
      */
@@ -1747,9 +1765,35 @@ export const ToolStatus = {
     /**
      * ToolStatusUnsupported: the capability is honestly not available
      * in this build / on this platform / without privileges. Nothing
-     * is claimed that was not verified.
+     * is claimed that was not verified — and it is never a lazy
+     * placeholder for an unfinished implementation.
      */
     ToolStatusUnsupported: "unsupported",
+
+    /**
+     * ToolStatusNotConfigured (v0.12.1): the tool requires a local
+     * proxy / endpoint / configuration and none exists — e.g. the
+     * HTTP CONNECT tool with no HTTP proxy anywhere in the
+     * configuration. A missing prerequisite is NOT a network
+     * failure and must never render as red "failed".
+     */
+    ToolStatusNotConfigured: "not_configured",
+
+    /**
+     * ToolStatusNotApplicable (v0.12.1): the tool cannot meaningfully
+     * run in the selected context — e.g. tunnel diagnostics on the
+     * Direct path with no tunnel to diagnose. The request itself was
+     * understood; the context just does not admit the measurement.
+     */
+    ToolStatusNotApplicable: "not_applicable",
+
+    /**
+     * ToolStatusUnreachable (v0.12.1): the tool itself ran, but the
+     * target/path was explicitly observed to be unreachable (ICMP
+     * "destination unreachable", a hop chain that provably stops).
+     * The diagnostic implementation worked; the path did not.
+     */
+    ToolStatusUnreachable: "unreachable",
 };
 
 /**

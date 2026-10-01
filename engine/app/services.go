@@ -305,6 +305,7 @@ func (s *SourceService) RefreshSource(id string) (*source.Stats, error) {
 	// The candidate pool changed for this source: drop the ranking
 	// snapshot (the same consequence a full cycle triggers).
 	s.app.InvalidateRankingSnapshot()
+	s.app.InvalidateCountsSnapshot()
 
 	s.app.mu.Lock()
 
@@ -546,14 +547,39 @@ type ConfigFilter struct {
 	SortDesc bool `json:"sort_desc,omitempty"`
 }
 
-// maxFilteredMatches bounds the materialised match set so a filter
-// over a huge store cannot balloon memory (the queue and detail views
-// work on fingerprints; the list only needs this window).
-const maxFilteredMatches = 20000
+// filteredKey is the lightweight sort identity of one matching record
+// (v0.13.0). The filtered listing materialises ONE key per match —
+// a dozen small fields — instead of the full decoded configuration
+// (credentials, payloads, history). That removes the old
+// maxFilteredMatches=20000 materialisation cap without unbounded
+// memory: the total, the ordering and the page window are computed on
+// keys, and only the page window's records are decoded again through
+// the store + hot cache.
+type filteredKey struct {
+	id       string
+	latency  int64
+	testedAt int64
+	working  bool
+	protocol string
+	source   string
+	address  string
+	orderPos int // manual-order position; -1 = not positioned
+	storeSeq int // store iteration order (stable secondary evidence)
+}
 
 // ListConfigsFiltered returns a sorted, filtered page of
-// configurations. Filtering happens engine-side; only the requested
-// window crosses the service boundary.
+// configurations. Filtering happens engine-side over the WHOLE store;
+// only the requested window crosses the service boundary.
+//
+// v0.13.0 contract (replaces the 20,000-materialised-match cap that
+// truncated totals on a 23,871-record store):
+//
+//   - Total is the TRUE global match count, never a bounded prefix;
+//   - ordering is GLOBAL and deterministic with a config-ID
+//     tie-breaker, so every (filter, sort, offset) maps to exactly one
+//     page — no duplicates, no gaps, across page boundaries;
+//   - memory stays bounded: one filteredKey per match (no config
+//     bodies retained), and only the page window is decoded.
 func (s *DataService) ListConfigsFiltered(filter ConfigFilter, offset, limit int) (*ConfigPage, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 100
@@ -570,14 +596,13 @@ func (s *DataService) ListConfigsFiltered(filter ConfigFilter, offset, limit int
 
 	// v0.11.0 group-filter performance fix: the previous path called
 	// groupMatches PER RECORD, which re-locked the collections state
-	// and linearly scanned group membership for every stored record
-	// (20k records × a 1k-member group = 20M comparisons plus 20k
-	// lock acquisitions). The group filter is now compiled ONCE per
-	// call: the relevant membership (favorites or one user group) is
-	// snapshotted into a set under a single lock, then membership
-	// checks during the store scan are O(1) map lookups. Built-in
-	// evidence groups stay pure record-field predicates. Semantics
-	// are unchanged: same matches, same order, same trust rules.
+	// and linearly scanned group membership for every stored record.
+	// The group filter is compiled ONCE per call: the relevant
+	// membership (favorites or one user group) is snapshotted into a
+	// set under a single lock, then membership checks during the store
+	// scan are O(1) map lookups. Built-in evidence groups stay pure
+	// record-field predicates. Semantics are unchanged: same matches,
+	// same trust rules.
 	groupMemberSet, err := s.compileGroupMemberSet(filter.Group)
 	if err != nil {
 		return nil, err
@@ -595,12 +620,19 @@ func (s *DataService) ListConfigsFiltered(filter ConfigFilter, offset, limit int
 		}
 	}
 
-	matches := make([]config.Config, 0, 256)
+	// v0.9.8.3 manual ordering applies unless the caller asked for an
+	// explicit sort — explicit sorts are view-local, the stored order
+	// stays intact underneath.
+	var orderPos map[string]int
+	if filter.SortBy == "" {
+		orderPos = s.app.manualOrderPositions()
+	}
+
+	keys := make([]filteredKey, 0, 256)
+	seq := 0
 
 	if err := s.app.store.Iterate(ctx, func(key string, value []byte) error {
-		if len(matches) >= maxFilteredMatches {
-			return context.Canceled
-		}
+		seq++
 
 		var cfg config.Config
 		if err := json.Unmarshal(value, &cfg); err != nil {
@@ -615,23 +647,38 @@ func (s *DataService) ListConfigsFiltered(filter ConfigFilter, offset, limit int
 			return nil
 		}
 
-		matches = append(matches, cfg)
+		if cfg.ID == "" {
+			cfg.ID = key
+		}
+
+		fk := filteredKey{
+			id:       cfg.ID,
+			latency:  cfg.LatencyMS,
+			testedAt: cfg.TestedAt,
+			working:  cfg.Working,
+			protocol: string(cfg.Type),
+			source:   cfg.Source,
+			address:  cfg.Address,
+			orderPos: -1,
+			storeSeq: seq,
+		}
+
+		if orderPos != nil {
+			if pos, ok := orderPos[cfg.ID]; ok {
+				fk.orderPos = pos
+			}
+		}
+
+		keys = append(keys, fk)
 
 		return nil
-	}); err != nil && err != context.Canceled {
+	}); err != nil {
 		return nil, err
 	}
 
-	// Manual ordering (v0.9.8.3) applies unless the caller asked for
-	// an explicit sort — explicit sorts are view-local, the stored
-	// order stays intact underneath.
-	if filter.SortBy == "" {
-		matches = s.app.applyConfigOrder(matches)
-	}
+	sortFilteredKeys(keys, filter)
 
-	sortConfigs(matches, filter)
-
-	total := len(matches)
+	total := len(keys)
 	page := &ConfigPage{Offset: offset, Total: total}
 
 	if offset < total {
@@ -640,7 +687,20 @@ func (s *DataService) ListConfigsFiltered(filter ConfigFilter, offset, limit int
 			end = total
 		}
 
-		page.Items = matches[offset:end]
+		page.Items = make([]config.Config, 0, end-offset)
+
+		// Decode ONLY the page window: keys carry no credential
+		// material, the records are re-read through the store with the
+		// hot cache (v0.13.0 — the old path decoded every match and
+		// kept up to 20,000 full configurations).
+		for _, fk := range keys[offset:end] {
+			cfg, err := s.configByID(fk.id)
+			if err != nil {
+				continue // vanished mid-paging: skip, the page stays dense
+			}
+
+			page.Items = append(page.Items, cfg)
+		}
 	} else {
 		page.Items = []config.Config{}
 	}
@@ -648,6 +708,165 @@ func (s *DataService) ListConfigsFiltered(filter ConfigFilter, offset, limit int
 	page.HasMore = offset+len(page.Items) < total
 
 	return page, nil
+}
+
+// configByID decodes one stored configuration through the hot cache
+// (the same identity path ListConfigs uses for page items).
+func (s *DataService) configByID(id string) (config.Config, error) {
+	if cached, ok := s.app.hotCache.Get(id, 0); ok {
+		if cfg, isCfg := cached.(config.Config); isCfg {
+			return cfg, nil
+		}
+	}
+
+	value, err := s.app.store.Get(id)
+	if err != nil {
+		return config.Config{}, err
+	}
+
+	var cfg config.Config
+
+	if err := json.Unmarshal(value, &cfg); err != nil {
+		return config.Config{}, err
+	}
+
+	s.app.hotCache.Put(id, cfg, 0)
+
+	return cfg, nil
+}
+
+// manualOrderPositions snapshots the stored manual order as
+// id → position (empty when no manual order exists).
+func (a *App) manualOrderPositions() map[string]int {
+	order := a.loadConfigOrder()
+	if len(order) == 0 {
+		return nil
+	}
+
+	pos := make(map[string]int, len(order))
+	for i, id := range order {
+		if _, dup := pos[id]; !dup {
+			pos[id] = i
+		}
+	}
+
+	return pos
+}
+
+// sortFilteredKeys orders the match keys for the requested sort. The
+// comparator is deterministic GLOBALLY: the user-selected primary
+// field (with direction) first, then the stable config-ID
+// tie-breaker — always ascending, in BOTH directions — so paging
+// cannot duplicate or skip records when values tie (equal latencies
+// are the common case on real datasets).
+func sortFilteredKeys(keys []filteredKey, filter ConfigFilter) {
+	// primaryCmp compares ONLY the user-selected field: -1 (a
+	// first), 0 (tie on this field), +1 (b first). The ID
+	// tie-breaker and the direction are applied uniformly outside.
+	primaryCmp := func(a, b filteredKey) int { return 0 }
+
+	switch filter.SortBy {
+	case "latency":
+		// v0.9.8.1 semantics preserved: a WORKING config always
+		// carries a measurement, and LatencyMS == 0 on a working
+		// config is a measured sub-millisecond round trip — the
+		// fastest, not "unmeasured". Measured before unmeasured,
+		// then ascending latency.
+		primaryCmp = func(a, b filteredKey) int {
+			am := a.measured()
+			bm := b.measured()
+
+			if am != bm {
+				if am {
+					return -1
+				}
+
+				return 1
+			}
+
+			if am && a.latency != b.latency {
+				if a.latency < b.latency {
+					return -1
+				}
+
+				return 1
+			}
+
+			return 0
+		}
+
+	case "tested_at":
+		primaryCmp = func(a, b filteredKey) int {
+			switch {
+			case a.testedAt < b.testedAt:
+				return -1
+			case a.testedAt > b.testedAt:
+				return 1
+			default:
+				return 0
+			}
+		}
+
+	case "protocol":
+		primaryCmp = func(a, b filteredKey) int { return strings.Compare(a.protocol, b.protocol) }
+
+	case "source":
+		primaryCmp = func(a, b filteredKey) int { return strings.Compare(a.source, b.source) }
+
+	case "address":
+		primaryCmp = func(a, b filteredKey) int { return strings.Compare(a.address, b.address) }
+
+	case "":
+		// Manual ordering (v0.9.8.3): positioned configs first in
+		// stored order, then the rest in store order — the same
+		// semantics applyConfigOrder gave the old materialised
+		// list. Never direction-flipped (no explicit sort asked).
+		sort.SliceStable(keys, func(i, j int) bool {
+			a, b := keys[i], keys[j]
+
+			switch {
+			case a.orderPos >= 0 && b.orderPos >= 0:
+				if a.orderPos != b.orderPos {
+					return a.orderPos < b.orderPos
+				}
+
+				return a.id < b.id
+			case a.orderPos >= 0:
+				return true
+			case b.orderPos >= 0:
+				return false
+			default:
+				return a.storeSeq < b.storeSeq
+			}
+		})
+
+		return
+
+	default:
+		primaryCmp = func(a, b filteredKey) int { return strings.Compare(a.id, b.id) }
+	}
+
+	dir := 1
+	if filter.SortDesc {
+		dir = -1
+	}
+
+	sort.SliceStable(keys, func(i, j int) bool {
+		a, b := keys[i], keys[j]
+
+		if c := primaryCmp(a, b); c != 0 {
+			return c*dir < 0
+		}
+
+		return a.id < b.id // the ONE global tie-break, both directions
+	})
+}
+
+// measured reports whether the record carries a real latency
+// measurement (working + tested; 0 ms counts as a measured sub-ms
+// reading, never as "unmeasured").
+func (k filteredKey) measured() bool {
+	return k.working && k.testedAt > 0
 }
 
 // filterMatches applies the filter predicate (a DataService method so
@@ -821,47 +1040,6 @@ func (s *DataService) groupMatchesCompiled(group string, cfg config.Config, memb
 	}
 
 	return false
-}
-
-// sortConfigs orders the match set in place.
-func sortConfigs(list []config.Config, filter ConfigFilter) {
-	less := func(i, j int) bool { return list[i].ID < list[j].ID } //nolint:gocritic // default
-
-	switch filter.SortBy {
-	case "latency":
-		// v0.9.8.1: a WORKING config always carries a measurement, and
-		// LatencyMS == 0 on a working config is a measured sub-milli-
-		// second round trip — the fastest, not "unmeasured". Sort
-		// measured-first, then ascending ms, then deterministically.
-		less = func(i, j int) bool {
-			a, b := list[i], list[j]
-			am := a.Working && a.TestedAt > 0
-			bm := b.Working && b.TestedAt > 0
-			if am != bm {
-				return am
-			}
-			if am && a.LatencyMS != b.LatencyMS {
-				return a.LatencyMS < b.LatencyMS
-			}
-			return a.ID < b.ID
-		}
-	case "tested_at":
-		less = func(i, j int) bool { return list[i].TestedAt < list[j].TestedAt }
-	case "protocol":
-		less = func(i, j int) bool { return list[i].Type < list[j].Type }
-	case "source":
-		less = func(i, j int) bool { return list[i].Source < list[j].Source }
-	case "address":
-		less = func(i, j int) bool { return list[i].Address < list[j].Address }
-	default:
-		less = func(i, j int) bool { return list[i].ID < list[j].ID }
-	}
-
-	if filter.SortDesc {
-		sort.Slice(list, func(i, j int) bool { return less(j, i) })
-	} else {
-		sort.Slice(list, less)
-	}
 }
 
 // GetConfig returns one configuration by fingerprint.

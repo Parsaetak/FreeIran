@@ -23,10 +23,21 @@ The scopes:
 | User Groups | user-created sets (`g-...` ids) | `group: <id>` (stable config IDs, persisted) |
 | Source / Subscription scopes | one source's configurations | `source: <sourceID>` (cfg.Source == sourceID) |
 
-Scope chips carry live counts. Built-in and group counts come from the
-collections store; **source scope counts come from the authoritative
+Scope chips carry live counts and every count describes the WHOLE
+dataset — the All badge equals the authoritative store count, never a
+bounded prefix (the pre-v0.13.0 scan stopped at 4,000). Built-in and
+group counts are computed by one uncapped store scan over a four-field
+projection per record and served from an authoritative cached count
+snapshot invalidated by real store/test/collection changes; **source
+scope counts come from the authoritative
 `SourceService.SourceStatsList()`** — the UI never recomputes source
 health and never downloads the database to filter it in React.
+
+Filtered/sorted scopes are fully paginated server-side
+(`DataService.ListConfigsFiltered`): the total is the TRUE global
+match count, ordering is global with a stable config-ID tie-breaker,
+and only the requested page window crosses the service boundary — no
+visible-results caps anywhere in the pipeline.
 
 ## Source scopes and the scope header
 
@@ -36,8 +47,12 @@ measured evidence only:
 - source name, enabled/disabled state, ROUTE-trust band
   (`official` / `user` / `public`);
 - configuration count and working count;
-- last successful fetch, last failure and the recorded failure reason
-  (from the source stats model — no fabricated reliability).
+- factual freshness — `Updated just now` / `Updated 12m ago` /
+  `Updated Oct 1, 13:05` (exact time in the tooltip) or `Never
+  fetched`; a never-fetched source serialises WITHOUT a timestamp
+  (`*time.Time` + `omitempty`), and impossible ages render as never
+  fetched. Content hashes are internal provenance/dedupe evidence and
+  never ordinary UI.
 
 Header actions:
 

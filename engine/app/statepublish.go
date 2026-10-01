@@ -28,6 +28,7 @@ import (
 	"github.com/Parsaetak/FreeIran/engine/connection"
 	"github.com/Parsaetak/FreeIran/engine/pipeline"
 	"github.com/Parsaetak/FreeIran/engine/testqueue"
+	"github.com/Parsaetak/FreeIran/engine/tunnel"
 	"github.com/Parsaetak/FreeIran/internal/statepub"
 )
 
@@ -99,6 +100,53 @@ func (a *App) SetConnectionListener(fn func(connection.Snapshot)) {
 	a.connSubCancel = cancel
 
 	a.pubMu.Unlock()
+}
+
+// SetTunnelStateListener registers the callback for tunnel-mode
+// changes (v0.13.0). TunnelService publishes after every state-
+// changing call — enables, disables, failed enables and cleanup — so
+// the native tray reflects the REAL dataplane state and cannot drift
+// after external changes. Registering twice is rejected: the
+// composition root wires exactly one listener.
+func (a *App) SetTunnelStateListener(fn func(tunnel.State)) {
+	if fn == nil {
+		return
+	}
+
+	a.tunnelListenerMu.Lock()
+
+	if a.tunnelListener != nil {
+		a.tunnelListenerMu.Unlock()
+
+		if a.logger != nil {
+			a.logger.Warn("app", "tunnel_listener",
+				"SetTunnelStateListener called twice; ignoring the second registration")
+		}
+
+		return
+	}
+
+	a.tunnelListener = fn
+
+	a.tunnelListenerMu.Unlock()
+}
+
+// publishTunnelState delivers the current tunnel state to the
+// registered listener (no-op without one). Called by TunnelService
+// after every state-changing call completes — success or failure:
+// the listener always observes the authoritative post-call State().
+func (a *App) publishTunnelState() {
+	a.tunnelListenerMu.Lock()
+	fn := a.tunnelListener
+	a.tunnelListenerMu.Unlock()
+
+	if fn == nil {
+		return
+	}
+
+	// The listener must be fast and non-blocking; State() only
+	// copies a snapshot under the controller mutex.
+	fn(NewTunnelService(a).State())
 }
 
 // publishState pushes the current application state into the

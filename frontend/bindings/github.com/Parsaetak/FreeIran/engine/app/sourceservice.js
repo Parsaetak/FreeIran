@@ -56,6 +56,34 @@ export function RefreshNow() {
 }
 
 /**
+ * RefreshSource refreshes EXACTLY ONE source (v0.12.1 §18) through
+ * the SAME ingestion architecture — the ONE fetcher, ONE parser
+ * pipeline, ONE store, ONE scheduler. No second downloader, collector
+ * or scheduler is created: the targeted operation snapshots the
+ * single source and hands a one-element slice to the same Pipeline
+ * instance the full cycles use.
+ * 
+ * Concurrency contract (single-owner gate): the targeted refresh and
+ * a full ingestion cycle share the same ingesting flag. While a full
+ * cycle is in flight the targeted refresh waits (bounded), then takes
+ * the gate; while the targeted refresh holds the gate, a concurrent
+ * full cycle is skipped by its existing skip-if-busy CAS. Two
+ * ingestion authorities can never race.
+ * 
+ * The operation validates the source ID, respects the enabled policy
+ * (a disabled source refuses an explicit refresh), preserves the
+ * dedupe/content-hash behaviour (seenHashes), publishes the normal
+ * source-refresh state and returns the source's own bounded stats.
+ * @param {string} id
+ * @returns {$CancellablePromise<source$0.Stats | null>}
+ */
+export function RefreshSource(id) {
+    return $Call.ByID(2155144200, id).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType5($result);
+    }));
+}
+
+/**
  * Remove deletes a source.
  * @param {string} id
  * @returns {$CancellablePromise<void>}
@@ -83,7 +111,7 @@ export function SetEnabled(id, enabled) {
  */
 export function SourceReliability() {
     return $Call.ByID(1732292637).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType5($result);
+        return $$createType7($result);
     }));
 }
 
@@ -93,7 +121,7 @@ export function SourceReliability() {
  */
 export function SourceStatsList() {
     return $Call.ByID(3558031882).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType7($result);
+        return $$createType8($result);
     }));
 }
 
@@ -113,7 +141,8 @@ const $$createType0 = $models.SourceView.createFrom;
 const $$createType1 = $Create.Array($$createType0);
 const $$createType2 = pipeline$0.Stats.createFrom;
 const $$createType3 = $Create.Nullable($$createType2);
-const $$createType4 = $models.SourceReliabilityReport.createFrom;
+const $$createType4 = source$0.Stats.createFrom;
 const $$createType5 = $Create.Nullable($$createType4);
-const $$createType6 = source$0.Stats.createFrom;
-const $$createType7 = $Create.Array($$createType6);
+const $$createType6 = $models.SourceReliabilityReport.createFrom;
+const $$createType7 = $Create.Nullable($$createType6);
+const $$createType8 = $Create.Array($$createType4);

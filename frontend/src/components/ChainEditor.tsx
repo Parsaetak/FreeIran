@@ -296,10 +296,10 @@ export function ChainEditor({ open, chain, initialHops, onClose, onSaved }: Chai
     try {
       const result = await call(() => proxyChainService.CheckChain(chain.id));
 
-      if (result.end_to_end.ok) {
+      if (result?.end_to_end.ok) {
         toast("success", "Chain verified", `End-to-end ${result.end_to_end.ping_ms ?? 0} ms through ${result.end_to_end.backend}.`);
       } else {
-        toast("error", "Chain check failed", result.end_to_end.last_error || "No usable end-to-end connection was verified.");
+        toast("error", "Chain check failed", result?.end_to_end.last_error || "No usable end-to-end connection was verified.");
       }
     } catch (e) {
       toast("error", "Chain check failed", describeError(e));

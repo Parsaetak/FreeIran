@@ -11,6 +11,13 @@ import { Create as $Create } from "@wailsio/runtime";
  * the UI in the source registry snapshot. It is derived from the
  * Source metadata fields above; keeping it as a separate struct lets
  * the UI bind a stable shape even when Source grows.
+ * 
+ * v0.13.0 freshness contract: LastSuccessfulFetch / LastFailure are
+ * POINTERS. A Go zero time.Time serialises as "0001-01-01T00:00:00Z"
+ * (encoding/json never omits a struct), which the UI converted into
+ * an absurd "739889d ago" age. A nil pointer OMITS the JSON field, so
+ * a never-fetched source reaches the UI as an absent timestamp — the
+ * UI renders "Never fetched" — while valid times stay exact.
  */
 export class Stats {
     /**
@@ -74,17 +81,17 @@ export class Stats {
              */
             this["trust"] = "";
         }
-        if (!("last_successful_fetch" in $$source)) {
+        if (/** @type {any} */(false)) {
             /**
              * @member
-             * @type {string}
+             * @type {string | null | undefined}
              */
-            this["last_successful_fetch"] = "0001-01-01T00:00:00.000Z";
+            this["last_successful_fetch"] = undefined;
         }
         if (/** @type {any} */(false)) {
             /**
              * @member
-             * @type {string | undefined}
+             * @type {string | null | undefined}
              */
             this["last_failure"] = undefined;
         }

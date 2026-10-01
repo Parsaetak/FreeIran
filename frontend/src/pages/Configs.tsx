@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Events } from "@wailsio/runtime";
-import { useConfigsStore, makeSearchRunner } from "../state/stores";
+import { useConfigsStore } from "../state/stores";
 import { MenuSurface, type MenuAnchor } from "../components/MenuSurface";
 import {
   dataService,
@@ -22,6 +22,7 @@ import {
   formatNumber,
   latencyClass,
   relativeTime,
+  sourceFreshness,
   truncate,
 } from "../utilities/format";
 import { configToRow } from "../utilities/export";
@@ -65,9 +66,12 @@ import {
   IconZap,
 } from "../components/Icons";
 
-const searchRunner = makeSearchRunner(250);
-
 const PROTOCOL_FILTERS = ["vless", "vmess", "trojan", "shadowsocks", "hysteria2"];
+
+/** v0.13.0 rail hygiene: sources past this count collapse behind the
+ * compact "More sources" disclosure (the top of the page must stay
+ * scannable on large subscription sets). */
+const RAIL_SOURCE_CHIPS = 5;
 
 /** Short display label for a protocol value. */
 function protocolLabel(type: string): string {
@@ -345,9 +349,21 @@ export function ConfigsPage() {
   const [statusFilter, setStatusFilter] = useState<"" | "working" | "failed" | "untested">("");
   const [sortBy, setSortBy] = useState<"" | "latency" | "tested_at" | "protocol" | "address" | "source">("");
   const [sortDesc, setSortDesc] = useState(false);
+  //
+  // v0.13.0 filtered-view pagination: the filtered scope is a REAL
+  // paginated window now, not a one-shot loadFiltered(1000) — a
+  // 23,871-record store stayed truncated at 1000 rows before. Pages
+  // append on scroll (the same interaction as the unfiltered list);
+  // `filteredSeq` guards stale async responses; page state resets on
+  // every query/filter/sort/scope change.
+  const FILTER_PAGE_SIZE = 200;
   const [filtered, setFiltered] = useState<Config[] | null>(null);
   const [filteredTotal, setFilteredTotal] = useState(0);
   const [filteredLoading, setFilteredLoading] = useState(false);
+  const [filteredHasMore, setFilteredHasMore] = useState(false);
+  const filteredOffsetRef = useRef(0);
+  const filteredSeqRef = useRef(0);
+  const filteredBusyRef = useRef(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [queueStats, setQueueStats] = useState<QueueStatsView | null>(null);
   // v0.9.7: queue pause state for the testing control bar.
@@ -472,11 +488,13 @@ export function ConfigsPage() {
 
   /** v0.11.0: a column header click applies the matching server-side
    * sort (the ONE filtering pipeline — never client-side re-sorting of
-   * a bounded window). Clicking the active column flips direction. */
+   * a bounded window). v0.13.0: the click cycle is FIRST click ASC,
+   * SECOND click DESC — the direction toggles, the sort never
+   * silently clears (the v0.12.2 bug that dropped the user's sort on
+   * the second click). A deliberate third click flips back to ASC. */
   const sortColumn = (by: "latency" | "tested_at" | "protocol" | "address" | "source") => {
     if (sortBy === by) {
-      setSortBy("");
-      setSortDesc(false);
+      setSortDesc((desc) => !desc);
 
       return;
     }
@@ -538,7 +556,7 @@ export function ConfigsPage() {
     };
   }, [chainFilter]);
 
-  const loadFiltered = useCallback(async (limit: number) => {
+  const loadFiltered = useCallback(async (mode: "reset" | "more") => {
     // v0.12.1: a source scope is a server-side filter
     // (cfg.Source == sourceID) — the database is never downloaded to
     // filter it in React.
@@ -547,14 +565,35 @@ export function ConfigsPage() {
       sortBy === "" &&
       (groupFilter === "" || groupFilter === "all") &&
       sourceFilter === "" &&
-      !chainFilter
+      !chainFilter &&
+      protocol === "" &&
+      !searchQuery
     ) {
+      filteredSeqRef.current++; // invalidate in-flight pages
+      filteredOffsetRef.current = 0;
       setFiltered(null);
+      setFilteredHasMore(false);
+      setFilteredTotal(0);
 
       return;
     }
 
-    setFilteredLoading(true);
+    const seq = ++filteredSeqRef.current;
+
+    // "more" appends the next page to the loaded window; "reset"
+    // restarts the window from zero (new query/filter/sort/scope).
+    const offset = mode === "reset" ? 0 : filteredOffsetRef.current;
+
+    if (mode === "reset") {
+      setFiltered([]);
+      setFilteredLoading(true);
+    } else if (filteredBusyRef.current) {
+      return; // a page is already in flight: never race the window
+    } else {
+      setFilteredLoading(true);
+    }
+
+    filteredBusyRef.current = true;
 
     try {
       const page = await call(() =>
@@ -573,23 +612,51 @@ export function ConfigsPage() {
             // v0.12.2: a chain scope is an explicit id allow-list.
             ids: chainDetails?.config_ids ?? (chainFilter ? [] : undefined),
           },
-          0,
-          limit,
+          offset,
+          FILTER_PAGE_SIZE,
         ),
       );
 
-      setFiltered(page?.items ?? []);
+      if (seq !== filteredSeqRef.current) return; // stale response
+
+      const fresh = page?.items ?? [];
+
       setFilteredTotal(page?.total ?? 0);
+      setFilteredHasMore(Boolean(page?.has_more));
+      filteredOffsetRef.current = offset + fresh.length;
+
+      setFiltered((current) =>
+        current === null || offset === 0 || mode === "reset"
+          ? fresh
+          : [...current, ...fresh],
+      );
     } catch (error) {
-      toast("error", "Filter failed", describeError(error));
+      if (seq === filteredSeqRef.current) {
+        toast("error", "Filter failed", describeError(error));
+      }
     } finally {
-      setFilteredLoading(false);
+      filteredBusyRef.current = false;
+
+      if (seq === filteredSeqRef.current) {
+        setFilteredLoading(false);
+      }
     }
   }, [protocol, statusFilter, sortBy, sortDesc, searchQuery, groupFilter, sourceFilter, chainFilter, chainDetails]);
 
   useEffect(() => {
-    void loadFiltered(1000);
+    void loadFiltered("reset");
   }, [loadFiltered, viewVersion]);
+
+  /** v0.13.0: append the next filtered page when the scroll approaches
+   * the end of the loaded window (same interaction as the unfiltered
+   * list; guards keep duplicate/gapped pages out). */
+  const loadMoreFiltered = useCallback(() => {
+    if (filtered === null || filteredBusyRef.current || !filteredHasMore || filteredLoading) {
+      return;
+    }
+
+    void loadFiltered("more");
+  }, [filtered, filteredHasMore, filteredLoading, loadFiltered]);
 
   // Live queue state while a batch is running. v0.9.15: the previous
   // Stats + Paused + Snapshot(200) triple is replaced by ONE
@@ -715,7 +782,14 @@ export function ConfigsPage() {
     if (!element) return;
 
     if (element.scrollTop + element.clientHeight >= element.scrollHeight - 400) {
-      void loadMore();
+      // v0.13.0: both windows paginate — the unfiltered list through
+      // the configs store, the filtered scopes through the SAME
+      // server-side pipeline (never a one-shot bounded load).
+      if (filtered !== null) {
+        loadMoreFiltered();
+      } else {
+        void loadMore();
+      }
     }
   };
 
@@ -908,10 +982,10 @@ export function ConfigsPage() {
     try {
       const result = await call(() => proxyChainService.CheckChain(activeChainScope.id));
 
-      if (result.end_to_end.ok) {
+      if (result?.end_to_end.ok) {
         toast("success", "Chain verified", `End-to-end ${result.end_to_end.ping_ms ?? 0} ms through ${result.end_to_end.backend}.`);
       } else {
-        toast("error", "Chain check failed", result.end_to_end.last_error || "No usable end-to-end connection was verified.");
+        toast("error", "Chain check failed", result?.end_to_end.last_error || "No usable end-to-end connection was verified.");
       }
     } catch (error) {
       toast("error", "Chain check failed", describeError(error));
@@ -951,11 +1025,13 @@ export function ConfigsPage() {
 
       setViewVersion((v) => v + 1);
 
-      if (stats) {
+      if (stats && "config_count" in stats) {
+        const s = stats as { name?: string; config_count?: number; working_count?: number };
+
         toast(
           "success",
           "Source updated",
-          `${stats.name}: ${stats.config_count} configurations, ${stats.working_count} working.`,
+          `${s.name}: ${s.config_count} configurations, ${s.working_count} working.`,
         );
       } else {
         toast("success", "Source updated");
@@ -1388,7 +1464,7 @@ export function ConfigsPage() {
           <h1 className="page-title">Configurations</h1>
           <div className="page-subtitle">
             {filtered !== null
-              ? `${formatNumber(filtered.length)} shown · ${formatNumber(filteredTotal)} matched`
+              ? `${formatNumber(filtered.length)} shown · ${formatNumber(filteredTotal)} matched${filteredHasMore ? " · scroll to load more" : ""}`
               : `${formatNumber(items.length)} shown · ${formatNumber(total)} total`}
             {hasMore && searchQuery.trim() === "" && filtered === null ? " · scroll to load more" : ""}
           </div>
@@ -1483,10 +1559,16 @@ export function ConfigsPage() {
          * group with its authoritative configuration count. Selecting a
          * source clears the group scope — the two are independent
          * scopes of the same ONE server-side filter pipeline.
+         *
+         * v0.13.0 rail hygiene: with many subscriptions the top of the
+         * page must not turn into dozens of noisy chips. The first
+         * RAIL_SOURCE_CHIPS sources render inline; the rest collapse
+         * behind one compact "More sources" disclosure (same chips,
+         * same actions — just out of the primary row).
          */}
         {sourceStats.length > 0 && <span className="toolbar-divider" aria-hidden />}
 
-        {sourceStats.map((source) => {
+        {sourceStats.slice(0, RAIL_SOURCE_CHIPS).map((source) => {
           const active = sourceFilter === source.id;
 
           return (
@@ -1507,6 +1589,38 @@ export function ConfigsPage() {
             </button>
           );
         })}
+
+        {sourceStats.length > RAIL_SOURCE_CHIPS && (
+          <details className="rail-source-overflow">
+            <summary className="group-chip group-chip-source">
+              More sources
+              <span className="group-count">{sourceStats.length - RAIL_SOURCE_CHIPS}</span>
+            </summary>
+            <div className="rail-source-overflow-body">
+              {sourceStats.slice(RAIL_SOURCE_CHIPS).map((source) => {
+                const active = sourceFilter === source.id;
+
+                return (
+                  <button
+                    key={source.id}
+                    type="button"
+                    className={`group-chip group-chip-source ${active ? "active" : ""}`}
+                    aria-pressed={active}
+                    title={`${source.name} — ${source.config_count} configurations (${source.working_count} working)`}
+                    onClick={() => {
+                      setSourceFilter(active ? "" : source.id);
+                      setGroupFilter("all");
+                      setStatusFilter("");
+                    }}
+                  >
+                    {source.name}
+                    <span className="group-count">{source.config_count}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </details>
+        )}
 
         {userGroups.length > 0 && <span className="toolbar-divider" aria-hidden />}
 
@@ -1709,10 +1823,12 @@ export function ConfigsPage() {
             <span>
               {formatNumber(activeSourceScope.working_count)} working
             </span>
-            {activeSourceScope.last_successful_fetch && (
-              <span title={new Date(activeSourceScope.last_successful_fetch).toLocaleString()}>
-                last fetch {relativeTime(new Date(activeSourceScope.last_successful_fetch).getTime())}
+            {activeSourceScope.last_successful_fetch ? (
+              <span title={`Updated ${new Date(activeSourceScope.last_successful_fetch).toLocaleString()}`}>
+                {sourceFreshness(activeSourceScope.last_successful_fetch)}
               </span>
+            ) : (
+              <span>Never fetched</span>
             )}
             {activeSourceScope.last_failure && (
               <span
@@ -1856,10 +1972,7 @@ export function ConfigsPage() {
           placeholder="Search by address, name or protocol…"
           aria-label="Search configurations"
           value={searchQuery}
-          onChange={(event) => {
-            setSearchQuery(event.target.value);
-            searchRunner();
-          }}
+          onChange={(event) => setSearchQuery(event.target.value)}
         />
 
         <SegmentedControl

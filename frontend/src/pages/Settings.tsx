@@ -376,7 +376,7 @@ export function SettingsPage() {
 
           <input
             id="refresh-interval"
-            className="input"
+            className="input input-compact"
             type="number"
             min={REFRESH_MIN}
             max={REFRESH_MAX}
@@ -738,7 +738,7 @@ export function SettingsPage() {
 
               <input
                 id="log-max-mb"
-                className="input"
+                className="input input-compact"
                 type="number"
                 min={LOG_MB_MIN}
                 max={LOG_MB_MAX}
@@ -760,7 +760,7 @@ export function SettingsPage() {
 
               <input
                 id="log-max-backups"
-                className="input"
+                className="input input-compact"
                 type="number"
                 min={LOG_BACKUPS_MIN}
                 max={LOG_BACKUPS_MAX}
@@ -782,7 +782,7 @@ export function SettingsPage() {
 
               <input
                 id="log-retention-days"
-                className="input"
+                className="input input-compact"
                 type="number"
                 min={LOG_RETENTION_MIN}
                 max={LOG_RETENTION_MAX}
@@ -811,7 +811,7 @@ export function SettingsPage() {
 
               <input
                 id="local-socks-port"
-                className="input"
+                className="input input-compact"
                 type="number"
                 min={0}
                 max={65535}
@@ -834,7 +834,7 @@ export function SettingsPage() {
 
               <input
                 id="local-http-port"
-                className="input"
+                className="input input-compact"
                 type="number"
                 min={0}
                 max={65535}
@@ -870,6 +870,7 @@ export function SettingsPage() {
       <SettingsSection
         title="Developer"
         hint="Advanced engine controls. Defaults are right for almost everyone."
+        collapsed
         action={
           <button
             type="button"
@@ -911,7 +912,7 @@ export function SettingsPage() {
 
           <input
             id="dev-queue-workers"
-            className="input"
+            className="input input-compact"
             type="number"
             min={0}
             max={QUEUE_WORKERS_MAX}
@@ -936,7 +937,7 @@ export function SettingsPage() {
 
           <input
             id="dev-net-timeout"
-            className="input"
+            className="input input-compact"
             type="number"
             min={0}
             max={NET_TIMEOUT_MAX}
@@ -1068,21 +1069,54 @@ function SettingsSection({
   title,
   hint,
   action,
+  collapsed,
   children,
 }: {
   title: string;
   hint?: string;
   action?: ReactNode;
+  /** v0.13.0: maintenance/developer sections render inside a
+   * <details> disclosure collapsed by default — common settings stay
+   * near the top, low-frequency machinery stays one click away. */
+  collapsed?: boolean;
   children: ReactNode;
 }) {
+  const header = (
+    <>
+      <div className="card-heading">
+        <h3 className="card-title eyebrow">{title}</h3>
+        {hint && <div className="card-subtitle">{hint}</div>}
+      </div>
+      {action && <div className="card-header-actions">{action}</div>}
+    </>
+  );
+
+  if (collapsed) {
+    // The disclosure summary must stay click-simple (no nested
+    // interactive elements): the section action renders inside the
+    // body, above the section's rows.
+    return (
+      <details className="card settings-collapsed">
+        <summary className="card-header settings-collapsed-summary">
+          <div className="card-heading">
+            <h3 className="card-title eyebrow">{title}</h3>
+            {hint && <div className="card-subtitle">{hint}</div>}
+          </div>
+          <span className="settings-collapsed-chevron" aria-hidden>▾</span>
+        </summary>
+
+        <div className="card-body settings-form">
+          {action && <div className="card-header-actions">{action}</div>}
+          {children}
+        </div>
+      </details>
+    );
+  }
+
   return (
     <div className="card">
       <div className="card-header">
-        <div className="card-heading">
-          <h3 className="card-title eyebrow">{title}</h3>
-          {hint && <div className="card-subtitle">{hint}</div>}
-        </div>
-        {action && <div className="card-header-actions">{action}</div>}
+        {header}
       </div>
 
       <div className="card-body settings-form">{children}</div>

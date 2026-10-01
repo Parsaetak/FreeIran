@@ -8,14 +8,9 @@
  */
 import * as appServiceBinding from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/appservice.js";
 import * as sourceServiceBinding from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/sourceservice.js";
-// v0.12.1: targeted source refresh (§18) — hand-maintained ByName
-// binding (the Go contract test verifies every ByName method against
-// the real service).
-import * as sourceServiceV12 from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/sourceservice_v0121.js";
 import * as dataService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/dataservice.js";
 import * as storageService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/storageservice.js";
 import * as diagnosticsService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/diagnosticsservice.js";
-import * as connectionServiceBinding from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/connectionservice.js";
 import * as logService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/logservice.js";
 import * as settingsService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/settingsservice.js";
 import * as coreService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/coreservice.js";
@@ -26,13 +21,10 @@ import * as discoveryService from "../../bindings/github.com/Parsaetak/FreeIran/
 // Internet-Tools engine (§6). Hand-maintained ByName bindings (same
 // pattern the v0.9.3 methods used until the next generator run).
 import * as toolsService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/internettoolsservice.js";
-// v0.12.2: Quick Connect route-mode methods (the provider surface was
-// removed with Tor/Psiphon).
-import * as appServiceV12 from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/appservice_v0122.js";
 // v0.12.2: proxy chains (hand-maintained ByName binding).
 import * as proxyChainService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/proxychainservice.js";
 import * as proxyChainModels from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/proxychainmodels.js";
-import * as connectionServiceV12 from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/connectionservice_v0122.js";
+import * as connectionServiceV12 from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/connectionservice.js";
 // v0.9.10: favorites, user groups and the evidence-based source
 // reliability dashboard (machine-generated bindings).
 import * as collectionService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/collectionservice.js";
@@ -45,21 +37,13 @@ import * as profileService from "../../bindings/github.com/Parsaetak/FreeIran/en
 import * as importService from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/importservice.js";
 import * as loggingModels from "../../bindings/github.com/Parsaetak/FreeIran/internal/logging/models.js";
 
-// v0.12.2: appService merges the generated binding with the
-// hand-maintained Quick Connect route-mode methods.
-export const appService = {
-  ...appServiceBinding,
-  ConnectMode: appServiceV12.ConnectMode,
-  SetConnectMode: appServiceV12.SetConnectMode,
-};
+// v0.13.0: the v0.12.2 hand-maintained ByName bindings (Quick Connect
+// route modes, ConnectChain, RefreshSource) are REGENERATED bindings
+// now — the pinned wails3 CLI covers the whole surface, so the
+// generated modules are exported directly. One truth per method.
+export const appService = appServiceBinding;
 
-
-// v0.12.2: connectionService merges ConnectChain (chains compile into
-// ONE core process through the same state machine).
-export const connectionService = {
-  ...connectionServiceBinding,
-  ConnectChain: connectionServiceV12.ConnectChain,
-};
+export const connectionService = connectionServiceV12;
 
 export {
   dataService,
@@ -87,10 +71,7 @@ export {
  * the UI; no call-site needs to know which generation a method came
  * from.
  */
-export const sourceService = {
-  ...sourceServiceBinding,
-  RefreshSource: sourceServiceV12.RefreshSource,
-};
+export const sourceService = sourceServiceBinding;
 
 // Generated model types (synchronized with the Go backend by the
 // wails3 generator — do not duplicate these by hand).

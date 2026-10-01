@@ -6,7 +6,9 @@ import { useSettingsStore, effectiveReducedMotion } from "../state/settingsStore
 import { useConnectModeStore, CONNECT_MODE_LABELS, type ConnectMode } from "../state/connectModeStore";
 import { useChainStore } from "../state/chainStore";
 import { useProfilesStore, PROFILE_MODE_LABELS, normalizeProfileMode, type ProfileMode } from "../state/profilesStore";
-import { call, connectionService, type ProfileSpec } from "../services";
+import { call, connectionService, tunnelService, type ProfileSpec } from "../services";
+import * as tunnelOwnership from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/tunnelservice.js";
+import { describeError, toast } from "../state/toastStore";
 import { ProfileSpec as ProfileSpecModel } from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/models.js";
 import type { Page } from "../types/ui";
 import { formatLatency, truncate } from "../utilities/format";
@@ -488,7 +490,310 @@ export function QuickConnectPage({ onNavigate }: { onNavigate: (page: Page) => v
           </dl>
         </section>
       )}
+
+      {/* v0.13.0: system integration is a FIRST-CLASS block on the Main
+          page — the user's fastest path from "connected" to "the system
+          actually uses the tunnel". Connection stays the detailed
+          lifecycle page; the controls here call the SAME TunnelService. */}
+      <SystemIntegrationCard onNavigate={onNavigate} />
     </div>
+  );
+}
+
+/** OwnershipStatusView mirrors the generated tunnel OwnershipStatus
+ * class (structural subset used for rendering). */
+interface OwnershipStatusView {
+  present: boolean;
+  phase?: string;
+  endpoint?: string;
+}
+
+/** TUNSnapshotView mirrors the generated tunnel TUNSnapshot class
+ * (structural subset used for rendering). */
+interface TUNSnapshotView {
+  available?: boolean;
+  installed?: boolean;
+  active?: boolean;
+  status?: string;
+  backend?: string;
+  details?: string;
+  requires_elevation?: boolean;
+}
+
+/** TunnelStateView mirrors the generated tunnel State class. */
+interface TunnelStateView {
+  mode?: string;
+  active?: boolean;
+  endpoint?: string;
+  tun?: TUNSnapshotView;
+}
+
+/**
+ * v0.13.0 System Integration block (Main page, first class):
+ *
+ *   - System Proxy ON/OFF and TUN/VPN ON/OFF — real toggles wired to
+ *     the ONE TunnelService (no second integration manager);
+ *   - local inbound port settings (SOCKS5 / HTTP) — compact numeric
+ *     inputs persisted through the ONE settings path;
+ *   - the current endpoint and ownership/state read from the backend,
+ *     never invented client-side.
+ *
+ * Honest prerequisites: the system proxy needs a CONNECTED core (it
+ * routes system traffic into the live local inbound — with no session
+ * there is nothing to point WinINet at, and the card says so); TUN
+ * runs its own managed sing-box dataplane, so it needs a selected or
+ * connected configuration, not a live session. Disconnected state is
+ * still meaningful: the real backend mode is shown, OFF really turns
+ * integration off, and stale app-owned proxy residue from a crashed
+ * session is removable without any connection.
+ */
+function SystemIntegrationCard({ onNavigate }: { onNavigate: (page: Page) => void }) {
+  const snapshot = useConnectionStore((state) => state.snapshot);
+  // The state string rides the ONE authoritative snapshot (the store
+  // has no separate state field).
+  const connected =
+    snapshot?.state === "connected" || snapshot?.state === "connected_verified";
+
+  const settings = useSettingsStore((state) => state.settings);
+  const loadSettings = useSettingsStore((state) => state.load);
+  const saveSettings = useSettingsStore((state) => state.save);
+
+  const [tunnel, setTunnel] = useState<TunnelStateView | null>(null);
+  const [ownership, setOwnership] = useState<OwnershipStatusView | null>(null);
+  const [busy, setBusy] = useState<"proxy" | "tun" | "off" | "cleanup" | null>(null);
+  const [socksPort, setSocksPort] = useState(String(settings?.local_socks_port || 0));
+  const [httpPort, setHttpPort] = useState(String(settings?.local_http_port || 0));
+  const [portsSaved, setPortsSaved] = useState(false);
+
+  const proxyOn = tunnel?.mode === "system_proxy" && tunnel?.active;
+  const tunOn = tunnel?.mode === "tun" && Boolean(tunnel?.tun?.active);
+
+  const refreshState = useCallback(async () => {
+    try {
+      const [state, own] = await Promise.all([
+        call(() => tunnelService.State()),
+        call(() => tunnelOwnership.OwnershipStatus()).catch(() => null),
+      ]);
+
+      setTunnel((state ?? null) as TunnelStateView | null);
+      setOwnership((own ?? null) as OwnershipStatusView | null);
+    } catch {
+      setTunnel({ mode: "off" }); // never a fake active state
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshState();
+    void loadSettings();
+  }, [refreshState, loadSettings]);
+
+  // The connection event stream refreshes the endpoint read: the
+  // tray-free state never drifts after connects, disconnects or
+  // external changes.
+  useEffect(() => {
+    void refreshState();
+  }, [connected, snapshot?.endpoint, refreshState]);
+
+  useEffect(() => {
+    setSocksPort(String(settings?.local_socks_port || 0));
+    setHttpPort(String(settings?.local_http_port || 0));
+  }, [settings?.local_socks_port, settings?.local_http_port]);
+
+  const endpoint = tunnel?.endpoint || snapshot?.endpoint || "";
+
+  const toggleProxy = async () => {
+    setBusy("proxy");
+
+    try {
+      if (proxyOn) {
+        await call(() => tunnelService.Disable());
+      } else if (connected && endpoint) {
+        const idx = endpoint.lastIndexOf(":");
+
+        if (idx > 0) {
+          const host = endpoint.slice(0, idx);
+          const port = Number.parseInt(endpoint.slice(idx + 1), 10);
+
+          await call(() => tunnelService.EnableSystemProxy(host, port || 0, false, []));
+        }
+      }
+    } finally {
+      setBusy(null);
+      void refreshState();
+    }
+  };
+
+  const toggleTUN = async () => {
+    setBusy("tun");
+
+    try {
+      if (tunOn || tunnel?.mode === "tun") {
+        await call(() => tunnelService.Disable());
+      } else {
+        const configID = String(snapshot?.config_id ?? "");
+
+        if (configID) {
+          await call(() => tunnelService.EnableTUN(configID));
+        }
+      }
+    } catch (error) {
+      toast("error", "TUN could not be enabled", describeError(error));
+    } finally {
+      setBusy(null);
+      void refreshState();
+    }
+  };
+
+  const cleanupResidue = async () => {
+    setBusy("cleanup");
+
+    try {
+      const cleaned = await call(() => tunnelService.CleanupStaleOwnership());
+
+      toast(
+        cleaned ? "success" : "info",
+        cleaned ? "Stale proxy removed" : "Nothing to clean",
+        cleaned ? "The system proxy state recorded before the crash was restored." : "No app-owned proxy residue was found.",
+      );
+    } catch (error) {
+      toast("error", "Cleanup failed", describeError(error));
+    } finally {
+      setBusy(null);
+      void refreshState();
+    }
+  };
+
+  const savePorts = async () => {
+    if (!settings) return;
+
+    const next = {
+      ...settings,
+      local_socks_port: Math.max(0, Math.min(65535, Number(socksPort) || 0)),
+      local_http_port: Math.max(0, Math.min(65535, Number(httpPort) || 0)),
+    };
+
+    const saved = await saveSettings(next);
+
+    if (saved) {
+      setPortsSaved(true);
+      window.setTimeout(() => setPortsSaved(false), 2000);
+    }
+  };
+
+  const residuePresent = ownership?.present && !proxyOn && !tunOn;
+
+  return (
+    <section className="card sysint" aria-label="System integration">
+      <div className="card-header">
+        <h3 className="card-title eyebrow">System integration</h3>
+        <span className={`badge ${proxyOn || tunOn ? "success" : "info"}`}>
+          {tunOn ? "tun" : proxyOn ? "system proxy" : "direct"}
+        </span>
+      </div>
+
+      <div className="sysint-toggles">
+        <div className="sysint-row">
+          <div className="sysint-label">
+            <span className="cell-title">System proxy</span>
+            <span className="cell-sub" data-tip="Points Windows at FreeIran's local inbound (WinINet). Needs a connected configuration.">
+              {proxyOn && endpoint
+                ? `on — ${endpoint}`
+                : connected
+                  ? "off — connect routes through the tunnel once enabled"
+                  : "needs a connected configuration"}
+            </span>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={proxyOn}
+            aria-label="System proxy"
+            className={`switch ${proxyOn ? "on" : ""}`}
+            disabled={busy !== null || (!proxyOn && (!connected || !endpoint))}
+            onClick={() => void toggleProxy()}
+          />
+        </div>
+
+        <div className="sysint-row">
+          <div className="sysint-label">
+            <span className="cell-title">TUN / VPN mode</span>
+            <span className="cell-sub" data-tip="Routes ALL system traffic through the managed sing-box core's native TUN adapter (Windows, Wintun). Needs elevation and a selected configuration; not a kill switch.">
+            {tunnel?.mode === "tun"
+              ? tunnel.tun?.status === "active"
+                ? "active — all system traffic through the tunnel"
+                : `status: ${tunnel.tun?.status ?? "unknown"}`
+              : connected || snapshot?.config_id
+                ? "off — selected configuration runs through the TUN adapter"
+                : "needs a selected or connected configuration"}
+            </span>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={tunOn}
+            aria-label="TUN VPN mode"
+            className={`switch ${tunOn ? "on" : ""}`}
+            disabled={
+              busy !== null ||
+              (!tunOn && tunnel?.mode !== "tun" && !(connected || snapshot?.config_id))
+            }
+            onClick={() => void toggleTUN()}
+          />
+        </div>
+      </div>
+
+      {residuePresent && (
+        <div className="sysint-residue" role="status">
+          <span>
+            FreeIran owns system-proxy state from a crashed session (ownership phase: {ownership?.phase ?? "unknown"}).
+          </span>
+          <button type="button" className="btn sm" disabled={busy !== null} onClick={() => void cleanupResidue()}>
+            {busy === "cleanup" ? "Cleaning…" : "Remove stale proxy"}
+          </button>
+        </div>
+      )}
+
+      <div className="sysint-ports">
+        <span className="sysint-ports-title">Local inbound ports</span>
+        <div className="field-grid two">
+          <div className="field">
+            <label className="field-label" htmlFor="sysint-socks-port">
+              SOCKS5 (0 = automatic)
+            </label>
+            <input
+              id="sysint-socks-port"
+              className="input input-compact"
+              type="number"
+              min={0}
+              max={65535}
+              value={socksPort}
+              onChange={(event) => setSocksPort(event.target.value)}
+            />
+          </div>
+          <div className="field">
+            <label className="field-label" htmlFor="sysint-http-port">
+              HTTP (0 = off)
+            </label>
+            <input
+              id="sysint-http-port"
+              className="input input-compact"
+              type="number"
+              min={0}
+              max={65535}
+              value={httpPort}
+              onChange={(event) => setHttpPort(event.target.value)}
+            />
+          </div>
+        </div>
+        <button type="button" className="btn sm ghost" disabled={!settings} onClick={() => void savePorts()}>
+          {portsSaved ? "Saved" : "Save ports"}
+        </button>
+      </div>
+
+      <button type="button" className="linklike" onClick={() => onNavigate("connection")}>
+        Tunnel lifecycle &amp; diagnostics
+      </button>
+    </section>
   );
 }
 

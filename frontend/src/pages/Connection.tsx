@@ -6,6 +6,7 @@ import { useConfigsStore, makeSearchRunner } from "../state/stores";
 import { useSettingsStore } from "../state/settingsStore";
 import { call, type BackendView, type CandidateView, type Config } from "../services";
 import { connectionService, tunnelService } from "../services";
+import { toast } from "../state/toastStore";
 import { formatDuration, formatLatency, formatNumber, formatUptime, truncate } from "../utilities/format";
 import {
   BootDots,
@@ -23,7 +24,6 @@ import {
   IconStar,
   IconStop,
 } from "../components/Icons";
-import { describeError, toast } from "../state/toastStore";
 import { useTestProgress } from "../state/testProgress";
 
 const searchRunner = makeSearchRunner(250);
@@ -299,11 +299,7 @@ export function ConnectionPage() {
 
       <ConfigPicker disabled={uiState === "connecting" || connected || busy} />
 
-      <TunnelModeCard
-        connected={connected}
-        endpoint={snapshot?.endpoint ?? ""}
-        configID={snapshot?.config_id ?? ""}
-      />
+      <SystemIntegrationStatusCard endpoint={snapshot?.endpoint ?? ""} />
 
       <CoresCard backends={backends} scanning={scanning} onRescan={() => void rescan()} />
 
@@ -343,16 +339,14 @@ export function ConnectionPage() {
   );
 }
 
-/** TunnelModeCard controls the system-level integration modes
- * (system proxy / TUN). The actions reach the backend through the
- * v0.8 TunnelService bindings — the wiring gap v0.7 shipped with
- * (service existed, was never registered) is closed.
- * Modes require a live session: the system proxy routes system
- * traffic through the connected core's local inbound, while TUN
- * (v0.11.3) runs the SAME configuration through the managed sing-box
- * core's native TUN inbound (Windows, elevation required — honest
- * about both). TUN is NOT a kill switch: routing is not packet
- * filtering. */
+/** SystemIntegrationStatusCard is the Connection page's DETAILED
+ * system-integration evidence view (v0.13.0). The CONTROL surface
+ * moved to the Main (Quick Connect) page as a first-class block —
+ * this page keeps the lifecycle context: the active mode, the live
+ * TUN snapshot (interface, addresses, DNS, routes, core) and the
+ * durable ownership state, all read from the ONE TunnelService. It
+ * duplicates no toggles: duplicate controls were two Truths for one
+ * dataplane. */
 interface OwnershipStatusView {
   present: boolean;
   phase?: string;
@@ -387,25 +381,9 @@ interface TUNSnapshotView {
   details?: string;
 }
 
-function TunnelModeCard({
-  connected,
-  endpoint,
-  configID,
-}: {
-  connected: boolean;
-  endpoint: string;
-  configID: string;
-}) {
+function SystemIntegrationStatusCard({ endpoint }: { endpoint: string }) {
   const [mode, setMode] = useState<"off" | "system_proxy" | "tun" | "">("");
-  const [busy, setBusy] = useState(false);
   const [tun, setTun] = useState<TUNSnapshotView | null>(null);
-
-  const [host, port] = useMemo(() => {
-    const idx = endpoint.lastIndexOf(":");
-    if (idx <= 0) return ["127.0.0.1", 0];
-    const parsed = Number.parseInt(endpoint.slice(idx + 1), 10);
-    return [endpoint.slice(0, idx), Number.isFinite(parsed) ? parsed : 0];
-  }, [endpoint]);
 
   // v0.10.2 §15: the UI shows the durable ownership truth — whether
   // FreeIran currently owns the system proxy, and the saved previous
@@ -454,63 +432,21 @@ function TunnelModeCard({
     };
   }, []);
 
-  const apply = async (action: "proxy" | "tun" | "off") => {
-    setBusy(true);
-
-    try {
-      if (action === "proxy") {
-        // v0.9.8.7: truthful bindings type bypass as string[] (the Go
-        // side treats an empty list as "no bypass entries").
-        await call(() => tunnelService.EnableSystemProxy(host, port, false, []));
-        setMode("system_proxy");
-      } else if (action === "tun") {
-        // v0.11.3: the backend runs the full transactional TUN
-        // activation (elevation → verified core → observed interface
-        // → verified tunneled request). It resolves slowly and fails
-        // honestly — never a fake Active.
-        await call(() => tunnelService.EnableTUN(configID));
-        setMode("tun");
-      } else {
-        await call(() => tunnelService.Disable());
-        setMode("off");
-      }
-    } catch (error) {
-      toast("error", "Tunnel mode change failed", describeError(error, "unknown error"));
-    } finally {
-      setBusy(false);
-      // Re-fetch the authoritative state (mode + TUN snapshot).
-      void call(() => tunnelService.State())
-        .then((state) => {
-          const value = String(state?.mode ?? "off");
-          if (value === "system_proxy" || value === "tun" || value === "off") {
-            setMode(value);
-          }
-          setTun((state?.tun as TUNSnapshotView | undefined) ?? null);
-        })
-        .catch(() => {
-          /* the next mount re-fetches */ });
-    }
-  };
-
   return (
     <div className="card">
       <div className="card-header">
-        <h3 className="card-title eyebrow">System integration</h3>
+        <h3 className="card-title eyebrow">System integration status</h3>
         <span className={`badge ${mode === "off" || mode === "" ? "info" : "success"}`}>
           {mode === "" ? "unknown" : mode === "system_proxy" ? "system proxy" : mode}
         </span>
       </div>
 
       <p className="card-subtitle">
-        {connected
-          ? `Route system traffic through the local inbound at ${host}:${port}.`
-          : "Connect first: the system proxy needs a live local inbound."}
-      </p>
-      <p className="card-subtitle">
-        TUN routes ALL system traffic through the same configuration using the
-        managed sing-box core's native TUN adapter (Windows, Wintun). It needs
-        an elevated FreeIran and is not a kill switch: routing is not packet
-        filtering.
+        {mode === "system_proxy"
+          ? `Windows routes system traffic through the local inbound at ${endpoint || "the session endpoint"}.`
+          : mode === "tun"
+            ? "All system traffic routes through the sing-box TUN adapter (Wintun)."
+            : "No tunnel mode is active. Enable System Proxy or TUN from the Connect page."}
       </p>
 
       {tun && tun.status && tun.status !== "off" && (
@@ -558,38 +494,6 @@ function TunnelModeCard({
               : `Ownership marker present (${ownership.phase ?? "unknown"}).`}
         </p>
       )}
-
-      <div className="toolbar">
-        <button
-          type="button"
-          className="btn sm"
-          disabled={!connected || busy || port === 0}
-          onClick={() => void apply("proxy")}
-        >
-          Enable system proxy
-        </button>
-        <button
-          type="button"
-          className="btn sm"
-          disabled={!connected || busy || !configID}
-          title={
-            connected && configID
-              ? "Runs the same configuration through the sing-box TUN dataplane (requires elevation on Windows)"
-              : "Connect first: TUN needs an active configuration"
-          }
-          onClick={() => void apply("tun")}
-        >
-          {mode === "tun" && tun?.active ? "TUN active" : "Enable TUN"}
-        </button>
-        <button
-          type="button"
-          className="btn sm"
-          disabled={busy || mode === "off" || mode === ""}
-          onClick={() => void apply("off")}
-        >
-          Disable
-        </button>
-      </div>
     </div>
   );
 }
