@@ -819,7 +819,12 @@ button {
 }
 
 .field-grid.two {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  /* v0.13.1: both current uses are compact port PAIRS (Settings
+   * local proxy ports, Main-page system-integration ports) — size
+   * the tracks to content instead of stretching each field to half
+   * the form width. */
+  grid-template-columns: repeat(2, max-content);
+  justify-content: start;
 }
 
 @media (max-width: 900px) {
@@ -2402,8 +2407,11 @@ button {
 }
 
 .settings-row > .field {
-  flex: 1;
-  min-width: 160px;
+  /* v0.13.1: fields size to their content so compact numeric
+   * controls (ports, sizes, counts) sit in ONE tight row instead of
+   * stretching to equal widths and wrapping raggedly. */
+  flex: 0 1 auto;
+  min-width: 0;
 }
 
 .settings-row.align-start {
@@ -5701,9 +5709,9 @@ html.reduced-motion .qc-mode-chip {
 }
 
 .sysint-ports .field-grid.two {
-  flex: 1 1 auto;
-  display: flex;
-  gap: 12px;
+  /* v0.13.1: no flex stretch — the port pair keeps its compact
+   * content width next to the Save button. */
+  flex: 0 0 auto;
 }
 
 /* Configurations rail — compact "More sources" overflow. */
@@ -5757,4 +5765,114 @@ html.reduced-motion .qc-mode-chip {
 
 .settings-collapsed .card-header-actions {
   margin: 4px 0 10px;
+}
+
+/* ---------------------------------------------------------------------------
+ * v0.13.1 — Settings compact-control system (the real rendered-layout fix).
+ *
+ * v0.13.0 capped the numeric <input> boxes (.input-compact) but left the
+ * WRAPPERS oversized: .settings-row > .field forced min-width:160px with
+ * flex:1 (the runtime-log fields wrapped raggedly), .field-grid.two gave
+ * each port field a full-width track, the profile-form ports used a
+ * divergent second styling path, and range sliders were unstyled and
+ * full-width. The rules above repaired the wrappers; the rules below are
+ * the global numeric guard + slider treatment that keep every current and
+ * future numeric setting compact.
+ * ------------------------------------------------------------------------- */
+
+/* Number inputs never stretch full width inside settings surfaces — the
+ * guard is attribute-scoped (not class-scoped) so a future numeric field
+ * cannot regress to the v0.13.0 layout by forgetting a class. */
+.settings-form input[type="number"],
+.sysint input[type="number"],
+.qc-profile-form input[type="number"] {
+  width: 110px;
+  max-width: 110px;
+  min-width: 80px;
+}
+
+/* Suppress the native spinner: inside a compact box it consumes ~20px of
+ * usable digits on WebView2/Chromium. The value stays fully editable
+ * (keyboard arrows, wheel, direct entry) and validity is unchanged. */
+.settings-form input[type="number"]::-webkit-outer-spin-button,
+.settings-form input[type="number"]::-webkit-inner-spin-button,
+.sysint input[type="number"]::-webkit-outer-spin-button,
+.sysint input[type="number"]::-webkit-inner-spin-button,
+.qc-profile-form input[type="number"]::-webkit-outer-spin-button,
+.qc-profile-form input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.settings-form input[type="number"],
+.sysint input[type="number"],
+.qc-profile-form input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+/* Port variant: five digits never need 110px. */
+.input.input-compact.input-port {
+  width: 90px;
+  max-width: 90px;
+  min-width: 80px;
+}
+
+/* Range sliders (test samples / max candidates / racing parallelism):
+ * v0.13.0 left them UA-default and stretched to the full field width.
+ * Constrained, branded, keyboard-accessible (native input semantics
+ * untouched). */
+.settings-form input[type="range"].input-range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 220px;
+  max-width: 100%;
+  height: 18px;
+  margin: 2px 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.settings-form input[type="range"].input-range:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.settings-form input[type="range"].input-range::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border);
+}
+
+.settings-form input[type="range"].input-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -6px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--bg, #0a0a0c);
+}
+
+.settings-form input[type="range"].input-range::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border);
+}
+
+.settings-form input[type="range"].input-range::-moz-range-thumb {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--bg, #0a0a0c);
+}
+
+/* Settings cards stop stretching to the full content-inner width with a
+ * 640px form inside: the dead right half of every card is gone. */
+.page-settings .card {
+  max-width: 720px;
 }

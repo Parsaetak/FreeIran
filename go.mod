@@ -8,6 +8,7 @@ require (
 	github.com/quic-go/quic-go v0.63.0
 	github.com/wailsapp/wails/v3 v3.0.0-beta.19
 	golang.org/x/sys v0.47.0
+	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2
 )
 
 require (

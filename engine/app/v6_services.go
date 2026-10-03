@@ -993,10 +993,19 @@ func (s *TunnelService) OwnershipStatus() tunnel.OwnershipStatus {
 }
 
 // EnableSystemProxy sets the Windows system proxy.
+//
+// v0.13.1: the endpoint WinINet is pointed at belongs to whatever
+// backend owns the live session — the first-party FreeIran Engine for
+// supported routes (no external core launched) or the selected
+// external core otherwise. The backend label is derived from the ONE
+// connection snapshot (the single authority that knows) and recorded
+// in the tunnel state so Main, tray and diagnostics identify the
+// active path honestly.
 func (s *TunnelService) EnableSystemProxy(host string, port int, asHTTP bool, bypass []string) error {
 	err := s.ensureController().Enable(s.app.ctx, tunnel.ModeSystemProxy, host, port, tunnel.Options{
-		AsHTTP: asHTTP,
-		Bypass: bypass,
+		AsHTTP:  asHTTP,
+		Bypass:  bypass,
+		Backend: backendLabelOfCore(s.app.connMgr.Snapshot().Core),
 	})
 
 	// Publish regardless of outcome: a failed enable must move the

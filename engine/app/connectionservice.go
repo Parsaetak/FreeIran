@@ -126,6 +126,10 @@ func humanizeWithDetails(err error, subject string) error {
 // humanSubject maps a backend name to its display name.
 func humanSubject(core string) string {
 	switch core {
+	case "freecore":
+		// v0.13.1: the first-party in-process engine — its honest
+		// user-facing name, never a bare package id.
+		return "FreeIran Engine"
 	case "xray":
 		return "Xray"
 	case "v2ray":
@@ -599,4 +603,15 @@ func (s *ConnectionService) loadConfig(configID string) (*config.Config, error) 
 	cfg.ID = configID
 
 	return cfg, nil
+}
+
+// backendLabelOfCore maps a backend id to its user-facing label for
+// the tunnel state (v0.13.1). The first-party engine carries its
+// display name; external cores keep their established labels.
+func backendLabelOfCore(core string) string {
+	if core == "freecore" {
+		return "FreeIran Engine"
+	}
+
+	return core
 }

@@ -7,7 +7,8 @@ import { useSettingsStore } from "../state/settingsStore";
 import { call, type BackendView, type CandidateView, type Config } from "../services";
 import { connectionService, tunnelService } from "../services";
 import { toast } from "../state/toastStore";
-import { formatDuration, formatLatency, formatNumber, formatUptime, truncate } from "../utilities/format";
+import {
+  backendDisplayName, formatDuration, formatLatency, formatNumber, formatUptime, truncate } from "../utilities/format";
 import {
   BootDots,
   CONNECTION_STATE_LABELS,
@@ -192,7 +193,7 @@ export function ConnectionPage() {
               </span>
               <span className="conn-fact">
                 <span>core</span>
-                <b>{snapshot.core ? `${snapshot.core} ${snapshot.core_version ?? ""}` : "—"}</b>
+                <b>{snapshot.core ? `${backendDisplayName(snapshot.core)} ${snapshot.core_version ?? ""}` : "—"}</b>
               </span>
               <span className="conn-fact">
                 <span>latency</span>
@@ -972,7 +973,7 @@ function SessionStatusCard({
         <div className="reliability-stat">
           <span className="stat-label">Route</span>
           <span className="stat-value" style={{ fontSize: 14 }}>
-            {snapshot?.core || snapshot?.config_display || "—"}
+            {backendDisplayName(snapshot?.core) || snapshot?.config_display || "—"}
           </span>
           <span className="stat-sub">
             {snapshot?.endpoint ? `through ${snapshot.endpoint}` : "no active route"}

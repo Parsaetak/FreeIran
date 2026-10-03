@@ -4,6 +4,7 @@ package main
 
 import (
 	"encoding/binary"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -28,15 +29,27 @@ import (
 //  2. every RT_ICON payload byte-identically matches one image of the
 //     CANONICAL icon family (assets/freeiran-icon.ico) — the one icon
 //     asset authority — so the shell cannot be showing a foreign or
-//     silently-resized single-image icon.
+//     silently-resized single-image icon;
+//  3. the single RT_GROUP_ICON is registered under NUMERIC resource
+//     ID 3 (v0.13.1): the pinned Wails v3.0.0-beta.19 window path
+//     assigns the window icon through LoadIconW(exe, MAKEINTRESOURCE(3))
+//     - NewIconFromResource(GetModuleHandle(""), 3) in
+//     webview_window_windows.go - and only falls back to
+//     application.Options.Icon bytes when that lookup fails. The
+//     v0.13.0 build shipped its only icon group under the resource
+//     NAME "APP" (a go-winres string-name key), so the ID-3 lookup
+//     failed on every launch, no WM_SETICON was ever sent and the
+//     desktop showed the generic default icon while this test stayed
+//     green - exactly the regression this third assertion pins.
 //
 // Like TestWindowsGUISubsystem it needs the path of a BUILT
 // application binary via FREEIRAN_GUI_EXE and skips otherwise. The
 // release workflow sets it after linking and fails the release on
 // mismatch. No live-window claim is made here: this proves the
-// resource is LINKED, which is the input the Windows shell consumes
-// for the titlebar/taskbar/executable icon; the live-window surface
-// stays covered by the GUI launch proof.
+// resource is LINKED and discoverable through the exact lookup the
+// pinned Wails performs, which is the input the Windows shell
+// consumes for the titlebar/taskbar/executable icon; live shell
+// rendering is not CI-executable and is not claimed.
 func TestWindowsGUIIcon(t *testing.T) {
 	target := os.Getenv("FREEIRAN_GUI_EXE")
 	if target == "" {
@@ -72,8 +85,19 @@ func TestWindowsGUIIcon(t *testing.T) {
 		t.Fatalf("%s: inspect PE resources: %v", target, err)
 	}
 
-	if groups != 1 {
-		t.Fatalf("%s carries %d RT_GROUP_ICON resources, want exactly 1", target, groups)
+	if len(groups) != 1 {
+		t.Fatalf("%s carries %d RT_GROUP_ICON resources, want exactly 1", target, len(groups))
+	}
+
+	// The group must be reachable through the numeric-ID lookup the
+	// pinned Wails performs (LoadIconW(exe, MAKEINTRESOURCE(3))). A
+	// NAMED group (any string name) is invisible to that lookup even
+	// though Explorer still shows the file icon - the v0.13.0 defect.
+	if g := groups[0]; g.named || g.id != 3 {
+		t.Fatalf("%s registers its RT_GROUP_ICON as %s, want numeric ID 3 "+
+			"(Wails beta.19 loads LoadIconW(exe, MAKEINTRESOURCE(3))); "+
+			"regenerate the .syso from build/winres.json with the \"#3\" key",
+			target, groupRefLabel(g))
 	}
 
 	if len(icons) < 5 {
@@ -135,18 +159,39 @@ const (
 	icoResourceTableRVAIndex = 2 // optional-header data directory slot
 	icoRTGroupIcon           = 14
 	icoRTIcon                = 3
+
+	// icoResNameFlag marks a resource-directory Name field that holds
+	// an offset to a Unicode string instead of a numeric ID.
+	icoResNameFlag = 0x80000000
 )
 
+// icoGroupRef describes one RT_GROUP_ICON directory entry: whether it
+// is registered by NAME (true) or by numeric ID, and the numeric ID
+// when applicable.
+type icoGroupRef struct {
+	named bool
+	id    uint32
+}
+
+// groupRefLabel renders a group reference for failure messages.
+func groupRefLabel(g icoGroupRef) string {
+	if g.named {
+		return "a NAMED resource"
+	}
+
+	return fmt.Sprintf("numeric ID %d", g.id)
+}
+
 // peIconResources walks the PE resource table and returns
-// (RT_GROUP_ICON count, RT_ICON image payloads).
-func peIconResources(pe []byte) (int, [][]byte, error) {
+// (RT_GROUP_ICON references, RT_ICON image payloads).
+func peIconResources(pe []byte) ([]icoGroupRef, [][]byte, error) {
 	if len(pe) < 0x40 || binary.LittleEndian.Uint16(pe[:2]) != 0x5a4d {
-		return 0, nil, os.ErrInvalid
+		return nil, nil, os.ErrInvalid
 	}
 
 	peOff := int(binary.LittleEndian.Uint32(pe[0x3c:0x40]))
 	if peOff <= 0 || peOff+24 > len(pe) || binary.LittleEndian.Uint32(pe[peOff:peOff+4]) != 0x00004550 {
-		return 0, nil, os.ErrInvalid
+		return nil, nil, os.ErrInvalid
 	}
 
 	nSections := int(binary.LittleEndian.Uint16(pe[peOff+6 : peOff+8]))
@@ -154,7 +199,7 @@ func peIconResources(pe []byte) (int, [][]byte, error) {
 	opt := peOff + 24
 
 	if optSize < 128 || opt+optSize+nSections*40 > len(pe) {
-		return 0, nil, os.ErrInvalid
+		return nil, nil, os.ErrInvalid
 	}
 
 	// The optional header magic selects the data-directory layout:
@@ -167,11 +212,11 @@ func peIconResources(pe []byte) (int, [][]byte, error) {
 	case 0x20b:
 		dataDirOff = 112
 	default:
-		return 0, nil, os.ErrInvalid
+		return nil, nil, os.ErrInvalid
 	}
 
 	if optSize < dataDirOff+16*8 {
-		return 0, nil, os.ErrInvalid
+		return nil, nil, os.ErrInvalid
 	}
 
 	// Resource-table data directory (index 2): VirtualAddress + Size.
@@ -180,7 +225,7 @@ func peIconResources(pe []byte) (int, [][]byte, error) {
 	resSize := binary.LittleEndian.Uint32(pe[resSlot+4 : resSlot+8])
 
 	if resRVA == 0 || resSize == 0 {
-		return 0, nil, nil
+		return nil, nil, nil
 	}
 
 	for s := range nSections {
@@ -211,18 +256,18 @@ func peIconResources(pe []byte) (int, [][]byte, error) {
 		base := int(resRVA - vaddr)
 
 		if int(rawPtr)+int(rawSize) > len(pe) {
-			return 0, nil, os.ErrInvalid
+			return nil, nil, os.ErrInvalid
 		}
 
 		section := pe[rawPtr : rawPtr+rawSize]
 
 		if base+int(resSize) > len(section) {
-			return 0, nil, os.ErrInvalid
+			return nil, nil, os.ErrInvalid
 		}
 
 		rsrc := section[base : base+int(resSize)]
 
-		groups := 0
+		groups := []icoGroupRef{}
 		var icons [][]byte
 
 		// Level 1: type entries.
@@ -233,6 +278,13 @@ func peIconResources(pe []byte) (int, [][]byte, error) {
 
 			// Level 2: name/ID entries → level 3: language leaves.
 			for _, nm := range icoDirEntries(rsrc, ty.sub) {
+				// The level-2 Name field selects HOW the resource is
+				// registered: high bit set → an offset to a Unicode
+				// NAME; clear → a numeric resource ID. LoadIconW can
+				// only find numeric IDs.
+				named := nm.id&icoResNameFlag != 0
+				id := nm.id & 0x7fffffff
+
 				for _, leaf := range icoDirEntries(rsrc, nm.sub) {
 					if int(leaf.sub)+16 > len(rsrc) {
 						continue
@@ -253,7 +305,7 @@ func peIconResources(pe []byte) (int, [][]byte, error) {
 					copy(blob, rsrc[start:start+int(size)])
 
 					if ty.id == icoRTGroupIcon {
-						groups++
+						groups = append(groups, icoGroupRef{named: named, id: id})
 					} else {
 						icons = append(icons, blob)
 					}
@@ -264,7 +316,7 @@ func peIconResources(pe []byte) (int, [][]byte, error) {
 		return groups, icons, nil
 	}
 
-	return 0, nil, nil
+	return nil, nil, nil
 }
 
 // icoResEntry is one IMAGE_RESOURCE_DIRECTORY_ENTRY.

@@ -146,3 +146,17 @@ export function formatUptime(ms: number): string {
 
   return `${seconds}s`;
 }
+
+/**
+ * v0.13.1: maps a backend id from the connection snapshot to its
+ * honest user-facing label. The first-party in-process engine renders
+ * as "FreeIran Engine"; external cores keep their established names.
+ * Every surface that shows the active backend (Main page, Connection
+ * page, tray-driven state) goes through this ONE mapping — there is
+ * no second label path.
+ */
+export function backendDisplayName(core: string | null | undefined): string {
+  if (!core) return "";
+  if (core === "freecore") return "FreeIran Engine";
+  return core;
+}

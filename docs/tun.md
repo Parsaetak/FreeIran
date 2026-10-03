@@ -274,3 +274,42 @@ protections with contracts in
 None of the above weakens the evidence ladder in this document; a
 future release may only extend it with newly executed evidence
 classes.
+
+## First-party TUN foundation (v0.13.1) — device/control plane only, NOT a dataplane
+
+v0.13.1 lays the FreeIran-owned TUN boundary for Phase 2
+(ROADMAP.md item 1) without changing what TUN mode does today:
+
+- **What exists now** (`engine/freecore/tun`): the `Device`
+  interface with a bounded packet-channel boundary; a deterministic
+  FreeIran-owned adapter identity (stable name + GUID derivation,
+  ownership-tagged); a transaction/rollback state representation
+  (desired state, applied steps, inverse rollback plan); loop-
+  prevention metadata (the interface index / route-prefix exclusion
+  facts the future upstream dialer must honor so engine upstream
+  sockets never route back into the adapter); the Windows Wintun
+  adapter/session lifecycle through the reviewed
+  `golang.zx2c4.com/wintun` binding (MIT; memory-loaded, no
+  downloaded driver); and a read-only IP Helper observation seam
+  (interfaces/addresses/routes via `golang.org/x/sys/windows`).
+- **What does NOT exist**: any packet forwarding. The first-party
+  device layer is not wired to an IP stack, is not selectable in the
+  UI, is not reported anywhere as active, and cannot carry traffic.
+- **Selection is explicit and unchanged**: the runnable TUN
+  dataplane is the managed sing-box native TUN backend
+  (`tunBackendName = "sing-box native TUN (Wintun)"`). When the
+  Phase 2 dataplane lands, backend selection becomes an explicit,
+  evidence-gated choice inside the ONE `TUNBackend` authority —
+  never two parallel TUN systems.
+- **Evidence class of the foundation**: platform-neutral
+  ownership/identity/rollback/loop-guard decisions are unit-tested
+  on Linux; the Windows-specific layers (Wintun binding, IP Helper
+  collectors) compile in the windows/amd64 cross-build. NO Windows
+  runtime execution happened for this foundation in this release —
+  the same honesty rule as the evidence ladder above applies.
+
+The Phase 2 implementation contract (purpose, dependencies,
+boundary, evidence, fallback, retirement gate for the first-party
+dataplane) lives in ROADMAP.md item 1; the long-term protection
+architecture (DNS authority, IPv6 proof, WFP kill switch) remains
+governed by [autonomous-connectivity.md](autonomous-connectivity.md).

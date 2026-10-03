@@ -80,6 +80,17 @@ func NewRegistry(locator *system.CoreLocator) *Registry {
 	}
 }
 
+// StaticAvailability is implemented by backends that need no
+// executable discovery because they run in-process (v0.13.1: the
+// first-party FreeIran Engine). The registry uses the self-reported
+// availability instead of the locator, so an in-process backend is
+// always selectable without any binary on disk.
+type StaticAvailability interface {
+	// Availability reports the backend's own status, version, path,
+	// note, origin and ownership (same shape discover returns).
+	Availability() (status BackendStatus, version, path, note, origin, ownership string)
+}
+
 // Register adds or replaces a backend. Lower priority values win
 // during selection (0 = highest). Registration is cheap and
 // side-effect free; executable discovery happens on Refresh.
@@ -181,10 +192,20 @@ func (r *Registry) refresh(ctx context.Context, force bool) {
 	for _, item := range work {
 		wg.Add(1)
 
-		go func(name string) {
+		go func(name string, backend Core) {
 			defer wg.Done()
 
-			status, version, path, note, origin, ownership := r.discover(ctx, name)
+			var status BackendStatus
+
+			var version, path, note, origin, ownership string
+
+			// In-process backends declare their own availability;
+			// there is no executable to discover for them.
+			if static, ok := backend.(StaticAvailability); ok {
+				status, version, path, note, origin, ownership = static.Availability()
+			} else {
+				status, version, path, note, origin, ownership = r.discover(ctx, name)
+			}
 
 			r.mu.Lock()
 
@@ -199,7 +220,7 @@ func (r *Registry) refresh(ctx context.Context, force bool) {
 			}
 
 			r.mu.Unlock()
-		}(item.name)
+		}(item.name, item.core)
 	}
 
 	wg.Wait()

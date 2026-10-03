@@ -1,10 +1,11 @@
 // Package socks5 implements the minimal SOCKS5 client FreeIran needs
-// for connectivity measurement: a no-authentication CONNECT tunnel.
+// for connectivity measurement: a CONNECT tunnel with optional
+// RFC 1929 username/password authentication.
 //
 // The engine otherwise depends only on the standard library; this
-// subpackage keeps the same discipline (RFC 1928 subset, ~200 lines,
-// fully testable against a local listener) instead of pulling in an
-// external proxy library for one handshake.
+// subpackage keeps the same discipline (RFC 1928 + RFC 1929 subset,
+// ~250 lines, fully testable against a local listener) instead of
+// pulling in an external proxy library for one handshake.
 package socks5
 
 import (
@@ -24,6 +25,11 @@ var (
 	ErrHandshakeFailed = errors.New("socks5: handshake failed")
 	ErrConnectRefused  = errors.New("socks5: proxy refused the CONNECT request")
 	ErrUnsupported     = errors.New("socks5: unsupported reply or address type")
+
+	// ErrAuthFailed: the proxy rejected the RFC 1929 username/password
+	// subnegotiation (v0.13.1 — the first-party engine's SOCKS5
+	// outbound needs authenticated remotes).
+	ErrAuthFailed = errors.New("socks5: proxy rejected the username/password authentication")
 )
 
 // Dialer connects to targets through a SOCKS5 proxy.
@@ -33,6 +39,13 @@ type Dialer struct {
 
 	// Timeout bounds the TCP dial to the proxy AND the handshake.
 	Timeout time.Duration
+
+	// Username and Password enable RFC 1929 username/password
+	// authentication (v0.13.1). The zero value keeps the historical
+	// no-auth behavior byte-identical: the greeting offers only
+	// method 0x00.
+	Username string
+	Password string
 }
 
 // Dial connects to addr ("host:port") through the configured proxy.
@@ -84,7 +97,7 @@ func (d Dialer) Dial(ctx context.Context, _, addr string) (net.Conn, error) {
 		}
 	}()
 
-	handshakeErr := handshake(proxy, host, port)
+	handshakeErr := handshake(proxy, host, port, d.Username, d.Password)
 
 	if handshakeErr != nil {
 		close(watcherDone)
@@ -104,10 +117,23 @@ func (d Dialer) Dial(ctx context.Context, _, addr string) (net.Conn, error) {
 	return proxy, nil
 }
 
-// handshake performs greeting + CONNECT + reply parsing.
-func handshake(conn net.Conn, host string, port int) error {
-	// Greeting: VER=5, 1 method, NO-AUTH (0x00).
-	if _, err := conn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
+// handshake performs greeting + (optional RFC 1929 auth) + CONNECT +
+// reply parsing.
+func handshake(conn net.Conn, host string, port int, username, password string) error {
+	// Greeting: VER=5, methods [NO-AUTH (0x00)] — or, with credentials,
+	// [NO-AUTH, USERNAME/PASSWORD (0x02)] so a proxy that accepts both
+	// keeps working and a proxy that requires auth can be satisfied.
+	var greeting []byte
+
+	hasAuth := username != "" || password != ""
+
+	if hasAuth {
+		greeting = []byte{0x05, 0x02, 0x00, 0x02}
+	} else {
+		greeting = []byte{0x05, 0x01, 0x00}
+	}
+
+	if _, err := conn.Write(greeting); err != nil {
 		return fmt.Errorf("%w: send greeting: %v", ErrHandshakeFailed, err)
 	}
 
@@ -120,8 +146,21 @@ func handshake(conn net.Conn, host string, port int) error {
 		return fmt.Errorf("%w: proxy is not SOCKS5 (ver=0x%02x)", ErrHandshakeFailed, reply[0])
 	}
 
-	if reply[1] != 0x00 {
-		return fmt.Errorf("%w: proxy rejected the no-auth method (0x%02x)", ErrHandshakeFailed, reply[1])
+	switch reply[1] {
+	case 0x00:
+		// No auth needed (or selected) — proceed.
+	case 0x02:
+		if !hasAuth {
+			return fmt.Errorf("%w: proxy requires username/password authentication but no credentials were configured", ErrHandshakeFailed)
+		}
+
+		if err := authenticate(conn, username, password); err != nil {
+			return err
+		}
+	case 0xFF:
+		return fmt.Errorf("%w: proxy accepted no offered method (0xFF)", ErrHandshakeFailed)
+	default:
+		return fmt.Errorf("%w: proxy selected unsupported method 0x%02x", ErrHandshakeFailed, reply[1])
 	}
 
 	// CONNECT request: VER=5, CMD=1, RSV=0, ATYP, ADDR, PORT.
@@ -154,6 +193,41 @@ func handshake(conn net.Conn, host string, port int) error {
 	}
 
 	return readConnectReply(conn)
+}
+
+// authenticate performs the RFC 1929 username/password
+// subnegotiation: VER=1, ULEN, UNAME, PLEN, PASSWD, expecting the
+// VER=1 status-0 reply. Usernames and passwords are each bounded to
+// 255 bytes by the protocol itself.
+func authenticate(conn net.Conn, username, password string) error {
+	if len(username) > 255 || len(password) > 255 {
+		return fmt.Errorf("%w: credentials exceed the 255-byte RFC 1929 limit", ErrHandshakeFailed)
+	}
+
+	req := make([]byte, 0, 3+len(username)+1+len(password))
+	req = append(req, 0x01, byte(len(username)))
+	req = append(req, username...)
+	req = append(req, byte(len(password)))
+	req = append(req, password...)
+
+	if _, err := conn.Write(req); err != nil {
+		return fmt.Errorf("%w: send credentials: %v", ErrHandshakeFailed, err)
+	}
+
+	reply := make([]byte, 2)
+	if _, err := io.ReadFull(conn, reply); err != nil {
+		return fmt.Errorf("%w: read auth reply: %v", ErrHandshakeFailed, err)
+	}
+
+	if reply[0] != 0x01 {
+		return fmt.Errorf("%w: auth reply version 0x%02x", ErrHandshakeFailed, reply[0])
+	}
+
+	if reply[1] != 0x00 {
+		return fmt.Errorf("%w: status 0x%02x", ErrAuthFailed, reply[1])
+	}
+
+	return nil
 }
 
 // readConnectReply parses the variable-length CONNECT reply.

@@ -1191,3 +1191,91 @@ existing `applySettings` path) is the only new notification surface.
 historical allowlist, default rules fully active) and the exact
 `system/open_shell.go` allowlist case with its justification inline —
 both documented in docs/security.md (v0.11.3 addendum).
+
+---
+
+## v0.13.1 addendum — first-party FreeIran Engine foundation + in-process backend
+
+v0.13.1 begins the two-phase engine transition (ROADMAP.md). The
+architecture rule it establishes: **the first-party engine is
+implemented as a backend inside the existing execution boundary, not
+as a parallel system.**
+
+### FreeIran Engine (`engine/freecore`)
+
+The first-party Go runtime with a deliberately minimal internal
+model:
+
+- `Engine` — lifecycle (bound listeners, bounded session registry,
+  shutdown), one-time normalization from the universal
+  `config.Config` (`Normalize`; protocol implementations never
+  re-parse the application config), capability reporting.
+- `Session` — bounded per-connection lifecycle: metadata (inbound
+  kind, target, outbound kind), byte counters, cancellation and
+  close semantics.
+- `Inbound` / `Outbound` / `Dialer` / `RouterDecision` /
+  `Resolver` (DNS interface) / transport-security abstraction —
+  interfaces exist only at real subsystem boundaries. Phase 1 ships:
+  HTTP CONNECT inbound (CONNECT tunneling + absolute-form
+  forwarding), SOCKS5 inbound (RFC 1928 no-auth CONNECT subset;
+  BIND/UDP refused), SOCKS5 outbound (reusing `engine/socks5`),
+  HTTP CONNECT outbound and direct outbound, all with context
+  cancellation and deadlines end-to-end.
+
+### In-process backend integration (`engine/core`)
+
+`freecore.Backend` implements the `core.Core` contract (Name
+`freecore`, capability-gated `Supports`/`Validate`, deterministic
+`BuildConfig` session descriptor) and starts in-process through the
+new `core.LaunchInProcess`: the listeners are bound BEFORE the
+instance exists, the shared readiness supervisor probes the listener
+(the same launch verdict every backend uses), and the `Instance`
+carries no managed process (`PID()==0`, `Health` reports the
+in-process session, `WaitProcess` blocks until the session stops —
+normal stop is not a "crash"). The registry learns one new seam: a
+backend may declare static availability (the engine is compiled in;
+there is no executable to discover). Selection, preference, bounded
+fallback, the connection state machine, monitoring and verification
+are COMPLETELY UNCHANGED — for a first-party-supported route the
+machinery simply picks `freecore`, and the session's local endpoint
+is owned by FreeIran code.
+
+### System Proxy decoupling
+
+Nothing in `engine/tunnel` changed ownership: WinINet
+capture/apply/verify/restore, idempotency, rollback, durable
+recovery and the single Controller remain THE system-proxy
+authority. The decoupling happens at endpoint ownership: on a
+first-party-supported route the endpoint System Proxy points WinINet
+at belongs to the FreeIran Engine, so enabling System Proxy launches
+no external core. The app-level `EnableSystemProxy` records the real
+backend label (`FreeIran Engine` / external core name) in the tunnel
+state so the UI, tray and diagnostics stay honest.
+
+### First-party TUN foundation (`engine/freecore/tun`)
+
+The Phase 2 TUN boundary: `Device` interface with a packet-channel
+boundary, deterministic FreeIran-owned adapter identity,
+transaction/rollback state representation, loop-prevention metadata
+(the interface/route exclusion facts the future upstream dialer must
+honor), the Windows Wintun lifecycle through the reviewed
+`golang.zx2c4.com/wintun` binding, and a read-only IP Helper
+observation seam over `golang.org/x/sys/windows`. It forwards NO
+packets: the runnable TUN dataplane remains the sing-box backend
+selected through the existing `TUNBackend`; the first-party dataplane
+is Phase 2 item 1 and stays unexposed until its activation gate can
+honestly pass (docs/tun.md).
+
+### Windows icon root fix (cmd/freeiran + build)
+
+The v0.13.0 icon defect was a resource-layout bug, not a Wails bug:
+the executable's only icon group was stored under the resource NAME
+`APP`, while the pinned Wails v3.0.0-beta.19 window path loads
+`RT_GROUP_ICON` by NUMERIC ID 3 (and the class icon by an ID no
+build carries). The group is now emitted at numeric ID 3
+(`build/winres.json` `"#3"`), the `.syso` regenerated, and
+`application.Options.Icon` set from the canonical embedded PNG as
+the documented fallback. `TestWindowsGUIIcon` asserts the numeric
+ID so the regression class is permanently caught. Evidence level:
+resource layout + loader code path + Windows compile; live shell
+rendering is not CI-executable and is not claimed.

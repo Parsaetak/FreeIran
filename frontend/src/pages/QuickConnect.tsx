@@ -11,7 +11,8 @@ import * as tunnelOwnership from "../../bindings/github.com/Parsaetak/FreeIran/e
 import { describeError, toast } from "../state/toastStore";
 import { ProfileSpec as ProfileSpecModel } from "../../bindings/github.com/Parsaetak/FreeIran/engine/app/models.js";
 import type { Page } from "../types/ui";
-import { formatLatency, truncate } from "../utilities/format";
+import {
+  backendDisplayName, formatLatency, truncate } from "../utilities/format";
 import {
   quickPickerRows,
   pickerLatencyText,
@@ -320,7 +321,7 @@ export function QuickConnectPage({ onNavigate }: { onNavigate: (page: Page) => v
               </div>
               <div className="qc-result-sub">
                 {snapshot?.core
-                  ? `${snapshot.core}${snapshot.core_version ? ` · ${snapshot.core_version}` : ""}`
+                  ? `${backendDisplayName(snapshot.core)}${snapshot.core_version ? ` · ${snapshot.core_version}` : ""}`
                   : ""}
               </div>
             </div>
@@ -525,6 +526,10 @@ interface TunnelStateView {
   mode?: string;
   active?: boolean;
   endpoint?: string;
+  /** v0.13.1: the backend owning the endpoint WinINet points at —
+   * "FreeIran Engine" for the first-party in-process path, the
+   * external core name otherwise. */
+  backend?: string;
   tun?: TUNSnapshotView;
 }
 
@@ -695,9 +700,9 @@ function SystemIntegrationCard({ onNavigate }: { onNavigate: (page: Page) => voi
         <div className="sysint-row">
           <div className="sysint-label">
             <span className="cell-title">System proxy</span>
-            <span className="cell-sub" data-tip="Points Windows at FreeIran's local inbound (WinINet). Needs a connected configuration.">
+            <span className="cell-sub" data-tip="Points Windows at FreeIran's local inbound (WinINet). Needs a connected configuration. On first-party-supported routes the inbound is owned by the FreeIran Engine and no external core runs.">
               {proxyOn && endpoint
-                ? `on — ${endpoint}`
+                ? `on — ${endpoint}${tunnel?.backend ? ` · ${tunnel.backend}` : ""}`
                 : connected
                   ? "off — connect routes through the tunnel once enabled"
                   : "needs a connected configuration"}
@@ -762,7 +767,7 @@ function SystemIntegrationCard({ onNavigate }: { onNavigate: (page: Page) => voi
             </label>
             <input
               id="sysint-socks-port"
-              className="input input-compact"
+              className="input input-compact input-port"
               type="number"
               min={0}
               max={65535}
@@ -776,7 +781,7 @@ function SystemIntegrationCard({ onNavigate }: { onNavigate: (page: Page) => voi
             </label>
             <input
               id="sysint-http-port"
-              className="input input-compact"
+              className="input input-compact input-port"
               type="number"
               min={0}
               max={65535}
@@ -1087,6 +1092,7 @@ function ProfileManager({
           <label>
             SOCKS port
             <input
+              className="input input-compact input-port"
               type="number"
               min={0}
               value={draft.socks}
@@ -1097,6 +1103,7 @@ function ProfileManager({
           <label>
             HTTP port
             <input
+              className="input input-compact input-port"
               type="number"
               min={0}
               value={draft.http}

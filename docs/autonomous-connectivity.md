@@ -890,3 +890,50 @@ CI does not equal physical-host runtime verification.
   documentation-freshness side effect.
 - Roadmap phase order lives in ROADMAP.md; the phase contracts live
   in this document.
+
+---
+
+## Phase 2 handoff (v0.13.1) — the next implementation target
+
+v0.13.1 shipped the Phase 1 foundation (ROADMAP.md). The next
+agent's implementation program, in order:
+
+1. **Complete the FreeIran-owned TUN traffic dataplane** — build on
+   `engine/freecore/tun` (Device, identity, transaction/rollback,
+   loop-prevention, Wintun binding, IP Helper seam are in place and
+   tested at the unit level). The packet loop, IP stack handling,
+   NAT/route decisions and the DNS hijack path land inside the ONE
+   engine; the sing-box TUN backend remains the fallback until the
+   full docs/tun.md evidence ladder passes on a physical elevated
+   Windows host.
+2. **Move DNS/routing into the FreeIran Engine** — the `Resolver`
+   and `RouterDecision` interfaces in `engine/freecore` become real
+   authorities; external-core documents stop embedding route/DNS
+   decisions only after the equivalence evidence exists.
+3. **Expand protocol implementations incrementally** —
+   Shadowsocks → Trojan → VLESS → VMess → Hysteria/Hysteria2 → TUIC
+   → WireGuard, each behind its capability gate with reference-
+   server interop evidence (docs/protocols.md records the class).
+   Reuse the ONE session/routing/DNS/verification authority; never
+   fork a second engine surface.
+4. **Add transport/security combinations only where technically and
+   legally supportable** — TCP/TLS/WebSocket/HTTP2/gRPC/QUIC/XHTTP/
+   REALITY enter as reviewed implementations behind the engine's
+   transport abstraction; uTLS-style fingerprinting requires its
+   own license/security review before any capability declaration.
+5. **Maintain external compatibility only until each capability is
+   independently replaced** — the registry, selection, fallback and
+   verification machinery already treat `freecore` as "just another
+   backend"; keep it that way. Retire an external core only when
+   zero shipped capabilities depend on it (per-capability gates in
+   ROADMAP.md Phase 2 item 16).
+
+Architectural invariants that must survive Phase 2 (from the rules
+above and v0.13.1's architecture addendum): one engine authority, one
+connection state machine, one routing authority, one DNS authority,
+one TUN authority, one system-proxy authority, one store, one test
+queue, one process-supervision boundary — the first-party engine
+normally runs in-process and must never grow a private supervisor;
+no wholesale copying of Xray/V2Ray/sing-box/Mihomo source; licenses
+reviewed before code enters the tree; no capability is claimed
+without evidence at the class this document defines.

@@ -112,6 +112,21 @@ func main() {
 	wailsApp := application.New(application.Options{
 		Name:        "FreeIran",
 		Description: "Free, open-source VPN configuration manager",
+		// v0.13.1: the window-icon fallback from the ONE canonical
+		// icon authority. On Windows the pinned Wails
+		// v3.0.0-beta.19 assigns the window icon by loading
+		// RT_GROUP_ICON numeric ID 3 from the executable
+		// (NewIconFromResource(GetModuleHandle(""), 3) in
+		// webview_window_windows.go) and consults Options.Icon ONLY
+		// when that lookup fails. The linked .syso now carries the
+		// group at numeric ID 3 (build/winres.json "#3" key — the
+		// v0.13.0 defect was a NAMED "APP" group the loader can
+		// never find), so this Icon is defense-in-depth for builds
+		// whose resource lookup fails, not the primary path. It is
+		// the same canonical embedded PNG the Linux window icon and
+		// the tray use — one icon family, three native
+		// representations.
+		Icon: appicon.PNG,
 		// v0.11.5: Wails-internal failures (WebView2 runtime
 		// probing, environment/controller creation, navigation)
 		// previously went to Wails' own logger — io.Discard in

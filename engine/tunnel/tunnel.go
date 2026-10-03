@@ -615,6 +615,7 @@ func (c *Controller) Enable(ctx context.Context, mode Mode, host string, port in
 			Mode:       mode,
 			Active:     true,
 			Endpoint:   endpoint,
+			Backend:    opts.Backend,
 			BypassList: opts.Bypass,
 			StartedAt:  time.Now().UTC(),
 		}
@@ -794,4 +795,12 @@ type Options struct {
 	// (nil for system-proxy calls). EnableTUN is the preferred
 	// entrypoint; this field keeps the generic Enable usable.
 	TUN *TUNEnableOptions
+
+	// Backend labels the backend that OWNS the local endpoint WinINet
+	// is pointed at (v0.13.1): "FreeIran Engine" for the first-party
+	// in-process path, the external core name ("sing-box", "xray",
+	// "v2ray") otherwise. The caller derives it from the live
+	// connection snapshot — the one authority that knows — and the
+	// state surfaces it so the UI, tray and diagnostics stay honest.
+	Backend string
 }

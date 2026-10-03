@@ -9,7 +9,7 @@ configurations.
 **Project:** FreeIran — A SHEYTAN Digital System
 **Architect:** Parsa Tak / SHEYTAN
 **Repository:** https://github.com/Parsaetak/FreeIran
-**Current version:** 0.13.0 (see `VERSION`)
+**Current version:** 0.13.1 (see `VERSION`)
 **Status:** production architecture — multi-core protocol runtime with
 managed installation, multi-level node discovery, Ping/URL test modes
 with measured ranking, verified-connection engine with racing,
@@ -19,11 +19,12 @@ dataplane, unified adaptive memory control and kernel-level process
 supervision, evidence-based failure classification with
 transport-agile route selection, proxy chains compiled into a single
 core process, and schema-verified ECH support through sing-box.
-v0.13.0 makes the workspace honest at the real dataset size (true
-counts, global sort with a config-ID tie-breaker, paginated filtered
-scopes), moves system integration to the Main page with real tray
-toggles, and root-fixes the Windows icon chain (history lives in
-CHANGELOG.md).
+v0.13.1 opens the two-phase first-party engine transition (ROADMAP.md):
+the FreeIran Engine foundation now carries supported SOCKS/HTTP
+routes entirely in-process (System Proxy needs no external core for
+them) and the first-party TUN device/control foundation is laid,
+while external cores remain the compatibility fallback for
+everything else (history lives in CHANGELOG.md).
 
 ## What FreeIran is
 
@@ -45,6 +46,14 @@ as a future-work contract (PLANNED; not implemented).
 
 ## Current verified capabilities
 
+- **First-party engine (v0.13.1 foundation).** The FreeIran Engine
+  (`engine/freecore`) is a registered in-process backend: SOCKS and
+  HTTP remote configurations over plain TCP run entirely inside the
+  FreeIran process — local HTTP CONNECT and SOCKS5 inbounds, real
+  byte forwarding through FreeIran-owned Go code — so System Proxy
+  on those routes launches no external core. Its capability gate is
+  deliberately narrow; see [docs/protocols.md](docs/protocols.md)
+  for the exact matrix and evidence class.
 - Multi-core protocol runtime: Xray, V2Ray and sing-box as managed,
   digest-verified backends (Mihomo is core-manager-managed; its
   connection adapter is deliberately out of scope). See
@@ -57,9 +66,13 @@ as a future-work contract (PLANNED; not implemented).
 - Verified-connection engine: state machine, controlled racing,
   environment intelligence, evidence-based failure classification,
   transport-agile selection.
-- System Proxy mode (WinINet) and Windows TUN mode through the
-  managed sing-box core's native TUN dataplane (transactional,
-  observed activation; see [docs/tun.md](docs/tun.md)).
+- System Proxy mode (WinINet) — pointed at the active session's
+  local endpoint, which for first-party-supported routes is owned by
+  the FreeIran Engine (no external core launched) and for every
+  other route by the selected external core — and Windows TUN mode
+  through the managed sing-box core's native TUN dataplane
+  (transactional, observed activation; see
+  [docs/tun.md](docs/tun.md)).
 - Proxy Chains (v0.12.2): an ordered hop list over EXISTING
   configurations (2–4 hops), built and validated in the
   Configurations workspace, persisted in the collections sidecar and
@@ -88,6 +101,15 @@ as a future-work contract (PLANNED; not implemented).
 
 ## Current limitations (honest)
 
+- The first-party engine implements ONLY local proxy forwarding for
+  SOCKS/HTTP remotes over plain TCP (plus direct dialing). Every
+  other protocol/transport/security combination — VLESS, VMess,
+  Trojan, Shadowsocks, Hysteria/Hysteria2, TUIC, WireGuard,
+  TLS/REALITY, UDP, proxy chains — still runs through the external
+  cores, exactly as before. The first-party TUN foundation
+  (`engine/freecore/tun`) is a device/control-plane boundary only:
+  it forwards no packets, and the runnable TUN dataplane remains
+  sing-box's (Phase 2; see ROADMAP.md).
 - The Windows TUN physical runtime on an elevated physical host is
   NOT VERIFIED — evidence stops at generated-config (real pinned
   sing-box binary), Linux/unit, Windows-compile and Windows-CI
@@ -97,6 +119,11 @@ as a future-work contract (PLANNED; not implemented).
 - No FreeIran-owned DNS engine (DNS inside TUN is the sing-box
   document's module); no IPv6 leak-proof monitoring; `Connected` is
   never `Protected`.
+- The Windows window/taskbar icon fix is proven at the
+  resource/code-path level (icon group at the numeric resource ID
+  the pinned Wails loads, byte-identical to the canonical asset) and
+  by the strengthened PE regression test; live shell rendering is
+  not executable in CI and is not claimed.
 - Core support is bounded by the verified matrix; upstream core
   capabilities are not automatically exposed.
 - The GUI launch proof executes in CI, not in the authoring
@@ -129,22 +156,33 @@ as a future-work contract (PLANNED; not implemented).
    (engine/pipeline,     │
     engine/source)    Connection Manager
         │            (engine/connection: state machine, fallback)
-   FETCH → PARSE →        │
-   NORMALIZE →       ┌────┴────┐
+   FETCH → PARSE →       ┌────┴────┐
+   NORMALIZE →       │         │
    VALIDATE →        │         │
    DEDUP → PERSIST   │         │
                      │         │
-              Protocol cores (engine/core)
-              ┌──────────────┬──────────────┐
-              │ xray         │ v2ray        │ sing-box
-              └──────────────┴──────────────┘
+          Backend registry (engine/core)
+          ┌────────────┬────────────┬────────────┐
+          │ freecore   │ xray       │ sing-box   │
+          │ (in-proc)  │ v2ray      │            │
+          └────────────┴────────────┴────────────┘
+               FreeIran Engine    external protocol
+               (engine/freecore)  cores (managed)
+               SOCKS/HTTP local
+               proxy path (new in
+               v0.13.1)
                            │
               Test Queue (engine/testqueue)
               bounded workers + priority + cancellation
                            │
               Tunnel (engine/tunnel)
               System Proxy (WinINet) — production
-              TUN — sing-box native dataplane (Windows)
+              endpoint owned by FreeIran Engine on
+              first-party-supported routes, external
+              core otherwise
+              TUN — sing-box native dataplane (Windows;
+              first-party device/control foundation in
+              engine/freecore/tun, no dataplane yet)
 ```
 
 - **Go** is the primary orchestration/system language: lifecycle,

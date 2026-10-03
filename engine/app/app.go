@@ -33,6 +33,7 @@ import (
 	"github.com/Parsaetak/FreeIran/engine/core/v2ray"
 	"github.com/Parsaetak/FreeIran/engine/core/xray"
 	"github.com/Parsaetak/FreeIran/engine/coremgr"
+	"github.com/Parsaetak/FreeIran/engine/freecore"
 	"github.com/Parsaetak/FreeIran/engine/metrics"
 	"github.com/Parsaetak/FreeIran/engine/native"
 	"github.com/Parsaetak/FreeIran/engine/pipeline"
@@ -628,6 +629,20 @@ func New(opts Options) (*App, error) {
 	// authoritative cleanup, with the logger closed LAST so the
 	// failure itself is recorded.
 	fail := tx.fail
+
+	// v0.13.1: the first-party FreeIran Engine is a registered
+	// IN-PROCESS backend (selection priority 0; the deterministic
+	// tie-break is the name, where "freecore" sorts before "xray").
+	// For the routes it genuinely supports (SOCKS/HTTP remotes over
+	// plain TCP) the ONE connection state machine selects it, the
+	// local proxy endpoint is engine-owned and no external core is
+	// launched; every other configuration keeps flowing to the
+	// external cores below through the same selection machinery.
+	// Static availability: the engine is compiled in — the registry's
+	// StaticAvailability seam replaces executable discovery for it.
+	if err := coreRegistry.Register(freecore.New(), 0); err != nil {
+		return fail("register freecore", err)
+	}
 
 	if err := coreRegistry.Register(xray.New(), 0); err != nil {
 		return fail("register xray", err)

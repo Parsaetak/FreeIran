@@ -11,6 +11,166 @@ are historical: version numbers, core pins and verification claims
 inside them describe the state of that release, not the current
 state.
 
+## v0.13.1 — Phase 1 foundation: FreeIran Engine, first-party System Proxy path, TUN foundation, Windows icon + Settings repairs
+
+v0.13.1 is the first half of a deliberate two-phase transition
+(ROADMAP.md): it lays the first-party engine foundation and repairs
+the application surfaces, while every capability the engine does not
+genuinely implement keeps running through the existing external
+cores. No external core was replaced in this release; none is
+claimed to be.
+
+### Windows icon — the real root cause, fixed
+
+- **Root cause (found by tracing the pinned Wails
+  v3.0.0-beta.19 source, not by guessing).** Wails beta.19 assigns
+  the window icon by loading `RT_GROUP_ICON` with **numeric
+  resource ID 3** from the executable
+  (`NewIconFromResource(GetModuleHandle(""), 3)` in
+  `webview_window_windows.go`), and only falls back to
+  `application.Options.Icon` bytes when that lookup fails; the
+  window class icon is a separate lookup of icon-group ID 32512 that
+  no Wails build satisfies. FreeIran's committed `.syso` stored its
+  only icon group under the resource **name** `"APP"` (a go-winres
+  string-name key), so the ID-3 lookup always failed, no `WM_SETICON`
+  was ever sent, and the window fell back to the class icon — which
+  is itself NULL — producing the generic/default titlebar and
+  taskbar icon. Explorer still showed the right file icon (it takes
+  the first group regardless of name) and the tray was correct
+  (runtime PNG), which is exactly the "missing taskbar icon +
+  mismatched opened-window icon" defect: the v0.13.0 resource
+  inspection passed because it never checked the group's name/ID.
+- **Fix.** `build/winres.json` now emits the icon group under the
+  numeric ID the pinned Wails loads (`"#3"` instead of `"APP"`), the
+  `.syso` was regenerated from it, and `application.Options.Icon` is
+  set from the same canonical embedded PNG (`internal/appicon`) as a
+  documented defense-in-depth fallback for builds whose resource
+  lookup fails. Executable, window and tray representations all
+  derive from the one canonical icon family.
+- **Test hardened.** `TestWindowsGUIIcon` now also asserts the
+  single `RT_GROUP_ICON` is registered under **numeric ID 3** — the
+  exact regression class that shipped v0.13.0 with a broken desktop
+  icon while the test was green.
+- **Evidence honesty.** Proven: resource layout of the linked PE
+  (group ID 3, multi-size family, byte-identical to the canonical
+  asset), the code path of the pinned Wails loader, and the
+  Windows-targeted compile. NOT proven in CI: live shell rendering
+  (no interactive Windows session exists in CI); the release notes
+  and docs state this explicitly instead of claiming "taskbar
+  fixed".
+
+### Settings — numeric controls actually compact
+
+- The v0.13.0 compact-input CSS capped the `<input>` boxes but left
+  the WRAPPERS oversized: `.settings-row > .field` forced
+  `min-width: 160px` and `flex: 1` (the four runtime-log fields
+  wrapped raggedly), `.field-grid.two` gave each port field a
+  full-width grid track, and the QuickConnect profile-form ports
+  used a divergent second styling path with no compact class at
+  all. Numeric inputs now render in genuinely compact fields
+  (~80–110 px) inside compact rows: the runtime-log fields share one
+  tight row, port pairs size to content, profile-form ports reuse
+  the same compact treatment, and the three test/racing range
+  sliders are styled and constrained instead of stretching
+  full-width unstyled.
+- The number-input spinner is suppressed so the compact width is
+  usable digits, labels/descriptions/warnings are unchanged, and
+  keyboard navigation/focus visibility/native input behavior are
+  untouched.
+- Regression coverage: a Settings DOM test asserts every numeric
+  control carries the compact treatment, and a CSS contract test
+  pins the layout rules that kept the wrappers oversized
+  (`min-width` on settings-row fields, grid track stretching,
+  sysint port stretching) so the rendered layout cannot silently
+  regress to v0.13.0's.
+
+### FreeIran Engine foundation (`engine/freecore`) — real code, real bytes
+
+- The first-party Go engine exists with a deliberate, minimal
+  internal model: `Engine` (lifecycle, bounded session registry,
+  capability reporting), `Session` (bounded lifecycle, cancellation,
+  metadata, byte counters), inbound/outbound/dialer/router-decision
+  and DNS-resolver interfaces, and a transport/security abstraction
+  that exists only where a real subsystem boundary sits.
+- **One-time normalization**: the universal `config.Config` is
+  converted into the engine model exactly once
+  (`freecore.Normalize`); protocol implementations never re-parse
+  the application configuration.
+- **Local proxy pipeline that actually carries traffic**: a local
+  HTTP CONNECT inbound (CONNECT tunneling plus absolute-form
+  forwarding) and a local SOCKS5 inbound (RFC 1928 subset:
+  no-auth CONNECT; BIND/UDP-ASSOCIATE refused honestly), served on
+  the same port pair the external cores expose, forwarding through
+  SOCKS5, HTTP-CONNECT and direct outbounds with context
+  cancellation, deadlines, bounded buffers and per-session
+  accounting end-to-end. No external process is spawned for
+  first-party-supported sessions — the bytes move through
+  FreeIran-owned Go code.
+- **Honest capability gate**: the engine declares exactly
+  SOCKS/HTTP remotes over plain TCP with no security layer (plus
+  direct). VLESS, VMess, Trojan, Shadowsocks, the QUIC family,
+  WireGuard, TLS/REALITY transports, UDP and proxy chains are
+  refused by `Supports`/`Validate` and continue through the
+  existing external-core compatibility path.
+
+### System Proxy decoupled from sing-box (first-party path)
+
+- The FreeIran Engine is registered in the ONE core registry as an
+  in-process backend (`freecore`, selection priority 0). For a
+  supported route the ONE connection state machine selects it,
+  the local proxy endpoint is owned by the engine, and enabling
+  System Proxy points WinINet at that engine-owned endpoint —
+  sing-box (or any external core) is never launched for the
+  session. The tray's System Proxy toggle follows the same path.
+- Everything around WinINet is unchanged and still owned by the one
+  TunnelService authority: per-connection capture/apply/verify/
+  restore, idempotent ON/OFF, clean rollback on failed enable,
+  durable crash/stale-ownership recovery, and Main/tray convergence
+  on the same state.
+- **Honest backend identity everywhere**: connection snapshots,
+  the Backends view, tunnel state and the UI label the active
+  backend — `FreeIran Engine` for the first-party path, the
+  external core name for fallback paths. The app-level
+  `EnableSystemProxy` records the real backend of the endpoint it
+  points WinINet at.
+- Unsupported routes are provably unchanged: registry selection
+  still resolves them to Xray/V2Ray/sing-box, with the existing
+  preferred-backend setting and bounded fallback intact.
+
+### TUN — first-party device/control foundation (NOT a dataplane)
+
+- `engine/freecore/tun` establishes the first-party TUN boundary
+  for Phase 2: a `Device` interface with a packet channel boundary,
+  a deterministic FreeIran-owned adapter identity, a
+  transaction/rollback state representation, loop-prevention
+  metadata (the interface/route exclusion facts the future upstream
+  dialer must honor), the Windows Wintun adapter/session lifecycle
+  through the reviewed `golang.zx2c4.com/wintun` binding (MIT), and
+  a read-only Windows IP Helper observation seam over
+  `golang.org/x/sys/windows`.
+- Platform-neutral ownership/identity/rollback/loop-guard decisions
+  are unit-tested on Linux; the Windows-specific layers compile in
+  the windows/amd64 cross-build.
+- **No fake TUN**: nothing in the UI or the tunnel state exposes
+  the first-party TUN as working. The sing-box native TUN backend
+  remains the only runnable TUN dataplane and the explicit
+  selection; the first-party packet dataplane is Phase 2 item 1
+  (ROADMAP.md).
+
+### Version / infrastructure
+
+- VERSION, `internal/version`, `frontend/package.json` and the
+  Windows resource metadata are consistently 0.13.1 (the CI version
+  audit enforces this).
+- Documentation set updated as the Phase 1/Phase 2 contract:
+  README (current product, honest engine status), ROADMAP (the
+  two-phase program with per-item purpose/dependencies/boundary/
+  evidence/fallback/retirement gates), docs/architecture.md (the
+  engine boundary), docs/tun.md (the first-party TUN foundation and
+  its explicit not-a-dataplane status), docs/protocols.md (the
+  first-party capability row with its evidence class),
+  docs/autonomous-connectivity.md (Phase 2 handoff).
+
 ## v0.13.0 — dataset truth (counts/pagination/sorting), source freshness, Main-page system integration, tray controls, Windows icon root-fix
 
 v0.13.0 makes the configuration workspace honest at the real dataset

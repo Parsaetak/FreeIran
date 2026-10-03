@@ -326,7 +326,7 @@ export function SettingsPage() {
   const saveError = lastError ?? "";
 
   return (
-    <div>
+    <div className="page-settings">
       <div className="page-header">
         <div className="page-heading">
           <h1 className="page-title">Settings</h1>
@@ -497,6 +497,7 @@ export function SettingsPage() {
 
           <input
             id="test-samples"
+            className="input-range"
             type="range"
             min={1}
             max={16}
@@ -540,6 +541,7 @@ export function SettingsPage() {
 
           <input
             id="test-max"
+            className="input-range"
             type="range"
             min={5}
             max={200}
@@ -596,6 +598,7 @@ export function SettingsPage() {
 
             <input
               id="racing-candidates"
+              className="input-range"
               type="range"
               min={2}
               max={4}
@@ -811,7 +814,7 @@ export function SettingsPage() {
 
               <input
                 id="local-socks-port"
-                className="input input-compact"
+                className="input input-compact input-port"
                 type="number"
                 min={0}
                 max={65535}
@@ -834,7 +837,7 @@ export function SettingsPage() {
 
               <input
                 id="local-http-port"
-                className="input input-compact"
+                className="input input-compact input-port"
                 type="number"
                 min={0}
                 max={65535}

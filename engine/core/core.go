@@ -220,6 +220,13 @@ type Instance struct {
 	ready    chan struct{}
 	readyErr error
 	once     sync.Once
+
+	// inProcess carries the runtime of an in-process backend
+	// (v0.13.1: the first-party FreeIran Engine). A nil value means
+	// the classic process-backed instance; a non-nil value means
+	// there is NO managed process — PID is 0, Health reports the
+	// in-process session and WaitProcess observes the runtime.
+	inProcess InProcessRuntime
 }
 
 // setState records a lifecycle transition.
@@ -295,7 +302,10 @@ func (i *Instance) markReady(err error) {
 		}
 
 		name := i.coreName()
-		pid := i.proc.PID()
+		pid := 0
+		if i.proc != nil {
+			pid = i.proc.PID()
+		}
 		readyMS := time.Since(i.started).Milliseconds()
 
 		i.mu.Unlock()
@@ -409,11 +419,16 @@ func (i *Instance) Health(ctx context.Context) HealthReport {
 		return HealthReport{}
 	}
 
+	// In-process instances (v0.13.1) have no child process: the
+	// "process" is the FreeIran process itself and the runtime is
+	// alive while the instance is running. The report stays honest:
+	// both axes are still measured (runtime alive + listener ready).
 	report := HealthReport{
-		ProcessAlive: i.proc != nil && i.proc.Running(),
-		Core:         i.CoreName(),
-		State:        i.State(),
-		CheckedAt:    time.Now().UTC(),
+		ProcessAlive: (i.proc != nil && i.proc.Running()) ||
+			(i.inProcess != nil && i.State() == StateRunning),
+		Core:      i.CoreName(),
+		State:     i.State(),
+		CheckedAt: time.Now().UTC(),
 	}
 
 	if i.listen != "" {
@@ -451,7 +466,21 @@ func (i *Instance) Health(ctx context.Context) HealthReport {
 // verdict, or the ctx error on cancellation). Safe for concurrent
 // callers.
 func (i *Instance) WaitProcess(ctx context.Context) error {
-	if i == nil || i.proc == nil {
+	if i == nil {
+		return firerrors.New(firerrors.KindDependencyUnavailable,
+			Subsystem, "wait_process", "nil instance")
+	}
+
+	// In-process runtime (v0.13.1): Wait blocks until the runtime
+	// stops. A clean stop returns nil — the monitor treats that as
+	// "no crash" (the session is being torn down through Close); a
+	// real runtime failure returns its error and the monitor's
+	// crash path fires, exactly like a process exit.
+	if i.inProcess != nil {
+		return i.inProcess.Wait(ctx)
+	}
+
+	if i.proc == nil {
 		// Nothing to wait for: report an immediate, honest verdict.
 		return firerrors.New(firerrors.KindDependencyUnavailable,
 			Subsystem, "wait_process", "no supervised process")
@@ -462,11 +491,15 @@ func (i *Instance) WaitProcess(ctx context.Context) error {
 
 // Alive reports whether the supervised process is still running.
 func (i *Instance) Alive() bool {
-	if i == nil || i.proc == nil {
+	if i == nil {
 		return false
 	}
 
-	return i.proc.Running()
+	if i.inProcess != nil {
+		return i.State() == StateRunning || i.State() == StateStarting
+	}
+
+	return i.proc != nil && i.proc.Running()
 }
 
 // Close stops the core and releases every owned resource: the
@@ -493,7 +526,11 @@ func (i *Instance) Close() error {
 
 	grace := i.opts.WithDefaults().GracePeriod
 
-	if i.proc != nil {
+	if i.inProcess != nil {
+		// In-process runtime: stop it through the same Close
+		// contract (idempotent, bounded).
+		i.inProcess.Stop(grace)
+	} else if i.proc != nil {
 		if err := i.proc.Stop(grace); err != nil {
 			i.mu.Lock()
 			i.stopErr = err
@@ -520,7 +557,10 @@ func (i *Instance) Close() error {
 		}
 	}
 
-	err := i.runCfg.Cleanup()
+	var err error
+	if i.runCfg != nil {
+		err = i.runCfg.Cleanup()
+	}
 
 	i.mu.Lock()
 	i.stopErr = err

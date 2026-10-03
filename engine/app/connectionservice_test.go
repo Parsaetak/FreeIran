@@ -82,14 +82,35 @@ func TestConnectionServiceBackends(t *testing.T) {
 	// Force synchronous discovery.
 	backends := service.RefreshBackends()
 
-	if len(backends) != 3 {
-		t.Fatalf("backend count = %d, want 3 (xray/v2ray/sing-box)", len(backends))
+	// v0.13.1: the first-party FreeIran Engine is a registered
+	// in-process backend beside the three external cores.
+	if len(backends) != 4 {
+		t.Fatalf("backend count = %d, want 4 (freecore/xray/v2ray/sing-box)", len(backends))
 	}
 
 	names := map[string]bool{}
 
 	for _, backend := range backends {
 		names[backend.Name] = true
+
+		if backend.Name == "freecore" {
+			// The in-process engine has no external release to pin:
+			// it must report itself available with the application
+			// version and the honest in-process note instead.
+			if backend.Status != "available" {
+				t.Fatalf("freecore status = %q, want available (compiled in)", backend.Status)
+			}
+
+			if backend.Version == "" {
+				t.Fatal("freecore must report the application version")
+			}
+
+			if backend.Path != "" {
+				t.Fatalf("freecore path = %q, want empty (no binary)", backend.Path)
+			}
+
+			continue
+		}
 
 		if backend.PinnedVersion == "" {
 			t.Fatalf("%s has no pinned version", backend.Name)
@@ -100,7 +121,7 @@ func TestConnectionServiceBackends(t *testing.T) {
 		}
 	}
 
-	if !names["xray"] || !names["v2ray"] || !names["sing-box"] {
+	if !names["freecore"] || !names["xray"] || !names["v2ray"] || !names["sing-box"] {
 		t.Fatalf("missing backends: %v", names)
 	}
 

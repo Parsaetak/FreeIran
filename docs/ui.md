@@ -565,3 +565,34 @@ after external changes, failed enables, disconnects or rebuilds.
 **Settings:** compact numeric inputs (~110 px, paired in two-column
 rows) and a collapsed-by-default Developer section — common settings
 stay near the top and the page reads at 100/125/150/175% DPI.
+
+## v0.13.1 addendum — Settings layout repair, honest backend labels
+
+**Settings (the real rendered-layout fix):** v0.13.0 capped the
+numeric `<input>` boxes (~110 px) but left their CONTAINERS
+oversized — `.settings-row > .field` forced `min-width: 160px` with
+`flex: 1` (the four runtime-log fields wrapped raggedly), the port
+`.field-grid.two` tracks stretched each field to half the form, the
+QuickConnect profile-form ports used a divergent second styling
+path, and the three range sliders were entirely unstyled and
+full-width. v0.13.1 fixes the layout system: numeric fields live in
+compact rows (runtime-log controls share one tight row, port pairs
+size to content), the profile form reuses the shared compact
+treatment, range sliders are styled and width-constrained, number
+spinners are suppressed so compact widths are usable digits, and the
+global numeric-input rule keeps future numeric settings from
+regressing to full-width stretch. Labels, descriptions, warnings,
+keyboard navigation, focus visibility and native input behavior are
+unchanged. Regression coverage: a Settings DOM test pins the compact
+treatment on every numeric control id, and a CSS contract test pins
+the wrapper rules (no `min-width: 160px` on settings-row fields, no
+stretching grid tracks for port pairs, no `flex: 1 1 auto` stretch
+on the sysint port row).
+
+**Honest backend identity:** when the active session runs on the
+FreeIran Engine (first-party path), connection surfaces, the
+Backends view and the system-integration state label it
+`FreeIran Engine`; fallback sessions keep the external core name.
+The Main-page system-integration block, the tray and the Connection
+page all read this from the same authoritative state — there is no
+second label path.

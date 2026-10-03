@@ -1,7 +1,7 @@
 # Protocol × core capability matrix
 
 This document is the truthful statement of what FreeIran can execute
-(current as of v0.12.0). Future adaptive-transport candidates that are
+(current as of v0.13.1). Future adaptive-transport candidates that are
 NOT in this matrix are listed at the bottom and governed by
 [autonomous-connectivity.md](autonomous-connectivity.md). Status
 levels:
@@ -89,6 +89,27 @@ pinned binary with `sing-box check` and smoke startup):
 - WireGuard execution additionally depends on the sing-box build
   tags `with_wireguard`/`with_gvisor` — present in every official
   release binary the core manager installs.
+
+## First-party engine — freecore (v0.13.1)
+
+The FreeIran Engine (`engine/freecore`) is a registered in-process
+backend. Its capability slice is deliberately minimal and stated at
+its own evidence class:
+
+| Capability | Status | Evidence |
+|---|---|---|
+| SOCKS remote (plain TCP, no security layer) | **implemented** — in-process local proxy path (HTTP CONNECT + SOCKS5 inbounds, SOCKS5 outbound, direct) | loopback integration tests with real bytes (parse → forward → close, cancellation, timeout, capability refusal); no external process by construction and by test |
+| HTTP remote (plain TCP, no security layer) | **implemented** — same path with the HTTP CONNECT outbound | same test class |
+| Direct dialing (no remote) | **implemented** — engine-owned dialer | same test class |
+| Everything else (VLESS, VMess, Trojan, Shadowsocks, QUIC family, WireGuard, TLS/REALITY, UDP, proxy chains) | **not supported** — refused by the capability gate; routes to the external cores | `Supports`/`Validate` refusal tests |
+
+The evidence class for freecore rows is Go-test-level (real bytes on
+loopback, no real remote servers in CI), which is STRONGER than
+"parser-only" but does not claim remote-server interop — the Phase 2
+expansion (ROADMAP.md) upgrades each protocol to reference-server
+interop evidence before its capability declaration grows. Inbound
+auth is not implemented (no-auth SOCKS5 only), matching what the
+local endpoint needs for System Proxy.
 
 ## Encrypted Client Hello — ECH (v0.11.0)
 
