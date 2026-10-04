@@ -17,7 +17,7 @@ React/Wails (TypeScript UI → generated bindings)
   → core manager + process supervisor
   → Xray / V2Ray / sing-box (managed, digest-verified cores)
   → proxy chains compiled into ONE core process (v0.12.2)
-  → system proxy (WinINet) / TUN (sing-box native dataplane)
+  → system proxy (WinINet) / TUN (first-party dataplane; sing-box native TUN as the explicit fallback)
 ```
 
 TARGET (PLANNED — none of these components exists yet; see
@@ -56,7 +56,7 @@ Go application orchestration (engine/app)
         ├── engine/core          protocol-core execution boundary
         ├── engine/coremgr       [v0.6] managed core install/update/rollback
         ├── engine/testqueue     [v0.6] bounded-worker test queue
-        ├── engine/tunnel        [v0.6] system proxy (WinINet); TUN via sing-box dataplane (v0.11.3)
+        ├── engine/tunnel        [v0.6] system proxy (WinINet); TUN: first-party dataplane (v0.14+, v0.14.1-corrected) with the sing-box dataplane as explicit fallback
         ├── engine/scheduler     interval scheduling
         ├── engine/native        optional C++ acceleration bridge
         └── system               filesystem, processes, network, platform
@@ -616,7 +616,57 @@ refresh.
 
 ### TUN mode (`engine/tunnel`)
 
-**v0.11.3 — CURRENT DESIGN (v0.11.4-hardened):** TUN is a real Windows
+**v0.14.1 — CURRENT DESIGN (first-party dataplane, v0.14.0-introduced
+and correctness-repaired in v0.14.1):** TUN's PREFERRED authority is
+the FreeIran first-party dataplane — an owned Wintun adapter → the
+FreeIran userspace IP stack (`engine/freecore/netstack`, gVisor
+isolated behind FreeIran interfaces) → real engine sessions → the ONE
+Router → the first-party outbound. The activation is transactional
+with ADDITIVE-ONLY OS mutations (per-address
+`CreateUnicastIpAddressEntry`, per-route `CreateIpForwardEntry2` — the
+family-wide flush primitive is banned; rollback deletes exactly the
+session's entries and foreign addresses survive the full cycle), a
+deterministic collision-free identity checked against BOTH families,
+dual-family covering routes (0.0.0.0/1 + 128.0.0.0/1 and ::/1 +
+8000::/1) whose ownership `Enable` verifies through the LUID-bound
+dual-stack row2 lookup, and an EXPLICIT upstream constraint model:
+upstreams bind to the live-observed PHYSICAL interface (family-correct
+`IP_UNICAST_IF`/`IPV6_UNICAST_IF` encoding, resolved-address family
+selection, `DialContext` end to end) and never to the TUN — missing or
+stale physical/adapter identity fails the activation closed. Wintun
+send errors surface (allocate-then-submit; ring-full and
+terminating-session packets are errors, not silent drops). `Active`
+carries an explicit evidence ladder (Compiled / PlatformReady /
+StackReady / RouteReady / TrafficVerified): TrafficVerified is NEVER
+set by the activation, because no physical-host traffic probe exists —
+a successful activation is a route-ready fact, not a Level-5 traffic
+proof. UDP through the first-party TUN and TUN-originated DNS are
+NOT implemented (fail-closed, honestly stated). Selection prefers the
+first-party dataplane exactly when the capability gate holds;
+otherwise the sing-box path below runs unchanged.
+
+**v0.11.3 — the sing-box FALLBACK DESIGN (v0.11.4-hardened):** the
+managed sing-box core's native TUN inbound remains the explicit
+compatibility authority for configurations beyond the first-party
+capability gate. The activation is transactional and observed (elevation →
+verified core → sing-box-compatible configuration → collision-free
+addressing from the live interface table, FAILING CLOSED when every
+IPv4 candidate collides → launch through the existing supervisor →
+readiness → EXACT session adapter observed (recorded name AND expected
+address on that same interface) → covering route ownership observed
+through the native Windows IP Helper forwarding table → real tunneled
+request verified → upstream route-loop check → Active), routing
+is sing-box's `auto_route` + `strict_route` + `auto_detect_interface`
+(loop prevention, now OBSERVED at activation through the TCP owner
+table), DNS is hijacked into sing-box's resolver (DoH over the proxy;
+system adapter DNS is never mutated) and disable/recovery
+are transactional with honest residual reporting. The Wintun
+dependency ships embedded in the digest-verified sing-box binary
+(verified against the actual 1.14.1 release binary — see docs/tun.md)
+— no downloads, no netsh, no route shell commands, no shell parsing
+anywhere (the v0.11.4 observation layer is lazy IP Helper syscalls,
+read-only and bounded). Full design + evidence
+scope: **docs/tun.md**.
 tunnel mode backed by the managed sing-box core's native TUN inbound
 (Wintun). The activation is transactional and observed (elevation →
 verified core → sing-box-compatible configuration → collision-free
@@ -1211,17 +1261,36 @@ authority anywhere. What changed architecturally:
   dataplane explicitly and exclusively; no second TUN controller, no
   `FreecoreTUNService`, never both dataplanes for one activation.
 - **Routing is an authority, not a placeholder.** `Router` decisions
-  (action/outbound/resolver choice/reason/rule id) are produced once
-  and recorded on the session; protocol code never hides a decision.
-- **DNS is an authority with boundaries.** The bounded caching
-  resolver, the bootstrap resolver (proxy-endpoint names through the
-  constrained dialer) and remote resolution (domains preserved
-  through the first-party outbound) are the only DNS behaviors; the
-  engine never mutates Windows adapter DNS.
-- **Loop prevention is a dialer contract.** Under the first-party
-  TUN, every engine upstream dial is bound to the physical interface
-  observed live (Windows: `IP_UNICAST_IF`/`IPV6_UNICAST_IF`);
-  un-honorable constraints REFUSE the dial (fail-closed).
+  (action/outbound/resolver choice/reason/rule id) are produced ONCE
+  in `routeFlow` — by CONNECT, absolute-form HTTP, SOCKS5 and TUN
+  flows alike (the v0.14.1 repair removed the absolute-form
+  `outboundDecision` bypass) — and recorded on the session
+  (`Session.ResolverChoice` records the DNS decision explicitly);
+  protocol code never hides a decision.
+- **DNS is an authority with boundaries.** For `ResolverChoice=engine`
+  the DIRECT dial of a domain target resolves through the engine's
+  bounded caching resolver (`DirectOutbound.Resolver`; IP literals
+  never consult DNS); for `ResolverChoice=remote` the hostname is
+  preserved for remote-proxy resolution and the decision is recorded
+  on the session; the bootstrap resolver (proxy-endpoint names through
+  the loop-prevention-constrained dialer) stays SEPARATE from
+  destination resolution. TUN-originated DNS hijacking does NOT exist
+  (no first-party DNS packet path is claimed), and the engine never
+  mutates Windows adapter DNS.
+- **Loop prevention is a dialer contract over an explicit
+  constraint model.** Under the first-party TUN, `UpstreamConstraint`
+  carries `TUNInterfaceIndex` (forbidden as a bind target) and
+  `PhysicalInterfaceIndex` (the live-observed bind target); every
+  engine upstream dial binds to the physical interface with the
+  family-correct Windows encoding (IPv4 `IP_UNICAST_IF` network byte
+  order, IPv6 `IPV6_UNICAST_IF` native, family from the resolved
+  destination) through a context-aware seam (`DialContext` end to
+  end); un-honorable constraints REFUSE the dial (fail-closed).
+- **The TUN serving lifetime is explicit.** `ServeFlowsOnly` holds an
+  admission sentinel on the engine's serve WaitGroup for its whole
+  lifetime; flow admission and sentinel release are serialized, so
+  completion can never fire while the dataplane can still deliver
+  flows, and stop/cancel closes admission before draining.
 - **Selection ownership.** The registry prefers the first-party
   engine for capabilities it genuinely supports; an external
   `PreferredBackend` only orders external cores among themselves.

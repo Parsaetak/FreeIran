@@ -11,6 +11,168 @@ are historical: version numbers, core pins and verification claims
 inside them describe the state of that release, not the current
 state.
 
+## v0.14.1 — CI repair and first-party engine correctness
+
+v0.14.1 is a correctness release: it removes the two v0.14.0 CI
+failure causes (a cancellation scheduling race in the Shadowsocks
+suite; secret-scanner findings on deterministic KDF test vectors) and
+repairs every latent defect the audit behind them surfaced across the
+first-party engine, the TUN control plane and the routing/DNS call
+graph. No new capability is claimed anywhere; every claim this entry
+makes is pinned by a test named below.
+
+### The two CI failures (root-caused and fixed)
+
+- **Shadowsocks cancellation was a scheduling bet.**
+  `TestCancellationMidStreamFailsCleanly` slept 100ms and ASSUMED a
+  concurrent 8MiB `Write` had already parked — on a runner where the
+  write was still in flight (loopback buffering), the write completed
+  after cancellation and the test failed with "Write succeeded after
+  cancellation", for all three AEAD methods (CI run 37188707721).
+  The test now proves the park as an OBSERVED FACT against a gated
+  raw transport: cancellation must interrupt the parked write with a
+  `net.ErrClosed`-class transport error, make post-cancel I/O fail
+  fast, and leave no watcher goroutine behind. No sleeps as
+  synchronization.
+- **Deterministic KDF vectors looked like secrets to the scanner.**
+  Gitleaks 8.24.3 flagged four `generic-api-key` findings in
+  `kdf_test.go` (lines 23/25/27/28 of the v0.14.0 tree): the
+  EVP_BytesToKey vectors were stored as hex STRINGS with
+  password-shaped names, plus `key=<hex>` in comments. The vectors are
+  now typed byte-array literals preserving the exact expected bytes,
+  with the scanner-facing representation gone and the independent
+  in-test KDF verification untouched. `.gitleaks.toml` was NOT
+  weakened (verified: `gitleaks dir .` over the fixed tree reports no
+  findings; the security job's `generic-api-key` rule stays fully
+  active).
+
+### Shadowsocks (first-party protocol slice)
+
+- **`net.Conn` concurrency contract made real (item K).**
+  `chunkReader` and `chunkWriter` own their mutable framing state
+  (nonce counters, scratch buffers, payload windows) behind
+  per-direction mutexes: concurrent Reads serialize, concurrent
+  Writes serialize, Read and Write stay parallel, and Close/cancel
+  racing I/O is safe. Pinned by `TestTunnelConcurrentIODirections`
+  and `TestTunnelCloseRacesIO` under `-race`.
+- **Cancellation is observable inside the tunnel.** `tunnelConn`
+  carries a fail-fast closed flag set BEFORE the raw transport close;
+  the context watcher (`watchLoop`) is a named, leak-free goroutine
+  whose exit is observable (`watchDone`). Blocked I/O is interrupted
+  by the raw close; post-cancel I/O fails fast with a
+  `net.ErrClosed`-wrapped error; transport errors are preserved
+  (`errors.Is`-able).
+- **Half-close is a documented DECISION, not an accident (item L).**
+  `CloseWrite` is deliberately not reachable on the tunnel: the only
+  wire form a client half-close could take (an implicit zero-length
+  chunk) is not interoperable with the reference implementation, and
+  faking one is forbidden. The relay's own `CloseWrite` to the plain
+  TCP target is unchanged and separately proven
+  (`TestRelayHalfClosePropagatesToTarget`,
+  `TestTunnelHalfCloseExplicitlyUnsupported`).
+
+### Engine: one Router, one resolver authority, one lifetime
+
+- **HTTP absolute-form no longer bypasses the Router (item B).** The
+  plain-HTTP proxy path went `beginSession → outboundDecision`,
+  skipping routing entirely. Absolute-form now flows through the SAME
+  `routeFlow` pipeline as CONNECT, SOCKS5 and TUN: one Router
+  decision, one session, one dial point. BLOCK decisions refuse with
+  403-class, DIRECT decisions dial directly, PROXY goes through the
+  configured remote. Pinned by
+  `TestHTTPAbsoluteFormUsesCentralRouter` (a block-all policy must
+  produce 403 and zero origin contact).
+- **The DNS authority is real (item J).** `Options.Resolver` is now
+  the engine's actual authority: a DIRECT decision on a domain target
+  resolves through the engine resolver before dialing
+  (`DirectOutbound.Resolver`), IP literals never consult DNS, and
+  proxied flows preserve the hostname for remote-side resolution with
+  the choice RECORDED on the session (`Session.ResolverChoice`).
+  Bootstrap resolution for the TUN's own upstream needs stays a
+  separate, loop-prevention-constrained concern
+  (`BootstrapResolver`). No Windows adapter DNS is touched anywhere.
+  Pinned by `TestDirectDecisionUsesEngineResolver`.
+- **`ServeFlowsOnly` cannot complete before its service lifetime ends
+  (item A).** The v0.14.0 completion monitor waited on a WaitGroup
+  that could still be at zero while the TUN dataplane was fully
+  capable of delivering flows (and `HandleTUNFlow`'s `Add` raced that
+  zero-counter `Wait`). The TUN path now holds an explicit admission
+  SENTINEL taken synchronously before the monitor starts; flow
+  admission and sentinel release are serialized under one mutex;
+  stop/cancel closes admission first, owned flows drain, and
+  completion signals exactly once. Pinned by
+  `TestServeFlowsOnlyLifetimeCompletesOnlyAfterStop` and
+  `TestServeFlowsOnlyCancelClosesAdmission`.
+
+### Windows TUN control plane
+
+- **The upstream constraint model says what it means (item C).** The
+  single `ExcludedInterfaceIndex` field was documented as "the TUN to
+  avoid" while every producer filled it with the PHYSICAL index the
+  dialer then bound TO — including `LoopGuard.Constraint()`, which
+  could bind upstream traffic TO THE TUN. The model is now explicit:
+  `TUNInterfaceIndex` (forbidden as a bind target) and
+  `PhysicalInterfaceIndex` (the bind target), with `Validate()`
+  refusing missing-physical and physical==TUN fail-closed. The
+  activation fails closed when no physical interface can be observed.
+- **Cancellation reaches the Windows dialer (item D).** The binding
+  seam is `func(ctx, network, address)` end to end and the Windows
+  implementation uses `net.Dialer.DialContext` — a cancelled upstream
+  dial stops dialing. Pinned by
+  `TestBoundDialerContextReachesBinding` (a deterministically blocked
+  bind observes the caller's cancellation; no sleeps).
+- **`IP_UNICAST_IF` / `IPV6_UNICAST_IF` are now encoded correctly and
+  differently (item E).** v0.14.0 applied one byte-order treatment to
+  both families and inferred the family from hostname text (a domain
+  resolving to v6 got the v4 option). v0.14.1: IPv4
+  `IP_UNICAST_IF` carries the interface index in NETWORK byte order,
+  IPv6 `IPV6_UNICAST_IF` carries it NATIVE, and the family comes from
+  the RESOLVED destination address (or an explicit `tcp4`/`tcp6`) —
+  an ambiguous family fails closed. Pinned by
+  `TestUnicastSocketOptionIPv4Literal`, `TestUnicastSocketOptionIPv6Literal`,
+  `TestEffectiveFamily`, `TestUnicastSocketOptionHostnameAmbiguousRefused`
+  (Windows test surface).
+- **Wintun send errors surface (item F).** `WritePacket` ignored the
+  ring entirely: `session.SendPacket` cannot report failure, so
+  ring-full (`ERROR_BUFFER_OVERFLOW`) and terminating-session
+  (`ERROR_HANDLE_EOF`) packets were dropped while the code returned
+  nil. The send path now allocates through `AllocateSendPacket`
+  first (where Wintun reports those errors), copies, then submits:
+  one attempt, no unbounded retry, no silent loss, no fake success
+  counter. Pinned by the `TestWintun*` suite (Windows).
+- **Additive IP mutation only (item G).** The activation used
+  `SetIPAddressesForFamily`, which FLUSHES the whole address family
+  on the interface before adding — destroying unrelated user-created
+  addresses. The activation primitive is now `AddIPAddress`
+  (`CreateUnicastIpAddressEntry`) per address, with rollback deleting
+  exactly the entries the session created
+  (`DeleteUnicastIpAddressEntry`), through a testable additive
+  `IPMutator` seam. Pinned by
+  `TestApplyInterfaceConfigPreservesForeignState` (pre-existing
+  foreign address → enable → still exists → disable → still exists)
+  and `TestApplyInterfaceConfigMidBatchFailureRollsBackExactly`.
+- **IPv6 covering routes are real (item H).** v0.14.0 assigned an
+  IPv6 address to the first-party TUN but installed IPv4 covering
+  routes only — the dataplane could not honestly claim dual-stack
+  routing. v0.14.1 installs the IPv6 split-default pair (`::/1` +
+  `8000::/1`) through the same additive, exact-rollback IP Helper
+  authority, verifies ownership of EVERY covered route (both
+  families) through the dual-stack `MIB_IPFORWARD_ROW2` lookup bound
+  to the TUN's LUID (`VerifyRoutesOwnedByLUID`), and the address-plan
+  collision check now covers both families.
+
+### TUN evidence semantics
+
+- **`Active` no longer exceeds its evidence (item I).** The
+  first-party backend's `TUNSnapshot` carries an explicit evidence
+  ladder — Compiled / PlatformReady / StackReady / RouteReady /
+  TrafficVerified — where every rung is earned by an actual gate and
+  `TrafficVerified` is NEVER set by the activation (no physical
+  traffic probe exists, and unit/in-memory evidence must never be
+  promoted into Windows runtime evidence). The managed sing-box TUN
+  remains the explicit compatibility fallback whenever the first-party
+  capability gate does not hold.
+
 ## v0.14.0 — Phase 2: first FreeIran-owned TUN dataplane, real routing/DNS, first encrypted protocol
 
 v0.14.0 crosses the architectural boundary ROADMAP.md defines for

@@ -3,6 +3,7 @@ package freecore
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -90,6 +91,14 @@ func (h *HTTPConnectInbound) serveConnect(ctx context.Context, conn net.Conn, re
 // with Connection: close semantics: the forwarded request forces
 // close so the relayed response ends the connection deterministically
 // (documented; proxy clients re-open per request).
+//
+// v0.14.1: the request goes through the SAME central pipeline as
+// CONNECT, SOCKS5 and TUN flows (routeFlow — ONE Router authority, ONE
+// session registry). The Router's decision decides everything: BLOCK
+// refuses with 403-class, DIRECT dials the target directly, PROXY
+// sends it through the configured remote. No hidden alternate routing
+// path exists anymore (the pre-0.14.1 absolute-form shortcut straight
+// to outboundDecision() bypassed the Router and is gone).
 func (h *HTTPConnectInbound) serveAbsolute(ctx context.Context, conn net.Conn, reader *bufio.Reader, request *http.Request) {
 	target := request.URL.Host
 	if target == "" {
@@ -116,48 +125,43 @@ func (h *HTTPConnectInbound) serveAbsolute(ctx context.Context, conn net.Conn, r
 
 	_ = conn.SetDeadline(time.Time{})
 
-	session, sctx, end, err := h.Engine.beginSession(ctx)
-	if err != nil {
-		writeSimpleResponse(conn, http.StatusServiceUnavailable, "freecore: session limit reached")
+	// Bounded request-body/header behavior is preserved: the request
+	// head was already read through the DefaultHeaderLimit-bounded
+	// reader, and any pipelined bytes past the head are relayed first
+	// through the same MultiReader as before.
+	clientReader := io.MultiReader(reader, conn)
 
-		return
-	}
+	h.Engine.routeFlow(ctx, conn, h.Name(), target, clientReader,
+		// prepareUpstream: rewrite to origin-form, drop hop-by-hop
+		// headers, force close, and hand the request to the outbound —
+		// after the Router decision, after the dial, before the relay.
+		func(_ context.Context, upstream net.Conn) error {
+			request.URL.Scheme = ""
+			request.URL.Host = ""
+			request.Header.Del("Proxy-Authorization")
+			request.Header.Del("Proxy-Connection")
+			request.Header.Set("Connection", "close")
 
-	defer end()
+			if err := request.Write(upstream); err != nil {
+				return fmt.Errorf("freecore: upstream write failed: %w", err)
+			}
 
-	session.Inbound = h.Name()
-	session.Target = target
-
-	outbound, decision := h.Engine.outboundDecision()
-	session.Outbound = decision.Outbound
-
-	upstream, err := outbound.Dial(sctx, target)
-	if err != nil {
-		writeSimpleResponse(conn, http.StatusBadGateway, "freecore: upstream unavailable")
-
-		return
-	}
-
-	defer func() { _ = upstream.Close() }()
-
-	// Rewrite to origin-form, drop hop-by-hop headers, force close.
-	request.URL.Scheme = ""
-	request.URL.Host = ""
-	request.Header.Del("Proxy-Authorization")
-	request.Header.Del("Proxy-Connection")
-	request.Header.Set("Connection", "close")
-
-	if err := request.Write(upstream); err != nil {
-		writeSimpleResponse(conn, http.StatusBadGateway, "freecore: upstream write failed")
-
-		return
-	}
-
-	// Relay the exchange: any request-body bytes the client already
-	// pipelined past the head (buffered in reader) plus everything
-	// that follows flow upstream; the response flows back verbatim.
-	// The forced Connection: close ends the response deterministically.
-	relay(sctx, session, conn, io.MultiReader(reader, conn), upstream)
+			return nil
+		},
+		nil, // no CONNECT-style success reply: the response flows from the upstream verbatim
+		func(err error) {
+			switch {
+			case errors.Is(err, errRouteBlocked):
+				writeSimpleResponse(conn, http.StatusForbidden, "freecore: destination blocked by routing policy")
+			case errors.Is(err, errSessionLimit):
+				writeSimpleResponse(conn, http.StatusServiceUnavailable, "freecore: session limit reached")
+			case errors.Is(err, errDraining):
+				writeSimpleResponse(conn, http.StatusServiceUnavailable, "freecore: engine is shutting down")
+			default:
+				writeSimpleResponse(conn, http.StatusBadGateway, "freecore: upstream unavailable")
+			}
+		},
+	)
 }
 
 // writeSimpleResponse writes a minimal response and closes the

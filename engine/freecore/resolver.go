@@ -343,20 +343,22 @@ func classifyFailure(err error) FailureClass {
 // bootstrap DNS path uses so its queries can never enter the FreeIran
 // TUN (DNS bootstrap → physical interface → upstream, never TUN →
 // resolver → TUN). binding is the platform hook (nil = system default
-// routing, correct when no TUN owns the default route).
-func ConstrainedDialer(binding func(network, address string) (net.Conn, error)) Dialer {
+// routing, correct when no TUN owns the default route). The hook
+// receives the caller's CONTEXT and must honor it: a bootstrap query
+// cancelled by shutdown must not keep dialing.
+func ConstrainedDialer(binding func(ctx context.Context, network, address string) (net.Conn, error)) Dialer {
 	return constrainedDialer{binding: binding, timeout: DefaultDialTimeout}
 }
 
 type constrainedDialer struct {
-	binding func(network, address string) (net.Conn, error)
+	binding func(ctx context.Context, network, address string) (net.Conn, error)
 	timeout time.Duration
 }
 
 // DialContext implements Dialer.
 func (d constrainedDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	if d.binding != nil {
-		conn, err := d.binding(network, address)
+		conn, err := d.binding(ctx, network, address)
 		if err != nil {
 			return nil, fmt.Errorf("freecore.dns: constrained dial %s: %w", address, err)
 		}

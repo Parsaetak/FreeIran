@@ -1,7 +1,9 @@
 # Protocol × core capability matrix
 
 This document is the truthful statement of what FreeIran can execute
-(current as of v0.13.1). Future adaptive-transport candidates that are
+(current as of v0.14.1 — the first-party matrix is unchanged from
+v0.14.0; v0.14.1 corrected the engine's correctness, not its
+capability set). Future adaptive-transport candidates that are
 NOT in this matrix are listed at the bottom and governed by
 [autonomous-connectivity.md](autonomous-connectivity.md). Status
 levels:

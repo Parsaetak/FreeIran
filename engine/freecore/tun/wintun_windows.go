@@ -27,6 +27,11 @@ type wintunDevice struct {
 	adapter  *wintun.Adapter
 	session  wintun.Session
 	readDone chan struct{}
+
+	// sendPacket is the session send seam. Production: allocate from
+	// the ring, copy, submit. Tests inject a fake to pin the error
+	// contract (ring-full, terminating session) without a real adapter.
+	sendPacket func(data []byte) error
 }
 
 // OpenDevice creates (or reopens) the FreeIran adapter and starts the
@@ -60,6 +65,8 @@ func OpenDevice(ctx context.Context, identity Identity, opts DeviceOptions) (Dev
 		session:    session,
 		readDone:   make(chan struct{}),
 	}
+
+	device.sendPacket = sessionSendPacket(session)
 
 	go device.readLoop(ctx)
 
@@ -121,7 +128,33 @@ func (d *wintunDevice) readLoop(ctx context.Context) {
 	}
 }
 
-// WritePacket implements Device.
+// sessionSendPacket is the production send path over one Wintun
+// session. The Wintun API reports send-allocation failures through
+// AllocateSendPacket — ERROR_HANDLE_EOF when the session is
+// terminating and ERROR_BUFFER_OVERFLOW when the ring cannot hold the
+// packet — and WintunSendPacket itself is void. The old code called
+// SendPacket (which allocates internally and SILENTLY DROPS on
+// failure) and returned nil unconditionally: packets were lost while
+// the counters claimed delivery. Allocate first, copy, then submit:
+// every failure surfaces, one attempt, no unbounded retry, no fake
+// success counter.
+func sessionSendPacket(session wintun.Session) func(data []byte) error {
+	return func(data []byte) error {
+		packet, err := session.AllocateSendPacket(len(data))
+		if err != nil {
+			return fmt.Errorf("freecore.tun: send packet (%d bytes): %w", len(data), err)
+		}
+
+		copy(packet, data)
+		session.SendPacket(packet)
+
+		return nil
+	}
+}
+
+// WritePacket implements Device. Bounded behavior: exactly one send
+// attempt, real errors surfaced (closed device, ring full, session
+// terminating), no silent packet loss, no synthetic success counter.
 func (d *wintunDevice) WritePacket(p Packet) error {
 	select {
 	case <-d.closed:
@@ -133,7 +166,9 @@ func (d *wintunDevice) WritePacket(p Packet) error {
 		return errors.New("freecore.tun: empty packet")
 	}
 
-	d.session.SendPacket(p.Data)
+	if err := d.sendPacket(p.Data); err != nil {
+		return err
+	}
 
 	return nil
 }

@@ -3,6 +3,7 @@ package freecore
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"io"
 	"net"
 	"net/netip"
@@ -375,18 +376,43 @@ func TestTUNDataplaneIPv6ThroughSOCKS5Remote(t *testing.T) {
 
 // --- Phase D: loop prevention dialer (deterministic parts) -------------------
 
-// TestUpstreamDialerRefusesWithoutHonorableConstraint proves the
-// fail-closed rule: when the platform cannot honor the exclusion
-// (non-Windows in this environment), the upstream dial is REFUSED —
-// never silently unbound, because an unbound upstream is a loop risk.
-func TestUpstreamDialerRefusesWithoutHonorableConstraint(t *testing.T) {
-	constraint := &tun.UpstreamConstraint{ExcludedInterfaceIndex: 9}
+// TestUpstreamDialerFailsClosedOnBrokenConstraints proves the
+// fail-closed rules of the constraint model:
+//
+//   - a constraint without a physical interface refuses every dial;
+//   - a constraint whose physical interface IS the TUN refuses every
+//     dial (the loop refusal — upstream traffic must never bind to
+//     the TUN);
+//   - when the platform cannot honor the binding (non-Windows in this
+//     environment), the dial is refused — never silently unbound.
+func TestUpstreamDialerFailsClosedOnBrokenConstraints(t *testing.T) {
+	cases := []struct {
+		name       string
+		constraint *tun.UpstreamConstraint
+	}{
+		{
+			name:       "missing physical interface",
+			constraint: &tun.UpstreamConstraint{TUNInterfaceIndex: 7},
+		},
+		{
+			name:       "physical interface is the TUN",
+			constraint: &tun.UpstreamConstraint{TUNInterfaceIndex: 7, PhysicalInterfaceIndex: 7},
+		},
+		{
+			name:       "platform cannot bind",
+			constraint: &tun.UpstreamConstraint{TUNInterfaceIndex: 7, PhysicalInterfaceIndex: 9},
+		},
+	}
 
-	dialer := NewUpstreamDialer(constraint)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dialer := NewUpstreamDialer(tc.constraint)
 
-	_, err := dialer.DialContext(context.Background(), "tcp", "127.0.0.1:1")
-	if err == nil {
-		t.Fatal("upstream dial succeeded without an honorable constraint — loop risk")
+			_, err := dialer.DialContext(context.Background(), "tcp", "127.0.0.1:1")
+			if err == nil {
+				t.Fatal("upstream dial succeeded on a broken constraint — loop risk")
+			}
+		})
 	}
 }
 
@@ -422,15 +448,17 @@ func TestUpstreamDialerPlainWithoutTUN(t *testing.T) {
 // observation. The hook contract is exercised with a stub observation
 // window (the Windows implementation is compile-verified; the
 // decision logic here is platform-neutral).
-func TestUpstreamDialerObservesLiveInterface(t *testing.T) {
+func TestUpstreamDialerBindsPhysicalNeverTUN(t *testing.T) {
 	var bound atomic.Int32
 
 	original := upstreamBinding
-	upstreamBinding = func(index int) func(network, address string) (net.Conn, error) {
-		return func(network, address string) (net.Conn, error) {
+	upstreamBinding = func(index int) func(ctx context.Context, network, address string) (net.Conn, error) {
+		return func(ctx context.Context, network, address string) (net.Conn, error) {
 			bound.Store(int32(index))
 
-			return net.Dial(network, address)
+			var d net.Dialer
+
+			return d.DialContext(ctx, network, address)
 		}
 	}
 
@@ -450,7 +478,12 @@ func TestUpstreamDialerObservesLiveInterface(t *testing.T) {
 		}
 	}()
 
-	dialer := NewUpstreamDialer(&tun.UpstreamConstraint{ExcludedInterfaceIndex: 42})
+	// The constraint names BOTH facts: the TUN (7) is recorded and
+	// forbidden; the PHYSICAL interface (42) is the bind target.
+	dialer := NewUpstreamDialer(&tun.UpstreamConstraint{
+		TUNInterfaceIndex:      7,
+		PhysicalInterfaceIndex: 42,
+	})
 
 	conn, err := dialer.DialContext(context.Background(), "tcp", ln.Addr().String())
 	if err != nil {
@@ -460,6 +493,118 @@ func TestUpstreamDialerObservesLiveInterface(t *testing.T) {
 	_ = conn.Close()
 
 	if got := bound.Load(); got != 42 {
-		t.Fatalf("binding observed index %d, want 42 (the constraint's exclusion target)", got)
+		t.Fatalf("binding bound index %d, want 42 (the PHYSICAL interface)", got)
+	}
+}
+
+// TestUpstreamDialerInterfaceChangeDetected pins the change-detection
+// rule: the binding hook is consulted PER DIAL with the constraint's
+// physical index, so a stale constraint that no longer matches the
+// live platform is detectable — the Windows verify gate re-observes
+// (adapter + physical presence), and the dial seam never re-derives an
+// index behind the caller's back. Here: a changed constraint object
+// changes the bound index on the next dial — a silent misbind is
+// impossible because the index always comes from the constraint.
+func TestUpstreamDialerInterfaceChangeDetected(t *testing.T) {
+	var bound atomic.Int32
+
+	original := upstreamBinding
+	upstreamBinding = func(index int) func(ctx context.Context, network, address string) (net.Conn, error) {
+		return func(ctx context.Context, network, address string) (net.Conn, error) {
+			bound.Store(int32(index))
+
+			var d net.Dialer
+
+			return d.DialContext(ctx, network, address)
+		}
+	}
+
+	t.Cleanup(func() { upstreamBinding = original })
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	defer func() { _ = ln.Close() }()
+
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+
+			_ = c.Close()
+		}
+	}()
+
+	// Activation 1: physical interface 42.
+	dialer := NewUpstreamDialer(&tun.UpstreamConstraint{TUNInterfaceIndex: 7, PhysicalInterfaceIndex: 42})
+	conn, err := dialer.DialContext(context.Background(), "tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("bound dial (first): %v", err)
+	}
+
+	_ = conn.Close()
+
+	// The OS re-observes (interface changed): a NEW constraint carries
+	// the new physical index 51. The dialer must follow the constraint,
+	// never a cached or textually-derived index.
+	dialer = NewUpstreamDialer(&tun.UpstreamConstraint{TUNInterfaceIndex: 7, PhysicalInterfaceIndex: 51})
+	conn, err = dialer.DialContext(context.Background(), "tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("bound dial (re-observed): %v", err)
+	}
+
+	_ = conn.Close()
+
+	if got := bound.Load(); got != 51 {
+		t.Fatalf("binding bound index %d after re-observation, want 51 (silent misbind)", got)
+	}
+}
+
+// TestBoundDialerContextReachesBinding is the deterministic
+// blocked-connect cancellation proof for the binding seam: the binding
+// parks until the caller's context is done, and DialContext must fail
+// with the caller's cancellation — the context reaches THROUGH the
+// seam (the pre-0.14.1 seam dropped it). No sleeps: the parked signal
+// is the synchronization.
+func TestBoundDialerContextReachesBinding(t *testing.T) {
+	entered := make(chan struct{})
+
+	binding := func(ctx context.Context, _, _ string) (net.Conn, error) {
+		close(entered)
+
+		<-ctx.Done()
+
+		return nil, ctx.Err()
+	}
+
+	dialer := &boundDialer{binding: binding, timeout: time.Minute}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := dialer.DialContext(ctx, "tcp", "198.51.100.1:443")
+		errCh <- err
+	}()
+
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("binding never entered")
+	}
+
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("blocked dial error = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("blocked dial did not observe cancellation")
 	}
 }

@@ -41,7 +41,15 @@ type Options struct {
 	// stalls cannot pin an engine goroutine.
 	HandshakeTimeout time.Duration
 
-	// Resolver overrides the DNS seam (tests; default system).
+	// Resolver is the engine's DNS authority (the bounded CachingResolver
+	// over the configured upstream). It is the ONE authority the traffic
+	// path consults: direct/domain dials resolve through it when the
+	// Router's decision selects the engine choice; proxied flows preserve
+	// the hostname for remote-side resolution (recorded on the session as
+	// ResolverChoice="remote"); bootstrap resolution for the TUN's own
+	// upstream needs stays a separate, loop-prevention-constrained
+	// concern (BootstrapResolver). nil means the system resolver backs
+	// the seam.
 	Resolver Resolver
 
 	// Router overrides the routing authority (tests; default
@@ -89,6 +97,15 @@ type Engine struct {
 	// sessions drained — the Phase 2 hardening contract — instead of
 	// merely "listeners closed, sessions still winding down".
 	serveWG sync.WaitGroup
+
+	// tunMu guards the TUN flow-admission lifetime (ServeFlowsOnly).
+	// The WaitGroup Add/Wait lifetime rule forbids Add with a positive
+	// delta racing a Wait that may already observe a zero counter, so
+	// the TUN path holds a long-lived admission SENTINEL: serveWG is
+	// ≥1 exactly while admission is open, and HandleTUNFlow's Add is
+	// serialized against the sentinel's release under tunMu.
+	tunMu        sync.Mutex
+	tunAdmission bool
 
 	stopOnce    sync.Once
 	stoppedOnce sync.Once
@@ -175,6 +192,14 @@ func (e *Engine) Run(ctx context.Context) error {
 	engineCtx := e.ctx
 	e.stateMu.Unlock()
 
+	// The TUN flow-admission sentinel — one long-lived serveWG
+	// reference taken SYNCHRONOUSLY, before the completion monitor
+	// starts, so Wait can never observe a zero counter while the
+	// engine is running. (Run and ServeFlowsOnly share the same
+	// lifetime rule: while the engine runs, HandleTUNFlow may take
+	// flow references; when it stops, admission closes first.)
+	e.openTUNAdmission()
+
 	e.serveWG.Add(1)
 
 	go e.acceptLoop(engineCtx, mixed, true)
@@ -196,6 +221,8 @@ func (e *Engine) Run(ctx context.Context) error {
 		// Parent cancellation is a legitimate shutdown path: it owns the
 		// same drain gate as Stop, so the accept loops classify their
 		// listener close as a clean shutdown, not an engine failure.
+		// TUN admission closes under the same lifetime gate.
+		e.closeTUNAdmission()
 		e.registry.beginDrain()
 		e.closeListeners()
 	}()
@@ -235,14 +262,38 @@ func (e *Engine) markStopped() {
 // first-party TUN mode: flows arrive through HandleTUNFlow (the
 // userspace IP stack), not through the mixed port. Shutdown semantics
 // are identical to Run (Stop/Wait/drain).
+//
+// Lifetime contract (the WaitGroup Add/Wait rule, made explicit):
+//
+//	ServeFlowsOnly
+//	  → the TUN admission sentinel takes ONE serveWG reference before
+//	    the completion monitor starts (the counter is never observed
+//	    at zero while admission is open);
+//	  → HandleTUNFlow may add/remove flow references under the same
+//	    admission gate;
+//	  → stop/cancel closes admission (no new flows, sentinel released);
+//	  → all owned flows drain (their own serveWG references);
+//	  → completion is signaled exactly once.
 func (e *Engine) ServeFlowsOnly(ctx context.Context) error {
 	e.stateMu.Lock()
 	e.ctx, e.cancel = context.WithCancel(ctx)
 	engineCtx := e.ctx
 	e.stateMu.Unlock()
 
+	// The long-lived TUN serving lifetime reference. It is taken
+	// SYNCHRONOUSLY, before the completion monitor goroutine starts,
+	// so the monitor's Wait can never observe a zero counter while
+	// TUN flow admission is active — the exact bug class that made the
+	// engine appear stopped while the TUN dataplane was still capable
+	// of delivering flows.
+	e.openTUNAdmission()
+
 	go func() {
 		<-engineCtx.Done()
+		// Admission closes FIRST (under the same mutex the admission
+		// check runs under, so no Add can race the sentinel's release),
+		// then the drain gate refuses the session registry's stragglers.
+		e.closeTUNAdmission()
 		e.registry.beginDrain()
 	}()
 
@@ -262,6 +313,57 @@ func (e *Engine) ServeFlowsOnly(ctx context.Context) error {
 	}()
 
 	return nil
+}
+
+// openTUNAdmission takes the long-lived admission sentinel. Idempotent:
+// a second serving call does not double-count the lifetime reference.
+func (e *Engine) openTUNAdmission() {
+	e.tunMu.Lock()
+	defer e.tunMu.Unlock()
+
+	if e.tunAdmission {
+		return
+	}
+
+	e.tunAdmission = true
+	e.serveWG.Add(1)
+}
+
+// admitTUNFlow is the serialized admission gate of HandleTUNFlow: it
+// takes one serveWG reference IFF the TUN serving lifetime is open.
+// Because the sentinel guarantees the counter is ≥1 while admission
+// is open, this Add can never race a zero-counter Wait; because
+// admission closes under the same mutex before the sentinel is
+// released, no Add can land after the lifetime ends.
+func (e *Engine) admitTUNFlow() bool {
+	e.tunMu.Lock()
+	defer e.tunMu.Unlock()
+
+	if !e.tunAdmission {
+		return false
+	}
+
+	e.serveWG.Add(1)
+
+	return true
+}
+
+// closeTUNAdmission ends the TUN serving lifetime: admission flips
+// closed and the sentinel reference is released. After this returns,
+// HandleTUNFlow refuses flows and the completion monitor fires once
+// the last accepted flow drains.
+func (e *Engine) closeTUNAdmission() {
+	e.tunMu.Lock()
+	if !e.tunAdmission {
+		e.tunMu.Unlock()
+
+		return
+	}
+
+	e.tunAdmission = false
+	e.tunMu.Unlock()
+
+	e.serveWG.Done()
 }
 
 // acceptLoop serves one listener until it closes.
@@ -405,6 +507,10 @@ func (e *Engine) Stop(grace time.Duration) {
 		// noisy — refusing first is the honest contract.
 		e.registry.beginDrain()
 
+		// Close the TUN flow admission under the same gate the admission
+		// check runs under (no flow Add can race the sentinel release).
+		e.closeTUNAdmission()
+
 		e.stateMu.Lock()
 		cancel := e.cancel
 		e.stateMu.Unlock()
@@ -487,7 +593,8 @@ func (e *Engine) beginSession(ctx context.Context) (*Session, context.Context, f
 }
 
 // outboundDecision returns the default outbound and the router
-// decision for this engine run.
+// decision for diagnostics probes (a decision WITHOUT a target —
+// never the traffic path; every real flow goes through routeFlow).
 func (e *Engine) outboundDecision() (Outbound, RouterDecision) {
 	return e.outbound, e.router.Decide(context.Background(), "")
 }
@@ -502,14 +609,25 @@ func (e *Engine) outboundDecision() (Outbound, RouterDecision) {
 // each handler in its own goroutine, so the flow's lifetime is owned by
 // exactly one goroutine from accept to close (no double-spawn, no
 // handler racing its own teardown).
+//
+// Admission is gated by the TUN serving lifetime: once the engine stops
+// (admission closed), incoming flows are refused — never accepted into
+// a winding-down registry, never counted against a closed lifetime.
 func (e *Engine) HandleTUNFlow(ctx context.Context, conn net.Conn, target string) {
-	e.serveWG.Add(1)
+	if !e.admitTUNFlow() {
+		// The TUN serving lifetime has ended: the honest surface is a
+		// closed flow (the stack retries nothing; a refused flow is
+		// fail-closed, never a silent escape).
+		_ = conn.Close()
+
+		return
+	}
 
 	defer e.serveWG.Done()
 
 	defer func() { _ = conn.Close() }()
 
-	e.routeFlow(ctx, conn, "tun", target, nil, nil)
+	e.routeFlow(ctx, conn, "tun", target, nil, nil, nil, nil)
 }
 
 // routeFlow is the decision + dial + relay pipeline shared by the
@@ -517,10 +635,17 @@ func (e *Engine) HandleTUNFlow(ctx context.Context, conn net.Conn, target string
 // authority — no protocol implementation hides a routing decision).
 // The optional callbacks carry the inbound-specific success/refusal
 // replies; the TUN path passes none (a flow that fails just closes).
+// clientReader (nil = conn) overrides the client side of the relay
+// (the absolute-form HTTP path feeds buffered request bytes first);
+// prepareUpstream (nil = none) runs protocol setup on the established
+// upstream BEFORE the relay starts — still inside the SAME decision,
+// session and dial pipeline, with no alternate routing path.
 func (e *Engine) routeFlow(
 	ctx context.Context,
 	conn net.Conn,
 	inbound, target string,
+	clientReader io.Reader,
+	prepareUpstream func(ctx context.Context, upstream net.Conn) error,
 	onSuccess func(upstreamLocal net.Addr) error,
 	onRefusal func(error),
 ) {
@@ -539,12 +664,20 @@ func (e *Engine) routeFlow(
 
 		return
 	case ActionDirect:
-		outbound = &DirectOutbound{Timeout: DefaultDialTimeout}
+		// DIRECT is a real routing decision, and the resolver choice on
+		// it is honored: domains on a direct path resolve through the
+		// engine's DNS authority (Options.Resolver — the bounded
+		// CachingResolver when the run configures one), never through a
+		// hidden second resolver. IP literals skip resolution inside
+		// DirectOutbound. Proxied flows keep the hostname for the remote
+		// to resolve (decision.ResolverChoice == "remote", recorded on
+		// the session below).
+		outbound = &DirectOutbound{Timeout: DefaultDialTimeout, Resolver: e.resolver}
 	default:
 		outbound = e.outbound
 	}
 
-	e.pipeOutbound(ctx, conn, inbound, target, outbound, decision, onSuccess, onRefusal)
+	e.pipeOutbound(ctx, conn, inbound, target, clientReader, prepareUpstream, outbound, decision, onSuccess, onRefusal)
 }
 
 // errRouteBlocked is the internal refusal for BLOCK decisions. It is
@@ -562,7 +695,7 @@ func (e *Engine) pipe(
 	onSuccess func(upstreamLocal net.Addr) error,
 	onRefusal func(error),
 ) {
-	e.routeFlow(ctx, conn, inbound, target, onSuccess, onRefusal)
+	e.routeFlow(ctx, conn, inbound, target, nil, nil, onSuccess, onRefusal)
 }
 
 // pipeOutbound runs the pipeline through ONE explicit outbound and
@@ -571,6 +704,8 @@ func (e *Engine) pipeOutbound(
 	ctx context.Context,
 	conn net.Conn,
 	inbound, target string,
+	clientReader io.Reader,
+	prepareUpstream func(ctx context.Context, upstream net.Conn) error,
 	outbound Outbound,
 	decision RouterDecision,
 	onSuccess func(upstreamLocal net.Addr) error,
@@ -590,6 +725,7 @@ func (e *Engine) pipeOutbound(
 	session.Inbound = inbound
 	session.Target = target
 	session.Outbound = decision.Outbound
+	session.ResolverChoice = decision.ResolverChoice
 
 	upstream, err := outbound.Dial(sctx, target)
 	if err != nil {
@@ -614,13 +750,31 @@ func (e *Engine) pipeOutbound(
 
 	defer func() { _ = upstream.Close() }()
 
+	// Protocol preparation (absolute-form request rewrite/forward)
+	// runs INSIDE the pipeline, after the dial, before the relay — it
+	// never carries a routing decision of its own.
+	if prepareUpstream != nil {
+		if err := prepareUpstream(sctx, upstream); err != nil {
+			if onRefusal != nil {
+				onRefusal(err)
+			}
+
+			return
+		}
+	}
+
 	if onSuccess != nil {
 		if err := onSuccess(upstream.LocalAddr()); err != nil {
 			return
 		}
 	}
 
-	relay(sctx, session, conn, conn, upstream)
+	clientSide := io.Reader(conn)
+	if clientReader != nil {
+		clientSide = clientReader
+	}
+
+	relay(sctx, session, conn, clientSide, upstream)
 }
 
 // relay copies both directions with honest accounting until one side

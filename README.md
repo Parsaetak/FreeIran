@@ -14,19 +14,28 @@ configurations.
 managed installation, multi-level node discovery, Ping/URL test modes
 with measured ranking, verified-connection engine with racing,
 environment intelligence, system proxy mode (WinINet), functional
-Windows TUN mode through the managed sing-box core's native TUN
-dataplane, unified adaptive memory control and kernel-level process
-supervision, evidence-based failure classification with
+Windows TUN mode (the FreeIran first-party dataplane where the
+capability gate holds, the managed sing-box core's native TUN as the
+explicit fallback), unified adaptive memory control and kernel-level
+process supervision, evidence-based failure classification with
 transport-agile route selection, proxy chains compiled into a single
 core process, and schema-verified ECH support through sing-box.
-v0.14.0 crosses the Phase 2 boundary of the first-party engine
-transition (ROADMAP.md): the FreeIran Engine now carries supported
+v0.14.0 crossed the Phase 2 boundary of the first-party engine
+transition (ROADMAP.md): the FreeIran Engine carries supported
 SOCKS/HTTP/Shadowsocks-AEAD routes entirely in-process (System Proxy
-needs no external core for them), owns its first TUN dataplane (Wintun
+needs no external core for them) and owns its TUN dataplane (Wintun
 → FreeIran userspace IP stack → engine sessions → real routing/DNS
 authorities → first-party outbound, with loop-prevention-bound
-upstreams), and the external cores remain the explicit compatibility
-fallback for everything else (history lives in CHANGELOG.md).
+upstreams). v0.14.1 is a correctness release on top of that boundary:
+CI-failure root causes removed, Shadowsocks `net.Conn` concurrency
+and cancellation made deterministic, HTTP absolute-form routed through
+the central Router, the DNS authority actually wired, the TUN
+admission lifetime made explicit, the Windows control plane (socket
+binding byte order, context cancellation, Wintun send errors,
+additive-only IP mutation, dual-family covering routes) corrected —
+with `Active` evidence never exceeding what the activation gates
+prove. The external cores remain the explicit compatibility fallback
+for everything else (history lives in CHANGELOG.md).
 
 ## What FreeIran is
 
@@ -48,7 +57,7 @@ as a future-work contract (PLANNED; not implemented).
 
 ## Current verified capabilities
 
-- **First-party engine (v0.14.0: real dataplane).** The FreeIran
+- **First-party engine (v0.14.1: correctness-hardened real dataplane).** The FreeIran
   Engine (`engine/freecore`) is a registered in-process backend:
   SOCKS, HTTP and Shadowsocks-AEAD (aes-128-gcm, aes-256-gcm,
   chacha20-ietf-poly1305 — reference-interop evidenced) remote
@@ -78,9 +87,10 @@ as a future-work contract (PLANNED; not implemented).
   local endpoint, which for first-party-supported routes is owned by
   the FreeIran Engine (no external core launched) and for every
   other route by the selected external core — and Windows TUN mode
-  through the managed sing-box core's native TUN dataplane
-  (transactional, observed activation; see
-  [docs/tun.md](docs/tun.md)).
+  through the first-party dataplane (transactional, additively
+  mutated, evidence-laddered activation; the managed sing-box native
+  TUN remains the explicit fallback) — see
+  [docs/tun.md](docs/tun.md).
 - Proxy Chains (v0.12.2): an ordered hop list over EXISTING
   configurations (2–4 hops), built and validated in the
   Configurations workspace, persisted in the collections sidecar and

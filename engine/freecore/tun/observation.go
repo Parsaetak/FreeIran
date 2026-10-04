@@ -78,11 +78,21 @@ func (o Observation) DefaultInterfaceHints(excludeIndex uint32) []InterfaceFact 
 }
 
 // CoveringRoutesHeld reports whether the TUN interface owns every
-// covered prefix (the route-observation verdict the Phase 2
-// activation gate needs: a probe that succeeds while the default
-// route still points elsewhere is not evidence).
+// covered prefix it can verify against the OBSERVED table. The
+// observation's forwarding table is IPv4 (GetIpForwardTable), so only
+// the IPv4 covered prefixes are verified here — IPv6 ownership is
+// verified through the dual-stack row2 LUID lookup
+// (VerifyRoutesOwnedByLUID) by the activation gate. A covered prefix
+// of a family this observation cannot see is skipped here, never
+// invented as held.
 func (o Observation) CoveringRoutesHeld(guard LoopGuard) bool {
+	checked := 0
+
 	for _, covered := range guard.CoveredRoutes {
+		if covered.Addr().Is6() {
+			continue // not observable in the IPv4 table; verified via LUID
+		}
+
 		held := false
 
 		for _, route := range o.Routes {
@@ -96,9 +106,11 @@ func (o Observation) CoveringRoutesHeld(guard LoopGuard) bool {
 		if !held {
 			return false
 		}
+
+		checked++
 	}
 
-	return len(guard.CoveredRoutes) > 0
+	return checked > 0
 }
 
 // FreshWithin reports whether the observation is recent enough to

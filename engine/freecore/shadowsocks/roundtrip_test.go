@@ -9,6 +9,7 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -386,32 +387,20 @@ type dummyAddr struct{}
 func (dummyAddr) Network() string { return "dummy" }
 func (dummyAddr) String() string  { return "dummy" }
 
-// TestClientTunnelHalfCloseContractCanary pins the CURRENT behavior of
-// the client tunnel regarding half-close.
-//
-// RECORDED IMPLEMENTATION GAP (worklog Task 8-a, reported, not fixed
-// here): tunnelConn (engine/freecore/shadowsocks/client.go:175-182)
-// embeds the net.Conn INTERFACE, so only net.Conn's methods are promoted
-// onto *tunnelConn — CloseWrite is NOT part of net.Conn, the promoted
-// method set lacks it, and a runtime assertion fails. The type doc
-// (client.go:168-172) explicitly promises the opposite: "Close, CloseWrite
-// and deadline handling reach the underlying transport (CloseWrite is
-// what makes half-close propagate through the tunnel)". Consequence: a
-// client of DialTCP cannot TCP-half-close the tunnel; end-of-stream can
-// only be signaled by closing the whole connection (the reference
-// implementation has the identical limitation, so wire compatibility is
-// unaffected).
-//
-// This canary asserts the current state so the suite stays green; if the
-// gap is ever fixed, this test will fail — at that point replace it with
-// a real end-to-end half-close assertion (the relay-side counterpart is
-// TestRelayHalfClosePropagatesToTarget).
-func TestClientTunnelHalfCloseContractCanary(t *testing.T) {
+// TestTunnelHalfCloseExplicitlyUnsupported pins the half-close
+// contract decision (the RECORDED IMPLEMENTATION GAP is now a
+// DOCUMENTED DECISION): CloseWrite is NOT reachable on the tunnel —
+// half-close through the AEAD framing is unsupported because the
+// reference implementation cannot parse the only wire form it could
+// take (an implicit zero-length chunk). The relay's own CloseWrite to
+// the TARGET (plain TCP, not the tunnel) is separately proven by
+// TestRelayHalfClosePropagatesToTarget.
+func TestTunnelHalfCloseExplicitlyUnsupported(t *testing.T) {
 	echo := newEchoServer(t)
-	server := newSSServer(t, MethodAES128GCM, "canary-secret")
+	server := newSSServer(t, MethodAES128GCM, "half-close-decision")
 
 	client, err := ClientConfig{
-		Host: "127.0.0.1", Port: mustPort(server.addr), Password: "canary-secret", Method: MethodAES128GCM,
+		Host: "127.0.0.1", Port: mustPort(server.addr), Password: "half-close-decision", Method: MethodAES128GCM,
 	}.DialTCP(context.Background(), echo.addr)
 	if err != nil {
 		t.Fatalf("DialTCP: %v", err)
@@ -419,9 +408,9 @@ func TestClientTunnelHalfCloseContractCanary(t *testing.T) {
 	defer client.Close()
 
 	if _, ok := client.(interface{ CloseWrite() error }); ok {
-		t.Fatal("CloseWrite is now reachable on the tunnel conn — the RECORDED IMPLEMENTATION GAP " +
-			"has been fixed: replace this canary with a real end-to-end half-close test " +
-			"(client CloseWrite → echo EOF → full response + io.EOF)")
+		t.Fatal("CloseWrite became reachable on the tunnel conn — if half-close support was " +
+			"added deliberately, it must be proven interoperable with go-shadowsocks2 first; " +
+			"replace this test with a real interop-backed half-close test")
 	}
 }
 
@@ -466,58 +455,368 @@ func TestWrongPasswordFailsClosed(t *testing.T) {
 	t.Fatalf("server recorded no error within the deadline")
 }
 
-// TestCancellationMidStreamFailsCleanly: canceling the dial context
-// mid-stream must unblock pending I/O with errors, produce no panic, and
-// let both the client and the server fixture wind down cleanly.
+// gatedRawConn is a raw transport whose write side accepts a fixed
+// number of writes and then PARKS every further write until closed —
+// the deterministic model of a TCP socket whose send buffer is full.
+// It turns "the write has parked" from a timing assumption into an
+// observed fact (the parked channel), which is what makes the
+// cancellation test sleep-free and scheduling-race-free. Reads park
+// the same way (signaled through readParked): the read direction is
+// idle in these tests, and a parked Read is the observable proof of
+// Close-racing-Read.
+type gatedRawConn struct {
+	mu         sync.Mutex
+	allowed    int           // writes that succeed immediately (the handshake occupies one)
+	parked     chan struct{} // signaled when a write actually parks
+	readParked chan struct{} // signaled when a read actually parks
+	closed     chan struct{}
+	closeOnce  sync.Once
+
+	// parkedErr is returned by every parked operation when the close
+	// won the race. It wraps net.ErrClosed like a real TCP close, so
+	// the test classifies it with errors.Is.
+	parkedErr error
+}
+
+func newGatedRawConn(handshakeWrites int) *gatedRawConn {
+	return &gatedRawConn{
+		allowed:    handshakeWrites,
+		parked:     make(chan struct{}, 1),
+		readParked: make(chan struct{}, 1),
+		closed:     make(chan struct{}),
+		parkedErr:  fmt.Errorf("gated transport closed: %w", net.ErrClosed),
+	}
+}
+
+func (g *gatedRawConn) Write(p []byte) (int, error) {
+	g.mu.Lock()
+	if g.allowed > 0 {
+		g.allowed--
+		g.mu.Unlock()
+
+		return len(p), nil
+	}
+	g.mu.Unlock()
+
+	// Park: signal the observer, then wait for the close. One signal is
+	// enough — each test parks exactly one writer at a time.
+	select {
+	case g.parked <- struct{}{}:
+	default:
+	}
+
+	<-g.closed
+
+	return 0, g.parkedErr
+}
+
+func (g *gatedRawConn) Read(p []byte) (int, error) {
+	select {
+	case <-g.closed:
+		return 0, g.parkedErr
+	default:
+	}
+
+	select {
+	case g.readParked <- struct{}{}:
+	default:
+	}
+
+	<-g.closed // reads block until close — the read direction is idle here
+
+	return 0, g.parkedErr
+}
+
+func (g *gatedRawConn) Close() error {
+	g.closeOnce.Do(func() { close(g.closed) })
+
+	return nil
+}
+
+func (g *gatedRawConn) LocalAddr() net.Addr              { return dummyAddr{} }
+func (g *gatedRawConn) RemoteAddr() net.Addr             { return dummyAddr{} }
+func (g *gatedRawConn) SetDeadline(time.Time) error      { return nil }
+func (g *gatedRawConn) SetReadDeadline(time.Time) error  { return nil }
+func (g *gatedRawConn) SetWriteDeadline(time.Time) error { return nil }
+
+// gatedDialer adapts a pre-built raw conn to the ClientConfig.Dialer
+// seam (DialTCP then performs the handshake over it).
+type gatedDialer struct{ conn net.Conn }
+
+func (d gatedDialer) DialContext(context.Context, string, string) (net.Conn, error) {
+	return d.conn, nil
+}
+
+// TestCancellationMidStreamFailsCleanly is the deterministic
+// cancellation proof. The raw transport parks the payload write for
+// CERTAIN (the parked signal is an observed fact, not a timing bet),
+// so the test never demands that an in-flight Write lose a scheduling
+// race: cancellation must
+//
+//  1. be observed internally (markClosed before the raw close);
+//  2. interrupt blocked I/O (the parked write returns a real
+//     transport error);
+//  3. fail post-cancel I/O fast (net.ErrClosed-class errors);
+//  4. leave no goroutine behind (the watcher exits).
+//
+// No sleeps as synchronization, no artificial timeouts in the path
+// under test.
 func TestCancellationMidStreamFailsCleanly(t *testing.T) {
 	for _, method := range []Method{MethodAES128GCM, MethodAES256GCM, MethodChaCha20IETFPoly1305} {
 		t.Run(string(method), func(t *testing.T) {
-			echo := newEchoServer(t)
-			server := newSSServer(t, method, "cancel-secret")
+			raw := newGatedRawConn(2) // two writes succeed: the salt + the handshake target chunk
 
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 
 			client, err := ClientConfig{
-				Host: "127.0.0.1", Port: mustPort(server.addr), Password: "cancel-secret", Method: method,
-			}.DialTCP(ctx, echo.addr)
+				Host: "127.0.0.1", Port: 1, Password: "cancel-secret", Method: method,
+				Dialer: gatedDialer{conn: raw},
+			}.DialTCP(ctx, "198.51.100.1:443")
 			if err != nil {
-				t.Fatalf("DialTCP: %v", err)
+				t.Fatalf("DialTCP over the gated transport: %v", err)
 			}
-			defer client.Close()
 
-			// Fill every buffer until writes block: 8MiB with no reader.
-			payload := deterministicPayload(8<<20, 99)
+			tunnel, ok := client.(*tunnelConn)
+			if !ok {
+				t.Fatalf("DialTCP returned %T, want *tunnelConn", client)
+			}
+
+			// Park a write for certain, then cancel.
+			payload := deterministicPayload(1<<20, 99)
 			blocked := make(chan error, 1)
 			go func() {
 				_, err := client.Write(payload)
 				blocked <- err
 			}()
 
-			time.Sleep(100 * time.Millisecond) // let the write park
+			select {
+			case <-raw.parked:
+			case err := <-blocked:
+				t.Fatalf("write returned before parking (must park for certain): %v", err)
+			case <-time.After(10 * time.Second):
+				t.Fatal("write never parked")
+			}
+
 			cancel()
 
 			// The parked Write must fail with a transport error promptly.
 			select {
 			case err := <-blocked:
 				if err == nil {
-					t.Fatal("Write succeeded after cancellation")
+					t.Fatal("parked Write returned nil after cancellation")
+				}
+				if !errors.Is(err, net.ErrClosed) {
+					t.Errorf("parked Write error = %v, want a net.ErrClosed-class transport error", err)
 				}
 			case <-time.After(10 * time.Second):
 				t.Fatal("Write still parked 10s after cancellation (cancellation leaked)")
 			}
 
-			// Subsequent I/O must fail closed as well.
-			if _, err := client.Write([]byte("after cancel")); err == nil {
-				t.Error("Write after cancellation returned no error")
+			// Cancellation was observed: post-cancel I/O fails FAST and
+			// closed (the fast-fail flag is set before the raw close, so
+			// once the parked write observed its error this is already
+			// guaranteed — no race, no polling).
+			if _, err := client.Write([]byte("after cancel")); !errors.Is(err, net.ErrClosed) {
+				t.Errorf("Write after cancellation = %v, want net.ErrClosed-class", err)
 			}
-			if _, err := client.Read(make([]byte, 16)); err == nil {
-				t.Error("Read after cancellation returned no error")
+			if _, err := client.Read(make([]byte, 16)); !errors.Is(err, net.ErrClosed) {
+				t.Errorf("Read after cancellation = %v, want net.ErrClosed-class", err)
 			}
 			if err := client.Close(); err != nil {
 				t.Errorf("Close after cancellation: %v", err)
 			}
+
+			// No goroutine leak: the watcher exited (watchDone is closed
+			// by watchLoop's defer — a direct, deterministic observation).
+			select {
+			case <-tunnel.watchDone:
+			case <-time.After(5 * time.Second):
+				t.Fatal("cancellation watcher goroutine did not exit after cancellation")
+			}
 		})
+	}
+}
+
+// TestTunnelConcurrentIODirections pins the net.Conn concurrency
+// contract of the framing: concurrent Writes serialize safely (whole
+// chunks, no nonce corruption — the server would fail authentication
+// otherwise), concurrent Reads serialize safely, and both directions
+// run in parallel. The total-byte assertion is exact; any framing
+// corruption or interleaved chunk surfaces as an auth/read error. Run
+// under -race this is the direct proof.
+func TestTunnelConcurrentIODirections(t *testing.T) {
+	method := MethodAES128GCM
+	echo := newEchoServer(t)
+	server := newSSServer(t, method, "concurrent-io-secret")
+
+	client, err := ClientConfig{
+		Host: "127.0.0.1", Port: mustPort(server.addr), Password: "concurrent-io-secret", Method: method,
+	}.DialTCP(context.Background(), echo.addr)
+	if err != nil {
+		t.Fatalf("DialTCP: %v", err)
+	}
+
+	payload := deterministicPayload(64<<10, 42)
+
+	const writers = 8
+
+	// Eight writers and eight readers: both directions of the SAME
+	// tunnel under concurrency — the framing locks are what keep the
+	// chunks whole and the nonce streams correct.
+
+	// Concurrent readers start FIRST and drain the echoed direction
+	// while the writers run — the same structure the byte-path round
+	// trip uses. Each reader reads into its OWN buffer; the shared
+	// exact total is the completeness proof, and every read error
+	// (auth, framing, panic) fails the test. Concurrent Reads on one
+	// direction are exactly what the framing lock must serialize.
+	wantTotal := writers * len(payload)
+	var total atomic.Int64
+	var readWG sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		readWG.Add(1)
+		go func() {
+			defer readWG.Done()
+
+			buf := make([]byte, 16<<10)
+			for {
+				n, err := client.Read(buf)
+				if n > 0 {
+					total.Add(int64(n))
+				}
+				if err != nil {
+					// Any read error ends this reader; the final total
+					// assertion below decides whether data was lost (an
+					// early error with the total short is a real failure;
+					// the post-drain Close unblocks parked readers).
+					return
+				}
+			}
+		}()
+	}
+
+	// Concurrent writers hammer the other direction. The framing lock
+	// makes their chunks whole; the server's AEAD Open is the
+	// integrity oracle. Readers drain concurrently, so the writers
+	// cannot deadlock on full kernel buffers.
+	var wg sync.WaitGroup
+	errs := make(chan error, writers)
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			if _, err := client.Write(payload); err != nil {
+				errs <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("concurrent Write: %v", err)
+	}
+
+	// Bounded drain window: the echo has exactly wantTotal bytes in
+	// flight; if they are not all back in time the test fails honestly
+	// (and Close below unblocks every parked reader).
+	drainDeadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(drainDeadline) {
+		if total.Load() >= int64(wantTotal) {
+			break
+		}
+
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	_ = client.Close() // unblock any parked reader
+	readWG.Wait()
+
+	if got := total.Load(); got != int64(wantTotal) {
+		t.Fatalf("echoed bytes = %d, want exactly %d (lost or duplicated data through concurrent reads)", got, wantTotal)
+	}
+
+	// The server must have recorded a clean outcome for every
+	// connection — no authentication failure, no relay error.
+	for i, err := range server.waitConns(1, 5*time.Second) {
+		if err != nil {
+			t.Errorf("ServeConn conn %d returned %v under concurrent writes", i, err)
+		}
+	}
+}
+
+// TestTunnelCloseRacesIO proves Close racing parked Read AND Write is
+// safe and observed: both directions park against the gated transport
+// (observed facts), Close fires, and every parked and subsequent
+// operation fails with a net.ErrClosed-class error — no panic, no
+// hang, no false success. No sleeps as synchronization: the park
+// signals ARE the synchronization.
+func TestTunnelCloseRacesIO(t *testing.T) {
+	raw := newGatedRawConn(2) // salt + handshake write succeed; everything else parks
+
+	client, err := ClientConfig{
+		Host: "127.0.0.1", Port: 1, Password: "close-race-secret", Method: MethodAES128GCM,
+		Dialer: gatedDialer{conn: raw},
+	}.DialTCP(context.Background(), "198.51.100.1:443")
+	if err != nil {
+		t.Fatalf("DialTCP: %v", err)
+	}
+
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := client.Write(deterministicPayload(1<<20, 7))
+		writeDone <- err
+	}()
+
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := client.Read(make([]byte, 4096))
+		readDone <- err
+	}()
+
+	// Both directions must actually park before Close — observed, not
+	// assumed.
+	select {
+	case <-raw.parked:
+	case err := <-writeDone:
+		t.Fatalf("write returned before parking: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("write never parked")
+	}
+
+	select {
+	case <-raw.readParked:
+	case err := <-readDone:
+		t.Fatalf("read returned before parking: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("read never parked")
+	}
+
+	if err := client.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	for i := 0; i < 2; i++ {
+		select {
+		case err := <-writeDone:
+			if err == nil || !errors.Is(err, net.ErrClosed) {
+				t.Errorf("parked Write = %v, want net.ErrClosed-class", err)
+			}
+		case err := <-readDone:
+			if err == nil || !errors.Is(err, net.ErrClosed) {
+				t.Errorf("parked Read = %v, want net.ErrClosed-class", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("parked I/O did not unblock after Close")
+		}
+	}
+
+	if _, err := client.Write([]byte("x")); !errors.Is(err, net.ErrClosed) {
+		t.Errorf("Write after Close = %v, want net.ErrClosed-class", err)
+	}
+	if _, err := client.Read(make([]byte, 16)); !errors.Is(err, net.ErrClosed) {
+		t.Errorf("Read after Close = %v, want net.ErrClosed-class", err)
 	}
 }
 

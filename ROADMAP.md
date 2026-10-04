@@ -127,6 +127,15 @@ Router with decision objects), **item 4's Shadowsocks AEAD TCP slice**
 the dataplane required. UDP through the first-party TUN is explicitly
 NOT implemented (fail-closed classification) and remains planned.
 
+v0.14.1 corrected the shipped slices instead of widening them: the
+resolver authority is actually wired into direct dials (item 2's
+semantic completion), HTTP absolute-form joined the ONE Router path
+(item 3's call-graph completion), the Windows TUN control plane got
+its dual-family covering routes and byte-order-correct interface
+binding (item 1's control-plane correction), and `Active` evidence
+was re-scoped to the route-ready rung (the physical Windows runtime
+evidence rung stays OWED — it is not claimed by this release).
+
 ### 1. FreeIran TUN packet dataplane (complete Phase 1's foundation)
 
 - Purpose: route OS packets through the first-party engine —

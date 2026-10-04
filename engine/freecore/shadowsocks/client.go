@@ -8,6 +8,7 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -166,13 +167,29 @@ func (c ClientConfig) dial(ctx context.Context) (net.Conn, error) {
 	return conn, nil
 }
 
-// tunnelConn is the plaintext view of an AEAD tunnel. It embeds the raw
-// net.Conn so Close, CloseWrite and deadline handling reach the
-// underlying transport (CloseWrite is what makes half-close propagate
-// through the tunnel), while Read/Write go through the framing layer.
-// Read and Write have fully separate state (separate nonce counters and
-// buffers), so the standard one-reader-one-writer goroutine pattern is
-// safe.
+// tunnelConn is the plaintext view of an AEAD tunnel. It embeds the
+// raw net.Conn so Close and deadline handling reach the underlying
+// transport, while Read/Write go through the framing layer.
+//
+// Concurrency contract (net.Conn permits concurrent method calls):
+//
+//   - concurrent Reads / concurrent Writes are serialized per direction
+//     by the framing locks (chunkReader.mu / chunkWriter.mu); the two
+//     directions keep fully separate state and stay parallel;
+//   - Close racing Read/Write is safe: the close flag is atomic, and
+//     closing the raw transport unblocks parked I/O with the real
+//     transport error;
+//   - cancellation (ctx done) marks the tunnel closed and closes the
+//     raw transport, so blocked I/O is interrupted and new I/O fails
+//     fast with a net.ErrClosed-wrapped error.
+//
+// Half-close: deliberately UNSUPPORTED. CloseWrite is not reachable on
+// a tunnelConn, and no zero-length chunk is ever emitted implicitly —
+// the reference implementation (go-shadowsocks2) cannot parse one
+// (it would block waiting for a payload tag that never arrives).
+// End-of-stream is signaled by closing the connection, exactly like
+// the reference implementation; the read side still honors an explicit
+// zero-length chunk per the spec.
 type tunnelConn struct {
 	net.Conn
 	reader tunnelReader // client: lazy peer-salt init; server: concrete chunk reader
@@ -180,7 +197,24 @@ type tunnelConn struct {
 
 	watchStop chan struct{}
 	watchOnce sync.Once
+	closeOnce sync.Once
+
+	// watchDone is closed when the cancellation watcher returns —
+	// the observable proof that the watcher never outlives the
+	// connection it guards (the leak assertion in tests).
+	watchDone chan struct{}
+
+	// done is set before the raw transport is closed (Close and the
+	// cancellation watcher both go through markClosed). Once set, new
+	// Read/Write calls fail fast; in-flight I/O is interrupted by the
+	// raw transport close.
+	done atomic.Bool
 }
+
+// errTunnelClosed is the post-close/post-cancel fast-fail error. It
+// wraps net.ErrClosed so callers can classify it with errors.Is like
+// any other closed-transport failure.
+var errTunnelClosed = fmt.Errorf("shadowsocks: tunnel closed: %w", net.ErrClosed)
 
 // tunnelReader is the read half of the framing: the concrete chunkReader
 // (server side, salt already consumed) or the lazy saltedReader (client
@@ -189,8 +223,27 @@ type tunnelReader interface {
 	Read(p []byte) (int, error)
 }
 
-func (c *tunnelConn) Read(p []byte) (int, error)  { return c.reader.Read(p) }
-func (c *tunnelConn) Write(p []byte) (int, error) { return c.writer.Write(p) }
+func (c *tunnelConn) Read(p []byte) (int, error) {
+	if c.done.Load() {
+		return 0, errTunnelClosed
+	}
+
+	return c.reader.Read(p)
+}
+
+func (c *tunnelConn) Write(p []byte) (int, error) {
+	if c.done.Load() {
+		return 0, errTunnelClosed
+	}
+
+	return c.writer.Write(p)
+}
+
+// markClosed flips the fast-fail flag BEFORE the raw transport is
+// closed: once any observer sees the raw close (a returned I/O error),
+// new operations are already guaranteed to fail fast instead of racing
+// the teardown.
+func (c *tunnelConn) markClosed() { c.done.Store(true) }
 
 // Close releases the tunnel and stops the context watcher. It is
 // honest-idempotent: closing an ALREADY-closed transport (the ctx
@@ -198,7 +251,10 @@ func (c *tunnelConn) Write(p []byte) (int, error) { return c.writer.Write(p) }
 // "use of closed connection" noise; any other close error is real and
 // surfaces.
 func (c *tunnelConn) Close() error {
-	c.stopWatch()
+	c.closeOnce.Do(func() {
+		c.markClosed()
+		c.stopWatch()
+	})
 
 	if err := c.Conn.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
 		return err
@@ -207,23 +263,34 @@ func (c *tunnelConn) Close() error {
 	return nil
 }
 
-// watch unblocks any pending tunnel I/O when ctx is done by closing the
-// raw transport. Closing (rather than a deadline) is deliberate: a
-// canceled tunnel must also make the PEER's relay notice immediately,
-// which only a real close propagates. The watcher stops itself when the
-// tunnel is closed so it never outlives the connection it guards.
+// watch unblocks any pending tunnel I/O when ctx is done: the watcher
+// marks the tunnel closed and closes the raw transport, which
+// interrupts every blocked Read/Write with the real transport error.
+// Closing (rather than a deadline) is deliberate: a canceled tunnel
+// must also make the PEER's relay notice immediately, which only a
+// real close propagates. The watcher stops itself when the tunnel is
+// closed so it never outlives the connection it guards.
 func (c *tunnelConn) watch(ctx context.Context) {
 	if ctx == nil || ctx.Done() == nil {
 		return // nothing to watch; Close still cleans up
 	}
 	c.watchStop = make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = c.Conn.Close()
-		case <-c.watchStop:
-		}
-	}()
+	c.watchDone = make(chan struct{})
+	go c.watchLoop(ctx)
+}
+
+// watchLoop is the watcher body. It exits when the tunnel closes OR
+// ctx is done, closing watchDone on the way out — one goroutine per
+// tunnel, never a leak.
+func (c *tunnelConn) watchLoop(ctx context.Context) {
+	defer close(c.watchDone)
+
+	select {
+	case <-ctx.Done():
+		c.markClosed()
+		_ = c.Conn.Close()
+	case <-c.watchStop:
+	}
 }
 
 func (c *tunnelConn) stopWatch() {

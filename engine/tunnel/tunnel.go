@@ -229,16 +229,28 @@ type TUNSnapshot struct {
 	RequiresElevation bool     `json:"requires_elevation"`
 
 	// Backend names the TUN dataplane ("sing-box native TUN
-	// (Wintun)").
+	// (Wintun)" / the first-party label).
 	Backend string `json:"backend,omitempty"`
 
-	// Active reports an OBSERVED, VERIFIED session (interface +
-	// tunneled request), never merely a started process.
+	// Active reports a session whose ACTIVATION GATES passed. What
+	// those gates prove is the evidence ladder below — Active alone
+	// must never be read as Level-5 application-traffic proof.
 	Active bool `json:"active"`
 
 	// Status is the lifecycle state surfaced to the UI:
 	// off | starting | active | stopping | failed.
 	Status string `json:"status,omitempty"`
+
+	// Evidence ladder (v0.14.1) — each rung is earned by an actual
+	// gate, never assumed. A generic CI host (no elevated physical TUN
+	// runtime) can at most reach the rungs its environment earns;
+	// TrafficVerified requires a real runtime traffic probe and is
+	// NEVER fabricated from unit/in-memory evidence.
+	Compiled        bool `json:"evidence_compiled"`
+	PlatformReady   bool `json:"evidence_platform_ready"`
+	StackReady      bool `json:"evidence_stack_ready"`
+	RouteReady      bool `json:"evidence_route_ready"`
+	TrafficVerified bool `json:"evidence_traffic_verified"`
 
 	// Core is the sing-box version running the dataplane.
 	Core string `json:"core,omitempty"`

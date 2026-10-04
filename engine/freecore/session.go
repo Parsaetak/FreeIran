@@ -12,11 +12,16 @@ import (
 // bounded lifecycle, cancellation and accounting — there is no
 // per-request state outside a session.
 type Session struct {
-	ID        uint64
-	Inbound   string // "socks5" | "http-connect"
-	Target    string // destination host:port (credential-free)
-	Outbound  string // outbound the router selected
-	StartedAt time.Time
+	ID       uint64
+	Inbound  string // "socks5" | "http-connect" | "tun"
+	Target   string // destination host:port (credential-free)
+	Outbound string // outbound the router selected
+	// ResolverChoice records the DNS authority the Router decided for
+	// this flow: "remote" (the hostname is preserved for the remote
+	// proxy to resolve), "engine" (resolved by the engine's DNS
+	// authority on the direct path) or "none" (IP literal / blocked).
+	ResolverChoice string
+	StartedAt      time.Time
 
 	cancel  context.CancelFunc
 	done    chan struct{}

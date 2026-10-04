@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 
 	"golang.org/x/crypto/chacha20poly1305"
 )
@@ -118,6 +119,13 @@ type chunkReader struct {
 	lenBuf  [lengthFieldSize + tagSize]byte
 	buf     []byte // full-size wire buffer for the current chunk (allocated once)
 	payload []byte // decrypted bytes of the current chunk not yet consumed
+
+	// mu serializes the mutable framing state above. net.Conn permits
+	// concurrent Read calls; without the lock two concurrent Reads
+	// would corrupt the nonce counter and interleave chunk assembly.
+	// The write direction has its own lock (chunkWriter.mu): Read and
+	// Write stay parallel by design.
+	mu sync.Mutex
 }
 
 func newChunkReader(src io.Reader, aead cipher.AEAD) *chunkReader {
@@ -130,10 +138,15 @@ func newChunkReader(src io.Reader, aead cipher.AEAD) *chunkReader {
 }
 
 // Read returns decrypted plaintext. It never returns (n>0, err).
+// Safe for concurrent calls: the framing state is mutated under r.mu.
 func (r *chunkReader) Read(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	for {
 		if len(r.payload) > 0 {
 			n := copy(p, r.payload)
@@ -199,6 +212,12 @@ type chunkWriter struct {
 	aead  cipher.AEAD
 	nonce [nonceSize]byte
 	buf   []byte // scratch: length piece (2+tag) + payload piece (max+tag)
+
+	// mu serializes chunk assembly: net.Conn permits concurrent Write
+	// calls, and the nonce counter plus the shared scratch buffer are
+	// only correct when one chunk is sealed and handed to the wire at
+	// a time. The read direction (chunkReader.mu) stays independent.
+	mu sync.Mutex
 }
 
 func newChunkWriter(dst io.Writer, aead cipher.AEAD) *chunkWriter {
@@ -211,11 +230,17 @@ func newChunkWriter(dst io.Writer, aead cipher.AEAD) *chunkWriter {
 
 // Write encrypts p as one or more chunks. An empty p is a no-op: the
 // spec's zero-length end-of-stream chunk is deliberately NOT emitted
-// implicitly, because the reference implementation (go-shadowsocks2)
-// cannot parse one — it would try to read a 16-byte payload tag that
-// does not exist. End-of-stream is signaled by closing the connection;
-// the reader still honors an explicit zero-length chunk per the spec.
+// implicitly (and CloseWrite is NOT wired to one — half-close through
+// the tunnel is unsupported, see tunnelConn), because the reference
+// implementation (go-shadowsocks2) cannot parse one — it would try to
+// read a 16-byte payload tag that does not exist. End-of-stream is
+// signaled by closing the connection; the reader still honors an
+// explicit zero-length chunk per the spec.
+// Safe for concurrent calls: chunks are assembled under w.mu.
 func (w *chunkWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
 	written := 0
 	for len(p) > 0 {
 		size := len(p)

@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -35,6 +36,14 @@ type DirectOutbound struct {
 	// Timeout bounds one dial (zero = DefaultDialTimeout).
 	Timeout time.Duration
 
+	// Resolver is the engine's DNS authority for direct paths. When
+	// set, a DOMAIN target resolves through it before dialing (the
+	// Router's "engine" resolver choice made real — the dial never
+	// leaks the name to the system resolver). IP literals dial
+	// untouched. nil keeps the historical behavior: the dialer's own
+	// system resolution.
+	Resolver Resolver
+
 	// transport is the optional constrained dialer (loop prevention);
 	// used by router-DIRECT flows under the TUN dataplane.
 	transport Dialer
@@ -51,21 +60,62 @@ func (d *DirectOutbound) Dial(ctx context.Context, address string) (net.Conn, er
 		timeout = DefaultDialTimeout
 	}
 
+	dialAddress := address
+
+	// Resolve domain targets through the engine authority before
+	// dialing. An IP literal (the only shape the Router's "none"
+	// choice produces) is dialed untouched — resolving a literal
+	// would be a second, hidden DNS decision.
+	if d.Resolver != nil && isDomainTarget(address) {
+		host, port, splitErr := net.SplitHostPort(address)
+		if splitErr != nil {
+			return nil, fmt.Errorf("freecore: direct dial %s: %w", address, splitErr)
+		}
+
+		addrs, err := d.Resolver.Resolve(ctx, host)
+		if err != nil {
+			return nil, fmt.Errorf("freecore: direct dial %s: resolve: %w", address, err)
+		}
+
+		if len(addrs) == 0 {
+			return nil, fmt.Errorf("freecore: direct dial %s: resolve: no addresses", address)
+		}
+
+		dialAddress = net.JoinHostPort(addrs[0].String(), port)
+	}
+
 	var (
 		conn net.Conn
 		err  error
 	)
 
 	if d.transport != nil {
-		conn, err = d.transport.DialContext(ctx, "tcp", address)
+		conn, err = d.transport.DialContext(ctx, "tcp", dialAddress)
 	} else {
-		conn, err = (&net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second}).DialContext(ctx, "tcp", address)
+		conn, err = (&net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second}).DialContext(ctx, "tcp", dialAddress)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("freecore: direct dial %s: %w", address, err)
 	}
 
 	return conn, nil
+}
+
+// isDomainTarget reports whether address's host part is a DOMAIN name
+// (resolvable) rather than an IP literal. It is the honest gate for
+// the engine-resolver choice: literals never consult DNS.
+func isDomainTarget(address string) bool {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return false
+	}
+
+	host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+	if host == "" {
+		return false
+	}
+
+	return net.ParseIP(host) == nil
 }
 
 // --- SOCKS5 ----------------------------------------------------------------

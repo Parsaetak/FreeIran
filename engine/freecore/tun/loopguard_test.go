@@ -58,14 +58,41 @@ func TestLoopGuardOwnsRoute(t *testing.T) {
 }
 
 func TestLoopGuardConstraint(t *testing.T) {
-	c := guardFixture().Constraint()
+	// The two interface facts are DISTINCT: the guard carries the TUN's
+	// own index; the physical interface is the caller's separately
+	// observed fact supplied to Constraint.
+	c := guardFixture().Constraint(9)
 
-	if c.ExcludedInterfaceIndex != 7 {
-		t.Fatalf("constraint excludes index %d, want 7", c.ExcludedInterfaceIndex)
+	if c.TUNInterfaceIndex != 7 {
+		t.Fatalf("constraint TUN index = %d, want 7", c.TUNInterfaceIndex)
+	}
+
+	if c.PhysicalInterfaceIndex != 9 {
+		t.Fatalf("constraint physical index = %d, want 9", c.PhysicalInterfaceIndex)
 	}
 
 	if len(c.ForbiddenSourcePrefixes) != 1 {
 		t.Fatalf("forbidden source prefixes = %v", c.ForbiddenSourcePrefixes)
+	}
+
+	if err := c.Validate(); err != nil {
+		t.Fatalf("constraint {TUN 7, physical 9} must validate: %v", err)
+	}
+}
+
+func TestLoopGuardConstraintFailsClosed(t *testing.T) {
+	// Missing physical interface: the guard cannot guess it — the
+	// constraint carries zero and MUST fail closed.
+	missing := guardFixture().Constraint(0)
+	if err := missing.Validate(); err == nil {
+		t.Fatal("constraint without a physical interface validated (must fail closed)")
+	}
+
+	// Physical == TUN: the exact misbind the old single-field model
+	// allowed silently. Now a loud refusal.
+	misbind := guardFixture().Constraint(7)
+	if err := misbind.Validate(); err == nil {
+		t.Fatal("constraint binding the TUN as the physical interface validated (loop refusal missing)")
 	}
 }
 

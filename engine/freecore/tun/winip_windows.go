@@ -6,81 +6,95 @@ import (
 	"fmt"
 	"net/netip"
 
-	"golang.org/x/sys/windows"
 	"golang.zx2c4.com/wireguard/windows/tunnel/winipcfg"
 )
 
 // winip is the FreeIran-owned OS IP configuration surface for the
-// first-party TUN transaction (Phase C). It wraps the wireguard-windows
-// winipcfg helpers (the same production-proven IP-Helper code path
-// WireGuard uses) behind ONE verb — apply a batch of interface
-// mutations — whose result is a list of UNDO closures. DNS settings are
-// deliberately NOT exposed on this surface at all: mutating the Windows
-// adapter DNS is out of contract for the first-party engine
-// (docs/tun.md) and would create a second DNS authority.
+// first-party TUN transaction (Phase C). It wraps the pinned
+// wireguard-windows winipcfg helpers (the same production-proven
+// IP-Helper code path WireGuard uses) behind the additive IPMutator
+// seam — whose result is a list of UNDO closures removing exactly the
+// entries this session created.
+//
+// v0.14.1 — ADDITIVE ONLY (audited against the pinned winipcfg):
+//
+//   - LUID.AddIPAddress → CreateUnicastIpAddressEntry: adds ONE
+//     unicast address, touching nothing else;
+//   - LUID.DeleteIPAddress → DeleteUnicastIpAddressEntry: deletes
+//     exactly that entry (OnLinkPrefixLength ignored by the API);
+//   - LUID.AddRoute → CreateIpForwardEntry2 (dual-family
+//     MIB_IPFORWARD_ROW2): adds ONE forwarding entry for either
+//     address family;
+//   - LUID.DeleteRoute → DeleteIpForwardEntry2: deletes exactly that
+//     entry looked up through THIS interface's LUID.
+//
+// SetIPAddressesForFamily is deliberately NOT used anymore: it calls
+// FlushIPAddresses(family) first, which removes EVERY address of that
+// family on the interface — including unrelated user-created ones.
+// A family-wide flush is not a transactional activation primitive.
+//
+// DNS settings are deliberately NOT exposed on this surface at all:
+// mutating the Windows adapter DNS is out of contract for the
+// first-party engine (docs/tun.md) and would create a second DNS
+// authority.
 
-// InterfaceConfig is one OS mutation batch for the adapter: the
-// addresses to hold and the routes to install through the adapter's
-// LUID (the Wintun device's own LUID — FreeIran-owned state only).
-type InterfaceConfig struct {
-	LUID        uint64
-	Addresses   []netip.Prefix
-	Routes      []netip.Prefix
-	RouteMetric uint32
+// ipHelperMutator is the winipcfg-backed IPMutator over one LUID.
+type ipHelperMutator struct {
+	luid winipcfg.LUID
+}
+
+// AddAddress implements IPMutator (CreateUnicastIpAddressEntry).
+func (m ipHelperMutator) AddAddress(p netip.Prefix) error {
+	return m.luid.AddIPAddress(p)
+}
+
+// DeleteAddress implements IPMutator (DeleteUnicastIpAddressEntry —
+// exactly this address entry, nothing else on the interface).
+func (m ipHelperMutator) DeleteAddress(p netip.Prefix) error {
+	return m.luid.DeleteIPAddress(p)
+}
+
+// AddRoute implements IPMutator (CreateIpForwardEntry2, dual-family).
+func (m ipHelperMutator) AddRoute(p netip.Prefix, nextHop netip.Addr, metric uint32) error {
+	return m.luid.AddRoute(p, nextHop, metric)
+}
+
+// DeleteRoute implements IPMutator (DeleteIpForwardEntry2 through this
+// LUID — the route entry this interface owns).
+func (m ipHelperMutator) DeleteRoute(p netip.Prefix, nextHop netip.Addr) error {
+	return m.luid.DeleteRoute(p, nextHop)
 }
 
 // ApplyInterfaceConfig performs the mutations and returns their undo
-// closures in application order. The caller (Transaction.Rollback) runs
-// them in reverse. A mid-batch failure leaves the returned undo list
-// describing EXACTLY what was applied, so rollback stays complete — the
-// transactional contract of the activation.
+// closures in application order (the transactional activation seam).
 func ApplyInterfaceConfig(cfg InterfaceConfig) ([]func() error, error) {
-	luid := winipcfg.LUID(cfg.LUID)
+	return ApplyInterfaceConfigWith(ipHelperMutator{luid: winipcfg.LUID(cfg.LUID)}, cfg)
+}
 
-	var undo []func() error
+// VerifyRoutesOwnedByLUID verifies that every covered prefix is owned
+// by THIS interface (the dual-stack MIB_IPFORWARD_ROW2 lookup through
+// the interface's own LUID — GetIpForwardEntry2 fails unless the entry
+// exists for this LUID + destination + next hop). This is the IPv6
+// ownership check the IPv4-table observation cannot provide, and the
+// exact-ownership check for IPv4 on top of it: the TUN interface must
+// hold its covering routes, not merely "the routes must exist".
+func VerifyRoutesOwnedByLUID(luid uint64, covered []netip.Prefix) error {
+	wluid := winipcfg.LUID(luid)
 
-	// 1. Unicast addresses (per address — the undo mirrors the exact
-	//    mutation, not a family-wide wipe that could touch foreign state).
-	for _, p := range cfg.Addresses {
-		if err := luid.SetIPAddressesForFamily(familyOf(p), []netip.Prefix{p}); err != nil {
-			return undo, fmt.Errorf("freecore.tun: set address %s: %w", p, err)
-		}
-
-		prefix := p
-
-		undo = append(undo, func() error {
-			return luid.DeleteIPAddress(prefix)
-		})
-	}
-
-	// 2. Routes through this interface only (never a gateway rewrite of
-	//    the physical default route — the covered-routes model is
-	//    0.0.0.0/1 + 128.0.0.0/1, the split-default shape).
-	for _, p := range cfg.Routes {
+	for _, prefix := range covered {
 		nextHop := netip.IPv4Unspecified()
-		if p.Addr().Is6() {
+		if prefix.Addr().Is6() {
 			nextHop = netip.IPv6Unspecified()
 		}
 
-		if err := luid.AddRoute(p, nextHop, cfg.RouteMetric); err != nil {
-			return undo, fmt.Errorf("freecore.tun: add route %s: %w", p, err)
+		if _, err := wluid.Route(prefix, nextHop); err != nil {
+			return fmt.Errorf("freecore.tun: covered route %s not owned by this interface: %w", prefix, err)
 		}
-
-		prefix, hop := p, nextHop
-
-		undo = append(undo, func() error {
-			return luid.DeleteRoute(prefix, hop)
-		})
 	}
 
-	return undo, nil
-}
-
-// familyOf maps a prefix to the Windows address family.
-func familyOf(p netip.Prefix) winipcfg.AddressFamily {
-	if p.Addr().Is4() {
-		return windows.AF_INET
+	if len(covered) == 0 {
+		return fmt.Errorf("freecore.tun: no covered routes to verify")
 	}
 
-	return windows.AF_INET6
+	return nil
 }

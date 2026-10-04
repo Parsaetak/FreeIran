@@ -17,6 +17,11 @@ import (
 	"github.com/Parsaetak/FreeIran/internal/logging"
 )
 
+// tunObserve is the OS observation seam (swappable in tests: the
+// activation gate must be testable against synthetic interface/route
+// facts without an elevated physical adapter).
+var tunObserve = fctun.Observe
+
 // freecoreTUNBackend is the FIRST-PARTY TUN dataplane (v0.14.0):
 // FreeIran-owned Wintun device → FreeIran userspace IP stack → FreeIran
 // engine sessions → Router → first-party outbound. It reuses the ONE
@@ -38,6 +43,7 @@ type freecoreTUNBackend struct {
 	ipv6       netip.Prefix
 	startedAt  time.Time
 	configured string
+	evidence   tunEvidence
 }
 
 // newFreecoreTUNBackend builds the first-party backend (Windows).
@@ -67,8 +73,8 @@ func (b *freecoreTUNBackend) setStatus(status, details string) {
 //
 //	validate first-party route → elevation → collision-free identity →
 //	open Wintun → configure interface/routes (recorded undos) → start
-//	engine + userspace stack → verify adapter + route ownership +
-//	upstream reachability → publish Active.
+//	engine + userspace stack → verify adapter + route ownership (both
+//	families) + physical upstream → publish Active.
 //
 // On any failure: stop stack, cancel flows, close device, undo exactly
 // the FreeIran-owned mutations, surface residual failures honestly.
@@ -102,12 +108,14 @@ func (b *freecoreTUNBackend) Enable(ctx context.Context, opts TUNEnableOptions) 
 
 	// 3. Collision-free FreeIran identity + addressing: the
 	//    deterministic identity is re-derived per activation; the
-	//    address plan refuses collisions against CURRENT observation.
+	//    address plan refuses collisions against CURRENT observation
+	//    for BOTH families (an IPv6 plan colliding with a live host
+	//    address is just as fatal as an IPv4 one).
 	identity := fctun.DefaultIdentity()
 	ipv4 := netip.MustParsePrefix(freecore.DefaultTUNPrefix4)
 	ipv6 := netip.MustParsePrefix(freecore.DefaultTUNPrefix6)
 
-	observation, err := fctun.Observe()
+	observation, err := tunObserve()
 	if err != nil {
 		b.failEnable(fmt.Errorf("tunnel: first-party TUN: observe: %w", err))
 
@@ -118,8 +126,12 @@ func (b *freecoreTUNBackend) Enable(ctx context.Context, opts TUNEnableOptions) 
 		for _, prefix := range fact.Addresses {
 			addr := prefix.Addr()
 
-			if addr.IsValid() && addr.Is4() && ipv4.Contains(addr) && !factOwnedName(fact.Name, identity) {
-				b.failEnable(fmt.Errorf("tunnel: first-party TUN: address plan %s collides with %s", ipv4, fact.Name))
+			if !addr.IsValid() || factOwnedName(fact.Name, identity) {
+				continue
+			}
+
+			if (addr.Is4() && ipv4.Contains(addr)) || (addr.Is6() && ipv6.Contains(addr)) {
+				b.failEnable(fmt.Errorf("tunnel: first-party TUN: address plan collides with %s", fact.Name))
 
 				return fmt.Errorf("tunnel: first-party TUN: address collision")
 			}
@@ -152,8 +164,11 @@ func (b *freecoreTUNBackend) Enable(ctx context.Context, opts TUNEnableOptions) 
 		return cause
 	}
 
-	// 5. Configure the interface state (addresses + covered routes)
-	//    through the FreeIran-owned IP surface, recording undos.
+	// 5. Configure the interface state (addresses + covering routes for
+	//    BOTH families) through the FreeIran-owned additive IP surface,
+	//    recording undos. The mutator only ever ADDS exact entries —
+	//    a family-wide flush (the pre-0.14.1 primitive) would destroy
+	//    unrelated user-created addresses.
 	luidProvider, ok := device.(interface{ LUID() uint64 })
 	if !ok {
 		return rollbackFailed(errors.New("tunnel: first-party TUN: device does not expose its LUID"))
@@ -173,8 +188,17 @@ func (b *freecoreTUNBackend) Enable(ctx context.Context, opts TUNEnableOptions) 
 
 	// 6. Start the engine (flows only) and the userspace stack. The
 	//    upstream dialer carries the loop-prevention constraint: the
-	//    physical interface is observed NOW, live — never hardcoded.
+	//    physical interface is observed NOW, live — never hardcoded,
+	//    never the TUN. A missing physical interface fails the
+	//    activation CLOSED (an unbound upstream is a loop risk).
 	constraint := buildUpstreamConstraint(observation, identity, ipv4)
+	if constraint == nil {
+		return rollbackFailed(errors.New("tunnel: first-party TUN: no physical upstream interface available (fail-closed)"))
+	}
+
+	if err := constraint.Validate(); err != nil {
+		return rollbackFailed(fmt.Errorf("tunnel: first-party TUN: upstream constraint: %w", err))
+	}
 
 	route, rerr := firstPartyRouteOf(opts.Config)
 	if rerr != nil {
@@ -226,12 +250,17 @@ func (b *freecoreTUNBackend) Enable(ctx context.Context, opts TUNEnableOptions) 
 	b.configured = opts.Config.DisplayURL()
 	b.mu.Unlock()
 
-	// 7. Verification gate: adapter observed, covered routes held by
-	//    FreeIran's interface, upstream reachable through the
-	//    constrained dialer. (Actual tunneled application traffic is
-	//    the Level-5 evidence rung — see docs/tun.md for the exact
-	//    evidence class of this release.)
-	if !b.verify(observation, identity, constraint) {
+	// 7. Verification gate — the EVIDENCE LADDER (v0.14.1). The rungs
+	//    actually executed here: platform-ready (elevation), stack-ready
+	//    (adapter + engine + userspace stack), route-ready (identity,
+	//    covered routes owned by the TUN interface in BOTH families,
+	//    physical upstream present). Traffic-verified is NOT claimed:
+	//    nothing here proves application bytes crossed the TUN on a
+	//    physical host, and unit/in-memory evidence must never be
+	//    converted into runtime evidence. See TUNSnapshot's evidence
+	//    fields and docs/tun.md.
+	evidence, verified := b.verify(observation, identity, constraint)
+	if !verified {
 		_ = b.Disable(ctx)
 
 		err := errors.New("tunnel: first-party TUN: verification gate failed")
@@ -240,33 +269,77 @@ func (b *freecoreTUNBackend) Enable(ctx context.Context, opts TUNEnableOptions) 
 		return err
 	}
 
+	b.mu.Lock()
+	b.evidence = evidence
+	b.mu.Unlock()
+
 	b.setStatus(tunStatusActive, "")
 
 	logging.LogR(logging.Record{
 		Level:     logging.LevelInfo,
 		Subsystem: Subsystem,
 		Event:     "tun_active",
-		Message:   fmt.Sprintf("first-party TUN active: adapter %s, %s + %s, engine-owned dataplane", identity.AdapterName, ipv4, ipv6),
+		Message:   fmt.Sprintf("first-party TUN active: adapter %s, %s + %s, engine-owned dataplane (evidence: route-ready; traffic-verified not claimed)", identity.AdapterName, ipv4, ipv6),
 		Status:    "active",
 	})
 
 	return nil
 }
 
-// verify runs the observable gates of the activation.
-func (b *freecoreTUNBackend) verify(prior fctun.Observation, identity fctun.Identity, constraint *fctun.UpstreamConstraint) bool {
-	// (a) The adapter is observed with the expected identity.
-	fresh, err := fctun.Observe()
+// tunEvidence is the honest evidence ladder of one first-party
+// activation. Each rung is EARNED by an actual gate; Active is the
+// route-ready rung — it must never be read as Level-5 application
+// traffic proof.
+type tunEvidence struct {
+	// Compiled: the first-party dataplane is built into this binary.
+	Compiled bool
+
+	// PlatformReady: elevation + platform gates passed on this host.
+	PlatformReady bool
+
+	// StackReady: adapter open, engine serving, userspace stack running.
+	StackReady bool
+
+	// RouteReady: adapter identity observed, covering routes owned by
+	// the FreeIran interface in BOTH families, physical upstream
+	// present and validated.
+	RouteReady bool
+
+	// TrafficVerified: application traffic observed crossing the
+	// first-party TUN. NEVER set by the activation gate — there is no
+	// probe here that produces that evidence, and fabricating it (or
+	// promoting unit/in-memory evidence) is forbidden. It becomes true
+	// only when a real runtime traffic probe exists.
+	TrafficVerified bool
+}
+
+// verify runs the observable gates of the activation and returns the
+// earned evidence ladder.
+func (b *freecoreTUNBackend) verify(prior fctun.Observation, identity fctun.Identity, constraint *fctun.UpstreamConstraint) (tunEvidence, bool) {
+	evidence := tunEvidence{Compiled: true}
+
+	// (a) Platform: the transaction got this far only elevated — that
+	//     rung is earned by construction.
+	evidence.PlatformReady = true
+
+	// (b) The adapter is observed with the expected identity and is up.
+	fresh, err := tunObserve()
 	if err != nil {
-		return false
+		return evidence, false
 	}
 
 	iface, found := fresh.FindInterface(identity.AdapterName)
 	if !found || !iface.Running {
-		return false
+		return evidence, false
 	}
 
-	// (b) The covered routes are held by FreeIran's interface index.
+	evidence.StackReady = true
+
+	// (c) Route ownership, BOTH families: the covered IPv4 routes are
+	//     held by FreeIran's interface index (IPv4 table observation),
+	//     and every covered route (v4 AND v6) resolves through THIS
+	//     interface's LUID via the dual-stack row2 lookup — the exact
+	//     TUN interface owns them, not merely "the routes exist".
 	guard := fctun.LoopGuard{
 		AdapterName:    identity.AdapterName,
 		InterfaceIndex: iface.Index,
@@ -275,23 +348,46 @@ func (b *freecoreTUNBackend) verify(prior fctun.Observation, identity fctun.Iden
 	}
 
 	if !fresh.CoveringRoutesHeld(guard) {
-		return false
+		return evidence, false
 	}
 
-	// (c) The physical upstream interface still exists (the constraint
-	//     was built from live observation moments ago).
-	if constraint == nil || constraint.ExcludedInterfaceIndex == 0 {
-		return false
+	if luidProvider, ok := b.device.(interface {
+		LUID() uint64
+	}); ok {
+		if err := fctun.VerifyRoutesOwnedByLUID(luidProvider.LUID(), fctun.DefaultCoveredRoutes()); err != nil {
+			return evidence, false
+		}
+	} else {
+		return evidence, false
 	}
 
-	_, upstreamFound := fresh.FindInterfaceByIndex(constraint.ExcludedInterfaceIndex)
+	// (d) The physical upstream interface still exists, is distinct
+	//     from the TUN, and the constraint validates (the exact
+	//     fail-closed shapes — missing physical, physical == TUN — are
+	//     refused here too, not only at dial time).
+	if constraint == nil || constraint.Validate() != nil {
+		return evidence, false
+	}
 
-	return upstreamFound
+	physical, upstreamFound := fresh.FindInterfaceByIndex(constraint.PhysicalInterfaceIndex)
+	if !upstreamFound || !physical.Running {
+		return evidence, false
+	}
+
+	evidence.RouteReady = true
+
+	// TrafficVerified stays FALSE by design — see the type doc.
+	return evidence, true
 }
 
 // buildUpstreamConstraint derives the loop-prevention policy from live
-// OS observation: the physical interface that owns the default route,
-// excluding the FreeIran adapter itself.
+// OS observation. The TUN interface index and the PHYSICAL interface
+// index are two DIFFERENT facts recorded in two DIFFERENT fields: the
+// guard carries the TUN's own index; the physical default-route owner
+// (excluding the TUN) is observed from the forwarding table. A missing
+// physical interface yields nil and the activation fails closed — the
+// dialer will never silently fall back to unbound (loop-prone) or
+// TUN-bound (looping) sockets.
 func buildUpstreamConstraint(observation fctun.Observation, identity fctun.Identity, tunPrefix netip.Prefix) *fctun.UpstreamConstraint {
 	tunIndex := uint32(0)
 
@@ -304,10 +400,15 @@ func buildUpstreamConstraint(observation fctun.Observation, identity fctun.Ident
 		return nil
 	}
 
-	return &fctun.UpstreamConstraint{
-		ExcludedInterfaceIndex:  hints[0].Index,
-		ForbiddenSourcePrefixes: []netip.Prefix{tunPrefix},
+	guard := fctun.LoopGuard{
+		AdapterName:    identity.AdapterName,
+		InterfaceIndex: tunIndex,
+		TunAddresses:   []netip.Prefix{tunPrefix},
 	}
+
+	constraint := guard.Constraint(hints[0].Index)
+
+	return &constraint
 }
 
 func factOwnedName(name string, identity fctun.Identity) bool {
@@ -361,6 +462,9 @@ func (b *freecoreTUNBackend) Disable(_ context.Context) error {
 }
 
 // Snapshot is the redacted truth about the first-party dataplane.
+// The evidence ladder is part of the truth: Active means the
+// route-ready rung — TrafficVerified stays false until a real runtime
+// traffic probe exists (never fabricated).
 func (b *freecoreTUNBackend) Snapshot() TUNSnapshot {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -379,6 +483,13 @@ func (b *freecoreTUNBackend) Snapshot() TUNSnapshot {
 		Configuration:     b.configured,
 		Details:           b.details,
 	}
+
+	// The evidence rungs actually earned by this backend's gates.
+	snap.Compiled = true
+	snap.PlatformReady = b.evidence.PlatformReady
+	snap.StackReady = b.evidence.StackReady
+	snap.RouteReady = b.evidence.RouteReady
+	snap.TrafficVerified = b.evidence.TrafficVerified
 
 	return snap
 }

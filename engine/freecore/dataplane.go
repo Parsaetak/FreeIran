@@ -2,6 +2,7 @@ package freecore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -135,32 +136,38 @@ func (d *TUNDataplane) SessionCount() int {
 // upstreamBinding is the platform seam the constrained dialer uses.
 // It returns a dial function whose sockets are bound to the physical
 // interface (nil = default routing, correct when no TUN owns the
-// default route). Windows implements it with IP_UNICAST_IF over the
-// observed physical interface index; other platforms return nil and
-// the first-party TUN path is refused anyway.
+// default route). The seam receives the CALLER'S CONTEXT and must
+// honor it — a binding that drops ctx cannot be cancelled (the v0.14.0
+// seam used net.Dialer.Dial and lost cancellation; v0.14.1 fixed the
+// contract). Windows implements it with IP_UNICAST_IF /
+// IPV6_UNICAST_IF over the observed physical interface index; other
+// platforms return nil and the first-party TUN path is refused anyway.
 var upstreamBinding = defaultUpstreamBinding
 
 // NewUpstreamDialer builds the loop-prevention dialer for upstream
 // engine connections while the first-party TUN owns traffic:
 //
 //   - constraint nil (no TUN) → the plain system dialer;
-//   - constraint present → sockets bound to the physical interface the
-//     OS currently routes through (observed live, never a hardcoded
-//     gateway/adapter), so an engine upstream can never re-enter the
-//     FreeIran TUN and loop.
-//
-// The platform binding hook is injected for tests.
+//   - constraint present → sockets bound to the constraint's PHYSICAL
+//     interface, after Validate() refuses the fail-closed shapes
+//     (missing physical interface; physical == TUN). A refused shape
+//     fails the DIAL, not the loop guarantee: an unbound or TUN-bound
+//     upstream is a loop risk, and a loop is worse than a refused
+//     connection.
 func NewUpstreamDialer(constraint *tun.UpstreamConstraint) Dialer {
-	if constraint == nil || constraint.ExcludedInterfaceIndex == 0 {
+	if constraint == nil {
 		return plainSystemDialer{}
 	}
 
-	binding := upstreamBinding(int(constraint.ExcludedInterfaceIndex))
+	if err := constraint.Validate(); err != nil {
+		return refusedDialer{cause: err}
+	}
+
+	binding := upstreamBinding(int(constraint.PhysicalInterfaceIndex))
 	if binding == nil {
 		// The platform cannot honor the constraint: fail the DIAL, not
-		// the loop guarantee. An unbound upstream is a loop risk, and a
-		// loop is worse than a refused connection.
-		return refusedDialer{}
+		// the loop guarantee.
+		return refusedDialer{cause: errNoPlatformBinding}
 	}
 
 	return &boundDialer{binding: binding, timeout: DefaultDialTimeout}
@@ -177,24 +184,31 @@ func (plainSystemDialer) DialContext(ctx context.Context, network, address strin
 	return dialer.DialContext(ctx, network, address)
 }
 
-// refusedDialer refuses every dial (loop-prevention fail-closed).
-type refusedDialer struct{}
+// Fail-closed dial causes (surfaced honestly, never swallowed).
+var errNoPlatformBinding = errors.New("freecore: platform cannot honor the upstream binding constraint")
 
-// DialContext implements Dialer.
-func (refusedDialer) DialContext(_ context.Context, _, address string) (net.Conn, error) {
-	return nil, fmt.Errorf("freecore: upstream dial %s refused: loop-prevention constraint cannot be honored on this platform", address)
+// refusedDialer refuses every dial (loop-prevention fail-closed).
+type refusedDialer struct {
+	cause error
 }
 
-// boundDialer dials through the platform binding hook.
+// DialContext implements Dialer.
+func (d refusedDialer) DialContext(_ context.Context, _, address string) (net.Conn, error) {
+	return nil, fmt.Errorf("freecore: upstream dial %s refused: %w", address, d.cause)
+}
+
+// boundDialer dials through the platform binding hook. The caller's
+// context flows INTO the binding: cancellation must reach the socket
+// connect, not stop at the seam.
 type boundDialer struct {
-	binding func(network, address string) (net.Conn, error)
+	binding func(ctx context.Context, network, address string) (net.Conn, error)
 	timeout time.Duration
 }
 
 // DialContext implements Dialer.
 func (d *boundDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	if d.binding != nil {
-		return d.binding(network, address)
+		return d.binding(ctx, network, address)
 	}
 
 	dialer := &net.Dialer{Timeout: d.timeout, KeepAlive: 30 * time.Second}
@@ -205,7 +219,7 @@ func (d *boundDialer) DialContext(ctx context.Context, network, address string) 
 // defaultUpstreamBinding is the platform-neutral fallback: it cannot
 // guarantee the exclusion, so it reports inability (the caller fails
 // closed). The Windows build provides the real binding.
-func defaultUpstreamBinding(_ int) func(network, address string) (net.Conn, error) {
+func defaultUpstreamBinding(_ int) func(ctx context.Context, network, address string) (net.Conn, error) {
 	return nil
 }
 
