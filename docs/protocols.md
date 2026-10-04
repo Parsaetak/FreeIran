@@ -90,7 +90,7 @@ pinned binary with `sing-box check` and smoke startup):
   tags `with_wireguard`/`with_gvisor` — present in every official
   release binary the core manager installs.
 
-## First-party engine — freecore (v0.13.1)
+## First-party engine — freecore (v0.14.0)
 
 The FreeIran Engine (`engine/freecore`) is a registered in-process
 backend. Its capability slice is deliberately minimal and stated at
@@ -101,15 +101,20 @@ its own evidence class:
 | SOCKS remote (plain TCP, no security layer) | **implemented** — in-process local proxy path (HTTP CONNECT + SOCKS5 inbounds, SOCKS5 outbound, direct) | loopback integration tests with real bytes (parse → forward → close, cancellation, timeout, capability refusal); no external process by construction and by test |
 | HTTP remote (plain TCP, no security layer) | **implemented** — same path with the HTTP CONNECT outbound | same test class |
 | Direct dialing (no remote) | **implemented** — engine-owned dialer | same test class |
-| Everything else (VLESS, VMess, Trojan, Shadowsocks, QUIC family, WireGuard, TLS/REALITY, UDP, proxy chains) | **not supported** — refused by the capability gate; routes to the external cores | `Supports`/`Validate` refusal tests |
+| Shadowsocks AEAD TCP (aes-128-gcm, aes-256-gcm, chacha20-ietf-poly1305) | **implemented (v0.14.0)** — first encrypted first-party protocol slice | KDF vectors vs an independent reimplementation; framing round-trip/tamper/oversize fail-closed tests; client↔server round-trip across all three methods; REFERENCE INTEROP both directions vs `go-shadowsocks2 v0.1.5` (our client through their server; their client through our fixture). Deprecated stream ciphers and AEAD-2022 are NOT implemented |
+| TUN dataplane (first-party, TCP) | **implemented (v0.14.0)** — Wintun → FreeIran userspace stack → engine sessions → Router → outbound | in-memory end-to-end byte path IPv4+IPv6 under `-race` (see docs/tun.md for the exact evidence ladder; physical Windows runtime NOT claimed) |
+| Routing / DNS authorities | **implemented (v0.14.0)** — one Router (DIRECT/PROXY/BLOCK + decision object) and one bounded DNS authority with observations; both called by the local-proxy AND TUN paths | `engine/freecore` hardening/router/DNS suites |
+| Everything else (VLESS, VMess, Trojan, QUIC family, WireGuard, TLS/REALITY, UDP through TUN, proxy chains) | **not supported** — refused by the capability gate; routes to the external cores | `Supports`/`Validate` refusal tests + the v0.14.0 selection ownership matrix (`engine/core/v0140_selection_test.go`) |
 
 The evidence class for freecore rows is Go-test-level (real bytes on
-loopback, no real remote servers in CI), which is STRONGER than
-"parser-only" but does not claim remote-server interop — the Phase 2
-expansion (ROADMAP.md) upgrades each protocol to reference-server
-interop evidence before its capability declaration grows. Inbound
-auth is not implemented (no-auth SOCKS5 only), matching what the
-local endpoint needs for System Proxy.
+loopback / in-memory device, real reference-server interop where the
+table says so). Shadowsocks is declared supported BECAUSE its
+interoperability evidence exists — the Phase 2 rule: a protocol is
+marked supported only after protocol-vector + interop evidence, and
+the external cores remain the compatibility path for every method or
+shape outside the three implemented AEAD methods. Inbound auth is not
+implemented (no-auth SOCKS5 only), matching what the local endpoint
+needs for System Proxy.
 
 ## Encrypted Client Hello — ECH (v0.11.0)
 

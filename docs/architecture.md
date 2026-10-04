@@ -1194,6 +1194,46 @@ both documented in docs/security.md (v0.11.3 addendum).
 
 ---
 
+## v0.14.0 addendum — the first-party TUN dataplane, real routing/DNS, first encrypted protocol
+
+v0.14.0 crosses the Phase 2 boundary WITHOUT creating a second
+authority anywhere. What changed architecturally:
+
+- **One dataplane, two transports.** The FreeIran Engine still runs
+  in-process (PID 0) under the same core contract. Its TUN dataplane
+  (`engine/freecore/netstack` over `engine/freecore/tun.Device`) feeds
+  accepted TCP flows into the SAME session registry, the SAME Router
+  and the SAME outbounds the local inbounds use — the TUN path and
+  the System Proxy path are one dataplane, never two.
+- **TUN selection stays inside the ONE TunnelService.**
+  `selectingTUNBackend` prefers the first-party backend when the
+  capability gate holds and falls back to the managed sing-box
+  dataplane explicitly and exclusively; no second TUN controller, no
+  `FreecoreTUNService`, never both dataplanes for one activation.
+- **Routing is an authority, not a placeholder.** `Router` decisions
+  (action/outbound/resolver choice/reason/rule id) are produced once
+  and recorded on the session; protocol code never hides a decision.
+- **DNS is an authority with boundaries.** The bounded caching
+  resolver, the bootstrap resolver (proxy-endpoint names through the
+  constrained dialer) and remote resolution (domains preserved
+  through the first-party outbound) are the only DNS behaviors; the
+  engine never mutates Windows adapter DNS.
+- **Loop prevention is a dialer contract.** Under the first-party
+  TUN, every engine upstream dial is bound to the physical interface
+  observed live (Windows: `IP_UNICAST_IF`/`IPV6_UNICAST_IF`);
+  un-honorable constraints REFUSE the dial (fail-closed).
+- **Selection ownership.** The registry prefers the first-party
+  engine for capabilities it genuinely supports; an external
+  `PreferredBackend` only orders external cores among themselves.
+- **Encrypted protocol slice.** Shadowsocks AEAD TCP lives in
+  `engine/freecore/shadowsocks` behind the same Route model
+  (no second config store) with interop evidence gating its
+  capability declaration.
+
+The long-term contract (docs/autonomous-connectivity.md) is
+unchanged; v0.14.0 removes the contradictions its TUN/DNS/routing
+paragraphs had with the shipped code.
+
 ## v0.13.1 addendum — first-party FreeIran Engine foundation + in-process backend
 
 v0.13.1 begins the two-phase engine transition (ROADMAP.md). The

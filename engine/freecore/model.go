@@ -44,28 +44,73 @@ type Dialer interface {
 	DialContext(ctx context.Context, network, address string) (net.Conn, error)
 }
 
-// RouterDecision records WHY traffic took a path. v0.13.1 routing is
-// trivial by design (everything flows through the session's remote
-// outbound); the decision object exists so the Phase 2 routing
-// authority (ROADMAP.md item 3) has one place to grow without
-// changing the session pipeline.
+// RouteAction is what the Router decided for one destination.
+type RouteAction string
+
+const (
+	// ActionProxy sends the flow through the session's configured remote
+	// outbound (the first-party SOCKS5/HTTP/Shadowsocks client).
+	ActionProxy RouteAction = "proxy"
+
+	// ActionDirect dials the destination without a remote. Only granted
+	// when policy allows it (explicit local/private destinations).
+	ActionDirect RouteAction = "direct"
+
+	// ActionBlock refuses the destination: the flow fails closed, no
+	// network sees it.
+	ActionBlock RouteAction = "block"
+)
+
+// RouterDecision records WHY traffic took a path. Phase 2 turns the
+// placeholder into a real decision: action, outbound, resolver choice,
+// reason and the policy/rule identifier — produced by the ONE Router
+// every path shares (local inbounds, TUN flows), never inside a
+// protocol implementation.
 type RouterDecision struct {
+	// Action is what happens to the flow (proxy/direct/block).
+	Action RouteAction
+
 	// Outbound is the outbound the traffic was sent through.
 	Outbound string
 
+	// ResolverChoice names the DNS strategy for the destination:
+	// "remote" (domain passed to the remote proxy — the default for
+	// proxied flows), "engine" (resolved by the engine's bounded cache
+	// through the constrained dialer), "none" (IP literal or block).
+	ResolverChoice string
+
 	// Reason is the human-readable, credential-free explanation.
 	Reason string
+
+	// RuleID identifies the matching rule/policy ("default-policy",
+	// "private-direct", "block-list", ...).
+	RuleID string
 }
 
-// Resolver is the DNS authority seam. v0.13.1 resolves through the
-// system resolver — exactly what the external cores do by default
-// for their own upstream dials — behind this boundary; the Phase 2
-// central DNS authority (ROADMAP.md item 2) replaces the
-// implementation, not the callers.
+// Router is the routing authority seam: ONE deterministic decision
+// function every traffic path calls. Implementations must be safe for
+// concurrent use, side-effect free and credential-free.
+type Router interface {
+	// Decide returns the decision for target (host:port, host may be a
+	// domain, an IPv4/IPv6 literal, or "" for diagnostics probes).
+	Decide(ctx context.Context, target string) RouterDecision
+}
+
+// Resolver is the DNS authority seam. Phase 2 builds the central
+// authority around this boundary: a bounded caching resolver with
+// explicit bootstrap behavior sits BEHIND the same interface — the
+// callers never change again.
 type Resolver interface {
 	// Resolve returns the addresses for host. Implementations must
 	// honor ctx cancellation and must never invent addresses.
 	Resolve(ctx context.Context, host string) ([]netip.Addr, error)
+}
+
+// parseShadowsocksMethod validates a Shadowsocks AEAD method name for
+// the Route model (the protocol package owns the truth; this seam keeps
+// protocol code out of the normalization path).
+func parseShadowsocksMethod(method string) (string, error) {
+	return NormalizeShadowsocksMethod(method)
 }
 
 // systemResolver resolves through the Go default resolver.

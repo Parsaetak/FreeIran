@@ -104,15 +104,28 @@ foundation tested without pretending to be a dataplane.
 
 ## PHASE 2 — FIRST-PARTY CONNECTIVITY ENGINE EXPANSION
 
-The ordered implementation program. Every item is PLANNED. Each item
-records: **purpose** (why it exists), **dependencies** (what must
-land first), **boundary** (where the code lives and what it may NOT
-do), **evidence** (what proves it), **fallback** (what happens until
-it is proven), and **retirement gate** (when the corresponding
-external-core role may be retired). The universal rules: FreeIran
-Engine slices enter `engine/freecore` behind its existing model;
-external cores stay compatible backends until a capability's
-retirement gate is met; nothing is claimed without its evidence.
+The ordered implementation program. Items marked **CURRENT (v0.14.0)**
+have crossed their evidence gate in the v0.14.0 release (details and
+exact evidence classes in CHANGELOG.md, docs/tun.md and
+docs/protocols.md); the rest remain PLANNED. Each item records:
+**purpose** (why it exists), **dependencies** (what must land first),
+**boundary** (where the code lives and what it may NOT do),
+**evidence** (what proves it), **fallback** (what happens until it is
+proven), and **retirement gate** (when the corresponding external-core
+role may be retired). The universal rules: FreeIran Engine slices
+enter `engine/freecore` behind its existing model; external cores stay
+compatible backends until a capability's retirement gate is met;
+nothing is claimed without its evidence.
+
+v0.14.0 delivered: **item 1's first slice** (real packet dataplane
+end-to-end in memory; Windows transaction compile-verified; physical
+Windows runtime still owed), **item 2's first slice** (bounded DNS
+authority + bootstrap separation), **item 3's first slice** (real
+Router with decision objects), **item 4's Shadowsocks AEAD TCP slice**
+(reference interop evidenced), first-party selection ownership
+(Phase I of the release contract), and the engine lifecycle hardening
+the dataplane required. UDP through the first-party TUN is explicitly
+NOT implemented (fail-closed classification) and remains planned.
 
 ### 1. FreeIran TUN packet dataplane (complete Phase 1's foundation)
 

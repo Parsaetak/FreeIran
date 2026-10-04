@@ -101,6 +101,8 @@ func (r *Registry) Select(cfg config.Config, pref Preferences) (Selection, error
 				Summary:      caps.Summary(),
 				LastCheck:    entry.check,
 				Note:         entry.note,
+				Origin:       entry.origin,
+				Ownership:    entry.ownership,
 			},
 			core: entry.core,
 		})
@@ -141,7 +143,30 @@ func (r *Registry) Select(cfg config.Config, pref Preferences) (Selection, error
 		return lessCandidate(eligible[i].info, eligible[j].info, pref.PreferredBackend)
 	})
 
+	// First-party capability ownership (v0.14.0): when a first-party
+	// backend is eligible for this configuration, it OWNS the
+	// selection. An ordinary external PreferredBackend setting is
+	// honored only between external cores, or when the first-party
+	// engine cannot serve the capability — otherwise a stale user
+	// preference would silently launch an external core (a child
+	// process) for a route the FreeIran Engine executes in-process,
+	// defeating the first-party System Proxy/TUN migration. The
+	// preference still orders every non-first-party candidate.
 	chosen := eligible[0]
+
+	for i, cand := range eligible {
+		if cand.info.Ownership == "first-party" {
+			if i != 0 {
+				// Lead with the first-party engine; the previous head
+				// becomes the first fallback.
+				eligible[0], eligible[i] = eligible[i], eligible[0]
+			}
+
+			chosen = eligible[0]
+
+			break
+		}
+	}
 
 	fallbacks := make([]string, 0, len(eligible)-1)
 

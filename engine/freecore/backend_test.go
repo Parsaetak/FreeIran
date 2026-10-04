@@ -374,15 +374,20 @@ func TestRegistrySelectionRouting(t *testing.T) {
 		t.Fatalf("unsupported route selected %q, want the external core", sel.Core.Name())
 	}
 
-	// Explicit user preference still wins (the existing setting
-	// semantics are unchanged).
+	// v0.14.0 first-party ownership: an ordinary external preference
+	// no longer launches an external core for a route the FreeIran
+	// Engine genuinely supports.
 	prefSel, err := registry.Select(supported, core.Preferences{PreferredBackend: "xray"})
 	if err != nil {
 		t.Fatalf("select preferred: %v", err)
 	}
 
-	if prefSel.Core.Name() != "xray" {
-		t.Fatalf("preferred selection = %q, want xray (preference must keep winning)", prefSel.Core.Name())
+	if prefSel.Core.Name() != "freecore" {
+		t.Fatalf("supported route with external preference = %q, want freecore (first-party ownership)", prefSel.Core.Name())
+	}
+
+	if sel, err := registry.Select(unsupported, core.Preferences{PreferredBackend: "xray"}); err != nil || sel.Core.Name() != "xray" {
+		t.Fatalf("unsupported route with preference = %v/%q, want xray (preference rules among external cores)", err, sel.Core.Name())
 	}
 }
 

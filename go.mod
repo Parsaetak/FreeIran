@@ -1,12 +1,15 @@
 module github.com/Parsaetak/FreeIran
 
-go 1.26.0
+go 1.26.3
 
 toolchain go1.26.8
 
 require (
 	github.com/quic-go/quic-go v0.63.0
+	github.com/sagernet/gvisor v0.0.0-20250325023245-7a9c0f5725fb
+	github.com/shadowsocks/go-shadowsocks2 v0.1.5
 	github.com/wailsapp/wails/v3 v3.0.0-beta.19
+	golang.org/x/crypto v0.54.0
 	golang.org/x/sys v0.47.0
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2
 )
@@ -16,9 +19,12 @@ require (
 	github.com/coder/websocket v1.8.14 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/godbus/dbus/v5 v5.2.2 // indirect
+	github.com/google/btree v1.1.2 // indirect
 	github.com/jchv/go-winloader v0.0.0-20250406163304-c1995be93bd1 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
-	golang.org/x/crypto v0.54.0 // indirect
+	github.com/riobard/go-bloom v0.0.0-20200614022211-cdc8013cb5b3 // indirect
 	golang.org/x/net v0.56.0 // indirect
+	golang.org/x/time v0.15.0 // indirect
+	golang.zx2c4.com/wireguard/windows v1.1.1
 )

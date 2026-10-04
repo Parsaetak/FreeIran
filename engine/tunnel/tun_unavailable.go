@@ -59,15 +59,20 @@ func (unavailableTUNBackend) Snapshot() TUNSnapshot {
 	}
 }
 
-// newTUNBackend returns the platform TUN backend. With a wired
-// TUNCoreResolver the real sing-box dataplane backend is used
-// (Windows); without one the honest unavailable backend is returned.
+// newTUNBackend returns the platform TUN backend with the v0.14.0
+// selection policy: the FIRST-PARTY dataplane (when the platform
+// provides one) is preferred for configurations the FreeIran Engine
+// genuinely supports; the managed sing-box dataplane remains the
+// compatibility fallback for everything else; without a wired core
+// resolver the unavailable backend reports honestly.
 func newTUNBackend(resolver TUNCoreResolver) TUNBackend {
+	var fallback TUNBackend = unavailableTUNBackend{}
+
 	if resolver != nil {
-		return newSingboxTUNBackend(resolver)
+		fallback = newSingboxTUNBackend(resolver)
 	}
 
-	return unavailableTUNBackend{}
+	return newSelectingTUNBackend(newFreecoreTUNBackend(), fallback)
 }
 
 // errTunNotWired is retained as a sentinel for callers probing WHY

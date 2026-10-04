@@ -9,7 +9,7 @@ configurations.
 **Project:** FreeIran — A SHEYTAN Digital System
 **Architect:** Parsa Tak / SHEYTAN
 **Repository:** https://github.com/Parsaetak/FreeIran
-**Current version:** 0.13.1 (see `VERSION`)
+**Current version:** 0.14.0 (see `VERSION`)
 **Status:** production architecture — multi-core protocol runtime with
 managed installation, multi-level node discovery, Ping/URL test modes
 with measured ranking, verified-connection engine with racing,
@@ -19,12 +19,14 @@ dataplane, unified adaptive memory control and kernel-level process
 supervision, evidence-based failure classification with
 transport-agile route selection, proxy chains compiled into a single
 core process, and schema-verified ECH support through sing-box.
-v0.13.1 opens the two-phase first-party engine transition (ROADMAP.md):
-the FreeIran Engine foundation now carries supported SOCKS/HTTP
-routes entirely in-process (System Proxy needs no external core for
-them) and the first-party TUN device/control foundation is laid,
-while external cores remain the compatibility fallback for
-everything else (history lives in CHANGELOG.md).
+v0.14.0 crosses the Phase 2 boundary of the first-party engine
+transition (ROADMAP.md): the FreeIran Engine now carries supported
+SOCKS/HTTP/Shadowsocks-AEAD routes entirely in-process (System Proxy
+needs no external core for them), owns its first TUN dataplane (Wintun
+→ FreeIran userspace IP stack → engine sessions → real routing/DNS
+authorities → first-party outbound, with loop-prevention-bound
+upstreams), and the external cores remain the explicit compatibility
+fallback for everything else (history lives in CHANGELOG.md).
 
 ## What FreeIran is
 
@@ -46,14 +48,20 @@ as a future-work contract (PLANNED; not implemented).
 
 ## Current verified capabilities
 
-- **First-party engine (v0.13.1 foundation).** The FreeIran Engine
-  (`engine/freecore`) is a registered in-process backend: SOCKS and
-  HTTP remote configurations over plain TCP run entirely inside the
-  FreeIran process — local HTTP CONNECT and SOCKS5 inbounds, real
-  byte forwarding through FreeIran-owned Go code — so System Proxy
-  on those routes launches no external core. Its capability gate is
-  deliberately narrow; see [docs/protocols.md](docs/protocols.md)
-  for the exact matrix and evidence class.
+- **First-party engine (v0.14.0: real dataplane).** The FreeIran
+  Engine (`engine/freecore`) is a registered in-process backend:
+  SOCKS, HTTP and Shadowsocks-AEAD (aes-128-gcm, aes-256-gcm,
+  chacha20-ietf-poly1305 — reference-interop evidenced) remote
+  configurations run entirely inside the FreeIran process, and the
+  first-party TUN dataplane carries real TCP flows through the
+  FreeIran-owned userspace IP stack, a real Router (DIRECT / PROXY /
+  BLOCK with explainable decisions) and a real bounded DNS authority.
+  First-party TUN selection prefers the FreeIran dataplane whenever
+  the capability gate holds; sing-box TUN remains the explicit
+  fallback. Its capability gate is deliberately narrow; see
+  [docs/protocols.md](docs/protocols.md) for the exact matrix and
+  evidence class and [docs/tun.md](docs/tun.md) for the TUN evidence
+  ladder.
 - Multi-core protocol runtime: Xray, V2Ray and sing-box as managed,
   digest-verified backends (Mihomo is core-manager-managed; its
   connection adapter is deliberately out of scope). See

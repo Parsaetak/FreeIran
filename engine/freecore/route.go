@@ -18,6 +18,11 @@ const (
 	// OutboundHTTP forwards through an HTTP CONNECT remote.
 	OutboundHTTP OutboundKind = "http"
 
+	// OutboundShadowsocks forwards through a Shadowsocks AEAD remote
+	// (the first encrypted protocol slice — evidence-gated, see
+	// docs/protocols.md).
+	OutboundShadowsocks OutboundKind = "shadowsocks"
+
 	// OutboundDirect dials the destination with no remote (the
 	// engine-side direct path; not selectable as a configuration
 	// type today — it exists because the outbound matrix needs it
@@ -41,6 +46,7 @@ type Route struct {
 	Endpoint     Endpoint
 	Username     string
 	Password     string
+	Method       string // AEAD method name for Shadowsocks ("" otherwise)
 	Network      Network
 	Security     TransportSecurity
 	DialTimeout  time.Duration
@@ -68,6 +74,14 @@ func Normalize(cfg config.Config) (Route, error) {
 		route.Outbound = OutboundSOCKS5
 	case config.TypeHTTP:
 		route.Outbound = OutboundHTTP
+	case config.TypeShadowsocks:
+		method, merr := NormalizeShadowsocksMethod(cfg.Method)
+		if merr != nil {
+			return Route{}, merr
+		}
+
+		route.Outbound = OutboundShadowsocks
+		route.Method = method
 	default:
 		return Route{}, firerrors.New(firerrors.KindInvalidInput,
 			Subsystem, "normalize",
@@ -98,6 +112,11 @@ func Normalize(cfg config.Config) (Route, error) {
 		return Route{}, firerrors.New(firerrors.KindInvalidInput,
 			Subsystem, "normalize",
 			"first-party engine does not implement in-engine chains (Phase 2)")
+	}
+
+	if cfg.Type == config.TypeShadowsocks && strings.TrimSpace(cfg.Password) == "" {
+		return Route{}, firerrors.New(firerrors.KindInvalidInput,
+			Subsystem, "normalize", "shadowsocks remote requires a password")
 	}
 
 	if strings.TrimSpace(cfg.Address) == "" {

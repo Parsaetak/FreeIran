@@ -68,6 +68,7 @@ type sessionRegistry struct {
 	sessions map[uint64]*Session
 	next     uint64
 	max      int
+	draining bool
 }
 
 func newSessionRegistry(max int) *sessionRegistry {
@@ -92,11 +93,29 @@ func (*sessionLimitError) Error() string {
 	return "freecore: concurrent session limit reached"
 }
 
+// errDraining is returned when a session begins after shutdown
+// started. It is distinct from the concurrency limit: the limit is a
+// load bound, draining is a lifecycle refusal.
+var errDraining = &drainingError{}
+
+type drainingError struct{}
+
+func (*drainingError) Error() string {
+	return "freecore: engine is shutting down"
+}
+
 // begin opens a session. The returned end function must be called
 // when the session ends (defer) — it removes the session from the
-// registry and cancels its context.
+// registry and cancels its context. After beginDrain, every begin
+// fails: shutdown owns the future.
 func (r *sessionRegistry) begin(parent context.Context) (*Session, context.Context, func(), error) {
 	r.mu.Lock()
+
+	if r.draining {
+		r.mu.Unlock()
+
+		return nil, nil, nil, errDraining
+	}
 
 	if len(r.sessions) >= r.max {
 		r.mu.Unlock()
@@ -129,6 +148,22 @@ func (r *sessionRegistry) begin(parent context.Context) (*Session, context.Conte
 	}
 
 	return s, ctx, end, nil
+}
+
+// beginDrain switches the registry into shutdown mode: every future
+// begin is refused. Idempotent.
+func (r *sessionRegistry) beginDrain() {
+	r.mu.Lock()
+	r.draining = true
+	r.mu.Unlock()
+}
+
+// draining reports whether the registry has begun draining.
+func (r *sessionRegistry) isDraining() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.draining
 }
 
 // Len returns the number of live sessions.

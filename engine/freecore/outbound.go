@@ -34,6 +34,10 @@ type Outbound interface {
 type DirectOutbound struct {
 	// Timeout bounds one dial (zero = DefaultDialTimeout).
 	Timeout time.Duration
+
+	// transport is the optional constrained dialer (loop prevention);
+	// used by router-DIRECT flows under the TUN dataplane.
+	transport Dialer
 }
 
 // Name implements Outbound.
@@ -47,9 +51,16 @@ func (d *DirectOutbound) Dial(ctx context.Context, address string) (net.Conn, er
 		timeout = DefaultDialTimeout
 	}
 
-	dialer := &net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second}
+	var (
+		conn net.Conn
+		err  error
+	)
 
-	conn, err := dialer.DialContext(ctx, "tcp", address)
+	if d.transport != nil {
+		conn, err = d.transport.DialContext(ctx, "tcp", address)
+	} else {
+		conn, err = (&net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second}).DialContext(ctx, "tcp", address)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("freecore: direct dial %s: %w", address, err)
 	}
@@ -74,6 +85,10 @@ type SOCKS5Outbound struct {
 	// Timeout bounds the proxy dial and handshake (zero =
 	// DefaultDialTimeout).
 	Timeout time.Duration
+
+	// transport is the optional constrained dialer (loop prevention);
+	// nil = plain system dialing.
+	transport Dialer
 }
 
 // Name implements Outbound.
@@ -91,6 +106,9 @@ func (s *SOCKS5Outbound) Dial(ctx context.Context, address string) (net.Conn, er
 		Timeout:   timeout,
 		Username:  s.Username,
 		Password:  s.Password,
+	}
+	if s.transport != nil {
+		dialer.DialFunc = s.transport.DialContext
 	}
 
 	conn, err := dialer.Dial(ctx, "tcp", address)
@@ -117,6 +135,9 @@ type HTTPConnectOutbound struct {
 	// Timeout bounds the proxy dial and the CONNECT exchange (zero =
 	// DefaultDialTimeout).
 	Timeout time.Duration
+
+	// transport is the optional constrained dialer (loop prevention).
+	transport Dialer
 }
 
 // Name implements Outbound.
@@ -130,9 +151,15 @@ func (h *HTTPConnectOutbound) Dial(ctx context.Context, address string) (net.Con
 		timeout = DefaultDialTimeout
 	}
 
-	dialer := &net.Dialer{Timeout: timeout}
+	var proxyConn net.Conn
 
-	proxyConn, err := dialer.DialContext(ctx, "tcp", h.Proxy.String())
+	var err error
+
+	if h.transport != nil {
+		proxyConn, err = h.transport.DialContext(ctx, "tcp", h.Proxy.String())
+	} else {
+		proxyConn, err = (&net.Dialer{Timeout: timeout}).DialContext(ctx, "tcp", h.Proxy.String())
+	}
 	if err != nil {
 		return nil, fmt.Errorf("freecore: http outbound dial %s: %w", h.Proxy, err)
 	}
@@ -225,23 +252,37 @@ func (w *watchedConn) Close() error {
 }
 
 // outboundFor builds the first-party outbound for a normalized route.
-func outboundFor(route Route) Outbound {
+// outboundFor builds the first-party outbound for a normalized route.
+// upstream (optional) is the loop-prevention constrained transport the
+// TUN dataplane passes in: it owns the DIAL to the remote for every
+// outbound shape, so an engine upstream can never re-enter the TUN.
+func outboundFor(route Route, upstream Dialer) Outbound {
 	switch route.Outbound {
 	case OutboundSOCKS5:
 		return &SOCKS5Outbound{
-			Proxy:    route.Endpoint,
-			Username: route.Username,
-			Password: route.Password,
-			Timeout:  route.DialTimeout,
+			Proxy:     route.Endpoint,
+			Username:  route.Username,
+			Password:  route.Password,
+			Timeout:   route.DialTimeout,
+			transport: upstream,
 		}
 	case OutboundHTTP:
 		return &HTTPConnectOutbound{
-			Proxy:    route.Endpoint,
-			Username: route.Username,
-			Password: route.Password,
-			Timeout:  route.DialTimeout,
+			Proxy:     route.Endpoint,
+			Username:  route.Username,
+			Password:  route.Password,
+			Timeout:   route.DialTimeout,
+			transport: upstream,
+		}
+	case OutboundShadowsocks:
+		return &ShadowsocksOutbound{
+			Proxy:     route.Endpoint,
+			Password:  route.Password,
+			Method:    route.Method,
+			Timeout:   route.DialTimeout,
+			transport: upstream,
 		}
 	default:
-		return &DirectOutbound{}
+		return &DirectOutbound{transport: upstream}
 	}
 }

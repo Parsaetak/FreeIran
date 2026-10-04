@@ -25,6 +25,29 @@ classes are NOT interchangeable.
 | Windows CI behavioral verification | EXECUTED BY CI — the Windows job runs the platform test surface (compile-all + behavioral + repeated battery); see docs/ci.md for the v0.11.3 hosted-runner incident and the v0.11.4 bounded-timeout hardening. CI runs NO privileged TUN operation |
 | Physical elevated Windows TUN runtime (real Wintun adapter + route + tunneled request on a physical Windows host) | **NOT VERIFIED** — requires an elevated Windows host with the managed sing-box core; no such runtime was executed for this release. FreeIran deliberately does not claim it |
 
+## v0.14.0 — the first-party TUN dataplane (evidence record)
+
+v0.14.0 adds the FIRST FreeIran-owned TUN dataplane alongside the
+sing-box path, with per-activation selection (`tun_backend_selected`):
+
+| Gate the first-party activation verifies | Evidence class reached in v0.14.0 |
+| --- | --- |
+| Packet path Wintun → userspace stack → engine flow → Router → first-party outbound → remote → reverse path | VERIFIED end-to-end in memory (IPv4 + IPv6, real bytes, `-race`) — `TestTUNDataplaneEndToEndThroughSOCKS5Remote`, `TestTUNDataplaneIPv6ThroughSOCKS5Remote`, `engine/freecore/netstack` integration suite |
+| Userspace IP stack behavior (TCP handshake, teardown, RST-on-refusal, bounded flows, counters) | VERIFIED in memory against the pinned gVisor fork (`github.com/sagernet/gvisor@v0.0.0-20250325023245-7a9c0f5725fb`, isolated behind `engine/freecore/netstack`) |
+| Windows platform code (Wintun open, `winipcfg` address/route mutation + undo, elevation check, `IP_UNICAST_IF` upstream binding) | COMPILE-VERIFIED (`windows/amd64` build + vet) — no elevated Windows runtime executed for this release |
+| Activation verification gate actually executed by `Enable` on Windows | adapter observed with the exact FreeIran identity, covered routes held by FreeIran's interface index, upstream physical interface present (live observation), loop-prevention constraint honored at the dial seam |
+| Actual tunneled APPLICATION traffic on a physical Windows host | **NOT VERIFIED** — the Level-5 rung. A successful first-party activation is NOT claimed as an internet-traffic proof. FreeIran deliberately does not claim it |
+| UDP through the first-party TUN | **NOT IMPLEMENTED (fail-closed)** — UDP datagrams entering the userspace stack are classified `Unsupported`, counted, and never leaked to the physical interface. SOCKS5 UDP ASSOCIATE remains planned (ROADMAP) |
+
+Loop prevention is a dialer contract (`freecore.NewUpstreamDialer`):
+engine upstreams bind to the PHYSICAL interface observed live on every
+activation (`IP_UNICAST_IF` / `IPV6_UNICAST_IF`); when the constraint
+cannot be honored the upstream dial is refused — fail-closed beats a
+loop. The adapter DNS settings are never touched by the first-party
+path; DNS behavior is defined in the engine's DNS authority section
+below and in docs/architecture.md.
+
+
 ## Architecture
 
 TUN is NOT a second packet engine. The EXISTING managed sing-box core

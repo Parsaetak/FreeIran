@@ -11,6 +11,156 @@ are historical: version numbers, core pins and verification claims
 inside them describe the state of that release, not the current
 state.
 
+## v0.14.0 — Phase 2: first FreeIran-owned TUN dataplane, real routing/DNS, first encrypted protocol
+
+v0.14.0 crosses the architectural boundary ROADMAP.md defines for
+Phase 2: the FreeIran-owned network dataplane now carries real TCP
+traffic end to end, routing and DNS are real engine authorities
+instead of placeholders, and the first encrypted protocol slice
+(Shadowsocks AEAD TCP) ships behind interoperability evidence. Every
+capability the engine still does not implement keeps running through
+the existing external cores — nothing was silently reclassified, and
+no unsupported first-party claim is made anywhere.
+
+### Engine hardening (Phase A)
+
+- **Drained shutdown.** `Engine.Stop(grace)` now has real semantics:
+  new sessions are refused (registry drain gate), live sessions are
+  cancelled, listeners close, and with `grace > 0` Stop waits (bounded)
+  until the session registry reaches zero. `Wait` reports completion
+  only after every engine-owned goroutine exited — a parent-context
+  cancellation now produces the same observable shutdown as an
+  explicit Stop (the v0.13.1 defect where a parent cancel left the
+  listeners open is closed).
+- **Listener failure is observable.** A listener that dies (or is
+  closed by something other than Stop) while the engine believes
+  itself running is recorded as an engine failure through `Wait` —
+  never a silent dead inbound.
+- **Lifecycle races designed for, not hoped away.** Stop/Wait/Run are
+  safe under concurrent callers (state mutex + separated stop-action /
+  completion onces); targeted `-race` coverage pins engine stop,
+  session creation/removal, listener failure, and goroutine-lifetime
+  invariants.
+
+### First-party TUN dataplane (Phase B)
+
+- **`engine/freecore/netstack`** isolates gVisor netstack (pinned:
+  `github.com/sagernet/gvisor@v0.0.0-20250325023245-7a9c0f5725fb`, the
+  build-friendly fork sing-box ships) behind FreeIran interfaces — no
+  gVisor type crosses the package boundary. Promiscuous + spoofing
+  NIC, catch-all route table, TCP forwarder with a real half-open
+  bound (`maxInFlight=1024`; this fork treats 0 as drop-everything),
+  bounded flow registry, and honest counters for every disposition
+  (in/out/dropped/malformed/unsupported/refused). UDP without a
+  handler is an explicit fail-closed classification — it is counted
+  and refused, never silently leaked to the physical interface.
+- **`engine/freecore/tun.MemDevice`** is the platform-neutral in-memory
+  device (same Device contract) that makes the whole packet path
+  testable on any OS.
+- **End-to-end evidence (in-memory integration, Linux):** application
+  packets → fake TUN device → userspace IP stack → engine session →
+  Router (default policy → PROXY) → first-party SOCKS5 outbound →
+  loopback SOCKS5 fixture → real echo server → back through every
+  layer, IPv4 and IPv6, byte-for-byte, under `-race`. Measured in CI
+  conditions (`TestPhase2Measurements`, in-memory, not a network
+  benchmark): engine start ~52µs, dataplane start ~0.4ms, 4 MiB echo
+  round-trip ~13 MiB/s, zero external child processes, PID 0.
+
+### TUN activation transaction + loop prevention (Phases C/D)
+
+- The ONE TunnelService now selects the TUN dataplane per activation:
+  the first-party backend (`freecoreTUNBackend`) is preferred when the
+  FreeIran Engine genuinely supports the configuration and the
+  platform gate (Windows + elevation) holds; the managed sing-box
+  dataplane remains the explicit fallback for everything else. The
+  selection is logged (`tun_backend_selected`) and surfaced through
+  `TUNSnapshot.Backend`; the two dataplanes are mutually exclusive.
+- The first-party activation transaction validates the route, checks
+  elevation BEFORE any mutation, re-derives the deterministic adapter
+  identity, refuses address-plan collisions against live observation,
+  opens the Wintun device, and applies interface addresses + covered
+  routes (0.0.0.0/1 + 128.0.0.0/1 split-default shape) through the
+  FreeIran-owned IP surface (`freecore/tun/winip_windows.go`, over the
+  production-proven wireguard-windows `winipcfg` helpers) with every
+  mutation recorded as an undo. Rollback runs undos in reverse,
+  surfaces residual failures honestly, and closes the device.
+- **Loop prevention** is a first-class dialer contract:
+  `freecore.NewUpstreamDialer(constraint)` binds engine upstreams to
+  the physical interface observed live (`IP_UNICAST_IF` /
+  `IPV6_UNICAST_IF`) so an upstream can never re-enter the FreeIran
+  TUN. When the platform cannot honor the constraint the upstream
+  dial is REFUSED — fail-closed beats a loop. The constraint is built
+  from current OS observation on every activation (never a hardcoded
+  gateway or adapter index), and the verification gate re-checks the
+  adapter, the covered-route ownership and the upstream interface.
+
+### Real routing authority (Phase E)
+
+- `Router` decisions now carry action (DIRECT / PROXY / BLOCK),
+  outbound, resolver choice, reason and rule id. The default policy
+  preserves the v0.13.1 contract (everything through the configured
+  remote); explicit policies gain block lists, direct lists and
+  private-direct. Malformed targets BLOCK (fail-closed). The local
+  inbounds and the TUN flow path call the SAME router — no protocol
+  implementation hides a decision.
+
+### Real DNS authority (Phase F)
+
+- `freecore.CachingResolver` is the bounded DNS authority behind the
+  existing `Resolver` seam: bounded cache (512 entries), positive and
+  negative TTLs, context-honoring lookups, caller-cancellation never
+  cached as a decision, and a bounded observation ring recording
+  resolver, route, success/failure class, cache state and timing.
+- `freecore.BootstrapResolver` resolves the proxy endpoint's own name
+  over explicit DNS servers through the constrained dialer — bootstrap,
+  destination resolution and TUN-originated DNS stay separated, no
+  recursion into the TUN, and Windows adapter DNS settings are never
+  touched by the engine.
+
+### SOCKS5 + Shadowsocks (Phases G/H)
+
+- The first-party SOCKS5 client gained a transport-dial override (the
+  loop-prevention dialer owns the proxy dial under TUN) with the
+  handshake unchanged and all existing loopback coverage intact.
+- **Shadowsocks AEAD TCP** (`engine/freecore/shadowsocks`):
+  aes-128-gcm, aes-256-gcm, chacha20-ietf-poly1305; EVP_BytesToKey
+  master keys, HKDF-SHA1 "ss-subkey" per-connection subkeys, LE nonce
+  counters, 0x3FFF chunk limit, fail-closed auth/tamper/oversize
+  handling, honest-idempotent close. Evidence: KDF vectors against an
+  independent reimplementation, framing round-trip/tamper tests, a
+  full client↔server round-trip suite, AND reference
+  interoperability both directions against
+  `github.com/shadowsocks/go-shadowsocks2 v0.1.5` for all three
+  methods (our client through their server; their client through our
+  fixture). Two implementation bugs found and fixed by the evidence
+  suite (reader buffer aliasing; close-after-cancel semantics).
+  Deprecated stream ciphers and AEAD-2022 are NOT implemented.
+
+### Backend selection ownership (Phase I)
+
+- `core.Registry.Select` now enforces first-party capability
+  ownership: when the FreeIran Engine genuinely supports the
+  configuration it OWNS the selection, and an ordinary external
+  `PreferredBackend` setting only orders the external cores (a stale
+  preference can no longer silently launch an external core for a
+  supported route). Regression matrix added (SOCKS/HTTP/Shadowsocks
+  first-party routes, VLESS/TLS/QUIC external routes, preference and
+  fallback ordering).
+
+### Compatibility and honesty
+
+- External cores (Xray/V2Ray/sing-box/Mihomo) continue serving every
+  unsupported capability; System Proxy still launches no child process
+  for first-party-supported routes; the connection state machine, the
+  core registry, the TUN controller, the config store and the test
+  queue remain the only authorities — no duplicate manager exists.
+- Evidence classes for this release: Levels 1–3 (compile, unit,
+  in-memory integration, real protocol interoperability) plus
+  compile-verified Windows platform code. Physical elevated Windows
+  TUN runtime (Level 5) with real traffic is NOT claimed in this
+  release; docs/tun.md records the exact gate the activation verifies
+  today. CI results are checked before any CI claim.
+
 ## v0.13.1 — Phase 1 foundation: FreeIran Engine, first-party System Proxy path, TUN foundation, Windows icon + Settings repairs
 
 v0.13.1 is the first half of a deliberate two-phase transition

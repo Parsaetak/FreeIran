@@ -46,6 +46,12 @@ type Dialer struct {
 	// method 0x00.
 	Username string
 	Password string
+
+	// DialFunc overrides the transport dial to the proxy (the
+	// loop-prevention constrained dialer passes its bound dial here;
+	// nil = plain net.DialTimeout). The handshake runs over the
+	// returned connection unchanged.
+	DialFunc func(ctx context.Context, network, address string) (net.Conn, error)
 }
 
 // Dial connects to addr ("host:port") through the configured proxy.
@@ -73,9 +79,15 @@ func (d Dialer) Dial(ctx context.Context, _, addr string) (net.Conn, error) {
 
 	var proxy net.Conn
 
-	if deadline, ok := dialCtx.Deadline(); ok {
+	deadline, hasDeadline := dialCtx.Deadline()
+
+	switch {
+	case d.DialFunc != nil:
+		// The constrained transport (loop prevention) owns the dial.
+		proxy, err = d.DialFunc(dialCtx, "tcp", d.ProxyAddr)
+	case hasDeadline:
 		proxy, err = net.DialTimeout("tcp", d.ProxyAddr, time.Until(deadline))
-	} else {
+	default:
 		proxy, err = net.DialTimeout("tcp", d.ProxyAddr, timeout)
 	}
 
