@@ -18,6 +18,15 @@ native/build/
 frontend/node_modules/
 frontend/dist/
 *.tsbuildinfo
+
+# --- Go embed tree (v0.14.2) ---
+# cmd/freeiran/frontend/dist is EPHEMERAL GENERATED OUTPUT, never
+# committed: it is staged by `npm run build:embed` (frontend/scripts/
+# copy-dist.mjs) and consumed by go:embed at compile time. CI stages
+# it per-job (or transfers it as the freeiran-frontend-embed artifact
+# to the desktop-validation job). Keep it untracked so a local
+# frontend build can never reintroduce generated output into Git.
+cmd/freeiran/frontend/dist/
 .npm/
 npm-debug.log*
 

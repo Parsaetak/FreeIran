@@ -5876,3 +5876,34 @@ html.reduced-motion .qc-mode-chip {
 .page-settings .card {
   max-width: 720px;
 }
+
+/* ---------------------------------------------------------------------------
+ * v0.14.2 — bounded-integer steppers (Settings compact control panel).
+ *
+ * The six bounded integer settings (refresh interval, log size, log
+ * backups, log retention, queue workers, network timeout) render as
+ * [-] value [+] groups: the compact input stays the keyboard/direct-
+ * entry authority (native number semantics, v0.13.1 width guard), and
+ * the two step buttons give mouse users a one-click ±1 that clamps to
+ * the declared bounds. The group is an inline flex row so the control
+ * cluster stays as narrow as the input it wraps — never a full-card
+ * form row again.
+ * ------------------------------------------------------------------------- */
+.number-stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.number-stepper .btn-step {
+  width: 26px;
+  min-width: 26px;
+  padding: 0;
+  line-height: 1;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.number-stepper input[type="number"] {
+  min-width: 0;
+}

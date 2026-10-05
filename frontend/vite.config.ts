@@ -61,5 +61,8 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
+    // v0.14.2: global async-util budget for testing-library queries
+    // (see src/test-setup.ts for the flake evidence and rationale).
+    setupFiles: ["src/test-setup.ts"],
   },
 });

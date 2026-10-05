@@ -29,7 +29,8 @@ if (problems.length > 0) {
   }
   console.error(
     "Stale or hashed assets are forbidden; run `npm run build:embed` " +
-      "in frontend/ and commit the result.",
+      "in frontend/ to re-stage the ephemeral embed tree (never " +
+      "committed).",
   );
   process.exit(1);
 }

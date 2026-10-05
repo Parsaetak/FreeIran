@@ -16,19 +16,20 @@ go (ubuntu)                     native (ubuntu)      frontend (ubuntu)
 ├─ gofmt check                  ├─ make -C native     ├─ npm ci (cached)
 ├─ go vet (engine/system/… )    │   test              ├─ typecheck (tsc)
 ├─ go build engine              ├─ build with         ├─ vitest
-├─ go test                      │   native_accel      ├─ vite build
-├─ go test -race                ├─ cross-language     └─ dist artifact
-├─ benchmark smoke              │   tests
-└─ windows/amd64 desktop        └─ bridge benchmarks
-   compile-validation
-                       │
-protocol-cores (ubuntu)         │
-├─ install pinned v2ray 5.53.0  │  (SHA-256 verified, official sources)
-├─ install pinned xray 26.3.27  │
+├─ go test                      │   native_accel      ├─ vite build +
+├─ go test -race                ├─ cross-language     │   embed staging
+├─ benchmark smoke              │   tests             └─ validated embed
+└─ engine tests only —          └─ bridge benchmarks     tree artifact
+   (v0.14.2 moved the                    │
+   desktop compile out)                  ▼ (needs: frontend)
+                       │               desktop-validation (ubuntu, v0.14.2)
+protocol-cores (ubuntu)         │      ├─ download freeiran-frontend-embed
+├─ install pinned v2ray 5.53.0  │      ├─ assert canonical embed assets
+├─ install pinned xray 26.3.27  │      └─ windows/amd64 compile-validation
 ├─ install pinned sing-box 1.14 │  (v1.14.1 since the v0.11.4 alignment)
 ├─ version-report checks        │
 ├─ v2ray adapter smoke (real)  │  ← v2ray test + run + listener + stop
-├─ xray adapter smoke (real)   │  ← xray run -test + run + stop
+├─ xray adapter smoke (real)  │  ← xray run -test + run + stop
 └─ sing-box adapter smoke      │  ← sing-box check + run + stop
                        │
                        ▼ (needs: go + frontend + protocol-cores)
@@ -40,7 +41,8 @@ protocol-cores (ubuntu)         │
               │   (coremgr exec, netcheck ladder, app boots, connection
               │   lifecycle) — focused -run patterns, bounded timeouts
               ├─ Layer C: repeated WinINet/recovery battery (×5)
-              ├─ runtime smoke + desktop build (ldflags version)
+              ├─ runtime smoke + CI resource regen (go-winres, v0.14.2)
+              ├─ desktop build (ldflags version)
               ├─ executable + PE-subsystem verification
               ├─ v0.11.5 GUI launch proof: launches the REAL built
               │   FreeIran.exe (no --smoke-test) in an isolated
@@ -51,6 +53,57 @@ protocol-cores (ubuntu)         │
               │   termination, window inventory + log tail on failure
               └─ artifact upload
 ```
+
+### v0.14.2 — the ephemeral embed pipeline
+
+CI run `37216394622` failed its ONLY failing step ("Validate desktop
+build (windows/amd64)") with `pattern all:frontend/dist: no matching
+files found`: v0.14.1 removed the tracked `cmd/freeiran/frontend/dist`
+tree (generated frontend output is no longer committed), the frontend
+job staged a fresh tree only inside its own workspace, and the Go
+job's checkout never saw one — `go:embed all:frontend/dist` therefore
+had no matching files. The Windows job was skipped behind that
+failure, so the run proved nothing about Windows.
+
+The v0.14.2 model:
+
+```text
+frontend source
+      │  npm run build:embed (tsc + vite build + copy-dist)
+      ▼
+validated ephemeral embed tree  cmd/freeiran/frontend/dist
+      │                          (inventory-checked by embed-inventory.mjs)
+      ▼
+freeiran-frontend-embed artifact / per-job staging
+      │
+      ▼
+desktop compile jobs (windows/amd64 validation, Windows build, release)
+```
+
+- The frontend job uploads its ALREADY-VALIDATED staged tree as the
+  `freeiran-frontend-embed` artifact; the new `desktop-validation`
+  job (needs ONLY the frontend job) restores it to
+  `cmd/freeiran/frontend/dist`, asserts the four canonical assets,
+  then compiles. The frontend is never rebuilt for the Go side.
+- The old `git diff --exit-code -- cmd/freeiran/frontend/dist`
+  freshness check is gone: against an untracked tree it would pass
+  vacuously forever (a nonexistent pathspec produces no diff). The
+  embed inventory validator is the one freshness authority, and it
+  runs before the artifact upload.
+- The engine-test portions stay in the `go` job, parallel to the
+  frontend build — only the desktop compile depends on the embed
+  artifact.
+- release.yml's `verify` job had the same defect (`npm run build`
+  with no staging); it now runs `npm run build:embed` + inventory
+  validation before the cross-compile.
+- Both Windows desktop builds regenerate
+  `cmd/freeiran/rsrc_windows_amd64.syso` from `build/winres.json`
+  via the documented go-winres mechanism BEFORE compiling, so the PE
+  icon/version resources always match `VERSION` (the committed .syso
+  is generated output whose metadata goes stale on every bump; the
+  CI-regenerated file stays an uncommitted runner artifact).
+- `cmd/freeiran/frontend/dist/` is `.gitignore`d: staged per job,
+  never tracked again.
 
 ### The protocol-cores job
 

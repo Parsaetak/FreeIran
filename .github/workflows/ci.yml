@@ -141,14 +141,6 @@ jobs:
             ./engine/chunks ./engine/store ./engine/pipeline \
             ./engine/core ./engine/core/v2ray ./internal/logging
 
-      # Compile-validate the Wails desktop app for the primary target
-      # from Linux: the Windows webview needs no GTK, so a full
-      # windows/amd64 build succeeds without GUI development packages.
-      - name: Validate desktop build (windows/amd64)
-        run: |
-          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
-            go build -o /dev/null ./cmd/freeiran
-
   native:
     name: C++ native layer
     runs-on: ubuntu-latest
@@ -204,48 +196,51 @@ jobs:
       - name: Production build
         run: npm run build
 
-      # The committed embed output must be EXACTLY what the pinned
-      # toolchain regenerates: build:embed wipes and re-copies the
-      # target, so a clean `git diff` proves no stale bundles and no
-      # drift between frontend/dist and cmd/freeiran/frontend/dist.
+      # v0.14.2 EMBED MODEL — the staged embed tree is an EPHEMERAL CI
+      # OUTPUT, not a committed artifact. v0.14.1 intentionally removed
+      # the tracked cmd/freeiran/frontend/dist tree: `go:embed` cannot
+      # traverse parent directories, so the tree must exist under
+      # cmd/freeiran/ at compile time, but GENERATED frontend output is
+      # no longer stored in Git (a committed tree either goes stale the
+      # moment the frontend moves or forces every frontend change to
+      # ship a mechanical re-commit).
       #
-      # PATH CONTEXT (fixed in v0.9.9): npm steps run in frontend/ but
-      # the embed tree lives at the REPO ROOT (cmd/freeiran/frontend/
-      # dist). The check below therefore runs from the repository root
-      # and only the npm invocation is scoped to frontend/ — running
-      # the whole script under the job's `working-directory: frontend`
-      # default made every root-relative path resolve to the
-      # nonexistent frontend/cmd/... tree (CI run 35542123824) and the
-      # `git diff -- <path>` guard passed vacuously because a
-      # nonexistent pathspec never produces a diff.
+      # This job therefore:
+      #   1. builds the frontend production bundle (npm run build:embed
+      #      = tsc + vite build + copy-dist into the embed target);
+      #   2. validates the staged tree against the canonical asset
+      #      inventory; and
+      #   3. uploads the VALIDATED tree as the freeiran-frontend-embed
+      #      artifact — the input the Go desktop-validation job compiles
+      #      against. The frontend is never rebuilt for that job.
       #
       # The inventory assertions live in frontend/scripts/
       # embed-inventory.mjs — the ONE shared validation source (the
       # same module copy-dist.mjs validates with) — invoked here via
       # validate-embed.mjs. An old hashed artifact, a missing canonical
       # asset, an undeclared index.html reference or a duplicate worker
-      # fails the job even when git diff would stay quiet (e.g. a file
-      # introduced AND committed in the same change).
-      - name: Clean-room embed check
+      # fails the job BEFORE the artifact is uploaded.
+      #
+      # PATH CONTEXT (unchanged since v0.9.9): npm steps run in
+      # frontend/ but the embed tree lives at the REPO ROOT
+      # (cmd/freeiran/frontend/dist) — the npm invocation is scoped to
+      # frontend/ and the validation runs from the repository root.
+      - name: Build and validate embed tree (ephemeral, not committed)
         working-directory: .
         run: |
           (cd frontend && npm run build:embed)
 
-          if ! git diff --exit-code -- cmd/freeiran/frontend/dist; then
-            echo "cmd/freeiran/frontend/dist is stale: the committed embed" >&2
-            echo "output differs from a fresh build. Run 'npm run build:embed'" >&2
-            echo "and commit the result (copy-dist.mjs wipes stale hashed files)." >&2
-            git status --short -- cmd/freeiran/frontend/dist
-            exit 1
-          fi
-
           node frontend/scripts/validate-embed.mjs
 
-      - name: Upload dist
+      # Upload the ALREADY-VALIDATED staged tree (never a rebuild, and
+      # never the pre-copy frontend/dist): the artifact root IS the
+      # embed tree, so the consumer restores it by extracting directly
+      # into cmd/freeiran/frontend/dist.
+      - name: Upload validated embed tree
         uses: actions/upload-artifact@v7
         with:
-          name: frontend-dist
-          path: frontend/dist
+          name: freeiran-frontend-embed
+          path: cmd/freeiran/frontend/dist
           retention-days: 3
 
   protocol-cores:
@@ -322,6 +317,66 @@ jobs:
         run: go test -count=1 -run TestSingBoxSmokeRealBinary -v ./engine/core/singbox
         env:
           FREEIRAN_TEST_SINGBOX_BIN: ${{ github.workspace }}/.cores/sing-box-bin
+
+  # v0.14.2 — the desktop compile-validation is its own job so ONLY
+  # the compile that needs generated frontend assets depends on the
+  # frontend job. CI run 37216394622 failed exactly here: `go:embed
+  # all:frontend/dist` (cmd/freeiran/main.go) has no matching files in
+  # the Go job's checkout because the embed tree is generated output
+  # (staged by build:embed, never committed since v0.14.1). The engine
+  # test portions of the old combined Go job keep running in parallel
+  # with the frontend build, exactly as before — nothing unrelated is
+  # serialized behind npm.
+  desktop-validation:
+    name: Go desktop build validation (windows/amd64)
+    runs-on: ubuntu-latest
+    needs: [frontend]
+    env:
+      GOTOOLCHAIN: local
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.8"
+          cache: true
+
+      # Restore the frontend job's VALIDATED embed tree. The artifact
+      # root is the tree itself (uploaded as cmd/freeiran/frontend/
+      # dist), so downloading directly into the package directory
+      # reconstructs the exact staged layout. The tree was already
+      # inventory-checked before upload; the assertion below re-proves
+      # the restore inside THIS workspace before the compiler runs.
+      - name: Download validated frontend embed artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: freeiran-frontend-embed
+          path: cmd/freeiran/frontend/dist
+
+      - name: Assert canonical embed assets
+        run: |
+          for asset in index.html assets/index.js assets/index.css assets/export-worker.js; do
+            if [ ! -f "cmd/freeiran/frontend/dist/$asset" ]; then
+              echo "embed artifact is missing canonical asset: $asset" >&2
+              exit 1
+            fi
+          done
+
+          count=$(find cmd/freeiran/frontend/dist -type f | wc -l)
+          echo "embed tree restored: $count files (canonical assets present)"
+
+          if [ "$count" -lt 4 ]; then
+            echo "embed tree suspiciously small: $count files" >&2
+            exit 1
+          fi
+
+      # Compile-validate the Wails desktop app for the primary target
+      # from Linux: the Windows webview needs no GTK, so a full
+      # windows/amd64 build succeeds without GUI development packages.
+      - name: Validate desktop build (windows/amd64)
+        run: |
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
+            go build -o /dev/null ./cmd/freeiran
 
   windows:
     name: Windows tests and desktop build
@@ -532,6 +587,21 @@ jobs:
         run: |
           go run ./cmd/freeiran --smoke-test
           if ($LASTEXITCODE -ne 0) { throw "smoke test failed: $LASTEXITCODE" }
+
+      # v0.14.2 — CI-ONLY Windows resource generation (same model as
+      # release.yml): the committed .syso is a generated artifact whose
+      # PE metadata must match VERSION at build time. Regenerate it
+      # from the authoritative build/winres.json (numeric
+      # RT_GROUP_ICON "#3" → assets/freeiran-icon.ico) before the
+      # desktop compile; the regenerated file stays a runner-workspace
+      # artifact and is never committed.
+      - name: Regenerate Windows resource from authoritative source
+        shell: pwsh
+        run: |
+          go run github.com/tc-hib/go-winres@latest make --in build/winres.json --out cmd/freeiran/rsrc
+          if ($LASTEXITCODE -ne 0) { throw "go-winres resource generation failed" }
+          $version = (Get-Content VERSION -Raw).Trim()
+          Write-Host "regenerated cmd/freeiran/rsrc_windows_amd64.syso from build/winres.json (version $version)"
 
       - name: Build desktop application
         shell: pwsh

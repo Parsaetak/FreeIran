@@ -540,6 +540,15 @@ func (t *trayManager) Destroy() {
 func (t *trayManager) buildLocked() {
 	tray := t.opts.app.SystemTray.New()
 	tray.SetIcon(appicon.PNG)
+	// v0.14.2: native identity. The pinned Wails v3.0.0-beta.19
+	// implements SystemTray.SetTooltip on Windows (ShellNotifyIcon
+	// NIM_MODIFY), so hovering the icon now names the application;
+	// SetLabel, by contrast, is a documented no-op on the Windows
+	// backend (labels are a macOS-dock concept). The tooltip is the
+	// only native identity surface the pinned API supports beyond
+	// the icon itself, and it is set here where the icon is set —
+	// one construction path, no second identity source.
+	tray.SetTooltip("FreeIran")
 
 	trayMenu := t.opts.app.Menu.New()
 	trayMenu.Add("Show").OnClick(func(*application.Context) {

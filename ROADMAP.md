@@ -136,6 +136,16 @@ binding (item 1's control-plane correction), and `Active` evidence
 was re-scoped to the route-ready rung (the physical Windows runtime
 evidence rung stays OWED — it is not claimed by this release).
 
+v0.14.2 repaired the delivery pipeline instead of widening the
+engine: the CI embed failure (the generated frontend embed tree left
+the Go desktop-validation job without its `go:embed` input) is fixed
+with an explicit validated-artifact handoff, the release
+verification path stages the same tree, the Windows PE resource is
+regenerated in CI from the authoritative winres source at every
+build, and the tray/settings surfaces got evidence-first touch-ups.
+The engine architecture, capability matrix and authority boundaries
+are unchanged.
+
 ### 1. FreeIran TUN packet dataplane (complete Phase 1's foundation)
 
 - Purpose: route OS packets through the first-party engine —

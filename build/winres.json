@@ -8,15 +8,15 @@
     "1": {
       "0000": {
         "fixed": {
-          "file_version": "0.14.1.0",
-          "product_version": "0.14.1.0"
+          "file_version": "0.14.2.0",
+          "product_version": "0.14.2.0"
         },
         "info": {
           "0409": {
             "ProductName": "FreeIran",
             "FileDescription": "FreeIran \u2014 A SHEYTAN Digital System",
-            "ProductVersion": "0.14.1",
-            "FileVersion": "0.14.1",
+            "ProductVersion": "0.14.2",
+            "FileVersion": "0.14.2",
             "OriginalFilename": "FreeIran.exe",
             "InternalName": "FreeIran",
             "CompanyName": "SHEYTAN Digital System",
@@ -31,7 +31,7 @@
       "0409": {
         "identity": {
           "name": "FreeIran",
-          "version": "0.14.1"
+          "version": "0.14.2"
         },
         "description": "Free, open-source VPN configuration manager",
         "minimum-os": "win10",

@@ -3,9 +3,11 @@
  *
  * `cmd/freeiran` embeds `frontend/dist` relative to its own package
  * directory (go:embed cannot traverse parent directories), so the
- * production build is copied there before `go build`. A placeholder
- * index.html is committed so the Go build also works before any
- * frontend build (tests, compile-validation).
+ * production build is copied there before `go build`. v0.14.2: the
+ * target tree is EPHEMERAL GENERATED OUTPUT — it is staged by this
+ * script (or restored in CI from the freeiran-frontend-embed
+ * artifact), never committed, and `.gitignore`d; plain `go build`
+ * requires staging it first.
  *
  * CLEAN-ROOM EMBED GUARANTEE: the target is wiped completely, the
  * fresh output is copied, and the result is verified against the
@@ -13,7 +15,7 @@
  * shared validation source (CI's "Clean-room embed check" runs
  * scripts/validate-embed.mjs against the same inventory). Any hashed
  * artifact, duplicate worker or unexpected file fails the build
- * loudly — the committed embed tree must always be EXACTLY what the
+ * loudly — the staged embed tree must always be EXACTLY what the
  * pinned toolchain produces.
  */
 import { cpSync, existsSync, rmSync } from "node:fs";

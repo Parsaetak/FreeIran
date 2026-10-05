@@ -9,7 +9,7 @@ configurations.
 **Project:** FreeIran — A SHEYTAN Digital System
 **Architect:** Parsa Tak / SHEYTAN
 **Repository:** https://github.com/Parsaetak/FreeIran
-**Current version:** 0.14.0 (see `VERSION`)
+**Current version:** 0.14.2 (see `VERSION`)
 **Status:** production architecture — multi-core protocol runtime with
 managed installation, multi-level node discovery, Ping/URL test modes
 with measured ranking, verified-connection engine with racing,
@@ -294,9 +294,15 @@ cd frontend && npm test                             # frontend tests
 cd frontend && npm run dev                          # Vite dev server
 ```
 
-A committed placeholder at `cmd/freeiran/frontend/dist` keeps `go build
-./cmd/freeiran` working before any frontend build; the real UI is
-staged by `npm run build:embed` (used by CI).
+`cmd/freeiran/frontend/dist` is EPHEMERAL generated output, not a
+committed tree (v0.14.1 removed it from Git; v0.14.2 `.gitignore`s
+it): plain `go build ./cmd/freeiran` needs a frontend build first —
+run `npm run build:embed` in `frontend/` to stage the embed tree
+(copy-dist.mjs wipes and re-copies the target, then validates it
+against the canonical asset inventory). CI stages the tree per job
+and transfers it to the desktop-validation job as the
+`freeiran-frontend-embed` artifact; `go:embed` is unchanged and no
+placeholder exists.
 
 ## Data Migration
 

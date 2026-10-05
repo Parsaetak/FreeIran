@@ -374,16 +374,13 @@ export function SettingsPage() {
             Refresh interval (minutes)
           </label>
 
-          <input
+          <SettingNumberInput
             id="refresh-interval"
-            className="input input-compact"
-            type="number"
+            label="Refresh interval"
+            value={draft.refresh_interval_minutes}
             min={REFRESH_MIN}
             max={REFRESH_MAX}
-            value={draft.refresh_interval_minutes}
-            onChange={(event) =>
-              update({ refresh_interval_minutes: Number(event.target.value) })
-            }
+            onChange={(next) => update({ refresh_interval_minutes: next })}
           />
 
           {fieldError(errors, "refresh") ? (
@@ -739,16 +736,13 @@ export function SettingsPage() {
                 Max size (MB)
               </label>
 
-              <input
+              <SettingNumberInput
                 id="log-max-mb"
-                className="input input-compact"
-                type="number"
+                label="Log size limit"
+                value={draft.log_max_bytes_mb}
                 min={LOG_MB_MIN}
                 max={LOG_MB_MAX}
-                value={draft.log_max_bytes_mb}
-                onChange={(event) =>
-                  update({ log_max_bytes_mb: Number(event.target.value) })
-                }
+                onChange={(next) => update({ log_max_bytes_mb: next })}
               />
 
               {fieldError(errors, "log_mb") && (
@@ -761,16 +755,13 @@ export function SettingsPage() {
                 Kept backups
               </label>
 
-              <input
+              <SettingNumberInput
                 id="log-max-backups"
-                className="input input-compact"
-                type="number"
+                label="Log backups"
+                value={draft.log_max_backups}
                 min={LOG_BACKUPS_MIN}
                 max={LOG_BACKUPS_MAX}
-                value={draft.log_max_backups}
-                onChange={(event) =>
-                  update({ log_max_backups: Number(event.target.value) })
-                }
+                onChange={(next) => update({ log_max_backups: next })}
               />
 
               {fieldError(errors, "log_backups") && (
@@ -783,16 +774,13 @@ export function SettingsPage() {
                 Retention (days)
               </label>
 
-              <input
+              <SettingNumberInput
                 id="log-retention-days"
-                className="input input-compact"
-                type="number"
+                label="Log retention"
+                value={draft.log_retention_days}
                 min={LOG_RETENTION_MIN}
                 max={LOG_RETENTION_MAX}
-                value={draft.log_retention_days}
-                onChange={(event) =>
-                  update({ log_retention_days: Number(event.target.value) })
-                }
+                onChange={(next) => update({ log_retention_days: next })}
               />
 
               {fieldError(errors, "log_retention") && (
@@ -913,14 +901,13 @@ export function SettingsPage() {
             Test queue workers (0 = adaptive)
           </label>
 
-          <input
+          <SettingNumberInput
             id="dev-queue-workers"
-            className="input input-compact"
-            type="number"
+            label="Test queue workers"
+            value={draft.dev_queue_workers}
             min={0}
             max={QUEUE_WORKERS_MAX}
-            value={draft.dev_queue_workers}
-            onChange={(event) => update({ dev_queue_workers: Number(event.target.value) })}
+            onChange={(next) => update({ dev_queue_workers: next })}
           />
 
           {fieldError(errors, "dev_workers") ? (
@@ -938,14 +925,13 @@ export function SettingsPage() {
             Network-test timeout (seconds, 0 = default)
           </label>
 
-          <input
+          <SettingNumberInput
             id="dev-net-timeout"
-            className="input input-compact"
-            type="number"
+            label="Network-test timeout"
+            value={draft.dev_net_timeout_seconds}
             min={0}
             max={NET_TIMEOUT_MAX}
-            value={draft.dev_net_timeout_seconds}
-            onChange={(event) => update({ dev_net_timeout_seconds: Number(event.target.value) })}
+            onChange={(next) => update({ dev_net_timeout_seconds: next })}
           />
 
           {fieldError(errors, "dev_net_timeout") ? (
@@ -1067,6 +1053,83 @@ export function SettingsPage() {
 }
 
 /* ----- section + row primitives (shared settings look) ----- */
+
+/**
+ * v0.14.2 bounded-integer control: the compact numeric input with
+ * optional [-] value [+] steppers around it. Design targets (v0.14.2
+ * Settings UX, no backend semantic change):
+ *
+ *   - the <input> keeps native number semantics: direct typing,
+ *     keyboard arrows and wheel all still work, and the rendered
+ *     classes stay `input input-compact` so the v0.13.1 width guard
+ *     keeps applying;
+ *   - the stepper buttons move by 1 and CLAMP to [min, max]; they are
+ *     disabled at the bounds instead of wrapping;
+ *   - both buttons carry accessible names derived from the field
+ *     label ("Decrease X" / "Increase X") so screen readers announce
+ *     the target instead of a bare glyph.
+ *
+ * Free-form settings (ports, URLs) deliberately do NOT use this
+ * control — five-digit port entry is faster typed than stepped.
+ */
+function SettingNumberInput({
+  id,
+  label,
+  value,
+  min,
+  max,
+  onChange,
+}: {
+  id: string;
+  label: string;
+  /** Optional-pointer settings (Go *int → number | undefined) flow
+   * straight through, exactly like the plain input they replace: the
+   * input renders empty when unset and the steppers fall back to min. */
+  value: number | undefined;
+  min: number;
+  max: number;
+  onChange: (next: number) => void;
+}) {
+  const current = typeof value === "number" && Number.isFinite(value) ? value : min;
+
+  const step = (delta: number) => {
+    onChange(Math.min(max, Math.max(min, current + delta)));
+  };
+
+  return (
+    <div className="number-stepper">
+      <button
+        type="button"
+        className="btn sm ghost btn-step"
+        aria-label={`Decrease ${label}`}
+        disabled={current <= min}
+        onClick={() => step(-1)}
+      >
+        −
+      </button>
+
+      <input
+        id={id}
+        className="input input-compact"
+        type="number"
+        min={min}
+        max={max}
+        value={value}
+        onChange={(event) => onChange(Number(event.target.value))}
+      />
+
+      <button
+        type="button"
+        className="btn sm ghost btn-step"
+        aria-label={`Increase ${label}`}
+        disabled={current >= max}
+        onClick={() => step(1)}
+      >
+        +
+      </button>
+    </div>
+  );
+}
 
 function SettingsSection({
   title,

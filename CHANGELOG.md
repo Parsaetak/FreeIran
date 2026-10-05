@@ -11,6 +11,162 @@ are historical: version numbers, core pins and verification claims
 inside them describe the state of that release, not the current
 state.
 
+## v0.14.2 — CI embed pipeline repair and release-verification correctness
+
+v0.14.2 is a CI/release-pipeline correctness release with three
+focused product-surface touch-ups (tray identity, Settings steppers,
+version metadata). It fixes the exact failure of CI run
+`37216394622` — `cmd/freeiran/main.go:46:12: pattern
+all:frontend/dist: no matching files found` — the same defect class in
+the release verification path, and the stale-documentation model that
+surrounded it. No engine capability changed; the first-party
+`engine/freecore` architecture remains authoritative and untouched
+beyond audit.
+
+### The go:embed failure (root-caused, structurally eliminated)
+
+- **Root cause.** `cmd/freeiran` embeds `all:frontend/dist` relative
+  to its own package directory. v0.14.1 intentionally removed the
+  tracked `cmd/freeiran/frontend/dist` tree (generated frontend output
+  no longer lives in Git), and the frontend CI job's `build:embed`
+  staging happens only inside the frontend job's workspace. The Go
+  job's checkout therefore has no embed target, and the
+  windows/amd64 desktop compile-validation failed while every engine
+  test, race test and benchmark step passed. The Windows job was
+  skipped as a dependency consequence — run `37216394622` is NOT
+  Windows validation.
+- **Fix (ci.yml).** The desktop compile-validation is now its own
+  `desktop-validation` job, depending ONLY on the `frontend` job: the
+  frontend job uploads its ALREADY-VALIDATED staged embed tree as the
+  `freeiran-frontend-embed` artifact (no frontend rebuild), the
+  validation job restores it to `cmd/freeiran/frontend/dist`, asserts
+  the canonical assets (`index.html`, `assets/index.js`,
+  `assets/index.css`, `assets/export-worker.js`), and only then runs
+  the windows/amd64 compile. The engine-test portions of the old
+  combined Go job keep running in parallel with the frontend build —
+  nothing unrelated is serialized behind npm. The `go:embed` directive
+  itself is unchanged and no placeholder is restored.
+- **The invalid freshness check is gone.** The frontend job's
+  `git diff --exit-code -- cmd/freeiran/frontend/dist` step could no
+  longer prove anything once the tree left Git (a nonexistent
+  pathspec produces no diff — the check would have passed vacuously
+  forever). The canonical embed inventory validator
+  (`frontend/scripts/embed-inventory.mjs` via `validate-embed.mjs`) is
+  the one freshness authority: it runs before the artifact upload.
+- **Release path had the same defect (release.yml).** The `verify`
+  job built the frontend with `npm run build` and then cross-compiled
+  `cmd/freeiran` without ever staging the embed tree. It now runs
+  `npm run build:embed`, validates the staged tree against the
+  inventory, and only then compiles. Release installer logic is
+  unchanged.
+- **Git hygiene.** `cmd/freeiran/frontend/dist/` is now `.gitignore`d:
+  the tree is ephemeral generated output staged per-job (or transferred
+  as the artifact), and a local `npm run build:embed` can never
+  reintroduce generated output into Git.
+
+### Windows resource generated in CI (version-matched, never committed)
+
+- The committed `cmd/freeiran/rsrc_windows_amd64.syso` is generated
+  output whose PE version metadata goes stale on every version bump.
+  Both Windows desktop builds (ci.yml and release.yml) now regenerate
+  the resource from the authoritative source before compiling —
+  `go run github.com/tc-hib/go-winres@latest make --in
+  build/winres.json --out cmd/freeiran/rsrc` — the documented
+  mechanism (docs/development.md), running in GitHub Actions only.
+  The regenerated `.syso` stays a runner-workspace artifact and is
+  never committed by the agent or the workflows.
+- One icon authority remains exactly as v0.13.1 established:
+  `assets/freeiran-icon.svg` → PNG/ICO → `build/winres.json`
+  (numeric `RT_GROUP_ICON "#3"`) → PE resources → the pinned Wails
+  beta.19 window-icon lookup, with `internal/appicon` as the runtime
+  PNG used by the tray and Linux window. `TestCanonicalIconFamily`
+  keeps pinning the source contract; the Windows-executable icon
+  proof stays `TestWindowsGUIIcon` on Windows CI.
+
+### Tray: native identity (evidence-first audit)
+
+- Audit against the pinned `wails v3.0.0-beta.19` source: tray
+  destruction destroys the menu with it (`windowsSystemTray.destroy`
+  → `s.menu.Destroy()`), `MenuItem.SetChecked` propagates to the
+  Win32 menu item (no re-set refresh needed), `InvokeSync` inside
+  tray construction runs inline on the main thread (no deadlock), and
+  `App.Shutdown` is `sync.Once`-guarded so the tray Quit →
+  OnShutdown path is idempotent. No defect in those paths; nothing
+  rewritten.
+- One real gap fixed: the tray had no native identity text. beta.19
+  implements `SystemTray.SetTooltip` on Windows (ShellNotifyIcon
+  NIM_MODIFY) while `SetLabel` is a no-op there, so the tray now sets
+  a `FreeIran` tooltip at construction — the only native identity
+  surface the pinned API supports beyond the icon. Visual shell
+  rendering stays a Windows-CI/runtime claim, not asserted here.
+
+### Settings: bounded-integer steppers (compact control panel)
+
+- New reusable `SettingNumberInput`: the six bounded integer settings
+  (refresh interval, log size, log backups, log retention, test-queue
+  workers, network-test timeout) render as `[-] value [+]` compact
+  groups. The input keeps native number semantics and the v0.13.1
+  `input-compact` width guard; the step buttons clamp to the declared
+  bounds, disable at the limits, and carry accessible names
+  ("Decrease X" / "Increase X") derived from the field label.
+- Port inputs deliberately stay free-form (five-digit entry is faster
+  typed than stepped) and keep the 90px port variant. No backend
+  semantic changed; `sameSettings` and the validation bounds are
+  untouched.
+- Regression tests: steppers wrap exactly the bounded controls (never
+  ports), accessible names exist, stepping clamps and disables at
+  bounds, direct entry still works, the section grouping order is
+  pinned, and selects/toggles keep their current behavior.
+- Pre-existing frontend flake fixed with evidence: the v0.14.1 base
+  tree intermittently failed Configs.v0121/v0122 row tests
+  ("Unable to find role=listitem") under the full parallel worker
+  pool — reproduced 2/4 full-suite runs on the untouched base commit
+  (load-dependent cold store hydration exceeding testing-library's
+  default 1s async budget). The fix is a global event-driven budget
+  raise, not a sleep: `src/test-setup.ts` sets
+  `asyncUtilTimeout: 4000` for every testing-library query. Four
+  consecutive full-suite runs are green after the change; no
+  assertion was weakened.
+
+### Engine architecture audit (no changes required)
+
+- The lifecycle audit re-verified `engine/freecore`: `Engine.Stop` is
+  `stopOnce`-guarded with admission drain BEFORE cancellation, guarded
+  idempotent listener close, and a grace-bounded drain wait;
+  `engine/tunnel`'s `Controller.Disable` is mutex-guarded, no-ops when
+  already disabled, publishes the TUN snapshot on failed disable, and
+  surfaces ownership-marker residue as `ErrOwnershipResidual` instead
+  of silent success. The full `engine/...`, `system/...`,
+  `internal/...`, `tools/...` matrix plus the complete
+  `engine/freecore` hardening suite pass unchanged. No duplicate
+  authority (engine/tray/tunnel/router/DNS) was introduced and the
+  capability matrix is unchanged.
+
+### Version and documentation alignment
+
+- Version synchronized to `0.14.2` across `VERSION`,
+  `frontend/package.json`, `frontend/package-lock.json`,
+  `internal/version/version.go` and `build/winres.json`; the CI
+  resource-regeneration step makes the built PE metadata match. No
+  new place hard-codes the version.
+- Documentation corrected to the real embed model (README,
+  docs/ci.md, docs/development.md): frontend build → validated
+  ephemeral embed tree → CI artifact / per-job staging → desktop
+  build. The stale "committed placeholder" and `git diff` freshness
+  language is removed.
+
+### Verification status (honest split)
+
+- Verified in this tree: `gofmt` clean; `go vet` clean;
+  `go test ./engine/... ./system/... ./internal/... ./tools/...` green;
+  full `./cmd/...` windows/amd64 test-surface compile check; frontend
+  `tsc --noEmit` clean; the complete vitest suite (25 files) green
+  including the new Settings stepper suite.
+- NOT claimed here, owned by CI: the actual windows/amd64
+  desktop compile with the transferred embed artifact, the Windows
+  test matrix, GUI launch proof, icon resource proof and the release
+  pipeline — the next push/tag produces that evidence.
+
 ## v0.14.1 — CI repair and first-party engine correctness
 
 v0.14.1 is a correctness release: it removes the two v0.14.0 CI

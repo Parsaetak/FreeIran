@@ -20,7 +20,7 @@ package version
 // Build systems override this via:
 //
 //	-ldflags "-X github.com/Parsaetak/FreeIran/internal/version.Version=x.y.z"
-var Version = "0.14.1"
+var Version = "0.14.2"
 
 // Commit is the git commit the binary was built from. CI overrides it
 // with ldflags; local builds report "dev".

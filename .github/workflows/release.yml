@@ -165,13 +165,27 @@ jobs:
         run: npm test
         working-directory: frontend
 
-      - name: Frontend production build
-        run: npm run build
+      # v0.14.2: the release verification build stages the SAME ephemeral
+      # embed tree the CI pipeline uses. build:embed = tsc + vite build
+      # + copy-dist into cmd/freeiran/frontend/dist (the go:embed
+      # target); `npm run build` alone stopped being sufficient when
+      # v0.14.1 removed the tracked embed tree — the windows/amd64
+      # validation below would fail with "pattern all:frontend/dist: no
+      # matching files found". The staged tree is validated against the
+      # canonical asset inventory before the Go compile consumes it.
+      - name: Frontend production build (and stage embed assets)
+        run: npm run build:embed
         working-directory: frontend
+
+      - name: Validate staged embed tree
+        working-directory: .
+        run: node frontend/scripts/validate-embed.mjs
 
       # Compile-validate the Wails desktop app for the primary target
       # from Linux: the Windows webview needs no GTK, so a full
       # windows/amd64 build succeeds without GUI development packages.
+      # Runs AFTER the embed staging above — the generated tree at
+      # cmd/freeiran/frontend/dist is the compile input.
       - name: Validate desktop build (windows/amd64)
         run: |
           GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
@@ -231,6 +245,25 @@ jobs:
           go run ./cmd/freeiran --smoke-test
           if ($LASTEXITCODE -ne 0) { throw "smoke test failed: $LASTEXITCODE" }
 
+      # v0.14.2 — CI-ONLY Windows resource generation. The committed
+      # cmd/freeiran/rsrc_windows_amd64.syso is a generated artifact,
+      # not a source file: its PE version metadata must match VERSION
+      # at build time, and a version bump (0.14.1 → 0.14.2) makes a
+      # previously generated .syso stale. This step regenerates the
+      # resource from the authoritative sources — build/winres.json
+      # (numeric RT_GROUP_ICON "#3" → assets/freeiran-icon.ico, the
+      # ONE icon authority) — using the documented go-winres mechanism
+      # (docs/development.md) BEFORE the desktop compile. The
+      # regenerated .syso stays a CI build artifact in the runner
+      # workspace; it is never committed by this workflow.
+      - name: Regenerate Windows resource from authoritative source
+        shell: pwsh
+        run: |
+          go run github.com/tc-hib/go-winres@latest make --in build/winres.json --out cmd/freeiran/rsrc
+          if ($LASTEXITCODE -ne 0) { throw "go-winres resource generation failed" }
+          $version = (Get-Content VERSION -Raw).Trim()
+          Write-Host "regenerated cmd/freeiran/rsrc_windows_amd64.syso from build/winres.json (version $version)"
+
       - name: Build desktop application
         shell: pwsh
         env:
@@ -240,8 +273,9 @@ jobs:
           $commit = $env:GITHUB_SHA.Substring(0, 8)
 
           # -H=windowsgui: the shipped executable must not open a
-          # console window. The committed .syso resources link the
-          # FreeIran icon, version info and DPI manifest automatically.
+          # console window. The CI-regenerated .syso (step above, from
+          # build/winres.json) links the FreeIran icon, current version
+          # info and DPI manifest automatically.
           go build -trimpath `
             -ldflags "-s -w -H=windowsgui -X github.com/Parsaetak/FreeIran/internal/version.Version=$version -X github.com/Parsaetak/FreeIran/internal/version.Commit=$commit" `
             -o FreeIran-windows-amd64.exe ./cmd/freeiran

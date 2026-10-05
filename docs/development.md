@@ -327,10 +327,12 @@ time with ldflags; CI injects the git commit. Rules:
   references `docs/autonomous-connectivity.md`. A future feature is
   never described as implemented, and a removed feature is never
   described as current.
-- **Generated frontend/embed workflow:** the committed placeholder at
-  `cmd/freeiran/frontend/dist` keeps plain `go build` working; the
-  real UI is staged only by `npm run build:embed` (CI path). Bindings
-  are regenerated with the pinned wails3 CLI (see the Wails toolchain
+- **Generated frontend/embed workflow:** `cmd/freeiran/frontend/dist`
+  is EPHEMERAL generated output (v0.14.2): it is staged by
+  `npm run build:embed`, validated against the canonical asset
+  inventory, and never committed (it is `.gitignore`d). Plain
+  `go build ./cmd/freeiran` requires staging it first. Bindings are
+  regenerated with the pinned wails3 CLI (see the Wails toolchain
   contract below) — never hand-edited.
 - **Core pins** (`engine/core/versions.go`) change only through a
   deliberate, fully re-verified upgrade (official digest from the
@@ -506,9 +508,14 @@ reproducible — running it twice must produce byte-identical output.
 
 * `engine/app/bindings_contract_test.go` structurally verifies the
   generated files' services against the Go service surface.
-* The frontend CI job runs `npm run build:embed` and requires a clean
-  `git diff --exit-code -- cmd/freeiran/frontend/dist`, so the
-  committed embed output can never accumulate stale hashed bundles.
+* The frontend CI job runs `npm run build:embed` and validates the
+  staged tree against the canonical asset inventory
+  (`frontend/scripts/embed-inventory.mjs` — v0.14.2 removed the old
+  `git diff` check: the embed tree is untracked generated output, so
+  a pathspec diff would pass vacuously). The validated tree is
+  transferred to the `desktop-validation` job as the
+  `freeiran-frontend-embed` artifact, which is what the windows/amd64
+  compile consumes.
 
 Do not delete the bindings: the build architecture requires them.
 When a Go service method is renamed or removed, update the
