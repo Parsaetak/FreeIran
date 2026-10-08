@@ -466,7 +466,7 @@ its designated surface.
 
 ---
 
-## Future UI concepts (PLANNED — v0.12.0 documentation only)
+## ARCHIVED HISTORICAL: UI concepts (v0.12.0 documentation only — research, not implemented, not upcoming work)
 
 The current UI is NOT redesigned for these; they are the recorded
 surface contracts for future phases

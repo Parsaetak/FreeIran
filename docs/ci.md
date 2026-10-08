@@ -516,7 +516,7 @@ the duplicated platform-neutral execution.
 
 ---
 
-## Future acceptance matrix (PLANNED — v0.12.0 documentation)
+## ARCHIVED HISTORICAL: acceptance matrix (v0.12.0 documentation — research targets, not active acceptance criteria)
 
 The future architecture's verification targets, from
 [autonomous-connectivity.md](autonomous-connectivity.md) (section V).

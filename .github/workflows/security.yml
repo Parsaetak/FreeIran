@@ -75,6 +75,33 @@ jobs:
 
       # cmd/freeiran compiles for windows without GTK dependencies, so
       # vet it against that target for full coverage.
+      #
+      # v0.final REPAIR: the desktop package embeds the frontend through
+      # `go:embed frontend/dist` under cmd/freeiran/, and that tree is an
+      # EPHEMERAL BUILD OUTPUT since v0.14.1 — it is intentionally NOT
+      # committed (see the CI `frontend` job). go vet therefore failed
+      # with `pattern frontend/dist: no matching files found` whenever it
+      # ran directly on a fresh checkout. The fix stages the embed tree
+      # with the repository's CANONICAL frontend embed process — exactly
+      # the pipeline the CI frontend job runs (Node 22 → npm ci →
+      # npm run build:embed → validate-embed.mjs) — before vetting.
+      # Nothing is committed, go vet is not weakened, and the validation
+      # is the ONE shared embed-inventory module, so a stale or incomplete
+      # staged tree fails here before vet sees it.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Stage frontend embed tree (canonical build:embed pipeline)
+        run: |
+          (cd frontend && npm ci)
+
+          (cd frontend && npm run build:embed)
+
+          node frontend/scripts/validate-embed.mjs
+
       - name: go vet (desktop package, windows target)
         run: GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go vet ./cmd/...
 

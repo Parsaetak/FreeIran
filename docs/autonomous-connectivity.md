@@ -1,7 +1,21 @@
-# Autonomous Connectivity Architecture — the long-term FreeIran contract
+# ARCHIVED / HISTORICAL RESEARCH — NOT AN ACTIVE FREEIRAN ROADMAP
 
-This document is the **canonical implementation handoff** for the
-long-term FreeIran direction. It distills the September 2026 R&D
+> FreeIran is **FINAL / FROZEN as of 2026-10-07** (v0.final,
+> implementation baseline 0.14.2 — see [../FINAL.md](../FINAL.md)).
+> This document preserves the September 2026 research-and-development
+> work toward an autonomous connectivity engine. It is kept because the
+> research is useful and the engineering discipline it records is real.
+> It is NOT a commitment, NOT a roadmap, and NOT upcoming FreeIran
+> development: everything marked PLANNED below is unimplemented,
+> archived research.
+
+---
+
+# Autonomous Connectivity Architecture — the long-term FreeIran contract (ARCHIVED)
+
+Historical research, preserved at freeze time. This was written as the
+**canonical implementation handoff** for the long-term FreeIran
+direction before the project froze. It distills the September 2026 R&D
 report (`Parsaetak/Contents`, Research-and-Development,
 `FreeIran-2026-09.md`) into an implementation-ready architecture
 contract so future coding agents can implement it incrementally
@@ -893,7 +907,7 @@ CI does not equal physical-host runtime verification.
 
 ---
 
-## Phase 2 handoff (v0.13.1) — the next implementation target
+## Phase 2 handoff (v0.13.1) — HISTORICAL (the target that v0.14.x partially executed; the remainder is archived)
 
 v0.13.1 shipped the Phase 1 foundation (ROADMAP.md). The next
 agent's implementation program, in order:

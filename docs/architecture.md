@@ -20,9 +20,10 @@ React/Wails (TypeScript UI → generated bindings)
   → system proxy (WinINet) / TUN (first-party dataplane; sing-box native TUN as the explicit fallback)
 ```
 
-TARGET (PLANNED — none of these components exists yet; see
+TARGET (ARCHIVED HISTORICAL RESEARCH — none of these components existed
+at the 2026-10-07 freeze and none is upcoming work; see
 [autonomous-connectivity.md](autonomous-connectivity.md) for the
-complete contract):
+archived contract):
 
 ```text
 Connection Engine    (adaptive, evidence-driven path selection)
@@ -33,11 +34,14 @@ Connection Engine    (adaptive, evidence-driven path selection)
 + Provider/Core Manager (the existing manager, extended lifecycle)
 ```
 
-The target components are built by EXTENDING the current
+Under the (archived) plan the target components were to be built by
+EXTENDING the current
 foundations — no duplicate connection manager, core manager,
 provider manager, process supervisor, downloader, routing
 authority, DNS authority, session model or TUN engine is ever
-created. Phase order and acceptance live in ROADMAP.md.
+created. Phase order and acceptance lived in ROADMAP.md (now an
+archived historical record — the roadmap closed at the 2026-10-07
+freeze).
 
 ## 1. Layer model
 
@@ -1305,7 +1309,9 @@ paragraphs had with the shipped code.
 
 ## v0.13.1 addendum — first-party FreeIran Engine foundation + in-process backend
 
-v0.13.1 begins the two-phase engine transition (ROADMAP.md). The
+v0.13.1 began the two-phase engine transition (ROADMAP.md, now an
+archived historical record — completed by v0.14.x within its verified
+scope before the 2026-10-07 freeze). The
 architecture rule it establishes: **the first-party engine is
 implemented as a backend inside the existing execution boundary, not
 as a parallel system.**

@@ -2,14 +2,65 @@
 
 Historical release record — the authoritative home for release facts
 and evidence. Structure since the v0.12.0 consolidation: current
-product description lives in the README, forward phases in ROADMAP.md,
-detailed architecture in the docs/ tree (see docs/README.md). Older
+product description lives in the README, detailed architecture in the
+docs/ tree (see docs/README.md). The phased roadmap is CLOSED:
+ROADMAP.md is an archived historical record (final freeze
+2026-10-07, v0.final). Older
 entries below v0.11.0 are compacted to version / purpose / key
 changes / important evidence and limitations; their full original
 narratives remain retrievable from git history. Historical entries
 are historical: version numbers, core pins and verification claims
 inside them describe the state of that release, not the current
 state.
+
+## v0.final — 2026-10-07 (FINAL / FROZEN)
+
+FreeIran is **FINAL / FROZEN as of 2026-10-07**. The human-facing final
+designation is **v0.final**; the machine-readable implementation
+baseline remains **0.14.2** (the numeric version every build, updater
+and resource contract requires — never replaced by "0.final").
+[FINAL.md](FINAL.md) is the canonical freeze statement.
+
+This entry records the finalization itself. **No new runtime features
+were added.** The v0.14.2 implementation is the product baseline.
+
+- **Functional finalization.** The advertised capabilities were
+  inventoried against the implementation and exercised to the maximum
+  extent verifiable in the available environments (Linux CI gate fully
+  replicated — vet, tests, race; frontend gate — typecheck, unit tests,
+  production build + embed validation; Windows compile-all and
+  Windows-targeted `go vet` of the desktop package). Evidence
+  boundaries stay honest: physical elevated-Windows-TUN traffic
+  verification is NOT claimed (docs/tun.md evidence ladder).
+- **Stale Windows TUN test contracts corrected.** The v0.11.3-era
+  behavioral tests `TestControllerTUNUnavailableWithoutCore` and
+  `TestTunBackendRefusesInstallAndEnable` still pinned "TUN unavailable
+  everywhere without a core resolver", which the v0.14.0 first-party
+  Windows dataplane superseded. They are replaced by platform-honest
+  contracts: the explicit unavailable-backend contract, per-platform
+  selection policy without a resolver, first-party capability-gate
+  fallthrough for unsupported configurations, fail-closed elevation
+  refusal with no state mutation, and the wired-resolver sing-box
+  fallback shape. The production TUN architecture was NOT reverted to
+  satisfy stale tests.
+- **Security CI closure.** The Security static-analysis job stages the
+  frontend embed tree through the canonical pipeline (Node 22 →
+  `npm ci` → `npm run build:embed` → `validate-embed.mjs`) before the
+  Windows-targeted `go vet ./cmd/...`, fixing the fresh-checkout
+  `no matching files found` failure without committing generated output
+  or weakening vet. Gitleaks remains strict (`useDefault = true`, no
+  path allowlist) with two additional PRECISE commit-scoped historical
+  exceptions for synthetic non-functional test fixtures (v0.11.3
+  `engine/core/singbox/tun_test.go` example WireGuard keys,
+  v0.14.0 `engine/freecore/shadowsocks/kdf_test.go` EVP_BytesToKey
+  test vectors), alongside the existing v0.10.2 exception.
+- **Documentation finalization.** README, ROADMAP (now an archived
+  historical record), docs/ tree and FINAL.md consistently state:
+  FINAL / FROZEN 2026-10-07, no active FreeIran roadmap, historical
+  research archived as historical, documented capabilities = actual
+  capabilities, and a neutral reference to the independent
+  `mlmvpn/mlmvpn_windows` project (a separate repository with a similar
+  purpose — no succession, migration or ownership relationship).
 
 ## v0.14.2 — CI embed pipeline repair and release-verification correctness
 

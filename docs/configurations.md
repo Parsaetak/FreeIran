@@ -2,8 +2,9 @@
 
 Authoritative description of the Configurations surface
 (`frontend/src/pages/Configs.tsx` + `engine/app` services) as of
-**v0.12.1**. Current behavior only; future contracts live in
-docs/autonomous-connectivity.md and are marked PLANNED there.
+**v0.12.1**. Current behavior of the frozen product only. Research
+directions that once lived in docs/autonomous-connectivity.md are
+ARCHIVED HISTORICAL RESEARCH — not upcoming work.
 
 ## What a "folder" is
 

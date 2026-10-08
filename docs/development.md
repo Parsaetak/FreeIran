@@ -1,5 +1,12 @@
 # FreeIran Development & Release Guide
 
+> **FINAL / FROZEN (2026-10-07).** The product is frozen as **v0.final**
+> (implementation baseline 0.14.2). This guide remains useful as the
+> practical build/test/release reference for the frozen code. Post-final
+> work is **maintenance** (correctness, reliability, environment
+> repairs) unless the project is intentionally reopened — there is no
+> active roadmap and no feature line.
+
 ## Toolchain
 
 | Tool | Version | Required for |
@@ -323,7 +330,7 @@ time with ldflags; CI injects the git commit. Rules:
 - **Current vs historical terminology.** Current behavior gets
   current wording; historical behavior gets explicitly historical
   wording (version-labeled, kept only where it explains why code
-  changed); future behavior gets explicitly PLANNED wording that
+  changed); research directions are archived as ARCHIVED / HISTORICAL (never presented as active work — the project froze 2026-10-07 as v0.final; post-final changes are maintenance unless the project is intentionally reopened),
   references `docs/autonomous-connectivity.md`. A future feature is
   never described as implemented, and a removed feature is never
   described as current.

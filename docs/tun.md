@@ -10,10 +10,10 @@ BOTH paths at their current state (v0.14.1); the sing-box path's
 v0.11.3/v0.11.4 history (address-selection fail-closed, exact-adapter
 activation identity, native route-path observation) and the historical
 removal rationale (v0.9.8.6) are preserved in the CHANGELOG and in the
-code comments of `engine/tunnel/tun.go`. Future protection work (a
-first-party DNS packet path, the WFP kill switch) is PLANNED and lives
-in [autonomous-connectivity.md](autonomous-connectivity.md) — none of
-it is claimed here.
+code comments of `engine/tunnel/tun.go`. Protection research (a
+first-party DNS packet path, the WFP kill switch) is ARCHIVED in
+[autonomous-connectivity.md](autonomous-connectivity.md) — none of
+it is claimed here, and none of it is upcoming work (frozen 2026-10-07).
 
 ## Status — the evidence ladder (v0.14.1)
 
@@ -47,7 +47,7 @@ per activation and logged (`tun_backend_selected`):
 | Activation verification gate actually executed by `Enable` on Windows | adapter observed with the exact FreeIran identity, covered routes owned by FreeIran's interface (both families, LUID-bound), physical upstream present and distinct from the TUN (fail-closed on missing/stale identity), loop-prevention constraint validated before any dial |
 | Actual tunneled APPLICATION traffic on a physical Windows host | **NOT VERIFIED** — the Level-5 rung (`TrafficVerified`). A successful first-party activation is NOT claimed as an internet-traffic proof; `TUNSnapshot.TrafficVerified` is never set without a real runtime traffic probe. FreeIran deliberately does not claim it |
 | TUN-originated DNS | **NOT IMPLEMENTED (fail-closed, honestly stated)** — there is no first-party DNS packet path through the TUN; DNS resolution semantics are the engine authority's (below) and bootstrap resolution is constrained to the physical interface. No Windows adapter DNS settings are ever mutated |
-| UDP through the first-party TUN | **NOT IMPLEMENTED (fail-closed)** — UDP datagrams entering the userspace stack are classified `Unsupported`, counted, and never leaked to the physical interface. SOCKS5 UDP ASSOCIATE remains planned (ROADMAP) |
+| UDP through the first-party TUN | **NOT IMPLEMENTED (fail-closed)** — UDP datagrams entering the userspace stack are classified `Unsupported`, counted, and never leaked to the physical interface. SOCKS5 UDP ASSOCIATE was never implemented (the reference to it is archived historical research) |
 
 Loop prevention is a dialer contract (`freecore.NewUpstreamDialer`)
 built on an EXPLICIT two-fact constraint model (`UpstreamConstraint`):
@@ -293,12 +293,13 @@ kill switch.
   documented ones in docs/security.md; none were weakened for this
   release.
 
-## Planned future work (NOT VERIFIED — not part of the current TUN)
+## ARCHIVED RESEARCH: future work (NOT VERIFIED — not part of the frozen TUN; not upcoming FreeIran work)
 
 The current TUN activation proves its state at activation time
-(transactional, observed). The following are PLANNED future
-protections with contracts in
-[autonomous-connectivity.md](autonomous-connectivity.md):
+(transactional, observed). The following were researched as future
+protections (contracts archived in
+[autonomous-connectivity.md](autonomous-connectivity.md)); none was
+implemented and none is upcoming work:
 
 - **IPv6 leak proof** — today IPv6 is honestly reported as
   used/unused per session address selection (`IPv6 unavailable` is

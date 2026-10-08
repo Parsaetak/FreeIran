@@ -220,7 +220,7 @@ transport is preferred (see docs/architecture.md).
   runnable" in the import preview — never silently saved as
   connectable.
 
-## Future adaptive-transport candidates (PLANNED — NOT in the matrix above)
+## ARCHIVED RESEARCH: adaptive-transport candidates (NOT in the frozen matrix above; never implemented, not upcoming work)
 
 The long-term direction treats transports/protocols as adaptive
 candidates selected by observed failure-stage evidence, not as a fixed

@@ -13,7 +13,8 @@
 //     curl/PowerShell acquisition, unbounded extraction) and is NOT
 //     the current implementation. TUN is NOT a kill switch and must
 //     never be described as one; a Windows Filtering Platform kill
-//     switch is explicitly future work (docs/autonomous-connectivity.md).
+//     switch is ARCHIVED research (docs/autonomous-connectivity.md;
+//     frozen 2026-10-07 — not upcoming work).
 //
 // Both modes require explicit user action and run independently of
 // the protocol-core execution boundary (engine/core). They consume

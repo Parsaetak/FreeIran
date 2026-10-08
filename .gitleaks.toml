@@ -1,4 +1,4 @@
-# FreeIran Gitleaks configuration (v0.11.4).
+# FreeIran Gitleaks configuration (v0.final).
 #
 # The Security workflow (`.github/workflows/security.yml`, job
 # "Secret scanning") runs gitleaks-action@v3 on a full-depth
@@ -18,26 +18,40 @@
 #   2. There is NO path allowlist. Test files are scanned like every
 #      other file, so a future secret-looking literal committed to
 #      any `_test.go` file is still detected.
-#   3. The ONLY exception below is bounded to a single HISTORICAL
-#      commit hash. It exists because that commit (v0.10.2) contains
-#      two synthetic WireGuard test-key literals in test fixtures
-#      (`engine/core/singbox/singbox_test.go` line 489 and
-#      `engine/app/importservice_test.go` line 105 as of that
-#      commit). The keys are well-known non-functional examples
-#      paired with RFC 5737 documentation addresses (192.0.2.0/24)
-#      — they never were runtime credentials, and the current source
-#      no longer contains any committed literal (all WireGuard test
-#      material is derived at runtime via deterministicKey /
-#      deterministicTestKey / deterministicTUNTestKey).
-#   4. v0.11.4 deliberately does NOT add the v0.11.3 commit
-#      (bf533da, which introduced — and v0.11.4 removed — the
-#      tun_test.go synthetic key fixture) to this allowlist: history
-#      is never rewritten, and a full-history AUDIT is expected to
-#      surface that superseded historical synthetic fixture exactly
-#      as it surfaces dd62f17c. New commits are what the push gate
-#      scans, and they are fully covered.
+#   3. The ONLY exceptions below are bounded to single HISTORICAL
+#      commit hashes. Each exists because that commit contains
+#      SYNTHETIC, NON-FUNCTIONAL test fixture material:
 #
-# Changing or removing this exception requires changing the scan
+#        - dd62f17c (v0.10.2): two synthetic WireGuard test-key
+#          literals in test fixtures (`engine/core/singbox/
+#          singbox_test.go` line 489 and `engine/app/
+#          importservice_test.go` line 105 as of that commit),
+#          paired with RFC 5737 documentation addresses.
+#
+#        - bf533da5 (v0.11.3): the `engine/core/singbox/tun_test.go`
+#          fixture introduced (and v0.11.4 removed) the well-known
+#          example WireGuard key pair plus the literal
+#          "synthetic-test-password" — published example material,
+#          never a runtime credential.
+#
+#        - 9ec87aa9 (v0.14.0): `engine/freecore/shadowsocks/
+#          kdf_test.go` carries deterministic EVP_BytesToKey test
+#          VECTORS derived from the password "test" (hex digests
+#          cross-checked against the OpenSSL CLI — algorithm outputs,
+#          not credentials).
+#
+#      None of these literals ever was a runtime credential, and the
+#      current source contains no committed secret-looking literal
+#      (all WireGuard test material is derived at runtime via
+#      deterministicKey / deterministicTestKey /
+#      deterministicTUNTestKey).
+#   4. History is never rewritten to hide findings: these entries
+#      make the audit report of FULL-HISTORY scans honest (only the
+#      documented synthetic fixtures are exempt), while the push
+#      gate keeps scanning every new commit with the full default
+#      rule set.
+#
+# Changing or removing these exceptions requires changing the scan
 # posture first (docs/security.md documents the contract).
 
 title = "FreeIran gitleaks configuration"
@@ -45,18 +59,23 @@ title = "FreeIran gitleaks configuration"
 [extend]
 # Keep every default rule (generic-api-key included) exactly as
 # published. This configuration only ADDS the bounded historical
-# exception below; it removes nothing.
+# exceptions below; it removes nothing.
 useDefault = true
 
 [allowlist]
   description = """\
-Historical synthetic test-key commit (v0.10.2, dd62f17c). The flagged \
-literals are non-functional WireGuard fixture keys paired with RFC 5737 \
-documentation addresses; the current source generates keys at runtime \
-and contains no committed secret-looking literal. Scoped to this one \
-historical commit ONLY — no path or rule is excluded, so every current \
-and future commit remains fully scanned by the default rule set.\
+Historical synthetic test-fixture commits (v0.10.2 dd62f17c, v0.11.3 \
+bf533da5, v0.14.0 9ec87aa9). The flagged literals are non-functional \
+fixture material: WireGuard example keys paired with RFC 5737 \
+documentation addresses, a literal "synthetic-test-password", and \
+EVP_BytesToKey vectors derived from the password "test". The current \
+source generates keys at runtime and contains no committed \
+secret-looking literal. Scoped to these historical commits ONLY — no \
+path, file or rule is excluded, so every current and future commit \
+remains fully scanned by the default rule set.\
 """
   commits = [
     "dd62f17c22f73940e5fadfed1db187630ef9dd73",
+    "bf533da54b3f6128e830b55817c4f9cecf555c5b",
+    "9ec87aa9c39128c130f16f10bd6b61aec3a9acad",
   ]

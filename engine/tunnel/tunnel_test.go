@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -44,21 +45,35 @@ func TestControllerEnableDirectIsNoop(t *testing.T) {
 	}
 }
 
-// TestControllerTUNUnavailableWithoutCore pins the v0.11.3 capability
-// contract: WITHOUT a wired managed-core resolver the controller
-// refuses TUN everywhere with the honest capability error. No
-// platform may half-configure the system before refusing.
-func TestControllerTUNUnavailableWithoutCore(t *testing.T) {
+// TestControllerTUNRefusalsWithoutCoreResolver pins the controller
+// refusal contract when NO managed-core resolver is wired (the bare
+// New()/NewWithProxyBackend wiring). The v0.14.0 selection policy
+// made the first-party Windows dataplane the preferred TUN authority,
+// so "unavailable everywhere without a resolver" is no longer the
+// platform contract (see TestTUNBackendSelectionWithoutResolver and
+// the Windows-specific first-party tests). What IS pinned on EVERY
+// platform:
+//
+//   - the legacy Enable(ModeTUN) shape without TUN options refuses
+//     with ErrTunUnavailable;
+//   - EnableTUN without a configuration refuses with
+//     ErrNoTUNConfiguration BEFORE the backend is consulted;
+//   - EnableTUN with a configuration the first-party engine does not
+//     support (VLESS) falls through the capability gate to the
+//     unavailable fallback and refuses with ErrTunUnavailable;
+//   - EVERY refusal leaves the controller direct/inactive with the
+//     failure surfaced to the UI — no state mutation, no half-enable.
+func TestControllerTUNRefusalsWithoutCoreResolver(t *testing.T) {
 	c := New()
-
-	if c.tun.Available() {
-		t.Fatal("TUN must report unavailable without a wired core resolver")
-	}
 
 	// Legacy Enable(ModeTUN) without options refuses.
 	err := c.Enable(context.Background(), ModeTUN, "127.0.0.1", 1080, Options{})
 	if !errors.Is(err, ErrTunUnavailable) {
 		t.Fatalf("Enable(ModeTUN) err = %v, want ErrTunUnavailable", err)
+	}
+
+	if state := c.State(); state.Mode != ModeDirect || state.Active {
+		t.Fatalf("state after legacy refusal = %+v, want direct/inactive", state)
 	}
 
 	// EnableTUN with no configuration refuses BEFORE the backend.
@@ -67,11 +82,17 @@ func TestControllerTUNUnavailableWithoutCore(t *testing.T) {
 		t.Fatalf("EnableTUN(no config) err = %v, want ErrNoTUNConfiguration", err)
 	}
 
-	// EnableTUN with a configuration reaches the backend, which
-	// refuses with the same capability error.
+	if state := c.State(); state.Mode != ModeDirect || state.Active {
+		t.Fatalf("state after empty-config refusal = %+v, want direct/inactive", state)
+	}
+
+	// EnableTUN with an unsupported configuration reaches the
+	// selecting backend, is declined by the first-party capability
+	// gate (or finds no first-party dataplane at all), and refuses
+	// through the unavailable fallback.
 	err = c.EnableTUN(context.Background(), TUNEnableOptions{Config: config.Config{Type: config.TypeVLESS}})
 	if !errors.Is(err, ErrTunUnavailable) {
-		t.Fatalf("EnableTUN(config) err = %v, want ErrTunUnavailable", err)
+		t.Fatalf("EnableTUN(vless) err = %v, want ErrTunUnavailable", err)
 	}
 
 	// The failed enable must leave the controller direct/inactive with
@@ -84,16 +105,24 @@ func TestControllerTUNUnavailableWithoutCore(t *testing.T) {
 	if state.Details == "" || !strings.Contains(state.Details, "TUN enable failed") {
 		t.Fatalf("details = %q, want the surfaced TUN failure", state.Details)
 	}
+
+	// A refused enable must not latch the controller: Disable is a
+	// harmless no-op afterwards.
+	if err := c.Disable(context.Background()); err != nil {
+		t.Fatalf("Disable after refused enable err = %v, want nil", err)
+	}
 }
 
-// TestTunBackendRefusesInstallAndEnable pins the unavailable backend
-// surface: Install and Enable both refuse, Disable is a harmless
-// no-op and the snapshot reports the honest unavailable state.
-func TestTunBackendRefusesInstallAndEnable(t *testing.T) {
-	backend := newTUNBackend(nil)
+// TestUnavailableTUNBackendContract pins the honest capability-limited
+// backend surface DIRECTLY (unavailableTUNBackend), independent of
+// platform selection: Install and Enable both refuse, Disable is a
+// harmless no-op, and the snapshot reports the unavailable state with
+// the backend named honestly.
+func TestUnavailableTUNBackendContract(t *testing.T) {
+	backend := unavailableTUNBackend{}
 
 	if backend.Available() {
-		t.Fatal("Available must be false without a core resolver")
+		t.Fatal("the unavailable backend must never report available")
 	}
 
 	if err := backend.Install(context.Background()); !errors.Is(err, ErrTunUnavailable) {
@@ -113,12 +142,98 @@ func TestTunBackendRefusesInstallAndEnable(t *testing.T) {
 		t.Fatalf("snapshot = %+v, want unavailable/not-installed", snap)
 	}
 
+	if !snap.RequiresElevation {
+		t.Fatal("the unavailable snapshot must still declare the elevation requirement")
+	}
+
 	if snap.Status != tunStatusOff {
 		t.Fatalf("status = %q, want %q", snap.Status, tunStatusOff)
 	}
 
 	if snap.Backend == "" {
 		t.Fatal("snapshot must name the TUN backend honestly")
+	}
+
+	if snap.Details != ErrTunUnavailable.Error() {
+		t.Fatalf("details = %q, want the capability error text", snap.Details)
+	}
+}
+
+// TestTUNBackendSelectionWithoutResolver pins the v0.14.0 selection
+// policy of newTUNBackend(nil) on each platform WITHOUT a wired core
+// resolver:
+//
+//   - Windows: the first-party dataplane is compiled in and is the
+//     preferred TUN authority — the backend reports AVAILABLE (the
+//     v0.11.3 "unavailable without a resolver" expectation was
+//     superseded by that architecture), its snapshot names the
+//     first-party dataplane, and configurations beyond the first-party
+//     capability set still fall through to the unavailable fallback.
+//   - Other platforms: no first-party dataplane exists; the backend
+//     reports honestly unavailable.
+//
+// Install always delegates to the sing-box dependency set (the
+// fallback), which refuses without a wired resolver on every platform.
+func TestTUNBackendSelectionWithoutResolver(t *testing.T) {
+	backend := newTUNBackend(nil)
+
+	// Install: the fallback dependency set is refused everywhere.
+	if err := backend.Install(context.Background()); !errors.Is(err, ErrTunUnavailable) {
+		t.Fatalf("Install err = %v, want ErrTunUnavailable", err)
+	}
+
+	// Disable with nothing active is a harmless no-op everywhere.
+	if err := backend.Disable(context.Background()); err != nil {
+		t.Fatalf("Disable err = %v, want nil no-op", err)
+	}
+
+	snap := backend.Snapshot()
+
+	if runtime.GOOS == "windows" {
+		if !backend.Available() {
+			t.Fatal("windows: the first-party dataplane must report available")
+		}
+
+		if !snap.Available || !snap.Installed {
+			t.Fatalf("windows: snapshot = %+v, want the available first-party dataplane", snap)
+		}
+
+		if snap.Active || snap.Status != tunStatusOff {
+			t.Fatalf("windows: snapshot = %+v, want inactive/off before any enable", snap)
+		}
+
+		if !snap.RequiresElevation {
+			t.Fatal("windows: the first-party snapshot must declare the elevation requirement")
+		}
+
+		if snap.Backend != tunDataplaneFirstParty {
+			t.Fatalf("windows: backend label = %q, want %q", snap.Backend, tunDataplaneFirstParty)
+		}
+	} else {
+		if backend.Available() {
+			t.Fatal("non-windows: TUN must report unavailable without a wired core resolver")
+		}
+
+		if snap.Available || snap.Installed {
+			t.Fatalf("non-windows: snapshot = %+v, want unavailable/not-installed", snap)
+		}
+
+		if snap.Status != tunStatusOff || snap.Backend == "" {
+			t.Fatalf("non-windows: snapshot = %+v, want off with an honest backend label", snap)
+		}
+	}
+
+	// An unsupported configuration (VLESS is beyond the first-party
+	// capability set) falls through the capability gate and refuses
+	// through the unavailable fallback on EVERY platform.
+	err := backend.Enable(context.Background(), TUNEnableOptions{Config: config.Config{Type: config.TypeVLESS}})
+	if !errors.Is(err, ErrTunUnavailable) {
+		t.Fatalf("Enable(vless) err = %v, want ErrTunUnavailable", err)
+	}
+
+	// The refused enable must not have activated anything.
+	if after := backend.Snapshot(); after.Active || after.Status == tunStatusActive {
+		t.Fatalf("snapshot after refused enable = %+v, want nothing active", after)
 	}
 }
 

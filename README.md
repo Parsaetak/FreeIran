@@ -1,5 +1,17 @@
 # FreeIran
 
+> **FINAL / FROZEN — v0.final (implementation baseline 0.14.2), finalized 2026-10-07.**
+>
+> FreeIran is feature-complete for its verified scope and is no longer under active
+> development: there is no active FreeIran roadmap, and no upcoming FreeIran phase is
+> described anywhere in this repository. This README documents the ACTUAL capabilities
+> and limitations of the frozen product; the technical docs under `docs/` are the
+> authority for the frozen implementation. Historical research and archived future
+> designs are clearly marked as such and are not commitments. An independent project
+> with a similar purpose exists at <https://github.com/mlmvpn/mlmvpn_windows> — it is
+> a separate repository with no ownership, migration or continuation relationship to
+> FreeIran.
+
 A lightweight, free, open-source VPN configuration manager and proxy
 client for Windows (and, architecturally, any desktop platform), built
 around a shared Go engine for discovering, testing, maintaining,
@@ -49,11 +61,13 @@ official core binaries from their upstream release pages, or testing
 configurations. It is intended for environments where ordinary
 Internet connectivity can be heavily restricted, including Iran.
 
-The long-term direction is an autonomous connectivity engine —
+The long-term direction of an autonomous connectivity engine —
 connectivity, privacy, censorship-resilience, routing, evidence and
-recovery — captured in
-[docs/autonomous-connectivity.md](docs/autonomous-connectivity.md)
-as a future-work contract (PLANNED; not implemented).
+recovery — was captured in
+[docs/autonomous-connectivity.md](docs/autonomous-connectivity.md).
+That document is **ARCHIVED / HISTORICAL RESEARCH — NOT AN ACTIVE
+FREEIRAN ROADMAP**; the project is frozen and none of its target
+models are upcoming FreeIran work.
 
 ## Current verified capabilities
 
@@ -124,14 +138,18 @@ as a future-work contract (PLANNED; not implemented).
   other protocol/transport/security combination — VLESS, VMess,
   Trojan, Shadowsocks, Hysteria/Hysteria2, TUIC, WireGuard,
   TLS/REALITY, UDP, proxy chains — still runs through the external
-  cores, exactly as before. The first-party TUN foundation
-  (`engine/freecore/tun`) is a device/control-plane boundary only:
-  it forwards no packets, and the runnable TUN dataplane remains
-  sing-box's (Phase 2; see ROADMAP.md).
+  cores, exactly as before. The first-party TUN dataplane serves the
+  configurations inside its capability gate; everything else falls
+  back to the managed sing-box native TUN, and unsupported
+  configurations are refused fail-closed (see
+  [docs/tun.md](docs/tun.md)).
 - The Windows TUN physical runtime on an elevated physical host is
   NOT VERIFIED — evidence stops at generated-config (real pinned
   sing-box binary), Linux/unit, Windows-compile and Windows-CI
-  classes ([docs/tun.md](docs/tun.md) evidence ladder).
+  classes; application traffic crossing the TUN has not been proven
+  by a physical runtime traffic probe and is never claimed
+  ([docs/tun.md](docs/tun.md) evidence ladder). UDP through the
+  first-party TUN is fail-closed (not implemented).
 - TUN is a traffic-routing feature, NOT a kill switch; no WFP
   firewall layer exists.
 - No FreeIran-owned DNS engine (DNS inside TUN is the sing-box
@@ -198,9 +216,11 @@ as a future-work contract (PLANNED; not implemented).
               endpoint owned by FreeIran Engine on
               first-party-supported routes, external
               core otherwise
-              TUN — sing-box native dataplane (Windows;
-              first-party device/control foundation in
-              engine/freecore/tun, no dataplane yet)
+              TUN — Windows: first-party FreeIran dataplane
+              (engine/freecore + engine/tunnel) for supported
+              configurations; managed sing-box native TUN as the
+              explicit fallback; unsupported configurations refused
+              fail-closed
 ```
 
 - **Go** is the primary orchestration/system language: lifecycle,
@@ -242,10 +262,12 @@ Details: [docs/README.md](docs/README.md) (documentation index),
   local diagnostics.
 - VPN trust is shifted, not eliminated; a VPN does not hide the local
   MAC from the access network and does not rewrite device
-  identifiers. The future privacy contract (minimal metadata, WFP
-  kill-switch target, banned marketing claims) is recorded in
+  identifiers. Historical research toward a fuller privacy contract
+  (minimal metadata, WFP kill-switch target, banned marketing claims)
+  is archived in
   [docs/autonomous-connectivity.md](docs/autonomous-connectivity.md)
-  and [docs/security.md](docs/security.md).
+  and [docs/security.md](docs/security.md) — archived, not upcoming
+  work.
 - CI runs `govulncheck` and `gitleaks` on every push; see
   [docs/security.md](docs/security.md).
 
@@ -352,20 +374,28 @@ FreeIran/
 ├── .github/workflows/     CI, release and security pipelines
 ├── docs/                  Technical documentation (see docs/README.md)
 ├── CHANGELOG.md           Release history
-├── ROADMAP.md             Forward roadmap (phased)
+├── ROADMAP.md             ARCHIVED historical roadmap (frozen 2026-10-07)
 └── VERSION                Application version (current source of truth)
 ```
 
-## Roadmap
+## Final status
 
-The forward roadmap is maintained in [ROADMAP.md](ROADMAP.md) —
-future phases (full-device protection, adaptive censorship engine,
-canonical routing/DNS, privacy diagnostics, advanced topologies) with
-the future architecture contracts in
-[docs/autonomous-connectivity.md](docs/autonomous-connectivity.md).
-Nothing beyond the current baseline is complete. Release history
-lives in [CHANGELOG.md](CHANGELOG.md) — this README describes the
-current product only.
+FreeIran is **FINAL / FROZEN as of 2026-10-07** with the human-facing
+designation **v0.final** and the machine-readable implementation
+version **0.14.2** (the value in `VERSION`, which all build and
+release machinery requires). The phased roadmap is closed:
+[ROADMAP.md](ROADMAP.md) is an archived historical record, and the
+future-design research in [docs/autonomous-connectivity.md](docs/autonomous-connectivity.md)
+is archived, not upcoming work. See [FINAL.md](FINAL.md) for the
+canonical freeze statement — final scope, known limitations and
+evidence boundaries. Release history lives in
+[CHANGELOG.md](CHANGELOG.md); this README describes the frozen
+product only.
+
+An independent project with a similar purpose exists at
+[mlmvpn/mlmvpn_windows](https://github.com/mlmvpn/mlmvpn_windows). It
+is a separate, unrelated repository — not a FreeIran successor, fork
+or continuation; FreeIran development has not moved there.
 
 ## Attribution & License
 

@@ -1,3 +1,20 @@
+# ARCHIVED HISTORICAL ROADMAP
+
+> **The FreeIran roadmap CLOSED on 2026-10-07.** The project is FINAL /
+> FROZEN as **v0.final** (implementation baseline 0.14.2) — see
+> [FINAL.md](FINAL.md). Everything below is a HISTORICAL RECORD of how
+> the project planned and executed its phases up to the freeze.
+>
+> - Completed phases are history, not an invitation to continue.
+> - Incomplete work below is honestly incomplete: it was never finished,
+>   and it is NOT upcoming FreeIran development. Do not read any planned
+>   item as a commitment, a roadmap, or a description of the current
+>   product.
+> - The current product is described only by [README.md](README.md) and
+>   the technical docs ([docs/README.md](docs/README.md)).
+
+---
+
 # FreeIran Roadmap
 
 ## FreeIran — Autonomous Local Connectivity Engine

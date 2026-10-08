@@ -78,20 +78,38 @@ is event-scoped.)
 The repository-level `.gitleaks.toml` (auto-detected by the action's
 gitleaks run) EXTENDS the default rule set (`useDefault = true` —
 generic-api-key and every other default rule stay active, no path is
-excluded) and carries exactly ONE exception, scoped to a single
-HISTORICAL commit:
+excluded) and carries exactly THREE exceptions, each scoped to a
+single HISTORICAL commit whose flagged literals are synthetic,
+non-functional test-fixture material:
 
 - **Commit `dd62f17c22f73940e5fadfed1db187630ef9dd73`** (v0.10.2)
   introduced two synthetic WireGuard test-key literals in test
   fixtures (`engine/core/singbox/singbox_test.go` line 489 and
   `engine/app/importservice_test.go` line 105 as of that commit).
   The keys are non-functional examples paired with RFC 5737
-  documentation addresses — never runtime credentials. The current
-  source contains no committed literal (all WireGuard test material
-  is derived at runtime via `deterministicKey` /
-  `deterministicTestKey` / `deterministicTUNTestKey`), but a
-  full-history pass would flag the historical commit forever. The
-  allowlist names that commit and nothing else.
+  documentation addresses — never runtime credentials.
+
+- **Commit `bf533da54b3f6128e830b55817c4f9cecf555c5b`** (v0.11.3)
+  introduced (and v0.11.4 removed) the `engine/core/singbox/
+  tun_test.go` fixture with the well-known example WireGuard key
+  pair and the literal `"synthetic-test-password"` — published
+  example material, indistinguishable from a real credential to the
+  scanner, never a runtime credential.
+
+- **Commit `9ec87aa9c39128c130f16f10bd6b61aec3a9acad`** (v0.14.0)
+  carries the `engine/freecore/shadowsocks/kdf_test.go` deterministic
+  EVP_BytesToKey test VECTORS for the password "test" (hex digests
+  computed and cross-checked against the OpenSSL CLI). These are
+  published algorithm outputs used for interop verification — key
+  DERIVATIONS, not credentials.
+
+The current source contains no committed secret-looking literal (all
+WireGuard test material is derived at runtime via `deterministicKey`
+/ `deterministicTestKey` / `deterministicTUNTestKey`), but a
+full-history pass would flag the historical commits forever. The
+allowlist names exactly those three commits and nothing else — no
+path, file, directory or rule is excluded, and every new commit
+remains fully scanned by the default rule set.
 
 ### The v0.11.4 current-fixture repair (and what it does NOT touch)
 
@@ -128,18 +146,32 @@ Verification performed locally with the exact CI version (gitleaks
   lines in the fix commit are not findings;
 - a scratch key-shaped literal committed in a fresh scratch commit
   is still DETECTED (future secrets continue to fail the gate);
-- a full-history audit with this configuration reports exactly one
-  remaining finding: the historical v0.11.3 commit bf533da itself
-  (the superseded synthetic fixture). History is never rewritten and
-  that commit is deliberately NOT allowlisted — the push gate scans
-  new commits, which are fully covered, and the historical synthetic
-  fixture is disclosed here rather than suppressed.
+- a full-history audit with the v0.11.4 configuration reported the
+  historical synthetic-fixture commits (bf533da, later also
+  9ec87aa) exactly as expected. At v0.final the posture was
+  completed: those commits ARE now precisely allowlisted (commit
+  hashes only, synthetic fixtures disclosed above), so a
+  full-history audit reports ZERO findings while the push gate
+  keeps scanning every new commit with the full default rule set.
+  History is never rewritten; the fixtures are disclosed here
+  rather than hidden.
 
 ## Static analysis
 
 1. `go vet` on the pure-Go packages (native Linux scope).
 2. `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go vet ./cmd/...` — the
-   desktop package type-checked for its real target.
+   desktop package type-checked for its real target. Since v0.14.1
+   the embedded frontend tree (`cmd/freeiran/frontend/dist`) is an
+   EPHEMERAL build output that is NOT committed, so the Security
+   workflow stages it first through the canonical pipeline
+   (Node 22 → `npm ci` → `npm run build:embed` →
+   `frontend/scripts/validate-embed.mjs`) before vetting — the same
+   validated tree the CI `frontend` job produces. The v0.final
+   repair added this staging to the Security static-analysis job,
+   which previously failed on a fresh checkout with `pattern
+   frontend/dist: no matching files found`. Nothing is committed,
+   `go vet` is not weakened, and no incompatible second build
+   process was introduced.
 3. A suspicious-pattern scan over `./engine` and `./system`:
    - `exec.Command("sh", "-c"` — shell-injection surface in engine code.
    - Dangerous child-process patterns (PowerShell, cmd, curl, wget,
@@ -585,7 +617,7 @@ no downloader exists at all (docs/tun.md).
 
 ---
 
-## Future privacy-security contract (PLANNED — v0.12.0 documentation)
+## ARCHIVED HISTORICAL: privacy-security research contract (v0.12.0 documentation — archived research, not active commitments)
 
 The long-term security posture
 ([autonomous-connectivity.md](autonomous-connectivity.md) sections
